@@ -1,0 +1,60 @@
+diff --git a/Trio/Sources/Models/NightscoutAlgorithmSettings.swift b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
+@@
++import Foundation
++
++/// Trio‑specific algorithm configuration that Nightscout doesn’t receive today.
++/// All properties are optional to keep the JSON backward‑compatible.
++struct NightscoutAlgorithmSettings: Codable {
++    /// Dynamic‑ISF / Autosens enabled?
++    let dynamicISFEnabled: Bool?
++    /// Autosens upper limit (e.g. 1.20).
++    let autosensMax: Decimal?
++    /// Autosens lower limit (e.g. 0.70).
++    let autosensMin: Decimal?
++    /// Is SMB / automatic bolus allowed?
++    let smbAllowed: Bool?
++    /// App / algorithm build string or git hash.
++    let algorithmVersion: String?
++}
++
+diff --git a/Trio/Sources/Models/NightscoutStatus.swift b/Trio/Sources/Models/NightscoutStatus.swift
+@@
+diff --git a/Trio/Sources/Models/NightscoutStatus.swift b/Trio/Sources/Models/NightscoutStatus.swift
+@@
+     let openaps: OpenAPSStatus
+     let pump: NSPumpStatus
+     let uploader: Uploader
++    /// Trio‑specific advanced algorithm settings (optional).
++    let trioSettings: NightscoutAlgorithmSettings?
+ }
+ 
+diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
+@@
+diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
+@@
+             battery: Int(batteryLevel * 100),
+             isCharging: batteryState == .charging || batteryState == .full
+         )
+ 
++        // Snapshot current Trio algorithm configuration.
++        // ⚠️ Replace placeholder paths with the real SettingsManager keys.
++        let trioSettings = NightscoutAlgorithmSettings(
++            dynamicISFEnabled: settingsManager.preferences.dynamicISFEnabled, // TODO: confirm path
++            autosensMax: settingsManager.preferences.autosensMax,             // TODO: confirm path
++            autosensMin: settingsManager.preferences.autosensMin,             // TODO: confirm path
++            smbAllowed: settingsManager.settings.automaticBolus,              // TODO: confirm path
++            algorithmVersion: Bundle.main.releaseVersionNumber
++        )
++
+         let status = NightscoutStatus(
+             device: NightscoutTreatment.local,
+             openaps: openapsStatus,
+             pump: pump,
+-            uploader: uploader
++            uploader: uploader,
++            trioSettings: trioSettings
+         )
