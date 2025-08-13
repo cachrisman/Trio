@@ -1,9 +1,9 @@
-diff --git a/Trio/Sources/Models/NightscoutAlgorithmSettings.swift b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
+diff --git a/Trio/Trio/Sources/Models/NightscoutAlgorithmSettings.swift b/Trio/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
 new file mode 100644
-index 0000000..e69de29
+index 000000000..f0d39bb8a
 --- /dev/null
-+++ b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
-@@
++++ b/Trio/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
+@@ -0,0 +1,16 @@
 +import Foundation
 +
 +/// Trio‑specific algorithm configuration that Nightscout doesn’t receive today.
@@ -20,11 +20,12 @@ index 0000000..e69de29
 +    /// App / algorithm build string or git hash.
 +    let algorithmVersion: String?
 +}
-+
+
 diff --git a/Trio/Sources/Models/NightscoutStatus.swift b/Trio/Sources/Models/NightscoutStatus.swift
-@@
-diff --git a/Trio/Sources/Models/NightscoutStatus.swift b/Trio/Sources/Models/NightscoutStatus.swift
-@@
+index 65065783b..6c5a36aa4 100644
+--- a/Trio/Sources/Models/NightscoutStatus.swift
++++ b/Trio/Sources/Models/NightscoutStatus.swift
+@@ -5,6 +5,8 @@ struct NightscoutStatus: JSON {
      let openaps: OpenAPSStatus
      let pump: NSPumpStatus
      let uploader: Uploader
@@ -32,14 +33,15 @@ diff --git a/Trio/Sources/Models/NightscoutStatus.swift b/Trio/Sources/Models/Ni
 +    let trioSettings: NightscoutAlgorithmSettings?
  }
  
+ struct OpenAPSStatus: JSON {
 diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
-@@
-diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
-@@
+index caf651201..b34c882f4 100644
+--- a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
++++ b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
+@@ -621,11 +621,22 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
              battery: Int(batteryLevel * 100),
              isCharging: batteryState == .charging || batteryState == .full
          )
- 
 +        // Snapshot current Trio algorithm configuration.
 +        // ⚠️ Replace placeholder paths with the real SettingsManager keys.
 +        let trioSettings = NightscoutAlgorithmSettings(
@@ -58,3 +60,5 @@ diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/
 +            uploader: uploader,
 +            trioSettings: trioSettings
          )
+ 
+         do {
