@@ -1,0 +1,331 @@
+diff --git a/Trio.xcodeproj/project.pbxproj b/Trio.xcodeproj/project.pbxproj
+index d90505b6c..e6d06fd07 100644
+--- a/Trio.xcodeproj/project.pbxproj
++++ b/Trio.xcodeproj/project.pbxproj
+@@ -266,6 +266,7 @@
+ 		49B9B57F2D5768D2009C6B59 /* AdjustmentStored+Helper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49B9B57E2D5768D2009C6B59 /* AdjustmentStored+Helper.swift */; };
+ 		5075C1608E6249A51495C422 /* TargetsEditorProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BDEA2DC60EDE0A3CA54DC73 /* TargetsEditorProvider.swift */; };
+ 		53F2382465BF74DB1A967C8B /* PumpConfigProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8630D58BDAD6D9C650B9B39 /* PumpConfigProvider.swift */; };
++		542E67E92E65DFF00081B04E /* NightscoutAlgorithmSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 542E67E82E65DFF00081B04E /* NightscoutAlgorithmSettings.swift */; };
+ 		581516A42BCED84A00BF67D7 /* DebuggingIdentifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 581516A32BCED84A00BF67D7 /* DebuggingIdentifiers.swift */; };
+ 		581516A92BCEEDF800BF67D7 /* NSPredicates.swift in Sources */ = {isa = PBXBuildFile; fileRef = 581516A82BCEEDF800BF67D7 /* NSPredicates.swift */; };
+ 		581AC4392BE22ED10038760C /* JSONConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 581AC4382BE22ED10038760C /* JSONConverter.swift */; };
+@@ -1089,6 +1090,7 @@
+ 		49B9B57E2D5768D2009C6B59 /* AdjustmentStored+Helper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AdjustmentStored+Helper.swift"; sourceTree = "<group>"; };
+ 		4DD795BA46B193644D48138C /* TargetsEditorRootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TargetsEditorRootView.swift; sourceTree = "<group>"; };
+ 		505E09DC17A0C3D0AF4B66FE /* ISFEditorStateModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ISFEditorStateModel.swift; sourceTree = "<group>"; };
++		542E67E82E65DFF00081B04E /* NightscoutAlgorithmSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NightscoutAlgorithmSettings.swift; sourceTree = "<group>"; };
+ 		581516A32BCED84A00BF67D7 /* DebuggingIdentifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebuggingIdentifiers.swift; sourceTree = "<group>"; };
+ 		581516A82BCEEDF800BF67D7 /* NSPredicates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSPredicates.swift; sourceTree = "<group>"; };
+ 		581AC4382BE22ED10038760C /* JSONConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONConverter.swift; sourceTree = "<group>"; };
+@@ -2346,19 +2348,7 @@
+ 		388E5A5925B6F0250019842D /* Models */ = {
+ 			isa = PBXGroup;
+ 			children = (
+-				DDFF204F2DB2C11900AB8A96 /* WatchStateSnapshot.swift */,
+-				DDEBB05B2D89E9050032305D /* TimeInRangeType.swift */,
+-				3B2F77852D7E52ED005ED9FA /* TDD.swift */,
+-				DD4FFF322D458EE600B6CFF9 /* GarminWatchState.swift */,
+-				DD3078692D42F94000DE0490 /* GarminDevice.swift */,
+-				DD3078672D42F5CE00DE0490 /* WatchGlucoseObject.swift */,
+-				BD432CA02D2F4E3300D1EB79 /* WatchMessageKeys.swift */,
+-				BD54A9722D281A9C00F9C1EE /* TempTargetPresetWatch.swift */,
+-				BD54A95A2D28087700F9C1EE /* OverridePresetWatch.swift */,
+-				BDA25EFC2D261BF200035F34 /* WatchState.swift */,
+-				715120D12D3C2B84005D9FB6 /* GlucoseNotificationsOption.swift */,
+-				DD940BA92CA7585D000830A5 /* GlucoseColorScheme.swift */,
+-				DD6D67E32C9C253500660C9B /* ColorSchemeOption.swift */,
++				CE82E02628E869DF00473A9C /* AlertEntry.swift */,
+ 				388E5A5F25B6F2310019842D /* Autosens.swift */,
+ 				388358C725EEF6D200E024B2 /* BasalProfileEntry.swift */,
+ 				38D0B3B525EBE24900CB6E88 /* Battery.swift */,
+@@ -2366,41 +2356,54 @@
+ 				3870FF4225EC13F40088248F /* BloodGlucose.swift */,
+ 				38A9260425F012D8009E3739 /* CarbRatios.swift */,
+ 				38D0B3D825EC07C400CB6E88 /* CarbsEntry.swift */,
+-				3811DF0125CA9FEA00A708ED /* Credentials.swift */,
++				19D4E4EA29FC6A9F00351451 /* Charts.swift */,
++				DD6D67E32C9C253500660C9B /* ColorSchemeOption.swift */,
+ 				E592A36F2CEEC01E009A472C /* ContactTrickEntry.swift */,
+-				38AEE73C25F0200C0013F05B /* TrioSettings.swift */,
++				3811DF0125CA9FEA00A708ED /* Credentials.swift */,
++				19A910352A24D6D700C8951B /* DateFilter.swift */,
++				DD21FCB42C6952AD00AF2C25 /* DecimalPickerSettings.swift */,
++				583684072BD195A700070A60 /* Determination.swift */,
++				DDD6D4D22CDE90720029439A /* EstimatedA1cDisplayUnit.swift */,
++				DD6B7CB32C7B71F700B75029 /* ForecastDisplayType.swift */,
++				DD3078692D42F94000DE0490 /* GarminDevice.swift */,
++				DD4FFF322D458EE600B6CFF9 /* GarminWatchState.swift */,
++				DD940BA92CA7585D000830A5 /* GlucoseColorScheme.swift */,
++				715120D12D3C2B84005D9FB6 /* GlucoseNotificationsOption.swift */,
++				E0D4F80427513ECF00BDF1FE /* HealthKitSample.swift */,
++				1967DFBD29D052C200759F30 /* Icons.swift */,
+ 				382C133625F13A1E00715CE1 /* InsulinSensitivities.swift */,
+ 				38887CCD25F5725200944304 /* IOBEntry.swift */,
++				BDF530D72B40F8AC002CAF43 /* LockScreenView.swift */,
++				193F6CDC2A512C8F001240FD /* Loops.swift */,
++				19012CDB291D2CB900FB8210 /* LoopStats.swift */,
++				542E67E82E65DFF00081B04E /* NightscoutAlgorithmSettings.swift */,
+ 				DD68889C2C386E17006E3C44 /* NightscoutExercise.swift */,
++				FE41E4D529463EE20047FD55 /* NightscoutPreferences.swift */,
++				191F62672AD6B05A004D7911 /* NightscoutSettings.swift */,
+ 				385CEA8125F23DFD002D6D5B /* NightscoutStatus.swift */,
+ 				389442CA25F65F7100FA1F27 /* NightscoutTreatment.swift */,
++				BDC2EA462C3045AD00E5BBD0 /* Override.swift */,
++				BD54A95A2D28087700F9C1EE /* OverridePresetWatch.swift */,
+ 				3895E4C525B9E00D00214B37 /* Preferences.swift */,
+ 				38A13D3125E28B4B00EAA382 /* PumpHistoryEvent.swift */,
+ 				3883583325EEB38000E024B2 /* PumpSettings.swift */,
+ 				38E989DC25F5021400C0CED0 /* PumpStatus.swift */,
++				DD9ECB692CA99F6C00AA7C45 /* PushMessage.swift */,
++				CC6C406D2ACDD69E009B8058 /* RawFetchedProfile.swift */,
+ 				38BF021C25E7E3AF00579895 /* Reservoir.swift */,
++				19B0EF2028F6D66200069496 /* Statistics.swift */,
++				3B2F77852D7E52ED005ED9FA /* TDD.swift */,
+ 				38A0364125ED069400FCBB52 /* TempBasal.swift */,
+ 				3871F39B25ED892B0013ECB5 /* TempTarget.swift */,
+-				3811DE8E25C9D80400A708ED /* User.swift */,
+-				E0D4F80427513ECF00BDF1FE /* HealthKitSample.swift */,
++				BD54A9722D281A9C00F9C1EE /* TempTargetPresetWatch.swift */,
++				DDEBB05B2D89E9050032305D /* TimeInRangeType.swift */,
+ 				1935363F28496F7D001E0B16 /* TrioCustomOrefVariables.swift */,
+-				CE82E02628E869DF00473A9C /* AlertEntry.swift */,
+-				19B0EF2028F6D66200069496 /* Statistics.swift */,
+-				19012CDB291D2CB900FB8210 /* LoopStats.swift */,
+-				FE41E4D529463EE20047FD55 /* NightscoutPreferences.swift */,
+-				191F62672AD6B05A004D7911 /* NightscoutSettings.swift */,
+-				1967DFBD29D052C200759F30 /* Icons.swift */,
+-				19D4E4EA29FC6A9F00351451 /* Charts.swift */,
+-				19A910352A24D6D700C8951B /* DateFilter.swift */,
+-				193F6CDC2A512C8F001240FD /* Loops.swift */,
+-				CC6C406D2ACDD69E009B8058 /* RawFetchedProfile.swift */,
+-				BDF530D72B40F8AC002CAF43 /* LockScreenView.swift */,
+-				583684072BD195A700070A60 /* Determination.swift */,
+-				BDC2EA462C3045AD00E5BBD0 /* Override.swift */,
+-				DD21FCB42C6952AD00AF2C25 /* DecimalPickerSettings.swift */,
+-				DD6B7CB32C7B71F700B75029 /* ForecastDisplayType.swift */,
+-				DD9ECB692CA99F6C00AA7C45 /* PushMessage.swift */,
+-				DDD6D4D22CDE90720029439A /* EstimatedA1cDisplayUnit.swift */,
++				38AEE73C25F0200C0013F05B /* TrioSettings.swift */,
++				3811DE8E25C9D80400A708ED /* User.swift */,
++				DD3078672D42F5CE00DE0490 /* WatchGlucoseObject.swift */,
++				BD432CA02D2F4E3300D1EB79 /* WatchMessageKeys.swift */,
++				BDA25EFC2D261BF200035F34 /* WatchState.swift */,
++				DDFF204F2DB2C11900AB8A96 /* WatchStateSnapshot.swift */,
+ 			);
+ 			path = Models;
+ 			sourceTree = "<group>";
+@@ -4506,6 +4509,7 @@
+ 				110AEDED2C51A0AE00615CC9 /* ShortcutsConfigProvider.swift in Sources */,
+ 				38E4453D274E411700EC9A94 /* Disk+Errors.swift in Sources */,
+ 				C29835B02E2AA3F30068C5BB /* NightscoutUploadStepView.swift in Sources */,
++				542E67E92E65DFF00081B04E /* NightscoutAlgorithmSettings.swift in Sources */,
+ 				58D08B3A2C8DFECD00AA37D3 /* TempTargets.swift in Sources */,
+ 				38E98A2325F52C9300C0CED0 /* Signpost.swift in Sources */,
+ 				CE7CA3542A064973004BE681 /* TempPresetsIntentRequest.swift in Sources */,
+diff --git a/Trio/Sources/Models/NightscoutAlgorithmSettings.swift b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
+new file mode 100644
+index 000000000..e187db792
+--- /dev/null
++++ b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
+@@ -0,0 +1,87 @@
++import Foundation
++
++struct NightscoutAlgorithmSettings: Codable {
++    // Meta
++    let schemaVersion: Int? // = 1
++    let algorithmVersion: String?
++    let units: String? // "mg/dL" or "mmol/L"
++    let preferencesTimestamp: Date?
++
++    // Loop & SMB/UAM
++    let closedLoop: Bool?
++    let enableUAM: Bool?
++    let enableSMBAlways: Bool?
++    let enableSMBWithCOB: Bool?
++    let enableSMBAfterCarbs: Bool?
++    let enableSMBWithTemptarget: Bool?
++    let allowSMBWithHighTemptarget: Bool?
++    let smbDeliveryRatio: Decimal?
++    let smbInterval: Decimal?
++    let maxSMBBasalMinutes: Decimal?
++    let maxUAMSMBBasalMinutes: Decimal?
++
++    // Sensitivity / targets
++    let autosensMax: Decimal?
++    let autosensMin: Decimal?
++    let rewindResetsAutosens: Bool?
++    let highTemptargetRaisesSensitivity: Bool?
++    let lowTemptargetLowersSensitivity: Bool?
++    let sensitivityRaisesTarget: Bool?
++    let resistanceLowersTarget: Bool?
++    let advTargetAdjustments: Bool?
++
++    // Safety rails
++    let maxIOB: Decimal?
++    let maxCOB: Decimal?
++    let maxDailySafetyMultiplier: Decimal?
++    let currentBasalSafetyMultiplier: Decimal?
++
++    // Insulin model
++    let curve: String? // Preferences.InsulinCurve rawValue
++    let useCustomPeakTime: Bool?
++    let insulinPeakTime: Decimal?
++    let insulinActionCurve: Decimal? // Pump reality
++
++    // Exercise / temp targets
++    let exerciseMode: Bool?
++    let halfBasalExerciseTarget: Decimal?
++
++    // Carb absorption / UAM
++    let maxMealAbsorptionTime: Decimal?
++    let min5mCarbimpact: Decimal?
++    let remainingCarbsFraction: Decimal?
++    let remainingCarbsCap: Decimal?
++
++    // Heuristics & advanced math
++    let adjustmentFactor: Decimal?
++    let adjustmentFactorSigmoid: Decimal?
++    let sigmoid: Bool?
++    let useNewFormula: Bool?
++    let useWeightedAverage: Bool?
++    let weightPercentage: Decimal?
++    let tddAdjBasal: Bool?
++    let updateInterval: Decimal?
++    let maxDeltaBGthreshold: Decimal?
++    let noisyCGMTargetMultiplier: Decimal?
++    let carbsReqThreshold: Decimal?
++    let threshold_setting: Decimal?
++    let suspendZerosIOB: Bool?
++    let unsuspendIfNoTemp: Bool?
++    let skipNeutralTemps: Bool?
++
++    // Food processing helpers
++    let useFPUconversion: Bool?
++    let fattyMeals: Bool?
++    let fattyMealFactor: Decimal?
++    let sweetMeals: Bool?
++    let sweetMealFactor: Decimal?
++    let overrideFactor: Decimal?
++    let individualAdjustmentFactor: Decimal?
++    let timeCap: Decimal?
++    let minuteInterval: Decimal?
++    let delay: Decimal?
++
++    // Pump hard limits
++    let maxBolus: Decimal?
++    let maxBasal: Decimal?
++}
+diff --git a/Trio/Sources/Models/NightscoutStatus.swift b/Trio/Sources/Models/NightscoutStatus.swift
+index 65065783b..6c5a36aa4 100644
+--- a/Trio/Sources/Models/NightscoutStatus.swift
++++ b/Trio/Sources/Models/NightscoutStatus.swift
+@@ -5,6 +5,8 @@ struct NightscoutStatus: JSON {
+     let openaps: OpenAPSStatus
+     let pump: NSPumpStatus
+     let uploader: Uploader
++    /// Trio‑specific advanced algorithm settings (optional).
++    let trioSettings: NightscoutAlgorithmSettings?
+ }
+ 
+ struct OpenAPSStatus: JSON {
+diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
+index caf651201..0cfff0cde 100644
+--- a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
++++ b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
+@@ -621,11 +621,94 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
+             battery: Int(batteryLevel * 100),
+             isCharging: batteryState == .charging || batteryState == .full
+         )
++
++        let s = settingsManager.settings
++        let p = settingsManager.preferences
++        let ps = settingsManager.pumpSettings
++
++        let trioSettings = NightscoutAlgorithmSettings(
++            schemaVersion: 1,
++            algorithmVersion: Bundle.main.releaseVersionNumber,
++            units: s.units.rawValue,
++            preferencesTimestamp: p.timestamp,
++
++            closedLoop: s.closedLoop,
++            enableUAM: p.enableUAM,
++            enableSMBAlways: p.enableSMBAlways,
++            enableSMBWithCOB: p.enableSMBWithCOB,
++            enableSMBAfterCarbs: p.enableSMBAfterCarbs,
++            enableSMBWithTemptarget: p.enableSMBWithTemptarget,
++            allowSMBWithHighTemptarget: p.allowSMBWithHighTemptarget,
++            smbDeliveryRatio: p.smbDeliveryRatio,
++            smbInterval: p.smbInterval,
++            maxSMBBasalMinutes: p.maxSMBBasalMinutes,
++            maxUAMSMBBasalMinutes: p.maxUAMSMBBasalMinutes,
++
++            autosensMax: p.autosensMax,
++            autosensMin: p.autosensMin,
++            rewindResetsAutosens: p.rewindResetsAutosens,
++            highTemptargetRaisesSensitivity: p.highTemptargetRaisesSensitivity,
++            lowTemptargetLowersSensitivity: p.lowTemptargetLowersSensitivity,
++            sensitivityRaisesTarget: p.sensitivityRaisesTarget,
++            resistanceLowersTarget: p.resistanceLowersTarget,
++            advTargetAdjustments: p.advTargetAdjustments,
++
++            maxIOB: p.maxIOB,
++            maxCOB: p.maxCOB,
++            maxDailySafetyMultiplier: p.maxDailySafetyMultiplier,
++            currentBasalSafetyMultiplier: p.currentBasalSafetyMultiplier,
++
++            curve: p.curve.rawValue,
++            useCustomPeakTime: p.useCustomPeakTime,
++            insulinPeakTime: p.insulinPeakTime,
++            insulinActionCurve: ps.insulinActionCurve,
++
++            exerciseMode: p.exerciseMode,
++            halfBasalExerciseTarget: p.halfBasalExerciseTarget,
++
++            maxMealAbsorptionTime: p.maxMealAbsorptionTime,
++            min5mCarbimpact: p.min5mCarbimpact,
++            remainingCarbsFraction: p.remainingCarbsFraction,
++            remainingCarbsCap: p.remainingCarbsCap,
++
++            adjustmentFactor: p.adjustmentFactor,
++            adjustmentFactorSigmoid: p.adjustmentFactorSigmoid,
++            sigmoid: p.sigmoid,
++            useNewFormula: p.useNewFormula,
++            useWeightedAverage: p.useWeightedAverage,
++            weightPercentage: p.weightPercentage,
++            tddAdjBasal: p.tddAdjBasal,
++            updateInterval: p.updateInterval,
++            maxDeltaBGthreshold: p.maxDeltaBGthreshold,
++            noisyCGMTargetMultiplier: p.noisyCGMTargetMultiplier,
++            carbsReqThreshold: p.carbsReqThreshold,
++            threshold_setting: p.threshold_setting,
++            suspendZerosIOB: p.suspendZerosIOB,
++            unsuspendIfNoTemp: p.unsuspendIfNoTemp,
++            skipNeutralTemps: p.skipNeutralTemps,
++
++            useFPUconversion: s.useFPUconversion,
++            fattyMeals: s.fattyMeals,
++            fattyMealFactor: s.fattyMealFactor,
++            sweetMeals: s.sweetMeals,
++            sweetMealFactor: s.sweetMealFactor,
++            overrideFactor: s.overrideFactor,
++            individualAdjustmentFactor: s.individualAdjustmentFactor,
++            timeCap: s.timeCap,
++            minuteInterval: s.minuteInterval,
++            delay: s.delay,
++
++            maxBolus: ps.maxBolus,
++            maxBasal: ps.maxBasal
++        )
++        // pass trioSettings when building NightscoutStatus(...)
++
+         let status = NightscoutStatus(
+             device: NightscoutTreatment.local,
+             openaps: openapsStatus,
+             pump: pump,
+-            uploader: uploader
++            uploader: uploader,
++            trioSettings: trioSettings
+         )
+ 
+         do {
