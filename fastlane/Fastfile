@@ -23,6 +23,66 @@ DEVICE_NAME = ENV["DEVICE_NAME"]
 DEVICE_ID = ENV["DEVICE_ID"]
 ENV["FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"] = "120"
 
+require "set"
+
+def swift_files_from_patches(workspace_root)
+  patches_dir = File.join(workspace_root, "patches")
+  return [] unless Dir.exist?(patches_dir)
+
+  Dir.glob(File.join(patches_dir, "**/*.patch"))
+     .flat_map { |patch| extract_swift_paths_from_patch(patch) }
+     .uniq
+     .select { |relative_path| File.exist?(File.join(workspace_root, relative_path)) }
+end
+
+def extract_swift_paths_from_patch(path)
+  File.foreach(path, chomp: true).each_with_object([]) do |line, acc|
+    next unless line.start_with?("+++ b/")
+    candidate = line.delete_prefix("+++ b/").strip
+    acc << candidate if candidate.end_with?(".swift")
+  end
+end
+
+def ensure_swift_files_are_referenced(project_path:, files:)
+  return if files.empty?
+
+  require "xcodeproj"
+
+  project = Xcodeproj::Project.open(project_path)
+  target_mapping = {
+    "Trio/" => "Trio",
+    "TrioTests/" => "TrioTests",
+    "LiveActivity/" => "LiveActivityExtension",
+    "Trio Watch App Extension/" => "Trio Watch App",
+    "Trio Watch Complication/" => "Trio Watch Complication Extension",
+    "Trio Watch App Tests/" => "Trio Watch AppTests"
+  }
+
+  existing_paths = project.files.map(&:path).compact.to_set
+  did_change = false
+
+  files.each do |path|
+    next if existing_paths.include?(path)
+
+    target_name = target_mapping.find { |prefix, _| path.start_with?(prefix) }&.last || "Trio"
+    target = project.targets.find { |t| t.name == target_name }
+    next unless target
+
+    group_path = File.dirname(path)
+    group = if group_path == "." || group_path.empty?
+      project.main_group
+    else
+      project.main_group.find_subpath(group_path, true)
+    end
+
+    file_ref = group.new_file(path)
+    target.add_file_references([file_ref])
+    did_change = true
+  end
+
+  project.save if did_change
+end
+
 
 # Define method to parse xcconfig file, and replace $(DEVELOPMENT_TEAM) with ENV["TEAMID"]
 def parse_xcconfig_file(path)
@@ -55,6 +115,16 @@ platform :ios do
   lane :build_trio do
     setup_ci if ENV['CI']
     BUNDLE_ID = ENV["BUNDLE_ID"]
+    workspace_root = GITHUB_WORKSPACE || Dir.pwd
+
+    new_swift_files = swift_files_from_patches(workspace_root)
+    unless new_swift_files.empty?
+      UI.message("Ensuring new Swift files are added to the project: #{new_swift_files.join(', ')}")
+      ensure_swift_files_are_referenced(
+        project_path: File.join(workspace_root, "Trio.xcodeproj"),
+        files: new_swift_files
+      )
+    end
 
     update_project_team(
       path: "#{GITHUB_WORKSPACE}/Trio.xcodeproj",
