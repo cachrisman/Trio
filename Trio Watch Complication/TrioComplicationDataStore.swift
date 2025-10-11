@@ -108,9 +108,174 @@ struct TrioComplicationSnapshot: Equatable {
 final class TrioComplicationDataStore {
     static let shared = TrioComplicationDataStore()
     static let complicationKind = "TrioWatchComplication"
+    /// Remembers the last valid timestamp of a successful data save or decode.
+    static var lastValidTimestamp: Date?
 
-    /// Returns the shared App Group container URL based on the AppGroupID in Info.plist
-    var sharedContainerURL: URL? {
+    private let sharedContainerURLProvider: () -> URL?
+    private let fileManager: FileManager
+    private let snapshotFilename: String
+    private let shouldMirrorToDocuments: Bool
+
+    private var snapshotFileURL: URL? {
+        sharedContainerURLProvider()?.appendingPathComponent(snapshotFilename)
+    }
+
+    init(
+        sharedContainerURLProvider: @escaping () -> URL? = TrioComplicationDataStore.defaultSharedContainerURL,
+        fileManager: FileManager = .default,
+        snapshotFilename: String = "snapshot.json",
+        shouldMirrorToDocuments: Bool = true
+    ) {
+        self.sharedContainerURLProvider = sharedContainerURLProvider
+        self.fileManager = fileManager
+        self.snapshotFilename = snapshotFilename
+        self.shouldMirrorToDocuments = shouldMirrorToDocuments
+    }
+
+    func save(glucose: String, trend: String?, delta: String?, timestamp: Date) {
+        let snapshot = TrioComplicationSnapshot(
+            glucose: glucose,
+            trend: trend ?? "",
+            delta: delta ?? "",
+            timestamp: timestamp
+        )
+        save(snapshot)
+    }
+
+    func save(_ snapshot: TrioComplicationSnapshot) {
+        if let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String,
+           let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
+        {
+            #if os(watchOS)
+                Task { await WatchLogger.shared.log("✅ App Group container found: \(url.path)") }
+            #else
+                NSLog("✅ App Group container found: \(url.path)")
+            #endif
+        }
+
+        guard let fileURL = snapshotFileURL else {
+            saveDiagnosticSnapshot(message: "❌ Could not get snapshot file URL for saving.", state: "--")
+            return
+        }
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(SnapshotCodable(snapshot: snapshot))
+            try fileManager.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+            do {
+                try data.write(to: fileURL, options: [.atomic])
+                // Save last valid timestamp after successful write
+                Self.lastValidTimestamp = snapshot.timestamp
+                #if os(watchOS)
+                    Task {
+                        await WatchLogger.shared.log("✅ Saved complication snapshot to \(fileURL.lastPathComponent)")
+                    }
+                #endif
+                #if os(iOS)
+                    if shouldMirrorToDocuments {
+                        AppGroupDebugExporter.exportSnapshotToDocuments()
+                    }
+                #endif
+            } catch {
+                saveDiagnosticSnapshot(message: "❌ Failed to write complication snapshot: \(error)", state: "xx")
+            }
+        } catch {
+            saveDiagnosticSnapshot(message: "❌ Failed to encode complication snapshot: \(error)", state: "xx")
+        }
+    }
+
+    func latestSnapshot() -> TrioComplicationSnapshot? {
+        guard let fileURL = snapshotFileURL else {
+            saveDiagnosticSnapshot(message: "❌ Could not get snapshot file URL for loading.", state: "--")
+            return fallbackSnapshot(state: "--")
+        }
+        let fileExists = fileManager.fileExists(atPath: fileURL.path)
+        if !fileExists {
+            saveDiagnosticSnapshot(message: "❌ Snapshot file missing at \(fileURL.path)", state: "!!")
+            return fallbackSnapshot(state: "!!")
+        }
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let snapshotCodable = try decoder.decode(SnapshotCodable.self, from: data)
+            // Save last valid timestamp after successful decode
+            Self.lastValidTimestamp = snapshotCodable.snapshot.timestamp
+            // Return snapshot with no state indicator on successful decode
+            return TrioComplicationSnapshot(
+                glucose: snapshotCodable.snapshot.glucose,
+                trend: snapshotCodable.snapshot.trend,
+                delta: snapshotCodable.snapshot.delta,
+                timestamp: snapshotCodable.snapshot.timestamp,
+                state: nil
+            )
+        } catch {
+            saveDiagnosticSnapshot(message: "❌ Failed to decode complication snapshot: \(error)", state: "??")
+            return fallbackSnapshot(state: "??")
+        }
+    }
+
+    private func fallbackSnapshot(state: String) -> TrioComplicationSnapshot {
+        TrioComplicationSnapshot(
+            glucose: "--",
+            trend: "",
+            delta: "--",
+            timestamp: Self.lastValidTimestamp ?? Date(),
+            state: state
+        )
+    }
+
+    /// Writes a diagnostic snapshot with a given message and state, and logs via WatchLogger.
+    private func saveDiagnosticSnapshot(message: String, state: String) {
+        #if os(watchOS)
+            Task {
+                await WatchLogger.shared.log(message)
+            }
+        #else
+            NSLog("%@", message)
+        #endif
+        // Write a temporary fallback snapshot for clarity
+        guard state == "--", let fileURL = snapshotFileURL else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let diagnostic = TrioComplicationSnapshot(
+                glucose: "--",
+                trend: "",
+                delta: "--",
+                timestamp: Date(),
+                state: state
+            )
+            let data = try encoder.encode(SnapshotCodable(snapshot: diagnostic))
+            try? data.write(to: fileURL, options: [.atomic])
+        } catch {
+            // Ignore further errors here
+        }
+    }
+
+    #if canImport(WidgetKit)
+        func reloadTimeline() {
+            let reloadBlock = {
+                if #available(watchOS 10.0, *) {
+                    WidgetCenter.shared.reloadTimelines(ofKind: Self.complicationKind)
+                } else {
+                    WidgetCenter.shared.reloadAllTimelines()
+                }
+            }
+
+            if Thread.isMainThread {
+                reloadBlock()
+            } else {
+                DispatchQueue.main.async(execute: reloadBlock)
+            }
+        }
+    #endif
+
+    private static func defaultSharedContainerURL() -> URL? {
         guard let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String else {
             #if os(watchOS)
                 Task {
@@ -133,138 +298,6 @@ final class TrioComplicationDataStore {
         }
         return url
     }
-
-    private var snapshotFileURL: URL? {
-        sharedContainerURL?.appendingPathComponent("snapshot.json")
-    }
-
-    func save(glucose: String, trend: String?, delta: String?, timestamp: Date) {
-        let snapshot = TrioComplicationSnapshot(
-            glucose: glucose,
-            trend: trend ?? "",
-            delta: delta ?? "",
-            timestamp: timestamp
-        )
-        save(snapshot)
-    }
-
-    func save(_ snapshot: TrioComplicationSnapshot) {
-        guard let fileURL = snapshotFileURL else {
-            saveDiagnosticSnapshot(message: "❌ Could not get snapshot file URL for saving.", state: "--")
-            return
-        }
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(SnapshotCodable(snapshot: snapshot))
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true,
-                attributes: nil
-            )
-            do {
-                try data.write(to: fileURL, options: [.atomic])
-                #if os(watchOS)
-                    Task {
-                        await WatchLogger.shared.log("✅ Saved complication snapshot to \(fileURL.lastPathComponent)")
-                    }
-                #endif
-                #if os(iOS)
-                    AppGroupDebugExporter.exportSnapshotToDocuments()
-                #endif
-            } catch {
-                saveDiagnosticSnapshot(message: "❌ Failed to write complication snapshot: \(error)", state: "xx")
-            }
-        } catch {
-            saveDiagnosticSnapshot(message: "❌ Failed to encode complication snapshot: \(error)", state: "xx")
-        }
-    }
-
-    func latestSnapshot() -> TrioComplicationSnapshot? {
-        guard let fileURL = snapshotFileURL else {
-            saveDiagnosticSnapshot(message: "❌ Could not get snapshot file URL for loading.", state: "--")
-            return fallbackSnapshot(state: "--")
-        }
-        let fileExists = FileManager.default.fileExists(atPath: fileURL.path)
-        if !fileExists {
-            saveDiagnosticSnapshot(message: "❌ Snapshot file missing at \(fileURL.path)", state: "!!")
-            return fallbackSnapshot(state: "!!")
-        }
-        do {
-            let data = try Data(contentsOf: fileURL)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let snapshotCodable = try decoder.decode(SnapshotCodable.self, from: data)
-            // Return snapshot with no state indicator on successful decode
-            return TrioComplicationSnapshot(
-                glucose: snapshotCodable.snapshot.glucose,
-                trend: snapshotCodable.snapshot.trend,
-                delta: snapshotCodable.snapshot.delta,
-                timestamp: snapshotCodable.snapshot.timestamp,
-                state: nil
-            )
-        } catch {
-            saveDiagnosticSnapshot(message: "❌ Failed to decode complication snapshot: \(error)", state: "??")
-            return fallbackSnapshot(state: "??")
-        }
-    }
-
-    private func fallbackSnapshot(state: String) -> TrioComplicationSnapshot {
-        TrioComplicationSnapshot(
-            glucose: "--",
-            trend: "",
-            delta: "--",
-            timestamp: Date(),
-            state: state
-        )
-    }
-
-    /// Writes a diagnostic snapshot with a given message and state, and logs via WatchLogger.
-    private func saveDiagnosticSnapshot(message: String, state: String) {
-        #if os(watchOS)
-            Task {
-                await WatchLogger.shared.log(message)
-            }
-        #else
-            NSLog("%@", message)
-        #endif
-        // Write a temporary fallback snapshot for clarity
-        let diagnostic = TrioComplicationSnapshot(
-            glucose: "--",
-            trend: "",
-            delta: "--",
-            timestamp: Date(),
-            state: state
-        )
-        if let fileURL = snapshotFileURL {
-            do {
-                let encoder = JSONEncoder()
-                encoder.dateEncodingStrategy = .iso8601
-                let data = try encoder.encode(SnapshotCodable(snapshot: diagnostic))
-                try? data.write(to: fileURL, options: [.atomic])
-            } catch {
-                // Ignore further errors here
-            }
-        }
-    }
-
-    #if canImport(WidgetKit)
-        func reloadTimeline() {
-            let reloadBlock = {
-                if #available(watchOS 10.0, *) {
-                    WidgetCenter.shared.reloadTimelines(ofKind: Self.complicationKind)
-                } else {
-                    WidgetCenter.shared.reloadAllTimelines()
-                }
-            }
-
-            if Thread.isMainThread {
-                reloadBlock()
-            } else {
-                DispatchQueue.main.async(execute: reloadBlock)
-            }
-        }
-    #endif
 }
 
 // MARK: - Codable bridge for TrioComplicationSnapshot
@@ -301,8 +334,27 @@ private struct SnapshotCodable: Codable {
 #if os(iOS)
     /// Utility to export the App Group snapshot.json to the iOS Documents directory for debugging.
     enum AppGroupDebugExporter {
+        static func ensureDocumentsFolder() {
+            guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                print("❌ AppGroupDebugExporter: Could not resolve Documents directory.")
+                return
+            }
+            let trioFolder = documentsURL.appendingPathComponent("WatchComplicationData", isDirectory: true)
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: trioFolder.path) {
+                do {
+                    try fm.createDirectory(at: trioFolder, withIntermediateDirectories: true)
+                    let keepURL = trioFolder.appendingPathComponent(".keep")
+                    fm.createFile(atPath: keepURL.path, contents: Data())
+                } catch {
+                    print("❌ AppGroupDebugExporter: Failed to create Trio folder in Documents: \(error)")
+                }
+            }
+        }
+
         /// Copies the App Group snapshot.json file to the iPhone’s Documents directory for inspection via Files app.
         static func exportSnapshotToDocuments() {
+            ensureDocumentsFolder()
             // 1. Get App Group ID from Info.plist
             guard let appGroupID = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String else {
                 print("❌ AppGroupDebugExporter: AppGroupID not found in Info.plist.")
@@ -320,12 +372,14 @@ private struct SnapshotCodable: Codable {
                 print("❌ AppGroupDebugExporter: Could not resolve Documents directory.")
                 return
             }
-            let trioFolder = documentsURL.appendingPathComponent("Trio", isDirectory: true)
+            let trioFolder = documentsURL.appendingPathComponent("WatchComplicationData", isDirectory: true)
             let destURL = trioFolder.appendingPathComponent("snapshot.json")
             let fm = FileManager.default
             if !fm.fileExists(atPath: trioFolder.path) {
                 do {
                     try fm.createDirectory(at: trioFolder, withIntermediateDirectories: true)
+                    let keepURL = trioFolder.appendingPathComponent(".keep")
+                    fm.createFile(atPath: keepURL.path, contents: Data())
                 } catch {
                     print("❌ AppGroupDebugExporter: Failed to create Trio folder in Documents: \(error)")
                 }

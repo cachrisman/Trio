@@ -451,6 +451,10 @@ import WidgetKit
             self.showSyncingAnimation = false
         }
 
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.forceComplicationUpdate()
+        }
+
         Task {
             await WatchLogger.shared.log("✅ Watch UI update complete")
         }
@@ -605,8 +609,10 @@ import WidgetKit
         )
 
         TrioComplicationDataStore.shared.save(snapshot)
-        TrioComplicationDataStore.shared.reloadTimeline()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            TrioComplicationDataStore.shared.reloadTimeline()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
             TrioComplicationDataStore.shared.reloadTimeline()
         }
 
@@ -624,16 +630,19 @@ import WidgetKit
             await WatchLogger.shared.log("⌚️ Forcing complication update with current state")
         }
 
+        let effectiveTimestamp = TrioComplicationDataStore.lastValidTimestamp ?? Date()
         let snapshot = TrioComplicationSnapshot(
             glucose: currentGlucose,
             trend: trend ?? "",
             delta: delta ?? "",
-            timestamp: Date()
+            timestamp: effectiveTimestamp
         )
 
         TrioComplicationDataStore.shared.save(snapshot)
-        TrioComplicationDataStore.shared.reloadTimeline()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            TrioComplicationDataStore.shared.reloadTimeline()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
             TrioComplicationDataStore.shared.reloadTimeline()
         }
     }
