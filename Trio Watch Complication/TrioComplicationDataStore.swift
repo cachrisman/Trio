@@ -1,11 +1,26 @@
 #if os(iOS)
     import UIKit
 #endif
+#if os(iOS)
+import UIKit
+#endif
+//
+//  TrioComplicationDataStore.swift
+//
+//  This file defines the data store for the Trio Watch complication. It manages
+//  the saving, loading, and fallback logic for the most recent complication snapshot,
+//  which contains glucose, trend, delta, and timestamp data. The data store ensures
+//  that the complication always displays the latest available data, and provides
+//  diagnostic and debugging support, including exporting data to the iOS Documents
+//  directory for inspection. The store is designed for use with an App Group so
+//  that the iPhone and Watch app can share the latest snapshot for WidgetKit and
+//  complication display.
+//
 import Foundation
 #if canImport(WidgetKit)
     import WidgetKit
-#endif
-
+/// Represents a single snapshot of glucose, trend, and delta data for the Trio Watch complication.
+/// This struct is used to persist and transfer the most recent state for display in the complication.
 struct TrioComplicationSnapshot: Equatable {
     private enum Constants {
         static let fallbackGlucose = "--"
@@ -18,6 +33,7 @@ struct TrioComplicationSnapshot: Equatable {
     let timestamp: Date
     let state: String?
 
+    /// Initializes a new complication snapshot, sanitizing glucose and delta values.
     init(glucose rawGlucose: String, trend rawTrend: String, delta rawDelta: String, timestamp: Date, state: String? = nil) {
         glucose = TrioComplicationSnapshot.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -26,6 +42,7 @@ struct TrioComplicationSnapshot: Equatable {
         self.state = state
     }
 
+    /// Initializes a snapshot from a dictionary, validating timestamp and extracting values.
     init?(dictionary: [String: Any]) {
         let timestampValue: Date
         if let date = dictionary["timestamp"] as? Date {
@@ -50,6 +67,7 @@ struct TrioComplicationSnapshot: Equatable {
         )
     }
 
+    /// Returns the dictionary representation of this snapshot for serialization.
     func toDictionary() -> [String: Any] {
         var dict: [String: Any] = [
             "glucose": glucose,
@@ -63,6 +81,7 @@ struct TrioComplicationSnapshot: Equatable {
         return dict
     }
 
+    /// Sanitizes the glucose string into a displayable integer or fallback.
     private static func sanitizedGlucose(from value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return Constants.fallbackGlucose }
@@ -81,6 +100,7 @@ struct TrioComplicationSnapshot: Equatable {
         return trimmed
     }
 
+    /// Sanitizes the delta string into a displayable signed value or fallback.
     private static func sanitizedDelta(from value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return Constants.fallbackDelta }
@@ -105,10 +125,15 @@ struct TrioComplicationSnapshot: Equatable {
     }
 }
 
+/// The data store for the Trio Watch complication.
+/// Handles saving, loading, and fallback logic for complication snapshots,
+/// and supports exporting for debugging. Uses an App Group for cross-device sharing.
 final class TrioComplicationDataStore {
+    /// Singleton instance of the data store.
     static let shared = TrioComplicationDataStore()
+    /// The WidgetKit complication kind string.
     static let complicationKind = "TrioWatchComplication"
-    /// Remembers the last valid timestamp of a successful data save or decode.
+    /// The last valid timestamp of a successful data save or decode, for recency.
     static var lastValidTimestamp: Date?
 
     private let sharedContainerURLProvider: () -> URL?
@@ -116,10 +141,17 @@ final class TrioComplicationDataStore {
     private let snapshotFilename: String
     private let shouldMirrorToDocuments: Bool
 
+    /// The URL for the snapshot file in the shared App Group container.
     private var snapshotFileURL: URL? {
         sharedContainerURLProvider()?.appendingPathComponent(snapshotFilename)
     }
 
+    /// Creates a new data store. Parameters allow for dependency injection in tests.
+    /// - Parameters:
+    ///   - sharedContainerURLProvider: Closure to return the App Group container URL.
+    ///   - fileManager: The file manager used for file operations.
+    ///   - snapshotFilename: The filename for the complication snapshot.
+    ///   - shouldMirrorToDocuments: Whether to export snapshots to Documents (iOS only).
     init(
         sharedContainerURLProvider: @escaping () -> URL? = TrioComplicationDataStore.defaultSharedContainerURL,
         fileManager: FileManager = .default,
@@ -132,6 +164,12 @@ final class TrioComplicationDataStore {
         self.shouldMirrorToDocuments = shouldMirrorToDocuments
     }
 
+    /// Saves a new complication snapshot with the given glucose, trend, delta, and timestamp.
+    /// - Parameters:
+    ///   - glucose: The current glucose value as a string.
+    ///   - trend: The trend string (optional).
+    ///   - delta: The delta string (optional).
+    ///   - timestamp: The timestamp of the reading.
     func save(glucose: String, trend: String?, delta: String?, timestamp: Date) {
         let snapshot = TrioComplicationSnapshot(
             glucose: glucose,
@@ -142,6 +180,9 @@ final class TrioComplicationDataStore {
         save(snapshot)
     }
 
+    /// Saves the given complication snapshot to the shared container.
+    /// Also updates the last valid timestamp and optionally exports for debugging.
+    /// - Parameter snapshot: The snapshot to save.
     func save(_ snapshot: TrioComplicationSnapshot) {
         if let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String,
            let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
@@ -188,6 +229,8 @@ final class TrioComplicationDataStore {
         }
     }
 
+    /// Loads and returns the most recent complication snapshot, or a fallback if not available.
+    /// - Returns: The latest snapshot, or a fallback with error state if loading fails.
     func latestSnapshot() -> TrioComplicationSnapshot? {
         guard let fileURL = snapshotFileURL else {
             saveDiagnosticSnapshot(message: "❌ Could not get snapshot file URL for loading.", state: "--")
@@ -219,6 +262,9 @@ final class TrioComplicationDataStore {
         }
     }
 
+    /// Returns a fallback snapshot with error state for use when loading or saving fails.
+    /// - Parameter state: The error state code to include in the snapshot.
+    /// - Returns: A fallback snapshot with placeholder values.
     private func fallbackSnapshot(state: String) -> TrioComplicationSnapshot {
         TrioComplicationSnapshot(
             glucose: "--",
@@ -229,7 +275,11 @@ final class TrioComplicationDataStore {
         )
     }
 
-    /// Writes a diagnostic snapshot with a given message and state, and logs via WatchLogger.
+    /// Writes a diagnostic snapshot with a given message and state, and logs via WatchLogger or NSLog.
+    /// Only writes the fallback snapshot if the state is "--".
+    /// - Parameters:
+    ///   - message: The diagnostic message to log.
+    ///   - state: The error state code for the snapshot.
     private func saveDiagnosticSnapshot(message: String, state: String) {
         #if os(watchOS)
             Task {
@@ -258,6 +308,7 @@ final class TrioComplicationDataStore {
     }
 
     #if canImport(WidgetKit)
+    /// Reloads the WidgetKit complication timeline for the Trio complication.
         func reloadTimeline() {
             let reloadBlock = {
                 if #available(watchOS 10.0, *) {
@@ -275,6 +326,8 @@ final class TrioComplicationDataStore {
         }
     #endif
 
+    /// Returns the default App Group container URL, using the AppGroupID from Info.plist.
+    /// - Returns: The App Group URL, or nil if not available.
     private static func defaultSharedContainerURL() -> URL? {
         guard let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String else {
             #if os(watchOS)
@@ -312,19 +365,24 @@ extension TrioComplicationSnapshot: Codable {
     }
 }
 
-/// Wrapper to ensure compatibility with old code if needed
+/// Codable wrapper for TrioComplicationSnapshot for compatibility and
+/// to allow for future extensibility or legacy bridging.
 private struct SnapshotCodable: Codable {
+    /// The underlying snapshot.
     let snapshot: TrioComplicationSnapshot
 
+    /// Creates a wrapper from a snapshot.
     init(snapshot: TrioComplicationSnapshot) {
         self.snapshot = snapshot
     }
 
+    /// Decodes the snapshot from a single value container.
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         snapshot = try container.decode(TrioComplicationSnapshot.self)
     }
 
+    /// Encodes the snapshot into a single value container.
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(snapshot)
@@ -332,7 +390,7 @@ private struct SnapshotCodable: Codable {
 }
 
 #if os(iOS)
-    /// Utility to export the App Group snapshot.json to the iOS Documents directory for debugging.
+/// Utility for exporting complication snapshots from the App Group to the iOS Documents directory for debugging.
     enum AppGroupDebugExporter {
         static func ensureDocumentsFolder() {
             guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {

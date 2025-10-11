@@ -1,63 +1,86 @@
+//
+//  WatchState.swift
+//
+//  This file defines the WatchState class, which manages all communication and data
+//  synchronization between the Watch app and the paired iPhone using WatchConnectivity.
+//  It handles receiving glucose and loop state data, managing treatment inputs
+//  (bolus, carbs, overrides), updating the UI and complication, and sending requests
+//  to the iPhone. WatchState ensures robust state management for all watch glucose
+//  display and treatment features and is the central source of truth for the app’s UI.
+//
 import Foundation
 import SwiftUI
 import WatchConnectivity
 import WidgetKit
 
-/// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
-/// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
+/// Manages communication and synchronization between the Watch app and the paired iPhone using WatchConnectivity.
+/// Handles glucose data, loop status, treatment requests, and updates to the complication and UI.
 @Observable final class WatchState: NSObject, WCSessionDelegate {
     // MARK: - Properties
 
-    /// The WatchConnectivity session instance used for communication
+    // MARK: - WatchConnectivity
+    /// The WatchConnectivity session instance used for communication.
     var session: WCSession?
-    /// Indicates if the paired iPhone is currently reachable
+    /// Indicates if the paired iPhone is currently reachable.
     var isReachable = false
 
     var lastWatchStateUpdate: TimeInterval?
 
-    /// main view relevant metrics
+    // MARK: - Glucose and Loop Data
+    /// The current glucose value as a string, shown in the main UI and complication.
     var currentGlucose: String = "--"
+    /// The hex color string for the current glucose, used for display color.
     var currentGlucoseColorString: String = "#ffffff"
+    /// The trend string (e.g. "Flat", "SingleUp").
     var trend: String? = ""
+    /// The delta string (change since last reading).
     var delta: String? = "--"
+    /// Array of past glucose readings for graph display, each with a timestamp, value, and display color.
     var glucoseValues: [(date: Date, glucose: Double, color: Color)] = []
+    /// Minimum and maximum Y-axis values for the glucose graph.
     var minYAxisValue: Decimal = 39
     var maxYAxisValue: Decimal = 200
+    /// Current Carbs On Board (COB) and Insulin On Board (IOB) values as strings.
     var cob: String? = "--"
     var iob: String? = "--"
+    /// The time of the last successful loop as a display string.
     var lastLoopTime: String? = "--"
+    /// Override and temp target presets available for quick selection.
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
-    /// treatments inputs
-    /// used to store carbs for combined meal-bolus-treatments
+    // MARK: - Treatment Inputs (Bolus, Carbs, Fat, Protein)
+    /// Amount of carbs to deliver (for combined meal-bolus treatments).
     var carbsAmount: Int = 0
     var fatAmount: Int = 0
     var proteinAmount: Int = 0
     var bolusAmount: Double = 0.0
     var confirmationProgress: Double = 0.0
 
-    // Safety limits
+    // MARK: - Safety Limits and Dosing
+    /// Safety limits for bolus, carbs, fat, and protein entry.
     var maxBolus: Decimal = 10
     var maxCarbs: Decimal = 250
     var maxFat: Decimal = 250
     var maxProtein: Decimal = 250
 
-    // Pump specific dosing increment
+    /// Pump-specific bolus increment value.
     var bolusIncrement: Decimal = 0.05
     var confirmBolusFaster: Bool = false
 
-    // Acknowlegement handling
+    // MARK: - Acknowledgment and UI Feedback
+    /// Controls for showing communication animations and banners after sending treatments.
     var showCommsAnimation: Bool = false
     var showAcknowledgmentBanner: Bool = false
     var acknowledgementStatus: AcknowledgementStatus = .pending
     var acknowledgmentMessage: String = ""
     var shouldNavigateToRoot: Bool = true
 
-    // Bolus calculation progress
+    /// Controls display of bolus calculation progress.
     var showBolusCalculationProgress: Bool = false
 
-    // Meal bolus-specific properties
+    // MARK: - Meal Bolus Stepper
+    /// Current step in the meal bolus workflow.
     var mealBolusStep: MealBolusStep = .savingCarbs
     var isMealBolusCombo: Bool = false
 
@@ -65,13 +88,13 @@ import WidgetKit
 
     // MARK: - Debouncing and batch processing helpers
 
-    /// Temporary storage for new data arriving via WatchConnectivity.
+    /// Temporary storage for new data arriving via WatchConnectivity, used to debounce UI updates.
     private var pendingData: [String: Any] = [:]
 
-    /// Work item to schedule finalizing the pending data.
+    /// Work item to schedule finalizing the pending data for debounced UI updates.
     private var finalizeWorkItem: DispatchWorkItem?
 
-    /// A flag to tell the UI we’re still updating.
+    /// A flag to tell the UI we’re still updating (syncing).
     var showSyncingAnimation: Bool = false
 
     var deviceType = WatchSize.current
@@ -86,7 +109,8 @@ import WidgetKit
         }
     }
 
-    /// Configures the WatchConnectivity session if supported on the device
+    /// Configures and activates the WatchConnectivity session if supported on the device.
+    /// Sets self as the delegate and logs activation.
     private func setupSession() {
         if WCSession.isSupported() {
             let session = WCSession.default
@@ -105,6 +129,12 @@ import WidgetKit
 
     // MARK: – Handle Acknowledgement Messages FROM Phone
 
+    /// Handles acknowledgment messages from the iPhone for treatments or requests.
+    /// Updates UI banners, comms animation, and logs the result.
+    /// - Parameters:
+    ///   - success: Whether the action was acknowledged as successful.
+    ///   - message: The message to display to the user.
+    ///   - isFinal: Whether this is the final acknowledgment in a sequence (combo).
     func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
         Task {
             await WatchLogger.shared.log("Handling acknowledgment: \(message), success: \(success), isFinal: \(isFinal)")
@@ -151,8 +181,8 @@ import WidgetKit
 
     // MARK: - WCSessionDelegate
 
-    /// Called when the session has completed activation
-    /// Updates the reachability status and logs the activation state
+    /// Called when the WatchConnectivity session completes activation.
+    /// Updates the reachability status and logs the activation state.
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         DispatchQueue.main.async {
             if let error = error {
@@ -180,7 +210,11 @@ import WidgetKit
         }
     }
 
-    /// Handles incoming messages from the paired iPhone when Phone is in the foreground
+    /// Handles incoming messages from the paired iPhone when the phone is in the foreground.
+    /// Processes WatchState updates, acknowledgments, and recommended bolus messages.
+    /// - Parameters:
+    ///   - session: The WCSession instance (unused).
+    ///   - message: The message dictionary received from the phone.
     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
         Task {
             await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
@@ -285,8 +319,8 @@ import WidgetKit
         }
     }
 
-    /// Called when the reachability status of the paired iPhone changes
-    /// Updates the local reachability status
+    /// Called when the reachability status of the paired iPhone changes.
+    /// Updates the local reachability status and may trigger a state update.
     func sessionReachabilityDidChange(_ session: WCSession) {
         DispatchQueue.main.async {
             Task {
@@ -309,7 +343,7 @@ import WidgetKit
     /// Conditionally triggers a watch state update if the last known update was too long ago or has never occurred.
     ///
     /// This method checks the `lastWatchStateUpdate` timestamp to determine how many seconds
-    /// have elapsed since the last update under the following conditions
+    /// have elapsed since the last update under the following conditions:
     ///  - If `lastWatchStateUpdate` is `nil` (meaning there has never been an update), or
     ///  - If more than 15 seconds have passed,
     ///
@@ -340,7 +374,9 @@ import WidgetKit
         }
     }
 
-    /// Handles incoming messages that either contain an acknowledgement or fresh watchState data  (<15 min)
+    /// Handles incoming messages that either contain an acknowledgement or fresh watchState data (<15 min).
+    /// Updates UI and state as appropriate.
+    /// - Parameter message: The message dictionary received from the phone.
     private func processWatchMessage(_ message: [String: Any]) {
         DispatchQueue.main.async {
             // 1) Acknowledgment logic
@@ -384,7 +420,9 @@ import WidgetKit
         }
     }
 
-    /// Accumulate new data, set isSyncing, and debounce final update
+    /// Accumulates new data, sets syncing flag, and debounces the final UI update.
+    /// Used to batch process rapid incoming updates for smoother UI.
+    /// - Parameter newData: The new state data to merge and eventually apply.
     private func scheduleUIUpdate(with newData: [String: Any]) {
         if let incomingTimestamp = newData[WatchMessageKeys.date] as? TimeInterval,
            let lastTimestamp = lastWatchStateUpdate,
@@ -422,7 +460,8 @@ import WidgetKit
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: workItem)
     }
 
-    /// Applies all pending data to the watch state in one shot
+    /// Applies all pending data to the watch state in one shot.
+    /// Only called after debouncing; updates UI properties and triggers complication update.
     private func finalizePendingData() {
         guard !pendingData.isEmpty else {
             Task {
@@ -460,7 +499,9 @@ import WidgetKit
         }
     }
 
-    /// Updates the UI properties
+    /// Updates the main UI properties from the raw WatchState data dictionary.
+    /// Also saves a complication snapshot.
+    /// - Parameter message: The raw data dictionary received from the phone.
     private func processRawDataForWatchState(_ message: [String: Any]) {
         Task {
             await WatchLogger.shared.log("Processing raw WatchState data with keys: \(message.keys.joined(separator: ", "))")
@@ -587,6 +628,9 @@ import WidgetKit
         saveComplicationSnapshot(from: message)
     }
 
+    /// Saves a complication snapshot from the current or provided WatchState data.
+    /// Triggers a timeline reload to update the complication.
+    /// - Parameter message: The data dictionary to use for the snapshot.
     private func saveComplicationSnapshot(from message: [String: Any]) {
         let timestampValue: Date
         if let timestamp = message[WatchMessageKeys.date] as? TimeInterval {
@@ -624,7 +668,8 @@ import WidgetKit
         }
     }
 
-    /// Manually trigger a complication update with current state
+    /// Manually triggers a complication update using the current state.
+    /// Saves a new snapshot and reloads the complication timeline.
     func forceComplicationUpdate() {
         Task {
             await WatchLogger.shared.log("⌚️ Forcing complication update with current state")
