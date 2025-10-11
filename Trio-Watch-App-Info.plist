@@ -6,5 +6,9 @@
 	<string>group.org.nightscout.5QE6TMMEH2.trio.trio-app-group</string>
 	<key>NSExtensionFileProviderDocumentGroup</key>
 	<string>group.org.nightscout.5QE6TMMEH2.trio.trio-app-group</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 </dict>
 </plist>

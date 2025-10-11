@@ -17,15 +17,15 @@ import WidgetKit
 /// Handles glucose data, loop status, treatment requests, and updates to the complication and UI.
 @Observable final class WatchState: NSObject, WCSessionDelegate {
     // MARK: - Properties
-
+    
     // MARK: - WatchConnectivity
     /// The WatchConnectivity session instance used for communication.
     var session: WCSession?
     /// Indicates if the paired iPhone is currently reachable.
     var isReachable = false
-
+    
     var lastWatchStateUpdate: TimeInterval?
-
+    
     // MARK: - Glucose and Loop Data
     /// The current glucose value as a string, shown in the main UI and complication.
     var currentGlucose: String = "--"
@@ -48,7 +48,7 @@ import WidgetKit
     /// Override and temp target presets available for quick selection.
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
-
+    
     // MARK: - Treatment Inputs (Bolus, Carbs, Fat, Protein)
     /// Amount of carbs to deliver (for combined meal-bolus treatments).
     var carbsAmount: Int = 0
@@ -56,18 +56,18 @@ import WidgetKit
     var proteinAmount: Int = 0
     var bolusAmount: Double = 0.0
     var confirmationProgress: Double = 0.0
-
+    
     // MARK: - Safety Limits and Dosing
     /// Safety limits for bolus, carbs, fat, and protein entry.
     var maxBolus: Decimal = 10
     var maxCarbs: Decimal = 250
     var maxFat: Decimal = 250
     var maxProtein: Decimal = 250
-
+    
     /// Pump-specific bolus increment value.
     var bolusIncrement: Decimal = 0.05
     var confirmBolusFaster: Bool = false
-
+    
     // MARK: - Acknowledgment and UI Feedback
     /// Controls for showing communication animations and banners after sending treatments.
     var showCommsAnimation: Bool = false
@@ -75,40 +75,41 @@ import WidgetKit
     var acknowledgementStatus: AcknowledgementStatus = .pending
     var acknowledgmentMessage: String = ""
     var shouldNavigateToRoot: Bool = true
-
+    
     /// Controls display of bolus calculation progress.
     var showBolusCalculationProgress: Bool = false
-
+    
     // MARK: - Meal Bolus Stepper
     /// Current step in the meal bolus workflow.
     var mealBolusStep: MealBolusStep = .savingCarbs
     var isMealBolusCombo: Bool = false
-
+    
     var recommendedBolus: Decimal = 0
-
+    
     // MARK: - Debouncing and batch processing helpers
-
+    
     /// Temporary storage for new data arriving via WatchConnectivity, used to debounce UI updates.
     private var pendingData: [String: Any] = [:]
-
+    
     /// Work item to schedule finalizing the pending data for debounced UI updates.
     private var finalizeWorkItem: DispatchWorkItem?
-
+    
     /// A flag to tell the UI we’re still updating (syncing).
     var showSyncingAnimation: Bool = false
-
+    
     var deviceType = WatchSize.current
-
+    
     override init() {
         super.init()
         setupSession()
-
+        
         // Force an initial complication update after a short delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             self.forceComplicationUpdate()
+            self.scheduleBackgroundRefresh()
         }
     }
-
+    
     /// Configures and activates the WatchConnectivity session if supported on the device.
     /// Sets self as the delegate and logs activation.
     private func setupSession() {
@@ -126,9 +127,9 @@ import WidgetKit
             }
         }
     }
-
+    
     // MARK: – Handle Acknowledgement Messages FROM Phone
-
+    
     /// Handles acknowledgment messages from the iPhone for treatments or requests.
     /// Updates UI banners, comms animation, and logs the result.
     /// - Parameters:
@@ -139,14 +140,14 @@ import WidgetKit
         Task {
             await WatchLogger.shared.log("Handling acknowledgment: \(message), success: \(success), isFinal: \(isFinal)")
         }
-
+        
         if success {
             Task {
                 await WatchLogger.shared.log("⌚️ Acknowledgment received: \(message)")
             }
             acknowledgementStatus = .success
             acknowledgmentMessage = message
-
+            
             // Hide progress animation
             DispatchQueue.main.async {
                 self.showCommsAnimation = false
@@ -155,7 +156,7 @@ import WidgetKit
             Task {
                 await WatchLogger.shared.log("⌚️ Acknowledgment failed: \(message)")
             }
-
+            
             // Hide progress animation
             DispatchQueue.main.async {
                 self.showCommsAnimation = false
@@ -163,12 +164,12 @@ import WidgetKit
             acknowledgementStatus = .failure
             acknowledgmentMessage = "\(message)"
         }
-
+        
         if isFinal {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 self.showAcknowledgmentBanner = true
             }
-
+            
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 self.showAcknowledgmentBanner = false
                 self.showSyncingAnimation = false // Just ensure this is 100% set to false
@@ -178,9 +179,9 @@ import WidgetKit
             }
         }
     }
-
+    
     // MARK: - WCSessionDelegate
-
+    
     /// Called when the WatchConnectivity session completes activation.
     /// Updates the reachability status and logs the activation state.
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
@@ -193,23 +194,23 @@ import WidgetKit
                 }
                 return
             }
-
+            
             if activationState == .activated {
                 Task {
                     await WatchLogger.shared.log("⌚️ Watch session activated with state: \(activationState.rawValue)")
                 }
-
+                
                 self.forceConditionalWatchStateUpdate()
-
+                
                 self.isReachable = session.isReachable
-
+                
                 Task {
                     await WatchLogger.shared.log("⌚️ Watch isReachable after activation: \(session.isReachable)")
                 }
             }
         }
     }
-
+    
     /// Handles incoming messages from the paired iPhone when the phone is in the foreground.
     /// Processes WatchState updates, acknowledgments, and recommended bolus messages.
     /// - Parameters:
@@ -219,13 +220,13 @@ import WidgetKit
         Task {
             await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
         }
-
+        
         // If the message has a nested "watchState" dictionary with date as TimeInterval
         if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
            let timestamp = watchStateDict[WatchMessageKeys.date] as? TimeInterval
         {
             let date = Date(timeIntervalSince1970: timestamp)
-
+            
             // Check if it's not older than 15 min
             if date >= Date().addingTimeInterval(-15 * 60) {
                 Task {
@@ -242,7 +243,7 @@ import WidgetKit
             }
             return
         }
-
+        
         // Else if the message is an "ack" at the top level
         // e.g. { "acknowledged": true, "message": "Started Temp Target...", "date": Date(...) }
         else if
@@ -260,20 +261,20 @@ import WidgetKit
             }
             processWatchMessage(message)
             return
-
-                    // Recommended bolus is also not part of the WatchState message, hence the extra condition here
+            
+            // Recommended bolus is also not part of the WatchState message, hence the extra condition here
         } else if
             let recommendedBolus = message[WatchMessageKeys.recommendedBolus] as? NSNumber
         {
             Task {
                 await WatchLogger.shared.log("⌚️ Received recommended bolus: \(recommendedBolus)")
             }
-
+            
             DispatchQueue.main.async {
                 self.recommendedBolus = recommendedBolus.decimalValue
                 self.showBolusCalculationProgress = false
             }
-
+            
             return
         } else {
             Task {
@@ -284,7 +285,7 @@ import WidgetKit
             }
         }
     }
-
+    
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         guard let snapshot = WatchStateSnapshot(from: userInfo) else {
             Task {
@@ -292,23 +293,23 @@ import WidgetKit
             }
             return
         }
-
+        
         let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
-
+        
         guard snapshot.date > lastProcessed else {
             Task {
                 await WatchLogger.shared.log("⌚️ Ignoring outdated or duplicate WatchState snapshot", force: true)
             }
             return
         }
-
+        
         WatchStateSnapshot.saveLatestDateToDisk(snapshot.date)
-
+        
         DispatchQueue.main.async {
             self.scheduleUIUpdate(with: snapshot.payload)
         }
     }
-
+    
     func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
         if let error = error {
             Task {
@@ -318,7 +319,7 @@ import WidgetKit
             }
         }
     }
-
+    
     /// Called when the reachability status of the paired iPhone changes.
     /// Updates the local reachability status and may trigger a state update.
     func sessionReachabilityDidChange(_ session: WCSession) {
@@ -326,20 +327,20 @@ import WidgetKit
             Task {
                 await WatchLogger.shared.log("⌚️ Watch reachability changed: \(session.isReachable)")
             }
-
+            
             if session.isReachable {
                 self.forceConditionalWatchStateUpdate()
-
+                
                 // reset input amounts
                 self.bolusAmount = 0
                 self.carbsAmount = 0
-
+                
                 // reset auth progress
                 self.confirmationProgress = 0
             }
         }
     }
-
+    
     /// Conditionally triggers a watch state update if the last known update was too long ago or has never occurred.
     ///
     /// This method checks the `lastWatchStateUpdate` timestamp to determine how many seconds
@@ -353,19 +354,19 @@ import WidgetKit
             Task {
                 await WatchLogger.shared.log("Forcing initial WatchState update")
             }
-
+            
             // If there's no recorded timestamp, we must force a fresh update immediately.
             showSyncingAnimation = true
             requestWatchStateUpdate()
             return
         }
-
+        
         let now = Date().timeIntervalSince1970
         let secondsSinceUpdate = now - lastUpdateTimestamp
         Task {
             await WatchLogger.shared.log("Time since last update: \(secondsSinceUpdate) seconds")
         }
-
+        
         // If more than 15 seconds have elapsed since the last update, force an(other) update.
         if secondsSinceUpdate > 15 {
             showSyncingAnimation = true
@@ -373,7 +374,7 @@ import WidgetKit
             return
         }
     }
-
+    
     /// Handles incoming messages that either contain an acknowledgement or fresh watchState data (<15 min).
     /// Updates UI and state as appropriate.
     /// - Parameter message: The message dictionary received from the phone.
@@ -388,11 +389,11 @@ import WidgetKit
                 DispatchQueue.main.async {
                     self.showSyncingAnimation = false
                 }
-
+                
                 Task {
                     await WatchLogger.shared.log("⌚️ Received acknowledgment: \(ackMessage), success: \(acknowledged)")
                 }
-
+                
                 switch ackCode {
                 case .savingCarbs:
                     self.isMealBolusCombo = true
@@ -412,14 +413,14 @@ import WidgetKit
                     self.handleAcknowledgment(success: acknowledged, message: ackMessage, isFinal: true)
                 }
             }
-
+            
             // 2) Raw watchState data
             if let watchStateData = message[WatchMessageKeys.watchState] as? [String: Any] {
                 self.scheduleUIUpdate(with: watchStateData)
             }
         }
     }
-
+    
     /// Accumulates new data, sets syncing flag, and debounces the final UI update.
     /// Used to batch process rapid incoming updates for smoother UI.
     /// - Parameter newData: The new state data to merge and eventually apply.
@@ -433,22 +434,22 @@ import WidgetKit
             }
             return
         }
-
+        
         // 1) Mark as syncing
         DispatchQueue.main.async {
             self.showSyncingAnimation = true
         }
-
+        
         Task {
             await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
         }
-
+        
         // 2) Merge data into our pendingData
         pendingData.merge(newData) { _, newVal in newVal }
-
+        
         // 3) Cancel any previous finalization
         finalizeWorkItem?.cancel()
-
+        
         // 4) Create and schedule a new finalization
         let workItem = DispatchWorkItem { [self] in
             Task {
@@ -459,7 +460,7 @@ import WidgetKit
         finalizeWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: workItem)
     }
-
+    
     /// Applies all pending data to the watch state in one shot.
     /// Only called after debouncing; updates UI properties and triggers complication update.
     private func finalizePendingData() {
@@ -467,38 +468,38 @@ import WidgetKit
             Task {
                 await WatchLogger.shared.log("⚠️ finalizePendingData called with empty data")
             }
-
+            
             // If we have no actual data, just end syncing
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
             }
             return
         }
-
+        
         Task {
             await WatchLogger.shared.log("⌚️ Finalizing pending data")
         }
-
+        
         // Actually set your main UI properties here
         processRawDataForWatchState(pendingData)
-
+        
         // Clear
         pendingData.removeAll()
-
+        
         // Done - hide sync animation
         DispatchQueue.main.async {
             self.showSyncingAnimation = false
         }
-
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             self.forceComplicationUpdate()
         }
-
+        
         Task {
             await WatchLogger.shared.log("✅ Watch UI update complete")
         }
     }
-
+    
     /// Updates the main UI properties from the raw WatchState data dictionary.
     /// Also saves a complication snapshot.
     /// - Parameter message: The raw data dictionary received from the phone.
@@ -506,49 +507,49 @@ import WidgetKit
         Task {
             await WatchLogger.shared.log("Processing raw WatchState data with keys: \(message.keys.joined(separator: ", "))")
         }
-
+        
         if let timestamp = message[WatchMessageKeys.date] as? TimeInterval {
             lastWatchStateUpdate = timestamp
             Task {
                 await WatchLogger.shared.log("Updated lastWatchStateUpdate: \(timestamp)")
             }
         }
-
+        
         if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
             self.currentGlucose = currentGlucose
         }
-
+        
         if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
             self.currentGlucoseColorString = currentGlucoseColorString
         }
-
+        
         if let trend = message[WatchMessageKeys.trend] as? String {
             self.trend = trend
         }
-
+        
         if let delta = message[WatchMessageKeys.delta] as? String {
             self.delta = delta
         }
-
+        
         if let iob = message[WatchMessageKeys.iob] as? String {
             self.iob = iob
         }
-
+        
         if let cob = message[WatchMessageKeys.cob] as? String {
             self.cob = cob
         }
-
+        
         if let lastLoopTime = message[WatchMessageKeys.lastLoopTime] as? String {
             self.lastLoopTime = lastLoopTime
         }
-
+        
         if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
             glucoseValues = glucoseData.compactMap { data in
                 guard let glucose = data["glucose"] as? Double,
                       let timestamp = data["date"] as? TimeInterval,
                       let colorString = data["color"] as? String
                 else { return nil }
-
+                
                 return (
                     Date(timeIntervalSince1970: timestamp),
                     glucose,
@@ -557,19 +558,19 @@ import WidgetKit
             }
             .sorted { $0.date < $1.date }
         }
-
+        
         if let minYAxisValue = message[WatchMessageKeys.minYAxisValue] {
             if let decimalValue = (minYAxisValue as? NSNumber)?.decimalValue {
                 self.minYAxisValue = decimalValue
             }
         }
-
+        
         if let maxYAxisValue = message[WatchMessageKeys.maxYAxisValue] {
             if let decimalValue = (maxYAxisValue as? NSNumber)?.decimalValue {
                 self.maxYAxisValue = decimalValue
             }
         }
-
+        
         if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
             overridePresets = overrideData.compactMap { data in
                 guard let name = data["name"] as? String,
@@ -578,7 +579,7 @@ import WidgetKit
                 return OverridePresetWatch(name: name, isEnabled: isEnabled)
             }
         }
-
+        
         if let tempTargetData = message[WatchMessageKeys.tempTargetPresets] as? [[String: Any]] {
             tempTargetPresets = tempTargetData.compactMap { data in
                 guard let name = data["name"] as? String,
@@ -587,47 +588,47 @@ import WidgetKit
                 return TempTargetPresetWatch(name: name, isEnabled: isEnabled)
             }
         }
-
+        
         if let maxBolusValue = message[WatchMessageKeys.maxBolus] {
             if let decimalValue = (maxBolusValue as? NSNumber)?.decimalValue {
                 maxBolus = decimalValue
             }
         }
-
+        
         if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
             if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
                 maxCarbs = decimalValue
             }
         }
-
+        
         if let maxFatValue = message[WatchMessageKeys.maxFat] {
             if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
                 maxFat = decimalValue
             }
         }
-
+        
         if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
             if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
                 maxProtein = decimalValue
             }
         }
-
+        
         if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
             if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
                 // limit minimum to 0.05 to avoid dealing with 0.025 increments
                 self.bolusIncrement = max(decimalValue, 0.05)
             }
         }
-
+        
         if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] {
             if let booleanValue = confirmBolusFaster as? Bool {
                 self.confirmBolusFaster = booleanValue
             }
         }
-
+        
         saveComplicationSnapshot(from: message)
     }
-
+    
     /// Saves a complication snapshot from the current or provided WatchState data.
     /// Triggers a timeline reload to update the complication.
     /// - Parameter message: The data dictionary to use for the snapshot.
@@ -640,18 +641,18 @@ import WidgetKit
         } else {
             timestampValue = Date()
         }
-
+        
         let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
         let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
         let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
-
+        
         let snapshot = TrioComplicationSnapshot(
             glucose: glucoseValue,
             trend: trendValue,
             delta: deltaValue,
             timestamp: timestampValue
         )
-
+        
         TrioComplicationDataStore.shared.save(snapshot)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             TrioComplicationDataStore.shared.reloadTimeline()
@@ -659,7 +660,7 @@ import WidgetKit
         DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
             TrioComplicationDataStore.shared.reloadTimeline()
         }
-
+        
         Task {
             await WatchLogger.shared
                 .log(
@@ -667,14 +668,14 @@ import WidgetKit
                 )
         }
     }
-
+    
     /// Manually triggers a complication update using the current state.
     /// Saves a new snapshot and reloads the complication timeline.
     func forceComplicationUpdate() {
         Task {
             await WatchLogger.shared.log("⌚️ Forcing complication update with current state")
         }
-
+        
         let effectiveTimestamp = TrioComplicationDataStore.lastValidTimestamp ?? Date()
         let snapshot = TrioComplicationSnapshot(
             glucose: currentGlucose,
@@ -682,7 +683,7 @@ import WidgetKit
             delta: delta ?? "",
             timestamp: effectiveTimestamp
         )
-
+        
         TrioComplicationDataStore.shared.save(snapshot)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             TrioComplicationDataStore.shared.reloadTimeline()
@@ -692,3 +693,42 @@ import WidgetKit
         }
     }
 }
+
+// MARK: - Background Refresh Scheduling and Handling
+#if os(watchOS)
+/// Schedules a background refresh task for the app to update complications.
+/// This should be called after each background refresh and after initial setup.
+func scheduleBackgroundRefresh() {
+    let refreshDate = Date().addingTimeInterval(5 * 60) // 5 minutes
+    WKExtension.shared().scheduleBackgroundRefresh(withPreferredDate: refreshDate, userInfo: nil) { error in
+        Task {
+            if let error = error {
+                await WatchLogger.shared.log("⌚️ Failed to schedule background refresh: \(error)")
+            } else {
+                await WatchLogger.shared.log("⌚️ Scheduled background refresh at \(refreshDate)")
+            }
+        }
+    }
+}
+
+/// Handles background tasks, processes new data and reloads complication timeline.
+/// Should be called from ExtensionDelegate's handle(_:)
+func handleBackgroundTasks(_ tasks: Set<WKRefreshBackgroundTask>) {
+    for task in tasks {
+        if let refreshTask = task as? WKApplicationRefreshBackgroundTask {
+            Task {
+                await WatchLogger.shared.log("⌚️ Handling background refresh task")
+            }
+            // Save any fresh data if available (could trigger forceComplicationUpdate)
+            DispatchQueue.main.async {
+                self.forceComplicationUpdate()
+            }
+            TrioComplicationDataStore.shared.reloadTimeline()
+            self.scheduleBackgroundRefresh()
+            refreshTask.setTaskCompletedWithSnapshot(false)
+        } else {
+            task.setTaskCompletedWithSnapshot(false)
+        }
+    }
+}
+#endif

@@ -23,7 +23,7 @@ struct TrioWatchComplicationEntry: TimelineEntry {
     let delta: String
     /// The complication state code (used for debug or error indicators).
     let state: String?
-
+    
     /// Initializes a timeline entry with the given data.
     init(date: Date, glucose: String, trend: String, delta: String, state: String? = nil) {
         self.date = date
@@ -32,7 +32,7 @@ struct TrioWatchComplicationEntry: TimelineEntry {
         self.delta = delta
         self.state = state
     }
-
+    
     /// Initializes an entry from a saved complication snapshot.
     init(snapshot: TrioComplicationSnapshot) {
         date = snapshot.timestamp
@@ -41,12 +41,12 @@ struct TrioWatchComplicationEntry: TimelineEntry {
         delta = snapshot.delta
         state = snapshot.state
     }
-
+    
     /// Converts the raw trend string into an arrow symbol for display.
     var trendSymbol: String {
         TrendSymbolMapper.symbol(from: trend)
     }
-
+    
     /// Builds the top (outer) complication line showing glucose + trend.
     /// Example: `"110 →"` or `"--"`.
     var formattedGlucoseLine: String {
@@ -60,7 +60,7 @@ struct TrioWatchComplicationEntry: TimelineEntry {
         }
         return "\(statePrefix)\(glucoseText) \(trendText)"
     }
-
+    
     /// Builds the bottom (inner) complication line showing delta + time recency.
     /// Example: `"+2 • 5m ago"` or `"NOW"`.
     var formattedDeltaLine: String {
@@ -71,58 +71,54 @@ struct TrioWatchComplicationEntry: TimelineEntry {
         }
         return "\(deltaText) • \(ageText)"
     }
-
+    
     /// Cleans up delta formatting and ensures it is display-ready.
     private var sanitizedDelta: String {
         let trimmedDelta = delta.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedDelta.isEmpty else { return ComplicationDefaults.fallbackDelta }
         return trimmedDelta
     }
-
+    
     /// Calculates a human-readable relative time (e.g. `"NOW"`, `"5m ago"`, `"1h ago"`).
     /// Uses the last known valid timestamp from the data store if available.
     private var recencyDescription: String {
+        let referenceDate = TrioComplicationDataStore.lastValidTimestamp ?? date
         let now = Date()
-        let interval = max(0, now.timeIntervalSince(date))
+        let interval = max(0, now.timeIntervalSince(referenceDate))
         if interval < 60 {
             return "NOW"
         }
-
         let minutes = Int(interval / 60)
-        return "\(minutes)m ago"
+        if minutes < 60 {
+            return "\(minutes)m ago"
+        }
+        let hours = Int(interval / 3600)
+        if hours < 24 {
+            return "\(hours)h ago"
+        }
+        let days = Int(interval / 86400)
+        return "\(days)d ago"
     }
 }
 
+/// Maps trend strings (e.g. `"DoubleUp"`, `"Flat"`) to display arrow symbols.
 private enum TrendSymbolMapper {
     static func symbol(from rawValue: String) -> String {
         switch rawValue {
-        case "TripleUp":
-            return "↑↑↑"
-        case "DoubleUp":
-            return "↑↑"
-        case "SingleUp":
-            return "↑"
-        case "FortyFiveUp":
-            return "↗︎"
-        case "Flat":
-            return "→"
-        case "FortyFiveDown":
-            return "↘︎"
-        case "SingleDown":
-            return "↓"
-        case "DoubleDown":
-            return "↓↓"
-        case "TripleDown":
-            return "↓↓↓"
-        case "NONE",
-             "NOT COMPUTABLE",
-             "NotComputable",
-             "RATE OUT OF RANGE":
+        case "TripleUp": return "↑↑↑"
+        case "DoubleUp": return "↑↑"
+        case "SingleUp": return "↑"
+        case "FortyFiveUp": return "↗︎"
+        case "Flat": return "→"
+        case "FortyFiveDown": return "↘︎"
+        case "SingleDown": return "↓"
+        case "DoubleDown": return "↓↓"
+        case "TripleDown": return "↓↓↓"
+        case "NONE", "NOT COMPUTABLE", "NotComputable", "RATE OUT OF RANGE":
             return "↔︎"
         default:
-            if rawValue.contains("↑") || rawValue.contains("↓") || rawValue.contains("→") || rawValue.contains("↗") || rawValue
-                .contains("↘︎")
-            {
+            // Return existing symbol if already contains arrows.
+            if rawValue.contains("↑") || rawValue.contains("↓") || rawValue.contains("→") || rawValue.contains("↗") || rawValue.contains("↘︎") {
                 return rawValue
             }
             return ""
@@ -137,7 +133,7 @@ private enum TrendSymbolMapper {
 struct TrioWatchComplicationProvider: TimelineProvider {
     /// How often WidgetKit refreshes the complication in seconds.
     private let refreshInterval: TimeInterval = 30
-
+    
     /// Provides placeholder data shown in the complication preview in the Watch face selector.
     func placeholder(in _: Context) -> TrioWatchComplicationEntry {
         TrioWatchComplicationEntry(
@@ -147,7 +143,7 @@ struct TrioWatchComplicationProvider: TimelineProvider {
             delta: "+1"
         )
     }
-
+    
     /// Provides the latest snapshot data used in preview or quick refresh contexts.
     func getSnapshot(in context: Context, completion: @escaping (TrioWatchComplicationEntry) -> Void) {
         if context.isPreview {
@@ -156,7 +152,7 @@ struct TrioWatchComplicationProvider: TimelineProvider {
         }
         completion(loadLatestEntry())
     }
-
+    
     /// Builds the timeline of entries for the complication.
     /// WidgetKit uses these to decide when and how to refresh data.
     func getTimeline(in _: Context, completion: @escaping (Timeline<TrioWatchComplicationEntry>) -> Void) {
@@ -174,7 +170,7 @@ struct TrioWatchComplicationProvider: TimelineProvider {
         ]
         completion(Timeline(entries: entries, policy: .after(nextRefresh)))
     }
-
+    
     /// Loads the most recent complication snapshot from shared storage.
     private func loadLatestEntry() -> TrioWatchComplicationEntry {
         if let snapshot = TrioComplicationDataStore.shared.latestSnapshot() {
@@ -198,7 +194,7 @@ struct TrioWatchComplicationProvider: TimelineProvider {
 struct TrioWatchComplicationEntryView: View {
     @Environment(\.widgetFamily) private var widgetFamily
     var entry: TrioWatchComplicationEntry
-
+    
     var body: some View {
         switch widgetFamily {
         case .accessoryCircular:
@@ -217,13 +213,13 @@ struct TrioWatchComplicationEntryView: View {
 /// Shows glucose and trend on the main line and delta/age below.
 struct TrioAccessoryCornerView: View {
     var entry: TrioWatchComplicationEntry
-
+    
     var body: some View {
         ZStack(alignment: .leading) {
             if #available(watchOS 10.0, *) {
                 AccessoryWidgetBackground()
             }
-
+            
             Text(entry.formattedGlucoseLine)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .minimumScaleFactor(0.6)
@@ -243,7 +239,7 @@ struct TrioAccessoryCornerView: View {
 /// Displays the circular-style complication, which is icon-only.
 struct TrioAccessoryCircularView: View {
     var entry: TrioWatchComplicationEntry
-
+    
     var body: some View {
         Image("ComplicationIcon")
             .resizable()
@@ -259,7 +255,7 @@ struct TrioAccessoryCircularView: View {
 @main
 struct TrioWatchComplication: Widget {
     let kind: String = ComplicationDefaults.widgetKind
-
+    
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: TrioWatchComplicationProvider()) { entry in
             TrioWatchComplicationEntryView(entry: entry)
@@ -277,9 +273,7 @@ extension View {
     /// Applies the appropriate background modifier for widgets based on platform and OS version.
     func widgetBackground(backgroundView: some View) -> some View {
         if #available(watchOS 10.0, iOSApplicationExtension 17.0, iOS 17.0, *) {
-            return containerBackground(for: .widget) {
-                backgroundView
-            }
+            return containerBackground(for: .widget) { backgroundView }
         } else {
             return background(backgroundView)
         }
