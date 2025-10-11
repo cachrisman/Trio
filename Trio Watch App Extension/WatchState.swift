@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import WatchConnectivity
+import WidgetKit
 
 /// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
 /// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
@@ -78,6 +79,11 @@ import WatchConnectivity
     override init() {
         super.init()
         setupSession()
+
+        // Force an initial complication update after a short delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.forceComplicationUpdate()
+        }
     }
 
     /// Configures the WatchConnectivity session if supported on the device
@@ -572,6 +578,63 @@ import WatchConnectivity
             if let booleanValue = confirmBolusFaster as? Bool {
                 self.confirmBolusFaster = booleanValue
             }
+        }
+
+        saveComplicationSnapshot(from: message)
+    }
+
+    private func saveComplicationSnapshot(from message: [String: Any]) {
+        let timestampValue: Date
+        if let timestamp = message[WatchMessageKeys.date] as? TimeInterval {
+            timestampValue = Date(timeIntervalSince1970: timestamp)
+        } else if let lastUpdate = lastWatchStateUpdate {
+            timestampValue = Date(timeIntervalSince1970: lastUpdate)
+        } else {
+            timestampValue = Date()
+        }
+
+        let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
+        let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
+        let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
+
+        let snapshot = TrioComplicationSnapshot(
+            glucose: glucoseValue,
+            trend: trendValue,
+            delta: deltaValue,
+            timestamp: timestampValue
+        )
+
+        TrioComplicationDataStore.shared.save(snapshot)
+        TrioComplicationDataStore.shared.reloadTimeline()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            TrioComplicationDataStore.shared.reloadTimeline()
+        }
+
+        Task {
+            await WatchLogger.shared
+                .log(
+                    "⌚️ Saved complication snapshot - glucose: \(snapshot.glucose), trend: \(snapshot.trend), delta: \(snapshot.delta)"
+                )
+        }
+    }
+
+    /// Manually trigger a complication update with current state
+    func forceComplicationUpdate() {
+        Task {
+            await WatchLogger.shared.log("⌚️ Forcing complication update with current state")
+        }
+
+        let snapshot = TrioComplicationSnapshot(
+            glucose: currentGlucose,
+            trend: trend ?? "",
+            delta: delta ?? "",
+            timestamp: Date()
+        )
+
+        TrioComplicationDataStore.shared.save(snapshot)
+        TrioComplicationDataStore.shared.reloadTimeline()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            TrioComplicationDataStore.shared.reloadTimeline()
         }
     }
 }

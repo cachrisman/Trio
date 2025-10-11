@@ -1,0 +1,428 @@
+diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
+index d70ecdc65..dd3dbf713 100644
+--- a/Trio Watch App Extension/WatchState.swift	
++++ b/Trio Watch App Extension/WatchState.swift	
+@@ -1,10 +1,14 @@
+ import Foundation
+ import SwiftUI
+ import WatchConnectivity
++import WidgetKit
+ 
+ /// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
+ /// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
+ @Observable final class WatchState: NSObject, WCSessionDelegate {
++    private let complicationDefaultsKey = "TrioWatchComplication.latestState"
++    private let complicationKind = "TrioWatchComplication"
++
+     // MARK: - Properties
+ 
+     /// The WatchConnectivity session instance used for communication
+@@ -78,6 +82,11 @@ import WatchConnectivity
+     override init() {
+         super.init()
+         setupSession()
++
++        // Force an initial complication update after a short delay
++        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
++            self.forceComplicationUpdate()
++        }
+     }
+ 
+     /// Configures the WatchConnectivity session if supported on the device
+@@ -572,5 +581,85 @@ import WatchConnectivity
+                 self.confirmBolusFaster = booleanValue
+             }
+         }
++
++        saveComplicationSnapshot(from: message)
++    }
++
++    private func saveComplicationSnapshot(from message: [String: Any]) {
++        var snapshot: [String: Any] = [:]
++
++        let timestamp = message[WatchMessageKeys.date] as? TimeInterval ?? Date().timeIntervalSince1970
++        snapshot["timestamp"] = timestamp
++
++        let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
++        snapshot["glucose"] = glucoseValue
++
++        let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
++        snapshot["trend"] = trendValue
++
++        let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
++        snapshot["delta"] = deltaValue
++
++        let defaults = complicationDefaults()
++        defaults.set(snapshot, forKey: complicationDefaultsKey)
++
++        // Force synchronization to ensure data is written immediately
++        defaults.synchronize()
++
++        Task {
++            await WatchLogger.shared.log("⌚️ Saved complication snapshot - glucose: \(glucoseValue), trend: \(trendValue), delta: \(deltaValue)")
++        }
++
++        // Force immediate timeline reload
++        if #available(watchOS 10.0, *) {
++            WidgetCenter.shared.reloadTimelines(ofKind: complicationKind)
++        } else {
++            WidgetCenter.shared.reloadAllTimelines()
++        }
++
++        // Also schedule a delayed reload to ensure the complication updates
++        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
++            if #available(watchOS 10.0, *) {
++                WidgetCenter.shared.reloadTimelines(ofKind: self.complicationKind)
++            } else {
++                WidgetCenter.shared.reloadAllTimelines()
++            }
++        }
++    }
++
++    private func complicationDefaults() -> UserDefaults {
++        if let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String,
++           let defaults = UserDefaults(suiteName: suiteName)
++        {
++            return defaults
++        }
++
++        Task {
++            await WatchLogger.shared.log("⚠️ WatchState: AppGroupID not found, using standard UserDefaults for complication data")
++        }
++        return .standard
++    }
++    
++    /// Manually trigger a complication update with current state
++    func forceComplicationUpdate() {
++        Task {
++            await WatchLogger.shared.log("⌚️ Forcing complication update with current state")
++        }
++        
++        var snapshot: [String: Any] = [:]
++        snapshot["timestamp"] = Date().timeIntervalSince1970
++        snapshot["glucose"] = currentGlucose
++        snapshot["trend"] = trend ?? ""
++        snapshot["delta"] = delta ?? ""
++        
++        let defaults = complicationDefaults()
++        defaults.set(snapshot, forKey: complicationDefaultsKey)
++        defaults.synchronize()
++        
++        if #available(watchOS 10.0, *) {
++            WidgetCenter.shared.reloadTimelines(ofKind: complicationKind)
++        } else {
++            WidgetCenter.shared.reloadAllTimelines()
++        }
+     }
+ }
+diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
+index 8d15acbed..9e4d7910b 100644
+--- a/Trio Watch App/Info.plist	
++++ b/Trio Watch App/Info.plist	
+@@ -2,6 +2,8 @@
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <plist version="1.0">
+ <dict>
++	<key>AppGroupID</key>
++	<string>$(APP_GROUP_ID)</string>
+ 	<key>EXAppExtensionAttributes</key>
+ 	<dict>
+ 		<key>EXExtensionPointIdentifier</key>
+diff --git a/Trio Watch Complication/Info.plist b/Trio Watch Complication/Info.plist
+index 0f118fb75..6f081ab69 100644
+--- a/Trio Watch Complication/Info.plist	
++++ b/Trio Watch Complication/Info.plist	
+@@ -2,6 +2,8 @@
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <plist version="1.0">
+ <dict>
++	<key>AppGroupID</key>
++	<string>$(APP_GROUP_ID)</string>
+ 	<key>NSExtension</key>
+ 	<dict>
+ 		<key>NSExtensionPointIdentifier</key>
+diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
+index 411968936..f79682b1a 100644
+--- a/Trio Watch Complication/TrioWatchComplication.swift	
++++ b/Trio Watch Complication/TrioWatchComplication.swift	
+@@ -1,28 +1,214 @@
+ import SwiftUI
+ import WidgetKit
+ 
++private enum ComplicationDefaults {
++    static let latestStateKey = "TrioWatchComplication.latestState"
++    static let widgetKind = "TrioWatchComplication"
++    static let fallbackGlucose = "--"
++    static let fallbackDelta = "--"
++}
++
++private func complicationSharedDefaults() -> UserDefaults {
++    if let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String,
++       let defaults = UserDefaults(suiteName: suiteName)
++    {
++        return defaults
++    }
++    
++    // Fallback to standard UserDefaults if AppGroupID is not available
++    print("⚠️ Complication: AppGroupID not found, using standard UserDefaults")
++    return .standard
++}
++
+ // MARK: - Timeline Entry
+ 
+ struct TrioWatchComplicationEntry: TimelineEntry {
+     let date: Date
++    let glucose: String
++    let trend: String
++    let delta: String
++
++    var trendSymbol: String {
++        TrendSymbolMapper.symbol(from: trend)
++    }
++
++    var formattedGlucoseLine: String {
++        let trimmedGlucose = glucose.trimmingCharacters(in: .whitespacesAndNewlines)
++        let glucoseText = trimmedGlucose.isEmpty ? ComplicationDefaults.fallbackGlucose : trimmedGlucose
++        let trendText = trendSymbol
++        if trendText.isEmpty {
++            return glucoseText
++        }
++        return "\(glucoseText) \(trendText)"
++    }
++
++    var formattedDeltaLine: String {
++        let deltaText = sanitizedDelta
++        let ageText = recencyDescription
++        if deltaText.isEmpty {
++            return ageText
++        }
++        return "\(deltaText) • \(ageText)"
++    }
++
++    private var sanitizedDelta: String {
++        let trimmedDelta = delta.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !trimmedDelta.isEmpty else { return ComplicationDefaults.fallbackDelta }
++        return trimmedDelta
++    }
++
++    private var recencyDescription: String {
++        let now = Date()
++        let interval = max(0, now.timeIntervalSince(date))
++        if interval < 60 {
++            return "now"
++        }
++
++        let minutes = Int(interval / 60)
++        return "\(minutes)m ago"
++    }
++}
++
++// MARK: - Snapshot Loading
++
++private struct ComplicationSnapshot {
++    let glucose: String
++    let trend: String
++    let delta: String
++    let date: Date
++
++    init?(dictionary: [String: Any]) {
++        guard let timestamp = dictionary["timestamp"] as? TimeInterval else { 
++            print("⚠️ ComplicationSnapshot: Missing timestamp in dictionary: \(dictionary)")
++            return nil 
++        }
++        let glucose = dictionary["glucose"] as? String ?? ComplicationDefaults.fallbackGlucose
++        let trend = dictionary["trend"] as? String ?? ""
++        let delta = dictionary["delta"] as? String ?? ComplicationDefaults.fallbackDelta
++
++        self.glucose = glucose
++        self.trend = trend
++        self.delta = delta
++        date = Date(timeIntervalSince1970: timestamp)
++        
++        print("📊 ComplicationSnapshot: Created with glucose=\(glucose), trend=\(trend), delta=\(delta), date=\(date)")
++    }
++
++    static func loadLatest() -> ComplicationSnapshot? {
++        let defaults = complicationSharedDefaults()
++        guard let dictionary = defaults.dictionary(forKey: ComplicationDefaults.latestStateKey) else {
++            print("⚠️ Complication: No saved data found for key: \(ComplicationDefaults.latestStateKey)")
++            return nil
++        }
++        
++        guard let snapshot = ComplicationSnapshot(dictionary: dictionary) else {
++            print("⚠️ Complication: Failed to create snapshot from dictionary: \(dictionary)")
++            return nil
++        }
++        
++        print("✅ Complication: Loaded snapshot - glucose: \(snapshot.glucose), trend: \(snapshot.trend), delta: \(snapshot.delta)")
++        return snapshot
++    }
++}
++
++private enum TrendSymbolMapper {
++    static func symbol(from rawValue: String) -> String {
++        switch rawValue {
++        case "TripleUp":
++            return "↑↑↑"
++        case "DoubleUp":
++            return "↑↑"
++        case "SingleUp":
++            return "↑"
++        case "FortyFiveUp":
++            return "↗︎"
++        case "Flat":
++            return "→"
++        case "FortyFiveDown":
++            return "↘︎"
++        case "SingleDown":
++            return "↓"
++        case "DoubleDown":
++            return "↓↓"
++        case "TripleDown":
++            return "↓↓↓"
++        case "NONE",
++             "NOT COMPUTABLE",
++             "NotComputable",
++             "RATE OUT OF RANGE":
++            return "↔︎"
++        default:
++            if rawValue.contains("↑") || rawValue.contains("↓") || rawValue.contains("→") || rawValue.contains("↗") || rawValue
++                .contains("↘︎")
++            {
++                return rawValue
++            }
++            return ""
++        }
++    }
+ }
+ 
+ // MARK: - Provider
+ 
+ struct TrioWatchComplicationProvider: TimelineProvider {
++    private let refreshInterval: TimeInterval = 30 // More frequent updates
++
+     func placeholder(in _: Context) -> TrioWatchComplicationEntry {
+-        TrioWatchComplicationEntry(date: Date())
++        TrioWatchComplicationEntry(
++            date: Date(),
++            glucose: "110",
++            trend: "Flat",
++            delta: "+1"
++        )
+     }
+ 
+-    func getSnapshot(in _: Context, completion: @escaping (TrioWatchComplicationEntry) -> Void) {
+-        let entry = TrioWatchComplicationEntry(date: Date())
+-        completion(entry)
++    func getSnapshot(in context: Context, completion: @escaping (TrioWatchComplicationEntry) -> Void) {
++        if context.isPreview {
++            completion(placeholder(in: context))
++            return
++        }
++
++        completion(loadLatestEntry())
+     }
+ 
+     func getTimeline(in _: Context, completion: @escaping (Timeline<TrioWatchComplicationEntry>) -> Void) {
+-        let entry = TrioWatchComplicationEntry(date: Date())
+-        let timeline = Timeline(entries: [entry], policy: .never)
+-        completion(timeline)
++        let entry = loadLatestEntry()
++        let nextRefresh = Date().addingTimeInterval(refreshInterval)
++        
++        // Create multiple entries for more frequent updates
++        let entries = [
++            entry,
++            TrioWatchComplicationEntry(
++                date: Date().addingTimeInterval(15),
++                glucose: entry.glucose,
++                trend: entry.trend,
++                delta: entry.delta
++            )
++        ]
++        
++        completion(Timeline(entries: entries, policy: .after(nextRefresh)))
++    }
++
++    private func loadLatestEntry() -> TrioWatchComplicationEntry {
++        print("🔍 Complication: Loading latest entry...")
++        
++        if let snapshot = ComplicationSnapshot.loadLatest() {
++            print("✅ Complication: Using saved snapshot data")
++            return TrioWatchComplicationEntry(
++                date: snapshot.date,
++                glucose: snapshot.glucose,
++                trend: snapshot.trend,
++                delta: snapshot.delta
++            )
++        }
++
++        print("⚠️ Complication: No saved data found, using fallback values")
++        return TrioWatchComplicationEntry(
++            date: Date(),
++            glucose: ComplicationDefaults.fallbackGlucose,
++            trend: "",
++            delta: ComplicationDefaults.fallbackDelta
++        )
+     }
+ }
+ 
+@@ -50,21 +236,33 @@ struct TrioWatchComplicationEntryView: View {
+ 
+ /// Corner Complication
+ struct TrioAccessoryCornerView: View {
+-    var entry: TrioWatchComplicationProvider.Entry
++    var entry: TrioWatchComplicationEntry
+ 
+     var body: some View {
+-        Text("")
+-            .widgetCurvesContent()
+-            .widgetLabel {
+-                Text("Trio")
++        ZStack(alignment: .leading) {
++            if #available(watchOS 10.0, *) {
++                AccessoryWidgetBackground()
+             }
+-            .widgetBackground(backgroundView: Color.clear)
++
++            Text(entry.formattedGlucoseLine)
++                .font(.system(size: 12, weight: .semibold, design: .rounded))
++                .minimumScaleFactor(0.6)
++                .widgetAccentable()
++                .widgetCurvesContent()
++        }
++        .widgetLabel {
++            Text(entry.formattedDeltaLine)
++                .font(.system(size: 10, weight: .medium, design: .rounded))
++                .foregroundStyle(.secondary)
++                .minimumScaleFactor(0.6)
++        }
++        .widgetBackground(backgroundView: Color.clear)
+     }
+ }
+ 
+ /// Circular Complication
+ struct TrioAccessoryCircularView: View {
+-    var entry: TrioWatchComplicationProvider.Entry
++    var entry: TrioWatchComplicationEntry
+ 
+     var body: some View {
+         Image("ComplicationIcon")
+@@ -77,14 +275,14 @@ struct TrioAccessoryCircularView: View {
+ // MARK: - Widget Configuration
+ 
+ @main struct TrioWatchComplication: Widget {
+-    let kind: String = "TrioWatchComplication"
++    let kind: String = ComplicationDefaults.widgetKind
+ 
+     var body: some WidgetConfiguration {
+         StaticConfiguration(kind: kind, provider: TrioWatchComplicationProvider()) { entry in
+             TrioWatchComplicationEntryView(entry: entry)
+         }
+-        .configurationDisplayName("Trio")
+-        .description("Displays Trio app icon as complication")
++        .configurationDisplayName(String(localized: "Trio Glucose"))
++        .description(String(localized: "Shows current glucose, delta, and trend data."))
+         .supportedFamilies([
+             .accessoryCorner,
+             .accessoryCircular

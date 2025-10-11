@@ -470,6 +470,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         ]
     }
 
+    private func mirrorComplicationSnapshotForDebug(from state: WatchState) {
+        DispatchQueue.global(qos: .utility).async {
+            let snapshot = TrioComplicationSnapshot(
+                glucose: state.currentGlucose ?? "--",
+                trend: state.trend ?? "",
+                delta: state.delta ?? "",
+                timestamp: state.date
+            )
+            TrioComplicationDataStore.shared.save(snapshot)
+        }
+    }
+
     /// Sends the state of type WatchState to the connected Watch
     /// - Parameter state: Current WatchState containing glucose data to be sent
     @MainActor func sendDataToWatch(_ state: WatchState) async {
@@ -513,6 +525,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             session.transferUserInfo([WatchMessageKeys.watchState: message])
             debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo")
         }
+
+        mirrorComplicationSnapshotForDebug(from: state)
     }
 
     func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode) {
@@ -1199,6 +1213,70 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
 }
 
 extension BaseWatchManager {
+    // MARK: - Debug Helpers for Watch Complication Snapshot
+
+    /// Reads the snapshot.json from the shared App Group and logs its contents for debugging.
+    func fetchComplicationSnapshot() {
+        guard let appGroupID = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String else {
+            debug(.watchManager, "❌ AppGroupID not found in Info.plist")
+            return
+        }
+        guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) else {
+            debug(.watchManager, "❌ Could not resolve App Group container for \(appGroupID)")
+            return
+        }
+        let fileURL = containerURL.appendingPathComponent("snapshot.json")
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            debug(.watchManager, "⚠️ snapshot.json not found at \(fileURL.path)")
+            return
+        }
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
+            debug(
+                .watchManager,
+                "📄 Loaded complication snapshot → glucose: \(snapshot.glucose), trend: \(snapshot.trend), delta: \(snapshot.delta), time: \(snapshot.timestamp)"
+            )
+            debug(
+                .watchManager,
+                "📄 Loaded complication snapshot → glucose: \(snapshot.glucose), trend: \(snapshot.trend), delta: \(snapshot.delta), time: \(snapshot.timestamp)"
+            )
+        } catch {
+            debug(.watchManager, "❌ Failed to decode snapshot.json: \(error)")
+        }
+    }
+
+    /// Copies snapshot.json from the App Group to the Documents directory for inspection in the Files app.
+    func syncComplicationSnapshotToDocuments() {
+        guard let appGroupID = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String,
+              let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID),
+              let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        else {
+            debug(.watchManager, "❌ Could not resolve App Group or Documents directory.")
+            return
+        }
+
+        let source = containerURL.appendingPathComponent("snapshot.json")
+        let dest = documentsURL.appendingPathComponent("snapshot.json")
+
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            debug(.watchManager, "⚠️ snapshot.json not found at \(source.path)")
+            return
+        }
+
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: source, to: dest)
+            debug(.watchManager, "✅ snapshot.json copied to Documents: \(dest.path)")
+        } catch {
+            debug(.watchManager, "❌ Failed to copy snapshot.json: \(error)")
+        }
+    }
+
     /// Retrieves the current glucose target based on the time of day.
     private func getCurrentGlucoseTarget() async -> Decimal? {
         let now = Date()
