@@ -12,6 +12,14 @@ extension AddCarbs {
         @State var mealSaved = false
         @State private var showAlert = false
         @FocusState private var isFocused: Bool
+        
+        // Photo analysis states
+        @State private var showImageSourceSelection = false
+        @State private var showCamera = false
+        @State private var showPhotoLibrary = false
+        @State private var mealImage: UIImage?
+        @State private var isAnalyzingPhoto = false
+        @State private var visionError: String?
 
         @FetchRequest(
             entity: Presets.entity(),
@@ -39,6 +47,37 @@ extension AddCarbs {
                     }
                 }
                 Section {
+                    // Photo Analysis Button
+                    Button {
+                        showImageSourceSelection = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "camera.fill")
+                            Text("Analyze Meal Photo")
+                            Spacer()
+                            if isAnalyzingPhoto {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle())
+                            }
+                        }
+                    }
+                    .disabled(isAnalyzingPhoto)
+                    .confirmationDialog("Choose Image Source", isPresented: $showImageSourceSelection) {
+                        Button("Take Photo") {
+                            showCamera = true
+                        }
+                        Button("Choose from Library") {
+                            showPhotoLibrary = true
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    }
+                    
+                    if let error = visionError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                    }
+                    
                     HStack {
                         Text("Carbs").fontWeight(.semibold)
                         Spacer()
@@ -153,6 +192,24 @@ extension AddCarbs {
             }
             .onAppear(perform: configureView)
             .navigationBarItems(leading: Button("Close", action: state.hideModal))
+            .sheet(isPresented: $showCamera) {
+                CameraImagePicker(image: $mealImage)
+            }
+            .sheet(isPresented: $showPhotoLibrary) {
+                PhotoLibraryImagePicker(image: $mealImage)
+            }
+            .onChange(of: mealImage) { _, newImage in
+                if let image = newImage {
+                    isAnalyzingPhoto = true
+                    visionError = nil
+                    
+                    state.analyzeMealPhoto(image: image) { error in
+                        isAnalyzingPhoto = false
+                        visionError = error
+                        mealImage = nil
+                    }
+                }
+            }
         }
 
         var presetPopover: some View {
