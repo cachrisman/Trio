@@ -1,6 +1,8 @@
 import CoreData
 import SwiftUI
 import Swinject
+import PhotosUI
+import UIKit
 
 extension AddCarbs {
     struct RootView: BaseView {
@@ -11,6 +13,12 @@ extension AddCarbs {
         @State var noteSaved = false
         @State var mealSaved = false
         @State private var showAlert = false
+        @State private var showSourceSheet = false
+        @State private var showPicker = false
+        @State private var pickerSource: ImagePicker.Source = .camera
+        @State private var mealImage: UIImage?
+        @State private var isAnalyzingPhoto: Bool = false
+        @State private var visionError: String?
         @FocusState private var isFocused: Bool
 
         @FetchRequest(
@@ -108,6 +116,24 @@ extension AddCarbs {
                                             .protein
                                     )
                             )
+                        Button {
+                            showSourceSheet = true
+                        } label: {
+                            Text("Analyze Meal Photo")
+                        }
+                        .controlSize(.mini)
+                        .buttonStyle(BorderlessButtonStyle())
+                        .confirmationDialog("Analyze Meal Photo", isPresented: $showSourceSheet, titleVisibility: .visible) {
+                            Button("Take Photo") {
+                                pickerSource = .camera
+                                showPicker = true
+                            }
+                            Button("Choose from Library") {
+                                pickerSource = .photoLibrary
+                                showPicker = true
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        }
                     }
                     .popover(isPresented: $isPromtPresented) {
                         presetPopover
@@ -153,6 +179,35 @@ extension AddCarbs {
             }
             .onAppear(perform: configureView)
             .navigationBarItems(leading: Button("Close", action: state.hideModal))
+            .sheet(isPresented: $showPicker) {
+                ImagePicker(image: $mealImage, source: pickerSource)
+            }
+            .onChange(of: mealImage) { newValue in
+                guard let image = newValue else { return }
+                isAnalyzingPhoto = true
+                visionError = nil
+                state.analyzeMealPhoto(image) { error in
+                    isAnalyzingPhoto = false
+                    visionError = error
+                    mealImage = nil
+                }
+            }
+            .overlay {
+                if isAnalyzingPhoto {
+                    ZStack {
+                        Color.black.opacity(0.2).ignoresSafeArea()
+                        ProgressView("Analyzing…")
+                            .padding()
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(12)
+                    }
+                }
+            }
+            .alert("Analysis Error", isPresented: .constant(visionError != nil)) {
+                Button("OK") { visionError = nil }
+            } message: {
+                Text(visionError ?? "Unknown error")
+            }
         }
 
         var presetPopover: some View {

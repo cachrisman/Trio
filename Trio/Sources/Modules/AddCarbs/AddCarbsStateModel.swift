@@ -1,6 +1,7 @@
 import CoreData
 import Foundation
 import SwiftUI
+import UIKit
 
 extension AddCarbs {
     final class StateModel: BaseStateModel<Provider> {
@@ -176,5 +177,41 @@ extension AddCarbs {
                 return NSLocalizedString("Save and continue", comment: "")
             }
         }
+
+        func analyzeMealPhoto(_ image: UIImage, completion: @escaping (String?) -> Void) {
+            guard let key = (resolver?.resolve(Keychain.self))?.getValue(String.self, forKey: OpenAIConfig.Config.apiKeyKey) else {
+                completion("Missing API key. Configure OpenAI in Settings.")
+                return
+            }
+
+            guard let apiKey = key, !apiKey.isEmpty else {
+                completion("Missing API key. Configure OpenAI in Settings.")
+                return
+            }
+
+            let service = (resolver?.resolve(VisionNutritionAnalyzing.self)) ?? OpenAIVisionService()
+            Task {
+                do {
+                    let result = try await service.analyzeMeal(image: image, apiKey: apiKey)
+                    await MainActor.run {
+                        self.carbs = Decimal(Double(result.carbs).rounded(toPlaces: 1))
+                        self.fat = Decimal(Double(result.fat).rounded(toPlaces: 1))
+                        self.protein = Decimal(Double(result.protein).rounded(toPlaces: 1))
+                        completion(nil)
+                    }
+                } catch {
+                    await MainActor.run {
+                        completion(error.localizedDescription)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private extension Double {
+    func rounded(toPlaces places: Int) -> Double {
+        let divisor = pow(10.0, Double(places))
+        return (self * divisor).rounded() / divisor
     }
 }
