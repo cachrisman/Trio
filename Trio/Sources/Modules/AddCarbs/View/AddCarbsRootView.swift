@@ -1,17 +1,22 @@
 import CoreData
 import SwiftUI
 import Swinject
+import UIKit
 
 extension AddCarbs {
     struct RootView: BaseView {
         let resolver: Resolver
-        @StateObject var state = StateModel()
+        @StateObject var state = AddCarbs.StateModel()
         @State var dish: String = ""
         @State var isPromtPresented = false
         @State var noteSaved = false
         @State var mealSaved = false
         @State private var showAlert = false
         @FocusState private var isFocused: Bool
+        @State var mealImage: UIImage?
+        @State var showingImagePicker = false
+        @State var showingImageSourceDialog = false
+        @State var imagePickerSourceType: ImagePicker.SourceType = .photoLibrary
 
         @FetchRequest(
             entity: Presets.entity(),
@@ -39,6 +44,31 @@ extension AddCarbs {
                     }
                 }
                 Section {
+                    // Photo Analysis Button
+                    Button {
+                        showingImageSourceDialog = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "camera.fill")
+                                .foregroundColor(.blue)
+                            Text("Analyze Meal Photo")
+                                .foregroundColor(.blue)
+                            Spacer()
+                            if state.isAnalyzingPhoto {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            }
+                        }
+                    }
+                    .disabled(state.isAnalyzingPhoto)
+                    
+                    // Error message for photo analysis
+                    if let error = state.visionError {
+                        Text(error)
+                            .foregroundColor(.red)
+                            .font(.caption)
+                    }
+                    
                     HStack {
                         Text("Carbs").fontWeight(.semibold)
                         Spacer()
@@ -153,6 +183,27 @@ extension AddCarbs {
             }
             .onAppear(perform: configureView)
             .navigationBarItems(leading: Button("Close", action: state.hideModal))
+            .onChange(of: mealImage) { image in
+                if let image = image {
+                    state.analyzeMealPhoto(image) { error in
+                        mealImage = nil
+                    }
+                }
+            }
+            .confirmationDialog("Select Photo Source", isPresented: $showingImageSourceDialog) {
+                Button("Take Photo") {
+                    imagePickerSourceType = .camera
+                    showingImagePicker = true
+                }
+                Button("Choose from Library") {
+                    imagePickerSourceType = .photoLibrary
+                    showingImagePicker = true
+                }
+                Button("Cancel", role: .cancel) { }
+            }
+            .sheet(isPresented: $showingImagePicker) {
+                ImagePicker(selectedImage: $mealImage, sourceType: imagePickerSourceType)
+            }
         }
 
         var presetPopover: some View {
