@@ -2,7 +2,7 @@ import AppIntents
 import Foundation
 import SwiftUI
 
-struct ListStateView: View {
+@available(iOS 16.0, *) struct ListStateView: View {
     var state: StateResults
 
     private var numberFormatter: NumberFormatter {

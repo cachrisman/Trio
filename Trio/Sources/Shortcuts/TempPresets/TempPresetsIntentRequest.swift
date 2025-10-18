@@ -3,7 +3,7 @@ import Foundation
 import UIKit
 
 /// Handles intent requests related to temporary presets, such as fetching, enacting, and canceling temp targets.
-final class TempPresetsIntentRequest: BaseIntentsRequest {
+@available(iOS 16.0, *) final class TempPresetsIntentRequest: BaseIntentsRequest {
     /// Enum representing possible errors related to temporary presets.
     enum TempPresetsError: Error {
         case noTempTargetFound

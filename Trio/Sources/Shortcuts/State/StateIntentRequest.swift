@@ -2,13 +2,13 @@ import AppIntents
 import CoreData
 import Foundation
 
-enum StateIntentError: Error {
+@available(iOS 16.0, *) enum StateIntentError: Error {
     case StateIntentUnknownError
     case NoBG
     case NoIOBCOB
 }
 
-struct StateResults: AppEntity {
+@available(iOS 16.0, *) struct StateResults: AppEntity {
     static var defaultQuery = StateBGQuery()
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "Trio State Result"
@@ -44,7 +44,7 @@ struct StateResults: AppEntity {
     }
 }
 
-struct StateBGQuery: EntityQuery {
+@available(iOS 16.0, *) struct StateBGQuery: EntityQuery {
     func entities(for _: [StateResults.ID]) async throws -> [StateResults] {
         []
     }
@@ -54,7 +54,7 @@ struct StateBGQuery: EntityQuery {
     }
 }
 
-final class StateIntentRequest: BaseIntentsRequest {
+@available(iOS 16.0, *) final class StateIntentRequest: BaseIntentsRequest {
     let moc = CoreDataStack.shared.newTaskContext()
 
     func getLastGlucose(onContext: NSManagedObjectContext) throws

@@ -4,7 +4,7 @@ import Intents
 import Swinject
 
 /// Represents a temporary target preset that can be used in the app.
-struct TempPreset: AppEntity, Identifiable {
+@available(iOS 16.0, *) struct TempPreset: AppEntity, Identifiable {
     /// Default query instance for fetching temporary presets.
     static var defaultQuery = TempPresetsQuery()
 
@@ -33,7 +33,7 @@ struct TempPreset: AppEntity, Identifiable {
 }
 
 /// Query structure for fetching temporary target presets in an App Intent.
-struct TempPresetsQuery: EntityQuery {
+@available(iOS 16.0, *) struct TempPresetsQuery: EntityQuery {
     /// Fetches a list of temporary target presets matching the given identifiers.
     ///
     /// - Parameter identifiers: A list of preset IDs to fetch.
