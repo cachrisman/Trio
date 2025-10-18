@@ -2,12 +2,15 @@ import AppIntents
 import Foundation
 
 /// An App Intent that allows users to apply a temporary target preset through the Shortcuts app.
-struct ApplyTempPresetIntent: AppIntent {
+@available(iOS 16.0, *) struct ApplyTempPresetIntent: AppIntent {
     /// The title displayed for this action in the Shortcuts app.
     static var title: LocalizedStringResource = "Apply a Temporary Target"
 
     /// The description displayed for this action in the Shortcuts app.
     static var description = IntentDescription("Enable a Temporary Target")
+
+    /// Prevents launching the app UI when the shortcut runs.
+    static var openAppWhenRun: Bool { false }
 
     /// The temporary target preset to be applied.
     @Parameter(
@@ -25,7 +28,7 @@ struct ApplyTempPresetIntent: AppIntent {
 
     /// Defines the summary format shown in the Shortcuts app when configuring this intent.
     static var parameterSummary: some ParameterSummary {
-        When(\ApplyTempPresetIntent.$confirmBeforeApplying, .equalTo, true, {
+        When(\.$confirmBeforeApplying, .equalTo, true, {
             Summary("Applying \(\.$preset)") {
                 \.$confirmBeforeApplying
             }

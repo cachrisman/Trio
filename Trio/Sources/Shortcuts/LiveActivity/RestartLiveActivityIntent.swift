@@ -11,6 +11,9 @@ import Foundation
     /// Description of the action in the Shortcuts app.
     static var description = IntentDescription(.init("Restarts Trio's Live Activity"))
 
+    /// Prevents launching the app UI when the shortcut runs.
+    static var openAppWhenRun: Bool { false }
+
     /// Performs the intent by triggering the live activity restart.
     ///
     /// This method creates an instance of RestartLiveActivityIntentRequest (which inherits from BaseIntentsRequest)
