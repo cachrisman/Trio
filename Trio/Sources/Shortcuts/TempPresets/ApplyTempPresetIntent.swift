@@ -8,6 +8,9 @@ struct ApplyTempPresetIntent: AppIntent {
 
     /// The description displayed for this action in the Shortcuts app.
     static var description = IntentDescription("Enable a Temporary Target")
+    
+    /// Open the app when running this intent for better visibility
+    static var openAppWhenRun: Bool = true
 
     /// The temporary target preset to be applied.
     @Parameter(

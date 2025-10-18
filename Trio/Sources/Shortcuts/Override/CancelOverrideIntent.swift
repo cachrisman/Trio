@@ -8,6 +8,9 @@ struct CancelOverrideIntent: AppIntent {
 
     /// The description displayed for this action in the Shortcuts app.
     static var description = IntentDescription(.init("Cancel an active override"))
+    
+    // Open the app when canceling for visibility
+    static var openAppWhenRun: Bool = true
 
     /// Performs the intent action to cancel an active override.
     ///

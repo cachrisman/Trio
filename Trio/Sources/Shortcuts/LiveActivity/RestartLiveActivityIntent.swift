@@ -4,12 +4,15 @@ import Foundation
 /// App Intent used to restart the live activity via Apple Shortcuts automation.
 /// When invoked, this intent instantiates a RestartLiveActivityIntentRequest, which has its
 /// dependencies injected via Swinject, and calls the restart functionality.
-@available(iOS 16.2, *) struct RestartLiveActivityIntent: LiveActivityIntent {
+@available(iOS 16.2, *) struct RestartLiveActivityIntent: AppIntent {
     /// Title of the action in the Shortcuts app.
     static var title = LocalizedStringResource("Restart Live Activity")
 
     /// Description of the action in the Shortcuts app.
     static var description = IntentDescription(.init("Restarts Trio's Live Activity"))
+    
+    // Don't need to open app for live activity restart
+    static var openAppWhenRun: Bool = false
 
     /// Performs the intent by triggering the live activity restart.
     ///
