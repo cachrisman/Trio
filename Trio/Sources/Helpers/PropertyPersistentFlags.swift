@@ -23,4 +23,6 @@ final class PropertyPersistentFlags {
     @PersistedProperty(key: "diagnosticsSharing") var diagnosticsSharingEnabled: Bool?
 
     @PersistedProperty(key: "lastCleanupDate") var lastCleanupDate: Date?
+
+    @PersistedProperty(key: "lastLogCleanupDate") var lastLogCleanupDate: Date?
 }

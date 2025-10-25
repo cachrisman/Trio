@@ -90,7 +90,7 @@ actor WatchLogger {
 
     func persistLogsLocally() async {
         let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("logs", isDirectory: true)
+            .appendingPathComponent("logs/\(currentVersionFolder)", isDirectory: true)
 
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
 
@@ -119,9 +119,15 @@ actor WatchLogger {
         }
     }
 
+    private var currentVersionFolder: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        return "\(version)-\(buildNumber)"
+    }
+
     func flushPersistedLogs() async {
         let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("logs", isDirectory: true)
+            .appendingPathComponent("logs/\(currentVersionFolder)", isDirectory: true)
         let logFile = logDir.appendingPathComponent("watch_log.txt")
 
         guard let data = try? Data(contentsOf: logFile),
