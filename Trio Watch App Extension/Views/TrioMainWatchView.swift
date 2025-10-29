@@ -20,6 +20,10 @@ struct TrioMainWatchView: View {
     // treatments
     @State private var selectedTreatment: TreatmentOption?
 
+    // Manual refresh overlay
+    @State private var showManualRefreshOverlay: Bool = false
+    @State private var manualRefreshSuccess: Bool = false
+
     var isWatchStateDated: Bool {
         // If `lastWatchStateUpdate` is nil, treat as "dated"
         guard let lastUpdateTimestamp = state.lastWatchStateUpdate else {
@@ -85,6 +89,8 @@ struct TrioMainWatchView: View {
                                     7 // Font .body == 14, so half of default size for the SF Symbol image
                             )
                     }
+
+                    ManualRefreshOverlay(isVisible: showManualRefreshOverlay, isSuccess: manualRefreshSuccess)
                 }.tag(0)
 
                 // Page 2: Glucose chart
@@ -95,6 +101,15 @@ struct TrioMainWatchView: View {
                 )
                 .tag(1)
             }
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.6)
+                    .onEnded { _ in
+                        // Manual refresh: trigger full refresh request
+                        manualRefreshSuccess = false
+                        showManualRefreshOverlay = true
+                        state.requestWatchStateUpdate()
+                    }
+            )
             .onAppear {
                 /// Hard reset variables when main view appears
                 /// Reset `bolusAmount` and `recommendedBolus` to ensure no stale / old value is set when user opens bolus input or meal combo the next time.
@@ -107,6 +122,16 @@ struct TrioMainWatchView: View {
             .onChange(of: state.trend) { _, newTrend in
                 withAnimation {
                     updateRotation(for: newTrend)
+                }
+            }
+            .onChange(of: state.lastWatchStateUpdate) { _, _ in
+                if showManualRefreshOverlay {
+                    // Success path: show checkmark briefly then hide overlay
+                    manualRefreshSuccess = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        withAnimation { showManualRefreshOverlay = false }
+                        manualRefreshSuccess = false
+                    }
                 }
             }
             .toolbar {
