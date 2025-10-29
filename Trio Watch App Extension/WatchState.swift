@@ -619,6 +619,7 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️❌ Failed to parse delta update")
             }
+            logDecision(action: "skip_delta", reason: "parse_failed")
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
             }
@@ -635,6 +636,7 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️ Cold start detected - requesting full refresh")
             }
+            logDecision(action: "request_full", reason: "cold_start")
             requestFullRefresh()
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
@@ -647,6 +649,7 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️ Skipping duplicate delta (correlationId: \(delta.correlationId))")
             }
+            logDecision(action: "skip_delta", reason: "duplicate_correlation_id", details: "correlationId: \(delta.correlationId)")
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
             }
@@ -662,6 +665,7 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️⚠️ Out-of-order or duplicate delta: seq=\(delta.sequenceNumber) <= lastSeq=\(lastProcessedSeq)")
             }
+            logDecision(action: "skip_delta", reason: "out_of_order", details: "seq: \(delta.sequenceNumber), lastSeq: \(lastProcessedSeq)")
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
             }
@@ -673,6 +677,7 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️⚠️ Large sequence gap (\(sequenceGap)) - requesting full refresh")
             }
+            logDecision(action: "request_full", reason: "large_sequence_gap", details: "gap: \(sequenceGap)")
             WatchSyncUtilities.resetLastProcessedSequence()
             requestFullRefresh()
             DispatchQueue.main.async {
@@ -686,6 +691,7 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️⚠️ Stale data detected - requesting full refresh")
             }
+            logDecision(action: "request_full", reason: "stale_data")
             WatchSyncUtilities.resetLastProcessedSequence()
             requestFullRefresh()
             DispatchQueue.main.async {
@@ -695,6 +701,7 @@ import WatchConnectivity
         }
         
         // Apply delta update
+        logDecision(action: "apply_delta", reason: "valid", details: "seq: \(delta.sequenceNumber), gap: \(sequenceGap)")
         DispatchQueue.main.async {
             self.applyDelta(delta)
             WatchSyncUtilities.setLastProcessedSequence(delta.sequenceNumber)
@@ -711,6 +718,8 @@ import WatchConnectivity
         Task {
             await WatchLogger.shared.log("⌚️ Processing full update - resetting sequence")
         }
+        
+        logDecision(action: "apply_full", reason: "full_update_received")
         
         // Reset sequence on full update
         WatchSyncUtilities.resetLastProcessedSequence()
@@ -826,6 +835,11 @@ import WatchConnectivity
         }
         TrioComplicationDataStore.saveGlucoseHistory(historyValues)
         
+        // Log complication action
+        Task {
+            await WatchLogger.shared.log("📊 Complication Action: glucoseChanged=\(glucoseChanged), isColdStart=\(isColdStart), currentGlucose=\(currentGlucose)")
+        }
+        
         // Reload complication timeline
         if glucoseChanged {
             TrioComplicationDataStore.reloadTimelines(isColdStart: isColdStart)
@@ -841,12 +855,15 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️ Cannot request full refresh - session not ready")
             }
+            logSessionState(reason: "cannot_request_full_refresh")
             return
         }
         
         Task {
             await WatchLogger.shared.log("⌚️ Requesting full refresh from phone")
         }
+        
+        debug(.watchManager, "📊 Background Refresh Trigger: watch_requested_full_refresh")
         
         let message: [String: Any] = [
             WatchMessageKeys.requestFullRefresh: true
@@ -856,6 +873,37 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️ Error requesting full refresh: \(error)")
             }
+        }
+    }
+    
+    /// Log session state for telemetry (watch side)
+    private func logSessionState(reason: String, details: String? = nil) {
+        guard let session = session else {
+            Task {
+                await WatchLogger.shared.log("📊 Session State (watch): reason=\(reason), session=nil")
+            }
+            return
+        }
+        
+        var stateInfo = "reason=\(reason), isPaired=\(session.isPaired), isReachable=\(session.isReachable), isWatchAppInstalled=\(session.isWatchAppInstalled), activationState=\(session.activationState)"
+        if let details = details {
+            stateInfo += ", details=\(details)"
+        }
+        
+        Task {
+            await WatchLogger.shared.log("📊 Session State (watch): \(stateInfo)")
+        }
+    }
+    
+    /// Log decision points for telemetry (watch side)
+    private func logDecision(action: String, reason: String, details: String? = nil) {
+        var decisionInfo = "action=\(action), reason=\(reason)"
+        if let details = details {
+            decisionInfo += ", details=\(details)"
+        }
+        
+        Task {
+            await WatchLogger.shared.log("📊 Decision (watch): \(decisionInfo)")
         }
     }
 }

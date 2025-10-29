@@ -19,6 +19,10 @@ struct TrioMainWatchView: View {
 
     // treatments
     @State private var selectedTreatment: TreatmentOption?
+    
+    // manual refresh
+    @State private var showManualRefreshOverlay = false
+    @State private var refreshState: ManualRefreshOverlay.RefreshState = .idle
 
     var isWatchStateDated: Bool {
         // If `lastWatchStateUpdate` is nil, treat as "dated"
@@ -61,39 +65,49 @@ struct TrioMainWatchView: View {
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
-            TabView(selection: $currentPage) {
-                // Page 1: Current glucose trend in "BG bobble"
-                ZStack {
-                    GlucoseTrendView(
-                        state: state,
-                        rotationDegrees: rotationDegrees,
-                        isWatchStateDated: isWatchStateDated || isSessionUnreachable
-                    )
+            ZStack {
+                TabView(selection: $currentPage) {
+                    // Page 1: Current glucose trend in "BG bobble"
+                    ZStack {
+                        GlucoseTrendView(
+                            state: state,
+                            rotationDegrees: rotationDegrees,
+                            isWatchStateDated: isWatchStateDated || isSessionUnreachable
+                        )
 
-                    if state.showSyncingAnimation {
-                        Image(systemName: "iphone.radiowaves.left.and.right")
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(Color.primary, Color.tabBar, Color.clear)
-                            .symbolEffect(
-                                .variableColor.iterative,
-                                options: .repeating,
-                                value: state.showSyncingAnimation
-                            )
-                            .position(
-                                x: 20,
-                                y: (WKInterfaceDevice.current().screenBounds.height / 4) -
-                                    7 // Font .body == 14, so half of default size for the SF Symbol image
-                            )
+                        if state.showSyncingAnimation {
+                            Image(systemName: "iphone.radiowaves.left.and.right")
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(Color.primary, Color.tabBar, Color.clear)
+                                .symbolEffect(
+                                    .variableColor.iterative,
+                                    options: .repeating,
+                                    value: state.showSyncingAnimation
+                                )
+                                .position(
+                                    x: 20,
+                                    y: (WKInterfaceDevice.current().screenBounds.height / 4) -
+                                        7 // Font .body == 14, so half of default size for the SF Symbol image
+                                )
+                        }
                     }
-                }.tag(0)
+                    .tag(0)
+                    .onLongPressGesture(minimumDuration: 1.0) {
+                        // Long press gesture for manual refresh
+                        handleManualRefresh()
+                    }
 
-                // Page 2: Glucose chart
-                GlucoseChartView(
-                    glucoseValues: state.glucoseValues,
-                    minYAxisValue: state.minYAxisValue,
-                    maxYAxisValue: state.maxYAxisValue
-                )
-                .tag(1)
+                    // Page 2: Glucose chart
+                    GlucoseChartView(
+                        glucoseValues: state.glucoseValues,
+                        minYAxisValue: state.minYAxisValue,
+                        maxYAxisValue: state.maxYAxisValue
+                    )
+                    .tag(1)
+                    .onLongPressGesture(minimumDuration: 1.0) {
+                        // Long press gesture for manual refresh
+                        handleManualRefresh()
+                    }
             }
             .onAppear {
                 /// Hard reset variables when main view appears
@@ -221,8 +235,54 @@ struct TrioMainWatchView: View {
                     continueToBolus = false
                 }
             }
+            
+            // Manual refresh overlay
+            ManualRefreshOverlay(
+                isVisible: $showManualRefreshOverlay,
+                refreshState: $refreshState
+            )
         }
         .ignoresSafeArea()
+        .onChange(of: state.showSyncingAnimation) { _, isSyncing in
+            // Update refresh overlay state based on syncing animation
+            if isSyncing && showManualRefreshOverlay {
+                refreshState = .refreshing
+            } else if !isSyncing && showManualRefreshOverlay && refreshState == .refreshing {
+                // Refresh completed successfully
+                refreshState = .success
+                // Auto-dismiss after 2 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    showManualRefreshOverlay = false
+                    refreshState = .idle
+                }
+            }
+        }
+    }
+    
+    /// Handle manual refresh triggered by long-press gesture
+    private func handleManualRefresh() {
+        guard let session = state.session,
+              session.activationState == .activated else {
+            // Show error if session not ready
+            refreshState = .error
+            showManualRefreshOverlay = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                showManualRefreshOverlay = false
+                refreshState = .idle
+            }
+            return
+        }
+        
+        // Show overlay and start refresh
+        showManualRefreshOverlay = true
+        refreshState = .refreshing
+        
+        // Trigger manual refresh
+        state.requestManualRefresh()
+        
+        Task {
+            await WatchLogger.shared.log("⌚️ Manual refresh triggered via long-press gesture")
+        }
     }
 
     private func updateRotation(for trend: String?) {

@@ -316,20 +316,23 @@ Trio Watch App Extension/
 ## 🟡 Pending Tasks
 
 ### High Priority
-1. **Integrate Manual Refresh UI in Main View**
-   - Add long-press gesture to `TrioMainWatchView`
-   - Connect to `state.requestManualRefresh()`
-   - Show/hide `ManualRefreshOverlay` based on refresh state
+1. ✅ **Integrate Manual Refresh UI in Main View** — **COMPLETED**
+   - Long-press gesture added to `TrioMainWatchView` (both pages)
+   - Connected to `state.requestManualRefresh()`
+   - `ManualRefreshOverlay` integrated with state management
+   - Auto-dismiss after success/error
 
 2. ✅ **Model Accessibility** — **RESOLVED**
    - `WatchGlucoseDelta` created in watch extension (`Trio Watch App Extension/WatchGlucoseDelta.swift`)
    - `WatchSyncUtilities` created in watch extension (`Trio Watch App Extension/WatchSyncUtilities.swift`)
    - All models now accessible
 
-3. **Enhanced Logging & Telemetry**
-   - Add comprehensive session state tracking
-   - Log all decision points (full vs delta, debounce actions, etc.)
-   - Add telemetry for background refresh triggers
+3. ✅ **Enhanced Logging & Telemetry** — **COMPLETED**
+   - Comprehensive session state tracking (`logSessionState()`)
+   - All decision points logged (`logDecision()`)
+   - Background refresh triggers logged
+   - Complication actions logged
+   - Implemented on both phone and watch sides
 
 ### Low Priority
 4. **Testing**
@@ -547,8 +550,10 @@ Watch updates UI
 
 ---
 
-**Status Summary:** Core implementation is **98% complete**. 
+**Status Summary:** Core implementation is **100% complete**. 
 - ✅ All core features implemented
 - ✅ Model accessibility resolved
 - ✅ All handlers updated with correlation IDs
-- 🟡 Remaining: Manual refresh UI integration (long-press gesture), enhanced logging, and testing
+- ✅ Manual refresh UI integrated with long-press gesture
+- ✅ Enhanced logging & telemetry added
+- 🟡 Remaining: Testing and performance tuning

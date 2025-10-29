@@ -475,16 +475,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     /// - Parameter isManualRefresh: Whether this is a manual refresh request
     /// - Parameter manualRefreshRequestId: Correlation ID for manual refresh (if applicable)
     @MainActor func sendDataToWatch(_ state: WatchState, isManualRefresh: Bool = false, manualRefreshRequestId: String? = nil) async {
-        guard let session = session else { return }
+        guard let session = session else {
+            logSessionState(session: nil, reason: "No session available")
+            return
+        }
+
+        // Log session state
+        logSessionState(session: session, reason: "sendDataToWatch called")
 
         // Session readiness check
         guard isSessionReady(session) else {
+            logDecision(action: "skip_send", reason: "session_not_ready")
             return
         }
 
         // Debounce check (skip identical state sent < 30s ago)
         guard WatchSyncUtilities.shouldSendState(state) else {
             debug(.watchManager, "🕐 Skipping push — debounced (identical state sent recently)")
+            logDecision(action: "skip_send", reason: "debounced", details: "identical_state_sent_recently")
             return
         }
 
@@ -493,6 +501,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             let lastSent = WatchStateSnapshot.loadLatestDateFromDisk()
             guard lastSent < state.date else {
                 debug(.watchManager, "🕐 Skipping push — newer or equal state already sent")
+                logDecision(action: "skip_send", reason: "already_sent", details: "lastSent: \(lastSent.timeIntervalSince1970), stateDate: \(state.date.timeIntervalSince1970)")
                 return
             }
         }
@@ -502,6 +511,19 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         
         // Decision: Full vs Delta
         let shouldSendFull = isManualRefresh || WatchSyncUtilities.shouldSendFullUpdate(isStabilizationMode: isStabilizationMode)
+        
+        // Log decision
+        if isManualRefresh {
+            logDecision(action: "send_full", reason: "manual_refresh")
+        } else if isStabilizationMode {
+            logDecision(action: "send_full", reason: "stabilization_mode")
+        } else if shouldSendFull {
+            let lastSent = WatchSyncUtilities.getLastSentTimestamp()
+            let minutesSinceLastSend = lastSent != nil ? Date().timeIntervalSince(lastSent!) / 60.0 : 0
+            logDecision(action: "send_full", reason: "staleness_or_first", details: "minutesSinceLastSend: \(Int(minutesSinceLastSend))")
+        } else {
+            logDecision(action: "send_delta", reason: "regular_update")
+        }
         
         if shouldSendFull {
             // Send full state
@@ -519,17 +541,20 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private func isSessionReady(_ session: WCSession) -> Bool {
         guard session.isPaired else {
             debug(.watchManager, "⌚️❌ No Watch is paired")
+            logSessionState(session: session, reason: "not_paired")
             return false
         }
         
         guard session.isWatchAppInstalled else {
             debug(.watchManager, "⌚️❌ Trio Watch app is not installed")
+            logSessionState(session: session, reason: "watch_app_not_installed")
             return false
         }
         
         guard session.activationState == .activated else {
             let activationStateString = "\(session.activationState)"
             debug(.watchManager, "⌚️ Watch session activationState = \(activationStateString). Reactivating...")
+            logSessionState(session: session, reason: "not_activated", details: "activationState: \(activationStateString)")
             
             if session.activationState == .notActivated {
                 session.activate()
@@ -538,6 +563,44 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
         
         return true
+    }
+    
+    /// Log session state for telemetry
+    private func logSessionState(session: WCSession?, reason: String, details: String? = nil) {
+        var stateInfo: [String: Any] = [
+            "reason": reason,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        
+        if let session = session {
+            stateInfo["isPaired"] = session.isPaired
+            stateInfo["isReachable"] = session.isReachable
+            stateInfo["isWatchAppInstalled"] = session.isWatchAppInstalled
+            stateInfo["activationState"] = "\(session.activationState)"
+        } else {
+            stateInfo["session"] = "nil"
+        }
+        
+        if let details = details {
+            stateInfo["details"] = details
+        }
+        
+        debug(.watchManager, "📊 Session State: \(stateInfo)")
+    }
+    
+    /// Log decision points for telemetry
+    private func logDecision(action: String, reason: String, details: String? = nil) {
+        var decisionInfo: [String: Any] = [
+            "action": action,
+            "reason": reason,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        
+        if let details = details {
+            decisionInfo["details"] = details
+        }
+        
+        debug(.watchManager, "📊 Decision: \(decisionInfo)")
     }
     
     /// Send full state update
@@ -670,11 +733,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         if let error = error {
             debug(.watchManager, "📱 Phone session activation failed: \(error)")
+            logSessionState(session: session, reason: "activation_failed", details: "error: \(error.localizedDescription)")
             return
         }
 
         debug(.watchManager, "📱 Phone session activated with state: \(activationState.rawValue)")
         debug(.watchManager, "📱 Phone isReachable after activation: \(session.isReachable)")
+        
+        // Log activation for telemetry
+        logSessionState(session: session, reason: "activation_completed", details: "activationState: \(activationState.rawValue)")
+
+        // Log background refresh trigger
+        debug(.watchManager, "📊 Background Refresh Trigger: session_activated")
 
         // Try to send initial data after activation
         Task {
@@ -873,8 +943,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     func sessionReachabilityDidChange(_ session: WCSession) {
         debug(.watchManager, "📱 Phone reachability changed: \(session.isReachable)")
+        
+        // Log reachability change for telemetry
+        logSessionState(session: session, reason: "reachability_changed", details: "isReachable: \(session.isReachable)")
 
         if session.isReachable {
+            // Log background refresh trigger
+            debug(.watchManager, "📊 Background Refresh Trigger: reachability_became_available")
+            
             // Try to send data when connection is established
             Task {
                 let state = await self.setupWatchState()
