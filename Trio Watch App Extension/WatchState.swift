@@ -61,6 +61,30 @@ import WatchConnectivity
     var isMealBolusCombo: Bool = false
 
     var recommendedBolus: Decimal = 0
+    
+    // MARK: - Cold-start & Sync Management
+    
+    /// Tracks if this is the first activation after process start
+    private var isFirstActivation: Bool = true
+    
+    /// Tracks if we're in cold-start window
+    var isColdStart: Bool = false
+    
+    /// Cold-start window duration (seconds) - can be tuned from 60 → 10-15 once stable
+    private let coldStartWindowSeconds: TimeInterval = 60
+    
+    /// Task to end cold-start window
+    private var coldStartTask: Task<Void, Never>?
+    
+    /// Last processed sequence number for delta updates
+    private var lastProcessedSequence: Int {
+        get { UserDefaults.standard.integer(forKey: "trio.watch.lastProcessedSequence") }
+        set { UserDefaults.standard.set(newValue, forKey: "trio.watch.lastProcessedSequence") }
+    }
+    
+    /// Ring buffer for correlation ID deduplication (size ~50)
+    private var processedCorrelationIds: [String] = []
+    private let correlationIdBufferSize = 50
 
     // MARK: - Debouncing and batch processing helpers
 
@@ -94,6 +118,97 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
             }
+        }
+    }
+    
+    // MARK: - Session Readiness
+    
+    /// Checks if the WatchConnectivity session is ready for receiving/sending data
+    private func isSessionReady() -> Bool {
+        guard let session = session else {
+            Task {
+                await WatchLogger.shared.log("⌚️❌ No session available")
+            }
+            return false
+        }
+        
+        guard session.activationState == .activated else {
+            Task {
+                await WatchLogger.shared.log("⌚️ Session not activated (state: \(session.activationState.rawValue))")
+            }
+            
+            // Try to activate if needed
+            if session.activationState == .notActivated {
+                Task {
+                    await WatchLogger.shared.log("⌚️ Attempting to activate session...")
+                }
+                session.activate()
+            }
+            return false
+        }
+        
+        return true
+    }
+    
+    // MARK: - Cold-Start Management
+    
+    /// Marks the start of a cold-start window (called on first activation after process start)
+    func startColdStartWindow() {
+        guard isFirstActivation else { return }
+        
+        isFirstActivation = false
+        isColdStart = true
+        
+        Task {
+            await WatchLogger.shared.log("⌚️ 🥶 Cold-start window began (\(Int(coldStartWindowSeconds))s)")
+        }
+        
+        // Start timer to end cold-start window
+        coldStartTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(coldStartWindowSeconds * 1_000_000_000))
+            
+            await MainActor.run {
+                self.isColdStart = false
+                Task {
+                    await WatchLogger.shared.log("⌚️ ✅ Cold-start window ended")
+                }
+            }
+        }
+    }
+    
+    /// Checks if data is stale (>25 min since last update)
+    private func isDataStale() -> Bool {
+        guard let lastUpdate = lastWatchStateUpdate else {
+            return true // Never received data
+        }
+        
+        let now = Date().timeIntervalSince1970
+        let staleness = now - lastUpdate
+        let staleThreshold: TimeInterval = 25 * 60 // 25 minutes
+        
+        return staleness > staleThreshold
+    }
+    
+    /// Resets sequence tracking (used for full refresh or manual refresh)
+    func resetSequenceTracking() {
+        lastProcessedSequence = 0
+        Task {
+            await WatchLogger.shared.log("⌚️ 🔄 Reset sequence tracking")
+        }
+    }
+    
+    /// Checks if a correlation ID has already been processed (deduplication)
+    private func hasProcessedCorrelationId(_ id: String) -> Bool {
+        processedCorrelationIds.contains(id)
+    }
+    
+    /// Marks a correlation ID as processed
+    private func markCorrelationIdProcessed(_ id: String) {
+        processedCorrelationIds.append(id)
+        
+        // Maintain ring buffer size
+        if processedCorrelationIds.count > correlationIdBufferSize {
+            processedCorrelationIds.removeFirst()
         }
     }
 
@@ -161,9 +276,22 @@ import WatchConnectivity
             if activationState == .activated {
                 Task {
                     await WatchLogger.shared.log("⌚️ Watch session activated with state: \(activationState.rawValue)")
+                    await WatchLogger.shared.log("⌚️ isPaired: \(session.isPaired), isWatchAppInstalled: \(session.isWatchAppInstalled)")
                 }
-
-                self.forceConditionalWatchStateUpdate()
+                
+                // Start cold-start window on first activation
+                self.startColdStartWindow()
+                
+                // Check if data is stale and request full refresh if needed
+                if self.isDataStale() {
+                    Task {
+                        await WatchLogger.shared.log("⌚️ Data is stale (>25 min), requesting full refresh and resetting sequence")
+                    }
+                    self.resetSequenceTracking()
+                    self.forceConditionalWatchStateUpdate()
+                } else {
+                    self.forceConditionalWatchStateUpdate()
+                }
 
                 self.isReachable = session.isReachable
 
@@ -176,8 +304,32 @@ import WatchConnectivity
 
     /// Handles incoming messages from the paired iPhone when Phone is in the foreground
     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
+        // Gate: Check session readiness
+        guard isSessionReady() else {
+            Task {
+                await WatchLogger.shared.log("⌚️ Ignoring message: session not ready")
+            }
+            return
+        }
+        
+        // Extract correlation ID if present
+        let correlationId = message[WatchMessageKeys.correlationId] as? String
+        
         Task {
-            await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
+            await WatchLogger.shared.log("⌚️ Watch received data (correlationId: \(correlationId ?? "nil")): \(message.keys.joined(separator: ", "))")
+        }
+        
+        // Dedupe: Check if we've already processed this correlation ID
+        if let corrId = correlationId, hasProcessedCorrelationId(corrId) {
+            Task {
+                await WatchLogger.shared.log("⌚️ Ignoring duplicate message (correlationId: \(corrId))")
+            }
+            return
+        }
+        
+        // Mark correlation ID as processed
+        if let corrId = correlationId {
+            markCorrelationIdProcessed(corrId)
         }
 
         // If the message has a nested "watchState" dictionary with date as TimeInterval
@@ -246,6 +398,14 @@ import WatchConnectivity
     }
 
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        // Gate: Check session readiness
+        guard isSessionReady() else {
+            Task {
+                await WatchLogger.shared.log("⌚️ Ignoring userInfo: session not ready")
+            }
+            return
+        }
+        
         guard let snapshot = WatchStateSnapshot(from: userInfo) else {
             Task {
                 await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)

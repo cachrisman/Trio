@@ -80,13 +80,16 @@ extension WatchState {
             }
             return
         }
+        
+        let correlationId = UUID().uuidString
 
         Task {
-            await WatchLogger.shared.log("⌚️ Sending cancel override request")
+            await WatchLogger.shared.log("⌚️ Sending cancel override request (correlationId: \(correlationId))")
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.cancelOverride: true
+            WatchMessageKeys.cancelOverride: true,
+            WatchMessageKeys.correlationId: correlationId
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -113,13 +116,16 @@ extension WatchState {
             }
             return
         }
+        
+        let correlationId = UUID().uuidString
 
         Task {
-            await WatchLogger.shared.log("⌚️ Sending activate override request for preset: \(presetName)")
+            await WatchLogger.shared.log("⌚️ Sending activate override request for preset: \(presetName) (correlationId: \(correlationId))")
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.activateOverride: presetName
+            WatchMessageKeys.activateOverride: presetName,
+            WatchMessageKeys.correlationId: correlationId
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -145,13 +151,16 @@ extension WatchState {
             }
             return
         }
+        
+        let correlationId = UUID().uuidString
 
         Task {
-            await WatchLogger.shared.log("⌚️ Sending cancel temp target request")
+            await WatchLogger.shared.log("⌚️ Sending cancel temp target request (correlationId: \(correlationId))")
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.cancelTempTarget: true
+            WatchMessageKeys.cancelTempTarget: true,
+            WatchMessageKeys.correlationId: correlationId
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -178,13 +187,16 @@ extension WatchState {
             }
             return
         }
+        
+        let correlationId = UUID().uuidString
 
         Task {
-            await WatchLogger.shared.log("⌚️ Sending activate temp target request for preset: \(presetName)")
+            await WatchLogger.shared.log("⌚️ Sending activate temp target request for preset: \(presetName) (correlationId: \(correlationId))")
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.activateTempTarget: presetName
+            WatchMessageKeys.activateTempTarget: presetName,
+            WatchMessageKeys.correlationId: correlationId
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -246,11 +258,16 @@ extension WatchState {
         }
 
         if session.isReachable {
+            let correlationId = UUID().uuidString
+            
             Task {
-                await WatchLogger.shared.log("⌚️ Requesting WatchState update from iPhone")
+                await WatchLogger.shared.log("⌚️ Requesting WatchState update from iPhone (correlationId: \(correlationId))")
             }
 
-            let message = [WatchMessageKeys.requestWatchUpdate: WatchMessageKeys.watchState]
+            let message: [String: Any] = [
+                WatchMessageKeys.requestWatchUpdate: WatchMessageKeys.watchState,
+                WatchMessageKeys.correlationId: correlationId
+            ]
 
             session.sendMessage(message, replyHandler: nil) { error in
                 Task {
