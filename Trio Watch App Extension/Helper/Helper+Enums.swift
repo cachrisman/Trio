@@ -20,6 +20,10 @@ enum AcknowledgementStatus: String, CaseIterable {
 }
 
 enum AcknowledgmentCode: String, Codable {
+    case ok = "ok"
+    case notFound = "not_found"
+    case conflict = "conflict"
+    case error = "error"
     case savingCarbs = "saving_carbs"
     case enactingBolus = "enacting_bolus"
     case comboComplete = "combo_complete"

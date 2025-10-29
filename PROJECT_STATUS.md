@@ -51,15 +51,19 @@ Key PR changes
 
 ---
 
-### Presets & Temp Targets Parity [PARTIALLY COMPLETE]
+### Presets & Temp Targets Parity [COMPLETED]
 Implemented
 - Watch→Phone control messages carry `correlationId` and receive acks with echoed id.
 - Phone applies changes and sends updated state; watch UI reflects changes.
 - Idempotence: basic ring-buffers on both sides ignore duplicate requests/acks.
 
-Remaining
-- Config push channel (optional) to ship preset lists independently of full state.
-- Additional error codes (`not_found`, `conflict`) surfaced consistently across all paths.
+Config channel
+- Config payload (`watchConfig`) includes presets, limits, units, y-axis domain, version/lastModified.
+- Sent on activation, settings changes, and preset changes.
+- Watch processes config and merges into complication snapshot.
+
+Ack taxonomy
+- Added `ok`, `not_found`, `conflict`, `error` alongside existing codes.
 
 ---
 
@@ -85,8 +89,6 @@ Remaining
 ---
 
 ### Remaining Work
-- Optional config channel: decouple presets/config from Full state (small payloads).
-- Broader error taxonomy (`ackCode`): add `not_found`, `conflict` across all control flows.
 - Fine-tune cadences and cold-start window during rollout.
 - Add more unit tests: sequence persistence, pruning, debounce hash, complication reload rule.
 

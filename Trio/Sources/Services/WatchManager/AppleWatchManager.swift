@@ -141,6 +141,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             Task {
                 let state = await self.setupWatchState()
                 await self.sendDataToWatch(state)
+                await self.sendConfigToWatch(using: state)
             }
         }.store(in: &subscriptions)
 
@@ -151,6 +152,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             Task {
                 let state = await self.setupWatchState()
                 await self.sendDataToWatch(state)
+                await self.sendConfigToWatch(using: state)
             }
         }.store(in: &subscriptions)
     }
@@ -659,6 +661,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         Task {
             let state = await self.setupWatchState()
             await self.sendDataToWatch(state)
+            await self.sendConfigToWatch(using: state)
         }
     }
 
@@ -678,7 +681,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                       session.isWatchAppInstalled else { return }
                 Task {
                     let state = await self.setupWatchState()
-                    await self.sendDataToWatch(state)
+                    if let manual = message[WatchMessageKeys.manualRefresh] as? Bool, manual == true {
+                        let correlationId = UUID().uuidString
+                        let payload = self.watchStateToDictionary(from: state, correlationId: correlationId)
+                        await self.sendFull(message: payload, session: session)
+                    } else {
+                        await self.sendDataToWatch(state)
+                    }
                 }
                 return
             }
@@ -719,7 +728,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 self?.sendAcknowledgment(
                     toWatch: false,
                     message: "Error! Invalid or incomplete data received from watch.",
-                    ackCode: .genericFailure,
+                    ackCode: .error,
                     correlationId: correlationId
                 )
             }
@@ -1039,7 +1048,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                         } catch {
                             debug(.watchManager, "❌ Error cancelling override: \(error)")
                             // Acknowledge cancellation error
-                            self.sendAcknowledgment(toWatch: false, message: "Error stopping Override.", ackCode: .genericFailure, correlationId: correlationId)
+                            self.sendAcknowledgment(toWatch: false, message: "Error stopping Override.", ackCode: .error, correlationId: correlationId)
                         }
                     }
                 }
@@ -1048,7 +1057,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 self.sendAcknowledgment(
                     toWatch: false,
                     message: "No active override found.",
-                    ackCode: .genericFailure,
+                    ackCode: .notFound,
                     correlationId: correlationId
                 )
                 return
@@ -1090,7 +1099,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 self.sendAcknowledgment(
                     toWatch: false,
                     message: "Failed to load active override.",
-                        ackCode: .genericFailure,
+                        ackCode: .error,
                         correlationId: correlationId
                 )
                 return
@@ -1108,7 +1117,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                             localized: "Preset \"\(presetName)\" not found.",
                             comment: "Preset not found"
                         ),
-                        ackCode: .genericFailure,
+                        ackCode: .notFound,
                         correlationId: correlationId
                     )
                     return
@@ -1156,7 +1165,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     self.sendAcknowledgment(
                         toWatch: false,
                         message: "Error activating Override \"\(presetName)\".",
-                        ackCode: .genericFailure,
+                        ackCode: .error,
                         correlationId: correlationId
                     )
                 }
@@ -1247,10 +1256,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     } catch {
                         debug(.watchManager, "❌ Error activating temp target: \(error)")
                         // Acknowledge activation error
-                        self.sendAcknowledgment(
+                            self.sendAcknowledgment(
                             toWatch: false,
                             message: "Error activating Temp Target \"\(presetName)\".",
-                        ackCode: .genericFailure,
+                        ackCode: .error,
                         correlationId: correlationId
                         )
                     }
@@ -1311,7 +1320,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                             self.sendAcknowledgment(
                                 toWatch: false,
                                 message: "Error stopping Temp Target.",
-                                ackCode: .genericFailure,
+                                ackCode: .error,
                                 correlationId: correlationId
                             )
                         }
@@ -1331,6 +1340,7 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
         Task {
             let state = await self.setupWatchState()
             await self.sendDataToWatch(state)
+            await self.sendConfigToWatch(using: state)
         }
     }
 
@@ -1347,11 +1357,48 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
         Task {
             let state = await self.setupWatchState()
             await self.sendDataToWatch(state)
+            await self.sendConfigToWatch(using: state)
         }
     }
 }
 
 extension BaseWatchManager {
+    private func buildConfig(from state: WatchState) -> [String: Any] {
+        [
+            WatchMessageKeys.overridePresets: state.overridePresets.map { [
+                "name": $0.name,
+                "isEnabled": $0.isEnabled
+            ] },
+            WatchMessageKeys.tempTargetPresets: state.tempTargetPresets.map { [
+                "name": $0.name,
+                "isEnabled": $0.isEnabled
+            ] },
+            WatchMessageKeys.maxBolus: state.maxBolus,
+            WatchMessageKeys.maxCarbs: state.maxCarbs,
+            WatchMessageKeys.maxFat: state.maxFat,
+            WatchMessageKeys.maxProtein: state.maxProtein,
+            WatchMessageKeys.bolusIncrement: state.bolusIncrement,
+            WatchMessageKeys.confirmBolusFaster: state.confirmBolusFaster,
+            WatchMessageKeys.units: state.units.rawValue,
+            WatchMessageKeys.minYAxisValue: state.minYAxisValue,
+            WatchMessageKeys.maxYAxisValue: state.maxYAxisValue,
+            WatchMessageKeys.version: 1,
+            WatchMessageKeys.lastModified: Date().timeIntervalSince1970
+        ]
+    }
+
+    @MainActor
+    fileprivate func sendConfigToWatch(using state: WatchState) async {
+        guard let session = session, session.activationState == .activated else { return }
+        let config = buildConfig(from: state)
+        if session.isReachable {
+            session.sendMessage([WatchMessageKeys.config: config], replyHandler: nil) { error in
+                debug(.watchManager, "❌ Error sending config: \(error)")
+            }
+        } else {
+            session.transferUserInfo([WatchMessageKeys.config: config])
+        }
+    }
     /// Retrieves the current glucose target based on the time of day.
     private func getCurrentGlucoseTarget() async -> Decimal? {
         let now = Date()
@@ -1402,6 +1449,10 @@ extension BaseWatchManager {
 
 extension BaseWatchManager {
     enum AcknowledgmentCode: String, Codable {
+        case ok = "ok"
+        case notFound = "not_found"
+        case conflict = "conflict"
+        case error = "error"
         case savingCarbs = "saving_carbs"
         case enactingBolus = "enacting_bolus"
         case comboComplete = "combo_complete"

@@ -9,6 +9,7 @@ enum WatchMessageKeys {
     static let message = "message"
     static let correlationId = "correlationId"
     static let deltaUpdate = "watchDelta"
+    static let config = "watchConfig"
 
     // Treatment Keys
     static let bolus = "bolus"
@@ -60,4 +61,6 @@ enum WatchMessageKeys {
     static let newReadings = "newReadings"
     static let manualRefresh = "manualRefresh"
     static let manualRefreshRequestId = "manualRefreshRequestId"
+    static let version = "version"
+    static let lastModified = "lastModified"
 }

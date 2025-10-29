@@ -236,7 +236,7 @@ extension WatchState {
         }
     }
 
-    func requestWatchStateUpdate() {
+    func requestWatchStateUpdate(manual: Bool = false) {
         guard let session = session else {
             Task {
                 await WatchLogger.shared.log("⌚️ No session available for state update")
@@ -257,11 +257,15 @@ extension WatchState {
                 await WatchLogger.shared.log("⌚️ Requesting WatchState update from iPhone")
             }
 
-            let message: [String: Any] = [
-                WatchMessageKeys.requestWatchUpdate: WatchMessageKeys.watchState,
-                WatchMessageKeys.manualRefresh: true,
-                WatchMessageKeys.manualRefreshRequestId: UUID().uuidString
+            var message: [String: Any] = [
+                WatchMessageKeys.requestWatchUpdate: WatchMessageKeys.watchState
             ]
+            if manual {
+                message[WatchMessageKeys.manualRefresh] = true
+                message[WatchMessageKeys.manualRefreshRequestId] = UUID().uuidString
+                // Reset last processed sequence so next delta is accepted from fresh baseline
+                UserDefaults.standard.set(0, forKey: "trio.watch.lastProcessedSequence")
+            }
 
             session.sendMessage(message, replyHandler: nil) { error in
                 Task {

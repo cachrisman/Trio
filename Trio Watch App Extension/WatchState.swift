@@ -243,6 +243,12 @@ import WatchConnectivity
             return
         }
 
+        // Config update
+        if let config = message[WatchMessageKeys.config] as? [String: Any] {
+            processConfigUpdate(config)
+            return
+        }
+
         // Else if the message is an "ack" at the top level
         // e.g. { "acknowledged": true, "message": "Started Temp Target...", "date": Date(...) }
         else if
@@ -297,7 +303,7 @@ import WatchConnectivity
         // Gate on activation and cold start
         guard let session = session, session.activationState == .activated else { return }
         if isColdStartWindowActive {
-            requestWatchStateUpdate()
+            requestWatchStateUpdate(manual: false)
             return
         }
 
@@ -311,7 +317,7 @@ import WatchConnectivity
         if seq - lastSeq > 20 {
             Task { await WatchLogger.shared.log("⌚️ Large sequence gap detected; requesting full refresh") }
             UserDefaults.standard.set(0, forKey: "trio.watch.lastProcessedSequence")
-            requestWatchStateUpdate()
+            requestWatchStateUpdate(manual: false)
             return
         }
 
@@ -374,7 +380,42 @@ import WatchConnectivity
         return values.filter { $0.date >= cutoff }
     }
 
+    private func processConfigUpdate(_ cfg: [String: Any]) {
+        if let overrideData = cfg[WatchMessageKeys.overridePresets] as? [[String: Any]] {
+            overridePresets = overrideData.compactMap { data in
+                guard let name = data["name"] as? String,
+                      let isEnabled = data["isEnabled"] as? Bool
+                else { return nil }
+                return OverridePresetWatch(name: name, isEnabled: isEnabled)
+            }
+        }
+        if let tempTargetData = cfg[WatchMessageKeys.tempTargetPresets] as? [[String: Any]] {
+            tempTargetPresets = tempTargetData.compactMap { data in
+                guard let name = data["name"] as? String,
+                      let isEnabled = data["isEnabled"] as? Bool
+                else { return nil }
+                return TempTargetPresetWatch(name: name, isEnabled: isEnabled)
+            }
+        }
+
+        if let maxBolusValue = cfg[WatchMessageKeys.maxBolus] as? NSNumber { maxBolus = maxBolusValue.decimalValue }
+        if let maxCarbsValue = cfg[WatchMessageKeys.maxCarbs] as? NSNumber { maxCarbs = maxCarbsValue.decimalValue }
+        if let maxFatValue = cfg[WatchMessageKeys.maxFat] as? NSNumber { maxFat = maxFatValue.decimalValue }
+        if let maxProteinValue = cfg[WatchMessageKeys.maxProtein] as? NSNumber { maxProtein = maxProteinValue.decimalValue }
+        if let bolusInc = cfg[WatchMessageKeys.bolusIncrement] as? NSNumber { bolusIncrement = bolusInc.decimalValue }
+        if let confirmFaster = cfg[WatchMessageKeys.confirmBolusFaster] as? Bool { confirmBolusFaster = confirmFaster }
+        if let minY = (cfg[WatchMessageKeys.minYAxisValue] as? NSNumber)?.decimalValue { minYAxisValue = minY }
+        if let maxY = (cfg[WatchMessageKeys.maxYAxisValue] as? NSNumber)?.decimalValue { maxYAxisValue = maxY }
+
+        // Save into snapshot and reload complication
+        TrioComplicationDataStore.shared.saveSnapshotAndReloadIfNeeded(snapshot: cfg, isColdStart: isColdStartWindowActive)
+    }
+
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        if let cfg = userInfo[WatchMessageKeys.config] as? [String: Any] {
+            processConfigUpdate(cfg)
+            return
+        }
         guard let snapshot = WatchStateSnapshot(from: userInfo) else {
             Task {
                 await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)
@@ -469,7 +510,7 @@ import WatchConnectivity
 
             // If there's no recorded timestamp, we must force a fresh update immediately.
             showSyncingAnimation = true
-            requestWatchStateUpdate()
+            requestWatchStateUpdate(manual: false)
             return
         }
 
@@ -482,7 +523,7 @@ import WatchConnectivity
         // If more than 15 seconds have elapsed since the last update, force an(other) update.
         if secondsSinceUpdate > 15 {
             showSyncingAnimation = true
-            requestWatchStateUpdate()
+            requestWatchStateUpdate(manual: false)
             return
         }
     }
