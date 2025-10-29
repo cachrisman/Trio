@@ -517,6 +517,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private var lastSentStateHash: Int?
     private var lastSentTimestamp: TimeInterval?
     
+    /// Monotonic sequence number for delta updates
+    private var deltaSequenceNumber: Int {
+        get { UserDefaults.standard.integer(forKey: "trio.iphone.deltaSequence") }
+        set { UserDefaults.standard.set(newValue, forKey: "trio.iphone.deltaSequence") }
+    }
+    
+    /// Last sent full state for delta comparison
+    private var lastSentFullState: WatchState?
+    
     /// Determines if we should send a full state update
     private func shouldSendFullUpdate(for state: WatchState) -> Bool {
         // Always send full in stabilization mode (Phase A)
@@ -557,6 +566,79 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         
         return false
     }
+    
+    // MARK: - Delta Creation
+    
+    /// Creates a delta update from current and previous state
+    private func createDeltaUpdate(from currentState: WatchState) -> WatchGlucoseDelta? {
+        guard let previousState = lastSentFullState else {
+            debug(.watchManager, "⌚️ No previous state for delta - must send full")
+            return nil
+        }
+        
+        // Increment and persist sequence number
+        deltaSequenceNumber += 1
+        
+        let delta = WatchGlucoseDelta.create(
+            from: currentState,
+            previousState: previousState,
+            sequenceNumber: deltaSequenceNumber,
+            correlationId: currentState.correlationId
+        )
+        
+        debug(.watchManager, "⌚️ Created delta #\(deltaSequenceNumber) with \(delta.newReadings.count) new readings")
+        
+        return delta
+    }
+    
+    /// Converts delta to dictionary for sending
+    private func deltaToDictionary(from delta: WatchGlucoseDelta) -> [String: Any] {
+        var dict: [String: Any] = [
+            WatchMessageKeys.sequenceNumber: delta.sequenceNumber,
+            WatchMessageKeys.correlationId: delta.correlationId,
+            WatchMessageKeys.newReadings: delta.newReadings.map { reading in
+                [
+                    "glucose": reading.glucose,
+                    "date": reading.date.timeIntervalSince1970,
+                    "color": reading.color
+                ]
+            },
+            WatchMessageKeys.currentGlucose: delta.currentGlucose ?? "--",
+            WatchMessageKeys.trend: delta.trend ?? "",
+            WatchMessageKeys.delta: delta.delta ?? "",
+            WatchMessageKeys.date: delta.date.timeIntervalSince1970,
+            WatchMessageKeys.iob: delta.iob ?? "",
+            WatchMessageKeys.cob: delta.cob ?? "",
+            WatchMessageKeys.lastLoopTime: delta.lastLoopTime ?? "",
+            WatchMessageKeys.manualRefresh: delta.manualRefresh
+        ]
+        
+        if let currentGlucoseColor = delta.currentGlucoseColorString {
+            dict[WatchMessageKeys.currentGlucoseColorString] = currentGlucoseColor
+        }
+        
+        if let minY = delta.minYAxisValue {
+            dict[WatchMessageKeys.minYAxisValue] = minY
+        }
+        
+        if let maxY = delta.maxYAxisValue {
+            dict[WatchMessageKeys.maxYAxisValue] = maxY
+        }
+        
+        if let activeOverride = delta.activeOverrideName {
+            dict[WatchMessageKeys.activeOverrideName] = activeOverride
+        }
+        
+        if let activeTempTarget = delta.activeTempTargetName {
+            dict[WatchMessageKeys.activeTempTargetName] = activeTempTarget
+        }
+        
+        if let requestId = delta.manualRefreshRequestId {
+            dict[WatchMessageKeys.manualRefreshRequestId] = requestId
+        }
+        
+        return dict
+    }
 
     /// Sends the state of type WatchState to the connected Watch
     /// - Parameter state: Current WatchState containing glucose data to be sent
@@ -578,29 +660,74 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             return
         }
 
-        let message: [String: Any] = watchStateToDictionary(from: state)
+        // Determine if sending full or delta
+        let sendFull = shouldSendFullUpdate(for: state)
         
-        debug(.watchManager, "📱 Sending FULL state to watch (correlationId: \(state.correlationId))")
+        if sendFull {
+            // Send full state
+            let message: [String: Any] = watchStateToDictionary(from: state)
+            
+            debug(.watchManager, "📱 Sending FULL state to watch (correlationId: \(state.correlationId))")
 
-        // if session is reachable, it means watch App is in the foreground -> send watchState as message
-        // if session is not reachable, it means it's in background -> send watchState as userInfo
-        if session.isReachable {
-            session.sendMessage([WatchMessageKeys.watchState: message], replyHandler: nil) { error in
-                debug(.watchManager, "❌ Error sending watch state: \(error)")
+            // if session is reachable, it means watch App is in the foreground -> send watchState as message
+            // if session is not reachable, it means it's in background -> send watchState as userInfo
+            if session.isReachable {
+                session.sendMessage([WatchMessageKeys.watchState: message], replyHandler: nil) { error in
+                    debug(.watchManager, "❌ Error sending watch state: \(error)")
+                }
+                WatchStateSnapshot.saveLatestDateToDisk(state.date)
+                
+                // Update tracking for future deltas
+                lastSentFullState = state
+                lastSentStateHash = state.hashValue
+                lastSentTimestamp = Date().timeIntervalSince1970
+            } else {
+                WatchStateSnapshot.saveLatestDateToDisk(state.date)
+                session.transferUserInfo([WatchMessageKeys.watchState: message])
+                debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo")
+                
+                // Update tracking
+                lastSentFullState = state
+                lastSentStateHash = state.hashValue
+                lastSentTimestamp = Date().timeIntervalSince1970
             }
-            WatchStateSnapshot.saveLatestDateToDisk(state.date)
-            
-            // Update debounce tracking
-            lastSentStateHash = state.hashValue
-            lastSentTimestamp = Date().timeIntervalSince1970
         } else {
-            WatchStateSnapshot.saveLatestDateToDisk(state.date)
-            session.transferUserInfo([WatchMessageKeys.watchState: message])
-            debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo")
+            // Send delta (Phase B - currently not active due to stabilization mode)
+            guard let delta = createDeltaUpdate(from: state) else {
+                debug(.watchManager, "⌚️ Failed to create delta, falling back to full")
+                // Fallback to full send
+                let message: [String: Any] = watchStateToDictionary(from: state)
+                if session.isReachable {
+                    session.sendMessage([WatchMessageKeys.watchState: message], replyHandler: nil) { error in
+                        debug(.watchManager, "❌ Error sending watch state: \(error)")
+                    }
+                }
+                lastSentFullState = state
+                return
+            }
             
-            // Update debounce tracking
-            lastSentStateHash = state.hashValue
-            lastSentTimestamp = Date().timeIntervalSince1970
+            let deltaMessage = deltaToDictionary(from: delta)
+            
+            debug(.watchManager, "📱 Sending DELTA #\(delta.sequenceNumber) to watch (correlationId: \(state.correlationId))")
+            
+            if session.isReachable {
+                session.sendMessage([WatchMessageKeys.watchDelta: deltaMessage], replyHandler: nil) { error in
+                    debug(.watchManager, "❌ Error sending delta: \(error)")
+                }
+                
+                // Update tracking (but don't update lastSentFullState for deltas)
+                lastSentStateHash = state.hashValue
+                lastSentTimestamp = Date().timeIntervalSince1970
+            } else {
+                // Background: still send full via transferUserInfo for reliability
+                let fullMessage: [String: Any] = watchStateToDictionary(from: state)
+                session.transferUserInfo([WatchMessageKeys.watchState: fullMessage])
+                debug(.watchManager, "📤 Transferred full state via userInfo (background)")
+                
+                lastSentFullState = state
+                lastSentStateHash = state.hashValue
+                lastSentTimestamp = Date().timeIntervalSince1970
+            }
         }
     }
 

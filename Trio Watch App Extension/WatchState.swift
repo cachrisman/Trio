@@ -372,7 +372,16 @@ import WatchConnectivity
             }
             return
         }
-
+        
+        // Check for delta update message
+        if let deltaDict = message[WatchMessageKeys.watchDelta] as? [String: Any] {
+            Task {
+                await WatchLogger.shared.log("⌚️ Received DELTA update")
+            }
+            processDeltaUpdate(deltaDict)
+            return
+        }
+        
         // Else if the message is an "ack" at the top level
         // e.g. { "acknowledged": true, "message": "Started Temp Target...", "date": Date(...) }
         else if
@@ -832,5 +841,149 @@ import WatchConnectivity
                 self.showManualRefreshSuccess = false
             }
         }
+    }
+    
+    // MARK: - Delta Processing
+    
+    /// Processes a delta update message from the phone
+    private func processDeltaUpdate(_ deltaDict: [String: Any]) {
+        // Gate: Check if we're in cold-start
+        if isColdStart {
+            Task {
+                await WatchLogger.shared.log("⌚️ Ignoring delta during cold-start, requesting full refresh")
+            }
+            resetSequenceTracking()
+            requestWatchStateUpdate()
+            return
+        }
+        
+        // Extract sequence number
+        guard let sequenceNum = deltaDict[WatchMessageKeys.sequenceNumber] as? Int else {
+            Task {
+                await WatchLogger.shared.log("⌚️ Delta missing sequence number, requesting full refresh")
+            }
+            resetSequenceTracking()
+            requestWatchStateUpdate()
+            return
+        }
+        
+        // Validate sequence
+        if sequenceNum <= lastProcessedSequence {
+            Task {
+                await WatchLogger.shared.log("⌚️ Ignoring old/duplicate delta: seq=\(sequenceNum), lastProcessed=\(lastProcessedSequence)")
+            }
+            return
+        }
+        
+        // Check for gap
+        let expectedSeq = lastProcessedSequence + 1
+        if sequenceNum > expectedSeq && lastProcessedSequence > 0 {
+            let gap = sequenceNum - expectedSeq
+            Task {
+                await WatchLogger.shared.log("⌚️ Detected sequence gap: \(gap), requesting full refresh")
+            }
+            
+            // Gap > 20 or any gap if we have history → request full
+            if gap > 20 {
+                resetSequenceTracking()
+                requestWatchStateUpdate()
+                return
+            }
+        }
+        
+        Task {
+            await WatchLogger.shared.log("⌚️ Processing delta #\(sequenceNum) (newReadings: \(deltaDict[WatchMessageKeys.newReadings] != nil ? "yes" : "no"))")
+        }
+        
+        // Apply delta to current state
+        applyDeltaUpdate(deltaDict)
+        
+        // Update last processed sequence
+        lastProcessedSequence = sequenceNum
+        
+        Task {
+            await WatchLogger.shared.log("⌚️ ✅ Delta #\(sequenceNum) applied successfully")
+        }
+    }
+    
+    /// Applies delta changes to current watch state
+    private func applyDeltaUpdate(_ deltaDict: [String: Any]) {
+        DispatchQueue.main.async {
+            // Mark as syncing
+            self.showSyncingAnimation = true
+        }
+        
+        var updateData: [String: Any] = [:]
+        
+        // Current glucose and metadata
+        if let currentGlucose = deltaDict[WatchMessageKeys.currentGlucose] as? String {
+            updateData[WatchMessageKeys.currentGlucose] = currentGlucose
+        }
+        
+        if let currentGlucoseColor = deltaDict[WatchMessageKeys.currentGlucoseColorString] as? String {
+            updateData[WatchMessageKeys.currentGlucoseColorString] = currentGlucoseColor
+        }
+        
+        if let trend = deltaDict[WatchMessageKeys.trend] as? String {
+            updateData[WatchMessageKeys.trend] = trend
+        }
+        
+        if let delta = deltaDict[WatchMessageKeys.delta] as? String {
+            updateData[WatchMessageKeys.delta] = delta
+        }
+        
+        if let iob = deltaDict[WatchMessageKeys.iob] as? String {
+            updateData[WatchMessageKeys.iob] = iob
+        }
+        
+        if let cob = deltaDict[WatchMessageKeys.cob] as? String {
+            updateData[WatchMessageKeys.cob] = cob
+        }
+        
+        if let lastLoopTime = deltaDict[WatchMessageKeys.lastLoopTime] as? String {
+            updateData[WatchMessageKeys.lastLoopTime] = lastLoopTime
+        }
+        
+        if let timestamp = deltaDict[WatchMessageKeys.date] as? TimeInterval {
+            updateData[WatchMessageKeys.date] = timestamp
+        }
+        
+        if let minY = deltaDict[WatchMessageKeys.minYAxisValue] {
+            updateData[WatchMessageKeys.minYAxisValue] = minY
+        }
+        
+        if let maxY = deltaDict[WatchMessageKeys.maxYAxisValue] {
+            updateData[WatchMessageKeys.maxYAxisValue] = maxY
+        }
+        
+        // Handle new readings - append to existing glucoseValues
+        if let newReadingsArray = deltaDict[WatchMessageKeys.newReadings] as? [[String: Any]], !newReadingsArray.isEmpty {
+            let newReadings = newReadingsArray.compactMap { data -> (Date, Double, String)? in
+                guard let glucose = data["glucose"] as? Double,
+                      let timestamp = data["date"] as? TimeInterval,
+                      let colorString = data["color"] as? String
+                else { return nil }
+                
+                return (Date(timeIntervalSince1970: timestamp), glucose, colorString)
+            }
+            
+            // Merge with existing glucose values
+            DispatchQueue.main.async {
+                // Add new readings
+                let updatedValues = (self.glucoseValues + newReadings.map { (date: $0.0, glucose: $0.1, color: $0.2.toColor()) })
+                    .sorted { $0.date < $1.date }
+                
+                // Keep only last 24 hours (288 readings at 5min intervals)
+                let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
+                self.glucoseValues = Array(updatedValues.filter { $0.date >= cutoff }.suffix(288))
+                
+                Task {
+                    await WatchLogger.shared.log("⌚️ Merged \(newReadings.count) new readings, total: \(self.glucoseValues.count)")
+                }
+            }
+        }
+        
+        // Apply updates via existing processing pipeline
+        scheduleUIUpdate(with: updateData)
     }
 }
