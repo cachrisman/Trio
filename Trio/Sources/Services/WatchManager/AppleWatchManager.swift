@@ -605,7 +605,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             WatchGlucoseDelta.Reading(
                 date: value.date,
                 glucose: value.glucose,
-                colorHex: value.color.toHexString()
+                colorHex: value.color
             )
         }
         let activeOverride = state.overridePresets.first(where: { $0.isEnabled })?.name
