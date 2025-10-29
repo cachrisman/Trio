@@ -42,6 +42,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private var recentCorrelationIds: [String] = []
     private let correlationCapacity = 50
 
+    // Phase flags and persistence keys
+    private var isStabilizationMode: Bool = true // Phase A by default
+    private let lastSentHashKey = "trio.iphone.lastStateHash"
+    private let lastSentTimestampKey = "trio.iphone.lastSentTimestamp"
+    private let lastFullSentTimestampKey = "trio.iphone.lastFullSentTimestamp"
+    private let deltaSequenceKey = "trio.iphone.deltaSequence"
+
     typealias PumpEvent = PumpEventStored.EventType
 
     let backgroundContext = CoreDataStack.shared.newTaskContext()
@@ -504,21 +511,119 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             return
         }
 
-        let correlationId = UUID().uuidString
-        let message: [String: Any] = watchStateToDictionary(from: state, correlationId: correlationId)
+        // Debounce identical state within 30s
+        let stateHash = computeStateHash(from: state)
+        let now = Date()
+        let defaults = UserDefaults.standard
+        let lastHash = defaults.string(forKey: lastSentHashKey)
+        let lastSentTs = Date(timeIntervalSince1970: defaults.double(forKey: lastSentTimestampKey))
+        if stateHash == lastHash, now.timeIntervalSince(lastSentTs) < 30 {
+            debug(.watchManager, "⏱️ Debounced identical state <30s; skipping send")
+            return
+        }
 
-        // if session is reachable, it means watch App is in the foreground -> send watchState as message
-        // if session is not reachable, it means it's in background -> send watchState as userInfo
+        // Phase A: Always send full
+        if isStabilizationMode {
+            let correlationId = UUID().uuidString
+            let message: [String: Any] = watchStateToDictionary(from: state, correlationId: correlationId)
+            sendFull(message: message, session: session)
+            defaults.set(stateHash, forKey: lastSentHashKey)
+            defaults.set(now.timeIntervalSince1970, forKey: lastSentTimestampKey)
+            defaults.set(now.timeIntervalSince1970, forKey: lastFullSentTimestampKey)
+            return
+        }
+
+        // Phase B: Decide Full vs Delta
+        let lastFullTs = Date(timeIntervalSince1970: defaults.double(forKey: lastFullSentTimestampKey))
+        let shouldSendFull = lastFullTs.timeIntervalSince1970 == 0 || now.timeIntervalSince(lastFullTs) > 25 * 60
+        if shouldSendFull {
+            let correlationId = UUID().uuidString
+            let message: [String: Any] = watchStateToDictionary(from: state, correlationId: correlationId)
+            sendFull(message: message, session: session)
+            defaults.set(now.timeIntervalSince1970, forKey: lastFullSentTimestampKey)
+        } else {
+            let delta = createDeltaUpdate(from: state)
+            sendDelta(delta: delta, session: session)
+        }
+
+        defaults.set(stateHash, forKey: lastSentHashKey)
+        defaults.set(now.timeIntervalSince1970, forKey: lastSentTimestampKey)
+    }
+
+    @MainActor private func sendFull(message: [String: Any], session: WCSession) {
         if session.isReachable {
             session.sendMessage([WatchMessageKeys.watchState: message], replyHandler: nil) { error in
                 debug(.watchManager, "❌ Error sending watch state: \(error)")
             }
-            WatchStateSnapshot.saveLatestDateToDisk(state.date)
         } else {
-            WatchStateSnapshot.saveLatestDateToDisk(state.date)
             session.transferUserInfo([WatchMessageKeys.watchState: message])
             debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo")
         }
+        if let ts = message[WatchMessageKeys.date] as? TimeInterval {
+            WatchStateSnapshot.saveLatestDateToDisk(Date(timeIntervalSince1970: ts))
+        }
+    }
+
+    @MainActor private func sendDelta(delta: WatchGlucoseDelta, session: WCSession) {
+        let payload = delta.toDictionary()
+        if session.isReachable {
+            session.sendMessage([WatchMessageKeys.deltaUpdate: payload], replyHandler: nil) { error in
+                debug(.watchManager, "❌ Error sending delta: \(error)")
+            }
+        } else {
+            session.transferUserInfo([WatchMessageKeys.deltaUpdate: payload])
+            debug(.watchManager, "📤 Transferred delta via userInfo")
+        }
+    }
+
+    private func nextDeltaSequence() -> Int {
+        let defaults = UserDefaults.standard
+        let current = defaults.integer(forKey: deltaSequenceKey)
+        let next = current + 1
+        defaults.set(next, forKey: deltaSequenceKey)
+        return next
+    }
+
+    private func computeStateHash(from state: WatchState) -> String {
+        let parts: [String] = [
+            state.currentGlucose ?? "--",
+            state.trend ?? "",
+            state.delta ?? "--",
+            state.lastLoopTime ?? "--",
+            state.overridePresets.first(where: { $0.isEnabled })?.name ?? "",
+            state.tempTargetPresets.first(where: { $0.isEnabled })?.name ?? ""
+        ]
+        return parts.joined(separator: "|")
+    }
+
+    private func createDeltaUpdate(from state: WatchState) -> WatchGlucoseDelta {
+        let seq = nextDeltaSequence()
+        let corr = UUID().uuidString
+        let newReadings = Array(state.glucoseValues.suffix(6)).map { value in
+            WatchGlucoseDelta.Reading(
+                date: value.date,
+                glucose: value.glucose,
+                colorHex: value.color.toHexString()
+            )
+        }
+        let activeOverride = state.overridePresets.first(where: { $0.isEnabled })?.name
+        let activeTempTarget = state.tempTargetPresets.first(where: { $0.isEnabled })?.name
+        return WatchGlucoseDelta(
+            sequenceNumber: seq,
+            correlationId: corr,
+            date: state.date,
+            currentGlucose: state.currentGlucose ?? "--",
+            trend: state.trend ?? "",
+            delta: state.delta ?? "--",
+            iob: state.iob,
+            cob: state.cob,
+            lastLoopTime: state.lastLoopTime,
+            minYAxisValue: state.minYAxisValue,
+            maxYAxisValue: state.maxYAxisValue,
+            activeOverrideName: activeOverride,
+            activeTempTargetName: activeTempTarget,
+            newReadings: newReadings
+        )
     }
 
     func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode, correlationId: String? = nil) {

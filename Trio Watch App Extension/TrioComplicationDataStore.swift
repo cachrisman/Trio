@@ -17,11 +17,13 @@ final class TrioComplicationDataStore {
     func saveSnapshotAndReloadIfNeeded(snapshot: [String: Any], isColdStart: Bool) {
         let defaults = appGroupDefaults()
 
-        // Persist snapshot JSON for WidgetKit
-        defaults.set(snapshot, forKey: snapshotKey)
+        // Merge with existing snapshot to avoid dropping keys
+        var merged = (defaults.dictionary(forKey: snapshotKey) ?? [:])
+        merged.merge(snapshot) { _, new in new }
+        defaults.set(merged, forKey: snapshotKey)
 
         // Heuristic: immediate reload on glucose change, otherwise schedule delayed backup reload
-        let newGlucose = (snapshot[WatchMessageKeys.currentGlucose] as? String) ?? "--"
+        let newGlucose = (merged[WatchMessageKeys.currentGlucose] as? String) ?? "--"
         let lastGlucose = defaults.string(forKey: lastGlucoseKey) ?? ""
         let now = Date()
         let lastReload = Date(timeIntervalSince1970: defaults.double(forKey: lastReloadKey))

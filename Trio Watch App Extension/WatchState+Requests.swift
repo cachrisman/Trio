@@ -257,7 +257,11 @@ extension WatchState {
                 await WatchLogger.shared.log("⌚️ Requesting WatchState update from iPhone")
             }
 
-            let message = [WatchMessageKeys.requestWatchUpdate: WatchMessageKeys.watchState]
+            let message: [String: Any] = [
+                WatchMessageKeys.requestWatchUpdate: WatchMessageKeys.watchState,
+                WatchMessageKeys.manualRefresh: true,
+                WatchMessageKeys.manualRefreshRequestId: UUID().uuidString
+            ]
 
             session.sendMessage(message, replyHandler: nil) { error in
                 Task {

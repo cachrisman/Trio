@@ -8,6 +8,7 @@ enum WatchMessageKeys {
     static let ackCode = "ackCode"
     static let message = "message"
     static let correlationId = "correlationId"
+    static let deltaUpdate = "watchDelta"
 
     // Treatment Keys
     static let bolus = "bolus"
@@ -44,6 +45,8 @@ enum WatchMessageKeys {
     static let maxYAxisValue = "maxYAxisValue"
     static let overridePresets = "overridePresets"
     static let tempTargetPresets = "tempTargetPresets"
+    static let activeOverrideName = "activeOverrideName"
+    static let activeTempTargetName = "activeTempTargetName"
 
     // Limits and Settings Keys
     static let maxBolus = "maxBolus"
@@ -52,4 +55,9 @@ enum WatchMessageKeys {
     static let maxProtein = "maxProtein"
     static let bolusIncrement = "bolusIncrement"
     static let confirmBolusFaster = "confirmBolusFaster"
+    // Delta Keys
+    static let sequenceNumber = "sequenceNumber"
+    static let newReadings = "newReadings"
+    static let manualRefresh = "manualRefresh"
+    static let manualRefreshRequestId = "manualRefreshRequestId"
 }

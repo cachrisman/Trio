@@ -237,6 +237,12 @@ import WatchConnectivity
             return
         }
 
+        // Delta update
+        if let deltaDict = message[WatchMessageKeys.deltaUpdate] as? [String: Any] {
+            processDeltaUpdate(deltaDict)
+            return
+        }
+
         // Else if the message is an "ack" at the top level
         // e.g. { "acknowledged": true, "message": "Started Temp Target...", "date": Date(...) }
         else if
@@ -284,6 +290,88 @@ import WatchConnectivity
                 self.showSyncingAnimation = false
             }
         }
+    }
+
+    // MARK: - Delta processing
+    private func processDeltaUpdate(_ delta: [String: Any]) {
+        // Gate on activation and cold start
+        guard let session = session, session.activationState == .activated else { return }
+        if isColdStartWindowActive {
+            requestWatchStateUpdate()
+            return
+        }
+
+        let lastSeq = UserDefaults.standard.integer(forKey: "trio.watch.lastProcessedSequence")
+        guard let seq = delta[WatchMessageKeys.sequenceNumber] as? Int, seq > lastSeq else {
+            Task { await WatchLogger.shared.log("⌚️ Ignoring delta: seq <= lastProcessed (") }
+            return
+        }
+
+        // Optional: gap handling
+        if seq - lastSeq > 20 {
+            Task { await WatchLogger.shared.log("⌚️ Large sequence gap detected; requesting full refresh") }
+            UserDefaults.standard.set(0, forKey: "trio.watch.lastProcessedSequence")
+            requestWatchStateUpdate()
+            return
+        }
+
+        // Apply minimal fields
+        var updated: [String: Any] = [:]
+        if let timestamp = delta[WatchMessageKeys.date] as? TimeInterval {
+            lastWatchStateUpdate = timestamp
+            updated[WatchMessageKeys.date] = timestamp
+        }
+        if let cg = delta[WatchMessageKeys.currentGlucose] as? String { currentGlucose = cg; updated[WatchMessageKeys.currentGlucose] = cg }
+        if let t = delta[WatchMessageKeys.trend] as? String { trend = t; updated[WatchMessageKeys.trend] = t }
+        if let d = delta[WatchMessageKeys.delta] as? String { delta = d; updated[WatchMessageKeys.delta] = d }
+        if let i = delta[WatchMessageKeys.iob] as? String { iob = i; updated[WatchMessageKeys.iob] = i }
+        if let c = delta[WatchMessageKeys.cob] as? String { cob = c; updated[WatchMessageKeys.cob] = c }
+        if let ll = delta[WatchMessageKeys.lastLoopTime] as? String { lastLoopTime = ll; updated[WatchMessageKeys.lastLoopTime] = ll }
+        if let minY = (delta[WatchMessageKeys.minYAxisValue] as? NSNumber)?.decimalValue { minYAxisValue = minY; updated[WatchMessageKeys.minYAxisValue] = minY }
+        if let maxY = (delta[WatchMessageKeys.maxYAxisValue] as? NSNumber)?.decimalValue { maxYAxisValue = maxY; updated[WatchMessageKeys.maxYAxisValue] = maxY }
+
+        // Merge new readings
+        if let readings = delta[WatchMessageKeys.newReadings] as? [[String: Any]] {
+            let newValues: [(date: Date, glucose: Double, color: Color)] = readings.compactMap { r in
+                guard let ts = r["date"] as? TimeInterval, let g = r["glucose"] as? Double, let colorHex = r["color"] as? String else { return nil }
+                return (Date(timeIntervalSince1970: ts), g, colorHex.toColor())
+            }
+            let merged = mergeGlucoseValues(existing: glucoseValues, newValues: newValues)
+            glucoseValues = pruneTo24Hours(merged)
+        }
+
+        // Update active presets if we have names
+        if let overrideName = delta[WatchMessageKeys.activeOverrideName] as? String {
+            overridePresets = overridePresets.map { OverridePresetWatch(name: $0.name, isEnabled: $0.name == overrideName) }
+        }
+        if let tempName = delta[WatchMessageKeys.activeTempTargetName] as? String {
+            tempTargetPresets = tempTargetPresets.map { TempTargetPresetWatch(name: $0.name, isEnabled: $0.name == tempName) }
+        }
+
+        // Persist sequence
+        UserDefaults.standard.set(seq, forKey: "trio.watch.lastProcessedSequence")
+
+        // Persist snapshot and reload complication
+        TrioComplicationDataStore.shared.saveSnapshotAndReloadIfNeeded(snapshot: updated, isColdStart: isColdStartWindowActive)
+
+        // Schedule next background refresh adaptively
+        scheduleNextBackgroundRefresh()
+    }
+
+    private func mergeGlucoseValues(
+        existing: [(date: Date, glucose: Double, color: Color)],
+        newValues: [(date: Date, glucose: Double, color: Color)]
+    ) -> [(date: Date, glucose: Double, color: Color)] {
+        var map = Dictionary(uniqueKeysWithValues: existing.map { ($0.date.timeIntervalSince1970, $0) })
+        for nv in newValues {
+            map[nv.date.timeIntervalSince1970] = nv
+        }
+        return map.values.sorted { $0.date < $1.date }
+    }
+
+    private func pruneTo24Hours(_ values: [(date: Date, glucose: Double, color: Color)]) -> [(date: Date, glucose: Double, color: Color)] {
+        let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
+        return values.filter { $0.date >= cutoff }
     }
 
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
@@ -338,6 +426,30 @@ import WatchConnectivity
                 // reset auth progress
                 self.confirmationProgress = 0
             }
+        }
+    }
+
+    // MARK: - Background refresh scheduling
+    private func scheduleNextBackgroundRefresh() {
+        #if os(watchOS)
+            let extensionApp = WKExtension.shared()
+            let interval = nextRefreshInterval()
+            let preferredDate = Date().addingTimeInterval(interval)
+            extensionApp.scheduleBackgroundRefresh(withPreferredDate: preferredDate, userInfo: nil) { error in
+                Task {
+                    await WatchLogger.shared.log("⌚️ Scheduled background refresh in \(interval)s (error: \(String(describing: error)))")
+                }
+            }
+        #endif
+    }
+
+    private func nextRefreshInterval() -> TimeInterval {
+        let now = Date().timeIntervalSince1970
+        let stale = (now - (lastWatchStateUpdate ?? 0)) > 25 * 60
+        if session?.isReachable == true {
+            return stale ? 180 : 300 // 3 min when stale, 5 min otherwise
+        } else {
+            return 12 * 60 // 12 minutes when unreachable
         }
     }
 
