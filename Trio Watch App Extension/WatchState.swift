@@ -176,11 +176,28 @@ import WatchConnectivity
 
     /// Handles incoming messages from the paired iPhone when Phone is in the foreground
     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
+        // Check session readiness
+        guard let session = session, session.activationState == .activated else {
+            Task {
+                await WatchLogger.shared.log("⌚️❌ Session not ready - skipping message")
+            }
+            return
+        }
+        
         Task {
             await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
         }
 
-        // If the message has a nested "watchState" dictionary with date as TimeInterval
+        // Handle delta update
+        if let deltaDict = message[WatchMessageKeys.watchStateDelta] as? [String: Any] {
+            Task {
+                await WatchLogger.shared.log("⌚️ Received delta update")
+            }
+            processDeltaUpdate(deltaDict)
+            return
+        }
+
+        // If the message has a nested "watchState" dictionary with date as TimeInterval (full update)
         if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
            let timestamp = watchStateDict[WatchMessageKeys.date] as? TimeInterval
         {
@@ -191,7 +208,9 @@ import WatchConnectivity
                 Task {
                     await WatchLogger.shared.log("⌚️ Handling watchState from \(date)")
                 }
-                processWatchMessage(message)
+                
+                // Process full update - reset sequence on watch side
+                processFullUpdate(watchStateDict)
             } else {
                 Task {
                     await WatchLogger.shared.log("⌚️ Received outdated watchState data (\(date))")
@@ -246,6 +265,24 @@ import WatchConnectivity
     }
 
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        // Check session readiness
+        guard let session = session, session.activationState == .activated else {
+            Task {
+                await WatchLogger.shared.log("⌚️❌ Session not ready - skipping userInfo")
+            }
+            return
+        }
+        
+        // Handle delta update from userInfo
+        if let deltaDict = userInfo[WatchMessageKeys.watchStateDelta] as? [String: Any] {
+            Task {
+                await WatchLogger.shared.log("⌚️ Received delta update via userInfo")
+            }
+            processDeltaUpdate(deltaDict)
+            return
+        }
+        
+        // Handle full update from userInfo
         guard let snapshot = WatchStateSnapshot(from: userInfo) else {
             Task {
                 await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)
@@ -263,10 +300,9 @@ import WatchConnectivity
         }
 
         WatchStateSnapshot.saveLatestDateToDisk(snapshot.date)
-
-        DispatchQueue.main.async {
-            self.scheduleUIUpdate(with: snapshot.payload)
-        }
+        
+        // Process full update - reset sequence
+        processFullUpdate(snapshot.payload)
     }
 
     func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
@@ -572,5 +608,291 @@ import WatchConnectivity
                 self.confirmBolusFaster = booleanValue
             }
         }
+    }
+    
+    // MARK: - Delta Processing
+    
+    /// Process delta update with sequence validation and deduplication
+    private func processDeltaUpdate(_ deltaDict: [String: Any]) {
+        // Parse delta
+        guard let delta = WatchGlucoseDelta(from: deltaDict) else {
+            Task {
+                await WatchLogger.shared.log("⌚️❌ Failed to parse delta update")
+            }
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
+            }
+            return
+        }
+        
+        Task {
+            await WatchLogger.shared.log("⌚️ Processing delta: seq=\(delta.sequenceNumber), correlationId=\(delta.correlationId)")
+        }
+        
+        // Check for cold start - request full refresh if in cold start window
+        let isColdStart = WatchSyncUtilities.isColdStart(withinSeconds: 60.0)
+        if isColdStart {
+            Task {
+                await WatchLogger.shared.log("⌚️ Cold start detected - requesting full refresh")
+            }
+            requestFullRefresh()
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
+            }
+            return
+        }
+        
+        // Deduplication: check correlation ID
+        if WatchSyncUtilities.isCorrelationIdSeen(delta.correlationId) {
+            Task {
+                await WatchLogger.shared.log("⌚️ Skipping duplicate delta (correlationId: \(delta.correlationId))")
+            }
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
+            }
+            return
+        }
+        
+        // Sequence validation
+        let lastProcessedSeq = WatchSyncUtilities.getLastProcessedSequence()
+        let sequenceGap = delta.sequenceNumber - lastProcessedSeq
+        
+        // Handle sequence gaps
+        if delta.sequenceNumber <= lastProcessedSeq {
+            Task {
+                await WatchLogger.shared.log("⌚️⚠️ Out-of-order or duplicate delta: seq=\(delta.sequenceNumber) <= lastSeq=\(lastProcessedSeq)")
+            }
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
+            }
+            return
+        }
+        
+        // If gap > 20, reset and request full refresh
+        if sequenceGap > 20 {
+            Task {
+                await WatchLogger.shared.log("⌚️⚠️ Large sequence gap (\(sequenceGap)) - requesting full refresh")
+            }
+            WatchSyncUtilities.resetLastProcessedSequence()
+            requestFullRefresh()
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
+            }
+            return
+        }
+        
+        // Check staleness (> 25 minutes) - request full refresh
+        if WatchSyncUtilities.isLastUpdateStale() {
+            Task {
+                await WatchLogger.shared.log("⌚️⚠️ Stale data detected - requesting full refresh")
+            }
+            WatchSyncUtilities.resetLastProcessedSequence()
+            requestFullRefresh()
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
+            }
+            return
+        }
+        
+        // Apply delta update
+        DispatchQueue.main.async {
+            self.applyDelta(delta)
+            WatchSyncUtilities.setLastProcessedSequence(delta.sequenceNumber)
+            self.showSyncingAnimation = false
+        }
+        
+        Task {
+            await WatchLogger.shared.log("⌚️✅ Delta processed successfully (seq: \(delta.sequenceNumber))")
+        }
+    }
+    
+    /// Process full state update (resets sequence)
+    private func processFullUpdate(_ watchStateDict: [String: Any]) {
+        Task {
+            await WatchLogger.shared.log("⌚️ Processing full update - resetting sequence")
+        }
+        
+        // Reset sequence on full update
+        WatchSyncUtilities.resetLastProcessedSequence()
+        
+        // Update UI
+        DispatchQueue.main.async {
+            self.scheduleUIUpdate(with: watchStateDict)
+        }
+    }
+    
+    /// Apply delta to current state
+    @MainActor private func applyDelta(_ delta: WatchGlucoseDelta) {
+        // Update current glucose values if provided
+        if let currentGlucose = delta.currentGlucose {
+            self.currentGlucose = currentGlucose
+        }
+        
+        if let trend = delta.trend {
+            self.trend = trend
+        }
+        
+        if let deltaValue = delta.delta {
+            self.delta = deltaValue
+        }
+        
+        if let iob = delta.iob {
+            self.iob = iob
+        }
+        
+        if let cob = delta.cob {
+            self.cob = cob
+        }
+        
+        if let lastLoopTime = delta.lastLoopTime {
+            self.lastLoopTime = lastLoopTime
+        }
+        
+        // Merge new glucose readings (avoid duplicates)
+        if !delta.newReadings.isEmpty {
+            var existingDates = Set(glucoseValues.map { $0.date })
+            let newReadings = delta.newReadings.filter { !existingDates.contains($0.date) }
+            
+            glucoseValues.append(contentsOf: newReadings.map { (date: $0.date, glucose: $0.glucose, color: $0.color.toColor()) })
+            glucoseValues.sort { $0.date < $1.date }
+            
+            // Prune to 24 hours
+            let cutoffDate = Date().addingTimeInterval(-24 * 60 * 60)
+            glucoseValues = glucoseValues.filter { $0.date >= cutoffDate }
+        }
+        
+        // Update axis values if provided
+        if let minYAxisValue = delta.minYAxisValue {
+            self.minYAxisValue = minYAxisValue
+        }
+        
+        if let maxYAxisValue = delta.maxYAxisValue {
+            self.maxYAxisValue = maxYAxisValue
+        }
+        
+        // Update active preset names if provided
+        if let activeOverrideName = delta.activeOverrideName {
+            // Find and update override preset
+            if let index = overridePresets.firstIndex(where: { $0.name == activeOverrideName }) {
+                var updatedPresets = overridePresets
+                updatedPresets[index] = OverridePresetWatch(name: activeOverrideName, isEnabled: true)
+                // Disable all others
+                updatedPresets = updatedPresets.map { preset in
+                    OverridePresetWatch(name: preset.name, isEnabled: preset.name == activeOverrideName)
+                }
+                overridePresets = updatedPresets
+            }
+        }
+        
+        if let activeTempTargetName = delta.activeTempTargetName {
+            // Find and update temp target preset
+            if let index = tempTargetPresets.firstIndex(where: { $0.name == activeTempTargetName }) {
+                var updatedPresets = tempTargetPresets
+                updatedPresets[index] = TempTargetPresetWatch(name: activeTempTargetName, isEnabled: true)
+                // Disable all others
+                updatedPresets = updatedPresets.map { preset in
+                    TempTargetPresetWatch(name: preset.name, isEnabled: preset.name == activeTempTargetName)
+                }
+                tempTargetPresets = updatedPresets
+            }
+        }
+        
+        // Save snapshot for complication
+        saveComplicationSnapshot()
+    }
+    
+    /// Save snapshot for complication with glucose-change detection
+    private func saveComplicationSnapshot() {
+        var snapshot: [String: Any] = [:]
+        snapshot[WatchMessageKeys.date] = Date().timeIntervalSince1970
+        snapshot[WatchMessageKeys.currentGlucose] = currentGlucose
+        snapshot[WatchMessageKeys.currentGlucoseColorString] = currentGlucoseColorString
+        snapshot[WatchMessageKeys.trend] = trend ?? ""
+        snapshot[WatchMessageKeys.delta] = delta ?? ""
+        snapshot[WatchMessageKeys.iob] = iob ?? ""
+        snapshot[WatchMessageKeys.cob] = cob ?? ""
+        snapshot[WatchMessageKeys.lastLoopTime] = lastLoopTime ?? ""
+        
+        // Check if glucose changed
+        let glucoseChanged = TrioComplicationDataStore.hasGlucoseChanged(newGlucose: currentGlucose)
+        let isColdStart = WatchSyncUtilities.isColdStart(withinSeconds: 60.0)
+        
+        // Save snapshot
+        TrioComplicationDataStore.saveSnapshot(snapshot)
+        
+        // Save glucose history
+        let historyValues = glucoseValues.map { value in
+            WatchGlucoseObject(date: value.date, glucose: value.glucose, color: value.color.toHexString())
+        }
+        TrioComplicationDataStore.saveGlucoseHistory(historyValues)
+        
+        // Reload complication timeline
+        if glucoseChanged {
+            TrioComplicationDataStore.reloadTimelines(isColdStart: isColdStart)
+        } else {
+            // Schedule backup reload
+            TrioComplicationDataStore.reloadTimelines(isColdStart: isColdStart)
+        }
+    }
+    
+    /// Request full refresh from phone
+    private func requestFullRefresh() {
+        guard let session = session, session.activationState == .activated, session.isReachable else {
+            Task {
+                await WatchLogger.shared.log("⌚️ Cannot request full refresh - session not ready")
+            }
+            return
+        }
+        
+        Task {
+            await WatchLogger.shared.log("⌚️ Requesting full refresh from phone")
+        }
+        
+        let message: [String: Any] = [
+            WatchMessageKeys.requestFullRefresh: true
+        ]
+        
+        session.sendMessage(message, replyHandler: nil) { error in
+            Task {
+                await WatchLogger.shared.log("⌚️ Error requesting full refresh: \(error)")
+            }
+        }
+    }
+}
+
+// MARK: - String Extension for Color Conversion
+
+extension String {
+    func toColor() -> Color {
+        // Parse hex color string to Color
+        guard self.hasPrefix("#"), self.count >= 7 else {
+            return .white
+        }
+        
+        let hexString = String(self.dropFirst())
+        guard let hexValue = UInt64(hexString, radix: 16) else {
+            return .white
+        }
+        
+        let red = Double((hexValue & 0xFF0000) >> 16) / 255.0
+        let green = Double((hexValue & 0xFF00) >> 8) / 255.0
+        let blue = Double(hexValue & 0xFF) / 255.0
+        
+        return Color(red: red, green: green, blue: blue)
+    }
+    
+    func toHexString() -> String {
+        // If already hex, return as is
+        if self.hasPrefix("#") {
+            return self
+        }
+        return self
+    }
+}
+
+extension Color {
+    func toHexString() -> String {
+        // Simplified - default to white
+        return "#ffffff"
     }
 }

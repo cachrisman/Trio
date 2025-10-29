@@ -472,35 +472,82 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     /// Sends the state of type WatchState to the connected Watch
     /// - Parameter state: Current WatchState containing glucose data to be sent
-    @MainActor func sendDataToWatch(_ state: WatchState) async {
+    /// - Parameter isManualRefresh: Whether this is a manual refresh request
+    /// - Parameter manualRefreshRequestId: Correlation ID for manual refresh (if applicable)
+    @MainActor func sendDataToWatch(_ state: WatchState, isManualRefresh: Bool = false, manualRefreshRequestId: String? = nil) async {
         guard let session = session else { return }
 
+        // Session readiness check
+        guard isSessionReady(session) else {
+            return
+        }
+
+        // Debounce check (skip identical state sent < 30s ago)
+        guard WatchSyncUtilities.shouldSendState(state) else {
+            debug(.watchManager, "🕐 Skipping push — debounced (identical state sent recently)")
+            return
+        }
+
+        // Skip if we already sent this state or older (unless manual refresh)
+        if !isManualRefresh {
+            let lastSent = WatchStateSnapshot.loadLatestDateFromDisk()
+            guard lastSent < state.date else {
+                debug(.watchManager, "🕐 Skipping push — newer or equal state already sent")
+                return
+            }
+        }
+
+        // Feature flag: Phase A (stabilization) vs Phase B (delta optimization)
+        let isStabilizationMode = UserDefaults.standard.bool(forKey: "trio.watch.isStabilizationMode")
+        
+        // Decision: Full vs Delta
+        let shouldSendFull = isManualRefresh || WatchSyncUtilities.shouldSendFullUpdate(isStabilizationMode: isStabilizationMode)
+        
+        if shouldSendFull {
+            // Send full state
+            await sendFullState(state, session: session)
+        } else {
+            // Send delta
+            await sendDeltaUpdate(state, session: session, manualRefreshRequestId: manualRefreshRequestId)
+        }
+        
+        // Mark as sent for debouncing
+        WatchSyncUtilities.markStateAsSent(state)
+    }
+    
+    /// Check if session is ready (activated)
+    private func isSessionReady(_ session: WCSession) -> Bool {
         guard session.isPaired else {
             debug(.watchManager, "⌚️❌ No Watch is paired")
-            return
+            return false
         }
-
+        
         guard session.isWatchAppInstalled else {
-            debug(.watchManager, "⌚️❌ Trio Watch app is")
-            return
+            debug(.watchManager, "⌚️❌ Trio Watch app is not installed")
+            return false
         }
-
+        
         guard session.activationState == .activated else {
             let activationStateString = "\(session.activationState)"
             debug(.watchManager, "⌚️ Watch session activationState = \(activationStateString). Reactivating...")
-            session.activate()
-            return
+            
+            if session.activationState == .notActivated {
+                session.activate()
+            }
+            return false
         }
-
-        // Skip if we already sent this state or older
-        let lastSent = WatchStateSnapshot.loadLatestDateFromDisk()
-        guard lastSent < state.date else {
-            debug(.watchManager, "🕐 Skipping push — newer or equal state already sent")
-            return
-        }
-
-        let message: [String: Any] = watchStateToDictionary(from: state)
-
+        
+        return true
+    }
+    
+    /// Send full state update
+    @MainActor private func sendFullState(_ state: WatchState, session: WCSession) async {
+        let correlationId = WatchSyncUtilities.generateCorrelationId()
+        var message = watchStateToDictionary(from: state)
+        message[WatchMessageKeys.correlationId] = correlationId
+        
+        debug(.watchManager, "📤 Sending FULL state (correlationId: \(correlationId))")
+        
         // if session is reachable, it means watch App is in the foreground -> send watchState as message
         // if session is not reachable, it means it's in background -> send watchState as userInfo
         if session.isReachable {
@@ -514,18 +561,104 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo")
         }
     }
+    
+    /// Send delta update
+    @MainActor private func sendDeltaUpdate(_ state: WatchState, session: WCSession, manualRefreshRequestId: String?) async {
+        let correlationId = WatchSyncUtilities.generateCorrelationId()
+        let sequenceNumber = WatchSyncUtilities.nextDeltaSequenceNumber()
+        
+        // Get last ~6 glucose readings for delta
+        let newReadings = Array(state.glucoseValues.suffix(6))
+        
+        let delta = WatchGlucoseDelta(
+            sequenceNumber: sequenceNumber,
+            correlationId: correlationId,
+            newReadings: newReadings,
+            currentGlucose: state.currentGlucose,
+            trend: state.trend,
+            delta: state.delta,
+            date: state.date,
+            iob: state.iob,
+            cob: state.cob,
+            lastLoopTime: state.lastLoopTime,
+            minYAxisValue: state.minYAxisValue,
+            maxYAxisValue: state.maxYAxisValue,
+            activeOverrideName: state.activeOverrideName,
+            activeTempTargetName: state.activeTempTargetName,
+            manualRefresh: manualRefreshRequestId != nil,
+            manualRefreshRequestId: manualRefreshRequestId
+        )
+        
+        debug(.watchManager, "📤 Sending DELTA update (seq: \(sequenceNumber), correlationId: \(correlationId))")
+        
+        let deltaDict = delta.toDictionary()
+        
+        if session.isReachable {
+            session.sendMessage([WatchMessageKeys.watchStateDelta: deltaDict], replyHandler: nil) { error in
+                debug(.watchManager, "❌ Error sending delta update: \(error)")
+            }
+        } else {
+            session.transferUserInfo([WatchMessageKeys.watchStateDelta: deltaDict])
+            debug(.watchManager, "📤 Transferred delta update via userInfo")
+        }
+    }
+    
+    /// Create delta from current state and previous state
+    func createDeltaUpdate(from current: WatchState, previous: WatchState?) -> WatchGlucoseDelta? {
+        let sequenceNumber = WatchSyncUtilities.nextDeltaSequenceNumber()
+        let correlationId = WatchSyncUtilities.generateCorrelationId()
+        
+        // Determine which glucose readings are new
+        var newReadings: [WatchGlucoseObject] = []
+        if let previous = previous {
+            // Find readings newer than the last one in previous state
+            let lastPreviousDate = previous.glucoseValues.last?.date ?? Date.distantPast
+            newReadings = current.glucoseValues.filter { $0.date > lastPreviousDate }
+        } else {
+            // No previous state - send last 6 readings
+            newReadings = Array(current.glucoseValues.suffix(6))
+        }
+        
+        // Only include active preset names if they changed
+        let activeOverrideName = current.activeOverrideName != previous?.activeOverrideName ? current.activeOverrideName : nil
+        let activeTempTargetName = current.activeTempTargetName != previous?.activeTempTargetName ? current.activeTempTargetName : nil
+        
+        return WatchGlucoseDelta(
+            sequenceNumber: sequenceNumber,
+            correlationId: correlationId,
+            newReadings: newReadings,
+            currentGlucose: current.currentGlucose,
+            trend: current.trend,
+            delta: current.delta,
+            date: current.date,
+            iob: current.iob,
+            cob: current.cob,
+            lastLoopTime: current.lastLoopTime,
+            minYAxisValue: current.minYAxisValue != previous?.minYAxisValue ? current.minYAxisValue : nil,
+            maxYAxisValue: current.maxYAxisValue != previous?.maxYAxisValue ? current.maxYAxisValue : nil,
+            activeOverrideName: activeOverrideName,
+            activeTempTargetName: activeTempTargetName,
+            manualRefresh: false,
+            manualRefreshRequestId: nil
+        )
+    }
 
-    func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode) {
+    func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode, correlationId: String? = nil) {
         guard let session = session, session.isReachable else {
             debug(.watchManager, "⌚️ Watch not reachable for acknowledgment")
             return
         }
 
-        let ackMessage: [String: Any] = [
+        var ackMessage: [String: Any] = [
             WatchMessageKeys.acknowledged: success,
             WatchMessageKeys.message: message,
             WatchMessageKeys.ackCode: ackCode.rawValue
         ]
+        
+        // Include correlation ID if provided
+        if let correlationId = correlationId {
+            ackMessage[WatchMessageKeys.correlationId] = correlationId
+        }
 
         session.sendMessage(ackMessage, replyHandler: nil) { error in
             debug(.watchManager, "❌ Error sending acknowledgment: \(error)")
@@ -554,6 +687,22 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         DispatchQueue.main.async { [weak self] in
             if let logs = message["watchLogs"] as? String {
                 SimpleLogReporter.appendToWatchLog(logs)
+            }
+
+            // Handle full refresh request (resets sequences)
+            if message[WatchMessageKeys.requestFullRefresh] as? Bool == true {
+                debug(.watchManager, "📱 Watch requested full refresh - resetting sequences")
+                guard let self = self else { return }
+                // Reset sequences on both sides
+                WatchSyncUtilities.resetDeltaSequenceNumber()
+                // Skip if no watch is paired or app not installed
+                guard let session = self.session, session.isPaired, session.isReachable,
+                      session.isWatchAppInstalled else { return }
+                Task {
+                    let state = await self.setupWatchState()
+                    await self.sendDataToWatch(state, isManualRefresh: true)
+                }
+                return
             }
 
             if let requestWatchUpdate = message[WatchMessageKeys.requestWatchUpdate] as? String,
@@ -604,24 +753,55 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 )
             }
 
+            // Handle control messages with correlation IDs
+            if let action = message[WatchMessageKeys.action] as? String,
+               let correlationId = message[WatchMessageKeys.correlationId] as? String
+            {
+                switch action {
+                case WatchMessageKeys.cancelOverride:
+                    debug(.watchManager, "📱 Received cancel override request from watch (correlationId: \(correlationId))")
+                    self?.handleCancelOverride(correlationId: correlationId)
+                case WatchMessageKeys.startOverride:
+                    if let presetName = message[WatchMessageKeys.presetName] as? String {
+                        debug(.watchManager, "📱 Received start override request from watch for preset: \(presetName) (correlationId: \(correlationId))")
+                        self?.handleActivateOverride(presetName, correlationId: correlationId)
+                    }
+                case WatchMessageKeys.cancelTempTargetAction:
+                    debug(.watchManager, "📱 Received cancel temp target request from watch (correlationId: \(correlationId))")
+                    self?.handleCancelTempTarget(correlationId: correlationId)
+                case WatchMessageKeys.startTempTarget:
+                    if let presetName = message[WatchMessageKeys.presetName] as? String {
+                        debug(.watchManager, "📱 Received start temp target request from watch for preset: \(presetName) (correlationId: \(correlationId))")
+                        self?.handleActivateTempTarget(presetName, correlationId: correlationId)
+                    }
+                default:
+                    break
+                }
+            }
+            
+            // Legacy message format support (for backward compatibility)
             if message[WatchMessageKeys.cancelOverride] as? Bool == true {
-                debug(.watchManager, "📱 Received cancel override request from watch")
-                self?.handleCancelOverride()
+                let correlationId = WatchSyncUtilities.generateCorrelationId()
+                debug(.watchManager, "📱 Received cancel override request from watch (legacy format)")
+                self?.handleCancelOverride(correlationId: correlationId)
             }
 
             if let presetName = message[WatchMessageKeys.activateOverride] as? String {
-                debug(.watchManager, "📱 Received activate override request from watch for preset: \(presetName)")
-                self?.handleActivateOverride(presetName)
+                let correlationId = WatchSyncUtilities.generateCorrelationId()
+                debug(.watchManager, "📱 Received activate override request from watch for preset: \(presetName) (legacy format)")
+                self?.handleActivateOverride(presetName, correlationId: correlationId)
             }
 
             if let presetName = message[WatchMessageKeys.activateTempTarget] as? String {
-                debug(.watchManager, "📱 Received activate temp target request from watch for preset: \(presetName)")
-                self?.handleActivateTempTarget(presetName)
+                let correlationId = WatchSyncUtilities.generateCorrelationId()
+                debug(.watchManager, "📱 Received activate temp target request from watch for preset: \(presetName) (legacy format)")
+                self?.handleActivateTempTarget(presetName, correlationId: correlationId)
             }
 
             if message[WatchMessageKeys.cancelTempTarget] as? Bool == true {
-                debug(.watchManager, "📱 Received cancel temp target request from watch")
-                self?.handleCancelTempTarget()
+                let correlationId = WatchSyncUtilities.generateCorrelationId()
+                debug(.watchManager, "📱 Received cancel temp target request from watch (legacy format)")
+                self?.handleCancelTempTarget(correlationId: correlationId)
             }
 
             if message[WatchMessageKeys.requestBolusRecommendation] as? Bool == true {
@@ -854,7 +1034,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
     }
 
-    private func handleCancelOverride() {
+    private func handleCancelOverride(correlationId: String) {
+        // Idempotence check
+        if WatchSyncUtilities.isCorrelationIdSeen(correlationId) {
+            debug(.watchManager, "📱 Duplicate cancel override request (correlationId: \(correlationId)) - ignoring")
+            return
+        }
+        
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -873,7 +1059,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                 self.sendAcknowledgment(
                                     toWatch: false,
                                     message: "Error! Something went wrong when processing your request.",
-                                    ackCode: .genericFailure
+                                    ackCode: .genericFailure,
+                                    correlationId: correlationId
                                 )
                                 return
                             }
@@ -893,12 +1080,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                     localized: "Stopped Override successfully.",
                                     comment: "Stopped Override successfully"
                                 ),
-                                ackCode: .overrideStopped
+                                ackCode: .overrideStopped,
+                                correlationId: correlationId
                             )
+                            
+                            // Push updated state to watch
+                            Task {
+                                let state = await self.setupWatchState()
+                                await self.sendDataToWatch(state)
+                            }
                         } catch {
                             debug(.watchManager, "❌ Error cancelling override: \(error)")
                             // Acknowledge cancellation error
-                            self.sendAcknowledgment(toWatch: false, message: "Error stopping Override.", ackCode: .genericFailure)
+                            self.sendAcknowledgment(
+                                toWatch: false,
+                                message: "Error stopping Override.",
+                                ackCode: .error,
+                                correlationId: correlationId
+                            )
                         }
                     }
                 }
@@ -907,14 +1106,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 self.sendAcknowledgment(
                     toWatch: false,
                     message: "No active override found.",
-                    ackCode: .genericFailure
+                    ackCode: .notFound,
+                    correlationId: correlationId
                 )
                 return
             }
         }
     }
 
-    private func handleActivateOverride(_ presetName: String) {
+    private func handleActivateOverride(_ presetName: String, correlationId: String) {
+        // Idempotence check
+        if WatchSyncUtilities.isCorrelationIdSeen(correlationId) {
+            debug(.watchManager, "📱 Duplicate activate override request (correlationId: \(correlationId)) - ignoring")
+            return
+        }
+        
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -948,7 +1154,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 self.sendAcknowledgment(
                     toWatch: false,
                     message: "Failed to load active override.",
-                    ackCode: .genericFailure
+                    ackCode: .genericFailure,
+                    correlationId: correlationId
                 )
                 return
             }
@@ -965,7 +1172,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                             localized: "Preset \"\(presetName)\" not found.",
                             comment: "Preset not found"
                         ),
-                        ackCode: .genericFailure
+                        ackCode: .notFound,
+                        correlationId: correlationId
                     )
                     return
                 }
@@ -982,7 +1190,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                 localized: "Error! Something went wrong when processing your request.",
                                 comment: "Error message when activating override"
                             ),
-                            ackCode: .genericFailure
+                            ackCode: .genericFailure,
+                            correlationId: correlationId
                         )
                         return
                     }
@@ -1002,15 +1211,23 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                             localized: "Started Override \"\(presetName)\" successfully.",
                             comment: "Start override with override name"
                         ),
-                        ackCode: .overrideStarted
+                        ackCode: .overrideStarted,
+                        correlationId: correlationId
                     )
+                    
+                    // Push updated state to watch
+                    Task {
+                        let state = await self.setupWatchState()
+                        await self.sendDataToWatch(state)
+                    }
                 } catch {
                     debug(.watchManager, "❌ Error activating override: \(error)")
                     // Acknowledge activation error
                     self.sendAcknowledgment(
                         toWatch: false,
                         message: "Error activating Override \"\(presetName)\".",
-                        ackCode: .genericFailure
+                        ackCode: .error,
+                        correlationId: correlationId
                     )
                 }
             }
@@ -1259,5 +1476,8 @@ extension BaseWatchManager {
         case tempTargetStopped = "temp_target_stopped"
         case genericSuccess = "success"
         case genericFailure = "failure"
+        case notFound = "not_found"
+        case conflict = "conflict"
+        case error = "error"
     }
 }

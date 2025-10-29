@@ -30,6 +30,25 @@ enum WatchMessageKeys {
     static let cancelTempTarget = "cancelTempTarget"
     static let activateTempTarget = "activateTempTarget"
 
+    // Delta Update Keys
+    static let watchStateDelta = "watchStateDelta"
+    static let sequenceNumber = "sequenceNumber"
+    static let correlationId = "correlationId"
+    static let lastProcessedSequence = "lastProcessedSequence"
+    static let activeOverrideName = "activeOverrideName"
+    static let activeTempTargetName = "activeTempTargetName"
+    static let manualRefresh = "manualRefresh"
+    static let manualRefreshRequestId = "manualRefreshRequestId"
+    static let requestFullRefresh = "requestFullRefresh"
+
+    // Control Message Keys
+    static let action = "action"
+    static let presetName = "presetName"
+    static let startOverride = "startOverride"
+    static let startTempTarget = "startTempTarget"
+    static let cancelOverride = "cancelOverride"
+    static let cancelTempTargetAction = "cancelTempTarget"
+
     // Watch State Data Keys
     static let currentGlucose = "currentGlucose"
     static let currentGlucoseColorString = "currentGlucoseColorString"
