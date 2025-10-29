@@ -330,7 +330,7 @@ import WatchKit
         }
         if let cg = delta[WatchMessageKeys.currentGlucose] as? String { currentGlucose = cg; updated[WatchMessageKeys.currentGlucose] = cg }
         if let t = delta[WatchMessageKeys.trend] as? String { trend = t; updated[WatchMessageKeys.trend] = t }
-        if let d = delta[WatchMessageKeys.delta] as? String { delta = d; updated[WatchMessageKeys.delta] = d }
+        if let d = delta[WatchMessageKeys.delta] as? String { self.delta = d; updated[WatchMessageKeys.delta] = d }
         if let i = delta[WatchMessageKeys.iob] as? String { iob = i; updated[WatchMessageKeys.iob] = i }
         if let c = delta[WatchMessageKeys.cob] as? String { cob = c; updated[WatchMessageKeys.cob] = c }
         if let ll = delta[WatchMessageKeys.lastLoopTime] as? String { lastLoopTime = ll; updated[WatchMessageKeys.lastLoopTime] = ll }
