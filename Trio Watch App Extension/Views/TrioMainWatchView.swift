@@ -107,7 +107,7 @@ struct TrioMainWatchView: View {
                         // Manual refresh: trigger full refresh request
                         manualRefreshSuccess = false
                         showManualRefreshOverlay = true
-                        state.requestWatchStateUpdate()
+                        state.requestWatchStateUpdate(manual: true)
                     }
             )
             .onAppear {
