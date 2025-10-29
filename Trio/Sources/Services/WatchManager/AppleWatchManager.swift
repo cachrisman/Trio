@@ -38,6 +38,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
     private var subscriptions = Set<AnyCancellable>()
 
+    // Dedupe correlation IDs (simple capped buffer)
+    private var recentCorrelationIds: [String] = []
+    private let correlationCapacity = 50
+
     typealias PumpEvent = PumpEventStored.EventType
 
     let backgroundContext = CoreDataStack.shared.newTaskContext()
@@ -429,7 +433,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     // MARK: - Send to Watch
 
-    func watchStateToDictionary(from state: WatchState) -> [String: Any] {
+    func watchStateToDictionary(from state: WatchState, correlationId: String) -> [String: Any] {
         [
             WatchMessageKeys.date: state.date.timeIntervalSince1970,
             WatchMessageKeys.currentGlucose: state.currentGlucose ?? "--",
@@ -466,7 +470,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             WatchMessageKeys.maxProtein: state.maxProtein,
             WatchMessageKeys.bolusIncrement: state.bolusIncrement,
             WatchMessageKeys.confirmBolusFaster: state.confirmBolusFaster,
-            WatchMessageKeys.units: state.units.rawValue
+            WatchMessageKeys.units: state.units.rawValue,
+            WatchMessageKeys.correlationId: correlationId
         ]
     }
 
@@ -499,7 +504,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             return
         }
 
-        let message: [String: Any] = watchStateToDictionary(from: state)
+        let correlationId = UUID().uuidString
+        let message: [String: Any] = watchStateToDictionary(from: state, correlationId: correlationId)
 
         // if session is reachable, it means watch App is in the foreground -> send watchState as message
         // if session is not reachable, it means it's in background -> send watchState as userInfo
@@ -515,7 +521,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
     }
 
-    func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode) {
+    func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode, correlationId: String? = nil) {
         guard let session = session, session.isReachable else {
             debug(.watchManager, "⌚️ Watch not reachable for acknowledgment")
             return
@@ -524,7 +530,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         let ackMessage: [String: Any] = [
             WatchMessageKeys.acknowledged: success,
             WatchMessageKeys.message: message,
-            WatchMessageKeys.ackCode: ackCode.rawValue
+            WatchMessageKeys.ackCode: ackCode.rawValue,
+            WatchMessageKeys.correlationId: correlationId as Any
         ]
 
         session.sendMessage(ackMessage, replyHandler: nil) { error in
@@ -571,19 +578,26 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 return
             }
 
+            let correlationId = message[WatchMessageKeys.correlationId] as? String
+
+            if let corr = correlationId, self?.hasProcessedCorrelationId(corr) == true {
+                debug(.watchManager, "📱 Duplicate control message detected (correlationId=\(corr)); ignoring")
+                return
+            }
+
             if let bolusAmount = message[WatchMessageKeys.bolus] as? Double,
                message[WatchMessageKeys.carbs] == nil,
                message[WatchMessageKeys.date] == nil
             {
                 debug(.watchManager, "📱 Received bolus request from watch: \(bolusAmount)U")
-                self?.handleBolusRequest(Decimal(bolusAmount))
+                self?.handleBolusRequest(Decimal(bolusAmount), correlationId: correlationId)
             } else if let carbsAmount = message[WatchMessageKeys.carbs] as? Int,
                       let timestamp = message[WatchMessageKeys.date] as? TimeInterval,
                       message[WatchMessageKeys.bolus] == nil
             {
                 let date = Date(timeIntervalSince1970: timestamp)
                 debug(.watchManager, "📱 Received carbs request from watch: \(carbsAmount)g at \(date)")
-                self?.handleCarbsRequest(carbsAmount, date)
+                self?.handleCarbsRequest(carbsAmount, date, correlationId: correlationId)
             } else if let bolusAmount = message[WatchMessageKeys.bolus] as? Double,
                       let carbsAmount = message[WatchMessageKeys.carbs] as? Int,
                       let timestamp = message[WatchMessageKeys.date] as? TimeInterval
@@ -593,35 +607,36 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     .watchManager,
                     "📱 Received meal bolus combo request from watch: \(bolusAmount)U, \(carbsAmount)g at \(date)"
                 )
-                self?.handleCombinedRequest(bolusAmount: Decimal(bolusAmount), carbsAmount: Decimal(carbsAmount), date: date)
+                self?.handleCombinedRequest(bolusAmount: Decimal(bolusAmount), carbsAmount: Decimal(carbsAmount), date: date, correlationId: correlationId)
             } else {
                 debug(.watchManager, "📱 Invalid or incomplete data received from watch. Received:  \(message)")
                 // Acknowledge failure
                 self?.sendAcknowledgment(
                     toWatch: false,
                     message: "Error! Invalid or incomplete data received from watch.",
-                    ackCode: .genericFailure
+                    ackCode: .genericFailure,
+                    correlationId: correlationId
                 )
             }
 
             if message[WatchMessageKeys.cancelOverride] as? Bool == true {
                 debug(.watchManager, "📱 Received cancel override request from watch")
-                self?.handleCancelOverride()
+                self?.handleCancelOverride(correlationId: correlationId)
             }
 
             if let presetName = message[WatchMessageKeys.activateOverride] as? String {
                 debug(.watchManager, "📱 Received activate override request from watch for preset: \(presetName)")
-                self?.handleActivateOverride(presetName)
+                self?.handleActivateOverride(presetName, correlationId: correlationId)
             }
 
             if let presetName = message[WatchMessageKeys.activateTempTarget] as? String {
                 debug(.watchManager, "📱 Received activate temp target request from watch for preset: \(presetName)")
-                self?.handleActivateTempTarget(presetName)
+                self?.handleActivateTempTarget(presetName, correlationId: correlationId)
             }
 
             if message[WatchMessageKeys.cancelTempTarget] as? Bool == true {
                 debug(.watchManager, "📱 Received cancel temp target request from watch")
-                self?.handleCancelTempTarget()
+                self?.handleCancelTempTarget(correlationId: correlationId)
             }
 
             if message[WatchMessageKeys.requestBolusRecommendation] as? Bool == true {
@@ -678,6 +693,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
     }
 
+    private func hasProcessedCorrelationId(_ id: String) -> Bool {
+        if recentCorrelationIds.contains(id) {
+            return true
+        }
+        recentCorrelationIds.append(id)
+        if recentCorrelationIds.count > correlationCapacity {
+            recentCorrelationIds.removeFirst(recentCorrelationIds.count - correlationCapacity)
+        }
+        return false
+    }
+
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         if let logs = userInfo["watchLogs"] as? String {
             SimpleLogReporter.appendToWatchLog(logs)
@@ -710,14 +736,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     /// Processes bolus requests received from the Watch
     /// - Parameter amount: The requested bolus amount in units
-    private func handleBolusRequest(_ amount: Decimal) {
+    private func handleBolusRequest(_ amount: Decimal, correlationId: String?) {
         Task {
             await apsManager.enactBolus(amount: Double(amount), isSMB: false) { success, message in
                 // Acknowledge success or error of bolus
                 self.sendAcknowledgment(
                     toWatch: success,
                     message: message,
-                    ackCode: success == true ? .genericSuccess : .genericFailure
+                    ackCode: success == true ? .genericSuccess : .genericFailure,
+                    correlationId: correlationId
                 )
             }
             debug(.watchManager, "📱 Enacted bolus via APS Manager: \(amount)U")
@@ -728,7 +755,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     /// - Parameters:
     ///   - amount: The carbs amount in grams
     ///   - date: Timestamp for the carbs entry
-    private func handleCarbsRequest(_ amount: Int, _ date: Date) {
+    private func handleCarbsRequest(_ amount: Int, _ date: Date, correlationId: String?) {
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -747,7 +774,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                         self.sendAcknowledgment(
                             toWatch: false,
                             message: "Error! Something went wrong when processing your request.",
-                            ackCode: .genericFailure
+                            ackCode: .genericFailure,
+                            correlationId: correlationId
                         )
                         return
                     }
@@ -761,13 +789,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                             localized: "Carbs logged successfully.",
                             comment: "Success message sent to watch when carbs are logged successfully"
                         ),
-                        ackCode: .carbsLogged
+                        ackCode: .carbsLogged,
+                        correlationId: correlationId
                     )
                 } catch {
                     debug(.watchManager, "❌ Error saving carbs: \(error)")
 
                     // Acknowledge failure
-                    self.sendAcknowledgment(toWatch: false, message: "Error logging carbs", ackCode: .genericFailure)
+                    self.sendAcknowledgment(toWatch: false, message: "Error logging carbs", ackCode: .genericFailure, correlationId: correlationId)
                 }
             }
         }
@@ -778,7 +807,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     ///   - bolusAmount: The bolus amount in units
     ///   - carbsAmount: The carbs amount in grams
     ///   - date: Timestamp for the carbs entry
-    private func handleCombinedRequest(bolusAmount: Decimal, carbsAmount: Decimal, date: Date) {
+    private func handleCombinedRequest(bolusAmount: Decimal, carbsAmount: Decimal, date: Date, correlationId: String?) {
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -790,7 +819,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                         localized: "Saving Carbs...",
                         comment: "Successful message sent to watch when saving carbs"
                     ),
-                    ackCode: .savingCarbs
+                    ackCode: .savingCarbs,
+                    correlationId: correlationId
                 )
 
                 // Save carbs entry in Core Data
@@ -808,7 +838,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                         self.sendAcknowledgment(
                             toWatch: false,
                             message: "Error! Something went wrong when processing your request.",
-                            ackCode: .genericFailure
+                            ackCode: .genericFailure,
+                            correlationId: correlationId
                         )
                         return
                     }
@@ -823,7 +854,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                         localized: "Enacting bolus...",
                         comment: "Successful message sent to watch when enacting bolus"
                     ),
-                    ackCode: .enactingBolus
+                    ackCode: .enactingBolus,
+                    correlationId: correlationId
                 )
 
                 // Enact bolus via APS Manager
@@ -833,7 +865,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     self.sendAcknowledgment(
                         toWatch: success,
                         message: message,
-                        ackCode: success == true ? .genericSuccess : .genericFailure
+                        ackCode: success == true ? .genericSuccess : .genericFailure,
+                        correlationId: correlationId
                     )
                 }
                 debug(.watchManager, "📱 Enacted bolus from watch via APS Manager: \(bolusDouble) U")
@@ -844,17 +877,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                         localized: "Carbs and Bolus logged successfully.",
                         comment: "Successful message sent to watch when logging carbs and bolus"
                     ),
-                    ackCode: .comboComplete
+                    ackCode: .comboComplete,
+                    correlationId: correlationId
                 )
 
             } catch {
                 debug(.watchManager, "❌ Error processing combined request: \(error)")
-                sendAcknowledgment(toWatch: false, message: "Failed to log carbs and bolus", ackCode: .genericFailure)
+                sendAcknowledgment(toWatch: false, message: "Failed to log carbs and bolus", ackCode: .genericFailure, correlationId: correlationId)
             }
         }
     }
 
-    private func handleCancelOverride() {
+    private func handleCancelOverride(correlationId: String?) {
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -873,7 +907,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                 self.sendAcknowledgment(
                                     toWatch: false,
                                     message: "Error! Something went wrong when processing your request.",
-                                    ackCode: .genericFailure
+                                ackCode: .genericFailure,
+                                correlationId: correlationId
                                 )
                                 return
                             }
@@ -893,12 +928,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                     localized: "Stopped Override successfully.",
                                     comment: "Stopped Override successfully"
                                 ),
-                                ackCode: .overrideStopped
+                                ackCode: .overrideStopped,
+                                correlationId: correlationId
                             )
                         } catch {
                             debug(.watchManager, "❌ Error cancelling override: \(error)")
                             // Acknowledge cancellation error
-                            self.sendAcknowledgment(toWatch: false, message: "Error stopping Override.", ackCode: .genericFailure)
+                            self.sendAcknowledgment(toWatch: false, message: "Error stopping Override.", ackCode: .genericFailure, correlationId: correlationId)
                         }
                     }
                 }
@@ -907,14 +943,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 self.sendAcknowledgment(
                     toWatch: false,
                     message: "No active override found.",
-                    ackCode: .genericFailure
+                    ackCode: .genericFailure,
+                    correlationId: correlationId
                 )
                 return
             }
         }
     }
 
-    private func handleActivateOverride(_ presetName: String) {
+    private func handleActivateOverride(_ presetName: String, correlationId: String?) {
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -948,7 +985,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 self.sendAcknowledgment(
                     toWatch: false,
                     message: "Failed to load active override.",
-                    ackCode: .genericFailure
+                        ackCode: .genericFailure,
+                        correlationId: correlationId
                 )
                 return
             }
@@ -965,7 +1003,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                             localized: "Preset \"\(presetName)\" not found.",
                             comment: "Preset not found"
                         ),
-                        ackCode: .genericFailure
+                        ackCode: .genericFailure,
+                        correlationId: correlationId
                     )
                     return
                 }
@@ -982,7 +1021,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                 localized: "Error! Something went wrong when processing your request.",
                                 comment: "Error message when activating override"
                             ),
-                            ackCode: .genericFailure
+                            ackCode: .genericFailure,
+                            correlationId: correlationId
                         )
                         return
                     }
@@ -1002,7 +1042,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                             localized: "Started Override \"\(presetName)\" successfully.",
                             comment: "Start override with override name"
                         ),
-                        ackCode: .overrideStarted
+                        ackCode: .overrideStarted,
+                        correlationId: correlationId
                     )
                 } catch {
                     debug(.watchManager, "❌ Error activating override: \(error)")
@@ -1010,14 +1051,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     self.sendAcknowledgment(
                         toWatch: false,
                         message: "Error activating Override \"\(presetName)\".",
-                        ackCode: .genericFailure
+                        ackCode: .genericFailure,
+                        correlationId: correlationId
                     )
                 }
             }
         }
     }
 
-    private func handleActivateTempTarget(_ presetName: String) {
+    private func handleActivateTempTarget(_ presetName: String, correlationId: String?) {
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -1052,7 +1094,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                             self.sendAcknowledgment(
                                 toWatch: false,
                                 message: "Error! Something went wrong when processing your request.",
-                                ackCode: .genericFailure
+                            ackCode: .genericFailure,
+                            correlationId: correlationId
                             )
                             return
                         }
@@ -1093,7 +1136,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                 localized: "Started Temp Target \"\(presetName)\" successfully.",
                                 comment: "Started Temp Target successfully."
                             ),
-                            ackCode: .tempTargetStarted
+                        ackCode: .tempTargetStarted,
+                        correlationId: correlationId
                         )
                     } catch {
                         debug(.watchManager, "❌ Error activating temp target: \(error)")
@@ -1101,7 +1145,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                         self.sendAcknowledgment(
                             toWatch: false,
                             message: "Error activating Temp Target \"\(presetName)\".",
-                            ackCode: .genericFailure
+                        ackCode: .genericFailure,
+                        correlationId: correlationId
                         )
                     }
                 }
@@ -1109,7 +1154,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
     }
 
-    private func handleCancelTempTarget() {
+    private func handleCancelTempTarget(correlationId: String?) {
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -1128,7 +1173,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                 self.sendAcknowledgment(
                                     toWatch: false,
                                     message: "Error! Something went wrong when processing your request.",
-                                    ackCode: .genericFailure
+                                ackCode: .genericFailure,
+                                correlationId: correlationId
                                 )
                                 return
                             }
@@ -1151,7 +1197,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                     localized: "Stopped Temp Target successfully.",
                                     comment: "Stopped Temp Target successfully."
                                 ),
-                                ackCode: .tempTargetStopped
+                                ackCode: .tempTargetStopped,
+                                correlationId: correlationId
                             )
                         } catch {
                             debug(.watchManager, "❌ Error stopping temp target: \(error)")
@@ -1159,7 +1206,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                             self.sendAcknowledgment(
                                 toWatch: false,
                                 message: "Error stopping Temp Target.",
-                                ackCode: .genericFailure
+                                ackCode: .genericFailure,
+                                correlationId: correlationId
                             )
                         }
                     }

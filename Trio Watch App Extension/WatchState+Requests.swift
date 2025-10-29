@@ -20,7 +20,8 @@ extension WatchState {
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.bolus: amount
+            WatchMessageKeys.bolus: amount,
+            WatchMessageKeys.correlationId: UUID().uuidString
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -54,7 +55,8 @@ extension WatchState {
 
         let message: [String: Any] = [
             WatchMessageKeys.carbs: amount,
-            WatchMessageKeys.date: date.timeIntervalSince1970
+            WatchMessageKeys.date: date.timeIntervalSince1970,
+            WatchMessageKeys.correlationId: UUID().uuidString
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -86,7 +88,8 @@ extension WatchState {
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.cancelOverride: true
+            WatchMessageKeys.cancelOverride: true,
+            WatchMessageKeys.correlationId: UUID().uuidString
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -119,7 +122,8 @@ extension WatchState {
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.activateOverride: presetName
+            WatchMessageKeys.activateOverride: presetName,
+            WatchMessageKeys.correlationId: UUID().uuidString
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -151,7 +155,8 @@ extension WatchState {
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.cancelTempTarget: true
+            WatchMessageKeys.cancelTempTarget: true,
+            WatchMessageKeys.correlationId: UUID().uuidString
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -184,7 +189,8 @@ extension WatchState {
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.activateTempTarget: presetName
+            WatchMessageKeys.activateTempTarget: presetName,
+            WatchMessageKeys.correlationId: UUID().uuidString
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -217,7 +223,8 @@ extension WatchState {
 
         let message: [String: Any] = [
             WatchMessageKeys.requestBolusRecommendation: true,
-            WatchMessageKeys.carbs: carbsAmount
+            WatchMessageKeys.carbs: carbsAmount,
+            WatchMessageKeys.correlationId: UUID().uuidString
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in

@@ -7,6 +7,7 @@ enum WatchMessageKeys {
     static let acknowledged = "acknowledged"
     static let ackCode = "ackCode"
     static let message = "message"
+    static let correlationId = "correlationId"
 
     // Treatment Keys
     static let bolus = "bolus"
