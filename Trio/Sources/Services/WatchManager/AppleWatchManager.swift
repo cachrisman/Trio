@@ -1234,7 +1234,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
     }
 
-    private func handleActivateTempTarget(_ presetName: String) {
+    private func handleActivateTempTarget(_ presetName: String, correlationId: String) {
+        // Idempotence check
+        if WatchSyncUtilities.isCorrelationIdSeen(correlationId) {
+            debug(.watchManager, "📱 Duplicate activate temp target request (correlationId: \(correlationId)) - ignoring")
+            return
+        }
+        
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -1259,74 +1265,101 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
             // Activate the selected preset
             await context.perform {
-                if let presetToActivate = presets.first(where: { $0.name == presetName }) {
-                    presetToActivate.enabled = true
-                    presetToActivate.date = Date()
+                guard let presetToActivate = presets.first(where: { $0.name == presetName }) else {
+                    debug(.watchManager, "❌ No matching temp target preset found for name: \"\(presetName)\"")
+                    self.sendAcknowledgment(
+                        toWatch: false,
+                        message: String(
+                            localized: "Preset \"\(presetName)\" not found.",
+                            comment: "Preset not found"
+                        ),
+                        ackCode: .notFound,
+                        correlationId: correlationId
+                    )
+                    return
+                }
+                
+                presetToActivate.enabled = true
+                presetToActivate.date = Date()
 
-                    do {
-                        guard context.hasChanges else {
-                            // Acknowledge failure
-                            self.sendAcknowledgment(
-                                toWatch: false,
-                                message: "Error! Something went wrong when processing your request.",
-                                ackCode: .genericFailure
-                            )
-                            return
-                        }
-                        try context.save()
-                        debug(.watchManager, "📱 Successfully activated temp target: \(presetName)")
-
-                        let settingsHalfBasalTarget = self.settingsManager.preferences
-                            .halfBasalExerciseTarget
-
-                        let halfBasalTarget = presetToActivate.halfBasalTarget?.decimalValue
-
-                        // To activate the temp target also in oref
-                        let tempTarget = TempTarget(
-                            name: presetToActivate.name,
-                            createdAt: Date(),
-                            targetTop: presetToActivate.target?.decimalValue,
-                            targetBottom: presetToActivate.target?.decimalValue,
-                            duration: presetToActivate.duration?.decimalValue ?? 0,
-                            enteredBy: TempTarget.local,
-                            reason: TempTarget.custom,
-                            isPreset: true,
-                            enabled: true,
-                            halfBasalTarget: halfBasalTarget ?? settingsHalfBasalTarget
-                        )
-
-                        self.tempTargetStorage.saveTempTargetsToStorage([tempTarget])
-
-                        // Send notification to update Adjustments UI
-                        Foundation.NotificationCenter.default.post(
-                            name: .didUpdateTempTargetConfiguration,
-                            object: nil
-                        )
-
-                        // Acknowledge activation success
-                        self.sendAcknowledgment(
-                            toWatch: true,
-                            message: String(
-                                localized: "Started Temp Target \"\(presetName)\" successfully.",
-                                comment: "Started Temp Target successfully."
-                            ),
-                            ackCode: .tempTargetStarted
-                        )
-                    } catch {
-                        debug(.watchManager, "❌ Error activating temp target: \(error)")
-                        // Acknowledge activation error
+                do {
+                    guard context.hasChanges else {
+                        // Acknowledge failure
                         self.sendAcknowledgment(
                             toWatch: false,
-                            message: "Error activating Temp Target \"\(presetName)\".",
-                            ackCode: .genericFailure
+                            message: "Error! Something went wrong when processing your request.",
+                            ackCode: .genericFailure,
+                            correlationId: correlationId
                         )
+                        return
                     }
+                    try context.save()
+                    debug(.watchManager, "📱 Successfully activated temp target: \(presetName)")
+
+                    let settingsHalfBasalTarget = self.settingsManager.preferences
+                        .halfBasalExerciseTarget
+
+                    let halfBasalTarget = presetToActivate.halfBasalTarget?.decimalValue
+
+                    // To activate the temp target also in oref
+                    let tempTarget = TempTarget(
+                        name: presetToActivate.name,
+                        createdAt: Date(),
+                        targetTop: presetToActivate.target?.decimalValue,
+                        targetBottom: presetToActivate.target?.decimalValue,
+                        duration: presetToActivate.duration?.decimalValue ?? 0,
+                        enteredBy: TempTarget.local,
+                        reason: TempTarget.custom,
+                        isPreset: true,
+                        enabled: true,
+                        halfBasalTarget: halfBasalTarget ?? settingsHalfBasalTarget
+                    )
+
+                    self.tempTargetStorage.saveTempTargetsToStorage([tempTarget])
+
+                    // Send notification to update Adjustments UI
+                    Foundation.NotificationCenter.default.post(
+                        name: .didUpdateTempTargetConfiguration,
+                        object: nil
+                    )
+
+                    // Acknowledge activation success
+                    self.sendAcknowledgment(
+                        toWatch: true,
+                        message: String(
+                            localized: "Started Temp Target \"\(presetName)\" successfully.",
+                            comment: "Started Temp Target successfully."
+                        ),
+                        ackCode: .tempTargetStarted,
+                        correlationId: correlationId
+                    )
+                    
+                    // Push updated state to watch
+                    Task {
+                        let state = await self.setupWatchState()
+                        await self.sendDataToWatch(state)
+                    }
+                } catch {
+                    debug(.watchManager, "❌ Error activating temp target: \(error)")
+                    // Acknowledge activation error
+                    self.sendAcknowledgment(
+                        toWatch: false,
+                        message: "Error activating Temp Target \"\(presetName)\".",
+                        ackCode: .error,
+                        correlationId: correlationId
+                    )
                 }
             }
         }
     }
 
-    private func handleCancelTempTarget() {
+    private func handleCancelTempTarget(correlationId: String) {
+        // Idempotence check
+        if WatchSyncUtilities.isCorrelationIdSeen(correlationId) {
+            debug(.watchManager, "📱 Duplicate cancel temp target request (correlationId: \(correlationId)) - ignoring")
+            return
+        }
+        
         Task {
             let context = CoreDataStack.shared.newTaskContext()
 
@@ -1345,7 +1378,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                 self.sendAcknowledgment(
                                     toWatch: false,
                                     message: "Error! Something went wrong when processing your request.",
-                                    ackCode: .genericFailure
+                                    ackCode: .genericFailure,
+                                    correlationId: correlationId
                                 )
                                 return
                             }
@@ -1368,19 +1402,36 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                                     localized: "Stopped Temp Target successfully.",
                                     comment: "Stopped Temp Target successfully."
                                 ),
-                                ackCode: .tempTargetStopped
+                                ackCode: .tempTargetStopped,
+                                correlationId: correlationId
                             )
+                            
+                            // Push updated state to watch
+                            Task {
+                                let state = await self.setupWatchState()
+                                await self.sendDataToWatch(state)
+                            }
                         } catch {
                             debug(.watchManager, "❌ Error stopping temp target: \(error)")
                             // Acknowledge cancellation error
                             self.sendAcknowledgment(
                                 toWatch: false,
                                 message: "Error stopping Temp Target.",
-                                ackCode: .genericFailure
+                                ackCode: .error,
+                                correlationId: correlationId
                             )
                         }
                     }
                 }
+            } else {
+                debug(.watchManager, "❌ No active temp target found.")
+                self.sendAcknowledgment(
+                    toWatch: false,
+                    message: "No active temp target found.",
+                    ackCode: .notFound,
+                    correlationId: correlationId
+                )
+                return
             }
         }
     }

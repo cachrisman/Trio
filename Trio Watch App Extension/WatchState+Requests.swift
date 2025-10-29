@@ -81,12 +81,14 @@ extension WatchState {
             return
         }
 
+        let correlationId = WatchSyncUtilities.generateCorrelationId()
         Task {
-            await WatchLogger.shared.log("⌚️ Sending cancel override request")
+            await WatchLogger.shared.log("⌚️ Sending cancel override request (correlationId: \(correlationId))")
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.cancelOverride: true
+            WatchMessageKeys.action: WatchMessageKeys.cancelOverride,
+            WatchMessageKeys.correlationId: correlationId
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -114,12 +116,15 @@ extension WatchState {
             return
         }
 
+        let correlationId = WatchSyncUtilities.generateCorrelationId()
         Task {
-            await WatchLogger.shared.log("⌚️ Sending activate override request for preset: \(presetName)")
+            await WatchLogger.shared.log("⌚️ Sending activate override request for preset: \(presetName) (correlationId: \(correlationId))")
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.activateOverride: presetName
+            WatchMessageKeys.action: WatchMessageKeys.startOverride,
+            WatchMessageKeys.presetName: presetName,
+            WatchMessageKeys.correlationId: correlationId
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -146,12 +151,14 @@ extension WatchState {
             return
         }
 
+        let correlationId = WatchSyncUtilities.generateCorrelationId()
         Task {
-            await WatchLogger.shared.log("⌚️ Sending cancel temp target request")
+            await WatchLogger.shared.log("⌚️ Sending cancel temp target request (correlationId: \(correlationId))")
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.cancelTempTarget: true
+            WatchMessageKeys.action: WatchMessageKeys.cancelTempTargetAction,
+            WatchMessageKeys.correlationId: correlationId
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -179,12 +186,15 @@ extension WatchState {
             return
         }
 
+        let correlationId = WatchSyncUtilities.generateCorrelationId()
         Task {
-            await WatchLogger.shared.log("⌚️ Sending activate temp target request for preset: \(presetName)")
+            await WatchLogger.shared.log("⌚️ Sending activate temp target request for preset: \(presetName) (correlationId: \(correlationId))")
         }
 
         let message: [String: Any] = [
-            WatchMessageKeys.activateTempTarget: presetName
+            WatchMessageKeys.action: WatchMessageKeys.startTempTarget,
+            WatchMessageKeys.presetName: presetName,
+            WatchMessageKeys.correlationId: correlationId
         ]
 
         session.sendMessage(message, replyHandler: nil) { error in
@@ -262,6 +272,41 @@ extension WatchState {
         } else {
             Task {
                 await WatchLogger.shared.log("⌚️ Phone not reachable for WatchState update")
+            }
+        }
+    }
+    
+    /// Manual refresh: Resets sequences on both sides and requests full refresh
+    func requestManualRefresh() {
+        guard let session = session, session.activationState == .activated else {
+            Task {
+                await WatchLogger.shared.log("⌚️ Cannot perform manual refresh - session not ready")
+            }
+            return
+        }
+        
+        // Reset watch-side sequence
+        WatchSyncUtilities.resetLastProcessedSequence()
+        
+        Task {
+            await WatchLogger.shared.log("⌚️ Manual refresh triggered - resetting sequences and requesting full refresh")
+        }
+        
+        if session.isReachable {
+            let message: [String: Any] = [
+                WatchMessageKeys.requestFullRefresh: true
+            ]
+            
+            session.sendMessage(message, replyHandler: nil) { error in
+                Task {
+                    await WatchLogger.shared.log("⌚️ Error requesting manual refresh: \(error)")
+                    await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+                    await WatchLogger.shared.persistLogsLocally()
+                }
+            }
+        } else {
+            Task {
+                await WatchLogger.shared.log("⌚️ Phone not reachable for manual refresh")
             }
         }
     }
