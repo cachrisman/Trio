@@ -85,6 +85,9 @@ import WatchConnectivity
     /// Ring buffer for correlation ID deduplication (size ~50)
     private var processedCorrelationIds: [String] = []
     private let correlationIdBufferSize = 50
+    
+    /// Complication data store
+    private let complicationStore = TrioComplicationDataStore.shared
 
     // MARK: - Debouncing and batch processing helpers
 
@@ -159,6 +162,9 @@ import WatchConnectivity
         isFirstActivation = false
         isColdStart = true
         
+        // Sync cold-start state to complication store
+        complicationStore.isColdStart = true
+        
         Task {
             await WatchLogger.shared.log("⌚️ 🥶 Cold-start window began (\(Int(coldStartWindowSeconds))s)")
         }
@@ -169,6 +175,7 @@ import WatchConnectivity
             
             await MainActor.run {
                 self.isColdStart = false
+                self.complicationStore.isColdStart = false
                 Task {
                     await WatchLogger.shared.log("⌚️ ✅ Cold-start window ended")
                 }
@@ -731,6 +738,31 @@ import WatchConnectivity
             if let booleanValue = confirmBolusFaster as? Bool {
                 self.confirmBolusFaster = booleanValue
             }
+        }
+        
+        // Save to complication data store
+        saveToComplicationStore()
+    }
+    
+    // MARK: - Complication Integration
+    
+    /// Saves current state to complication data store for widget display
+    private func saveToComplicationStore() {
+        Task { @MainActor in
+            complicationStore.saveSnapshot(
+                currentGlucose: self.currentGlucose,
+                currentGlucoseColor: self.currentGlucoseColorString ?? "#ffffff",
+                trend: self.trend,
+                delta: self.delta,
+                iob: self.iob,
+                cob: self.cob,
+                lastLoopTime: self.lastLoopTime,
+                minYAxis: Double(truncating: self.minYAxisValue as NSNumber),
+                maxYAxis: Double(truncating: self.maxYAxisValue as NSNumber)
+            )
+            
+            // Save glucose history (24h)
+            complicationStore.saveGlucoseHistory(self.glucoseValues)
         }
     }
 }
