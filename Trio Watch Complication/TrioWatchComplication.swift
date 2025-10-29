@@ -5,23 +5,47 @@ import WidgetKit
 
 struct TrioWatchComplicationEntry: TimelineEntry {
     let date: Date
+    let currentGlucose: String
+    let colorHex: String
+    let trend: String
 }
 
 // MARK: - Provider
 
 struct TrioWatchComplicationProvider: TimelineProvider {
+    private func loadSnapshot() -> [String: Any]? {
+        if let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String,
+           let shared = UserDefaults(suiteName: suiteName) {
+            return shared.dictionary(forKey: "trio.complication.snapshot")
+        }
+        return UserDefaults.standard.dictionary(forKey: "trio.complication.snapshot")
+    }
+
     func placeholder(in _: Context) -> TrioWatchComplicationEntry {
-        TrioWatchComplicationEntry(date: Date())
+        TrioWatchComplicationEntry(date: Date(), currentGlucose: "--", colorHex: "#ffffff", trend: "")
     }
 
     func getSnapshot(in _: Context, completion: @escaping (TrioWatchComplicationEntry) -> Void) {
-        let entry = TrioWatchComplicationEntry(date: Date())
+        let snap = loadSnapshot()
+        let entry = TrioWatchComplicationEntry(
+            date: Date(),
+            currentGlucose: (snap?[WatchMessageKeys.currentGlucose] as? String) ?? "--",
+            colorHex: (snap?[WatchMessageKeys.currentGlucoseColorString] as? String) ?? "#ffffff",
+            trend: (snap?[WatchMessageKeys.trend] as? String) ?? ""
+        )
         completion(entry)
     }
 
     func getTimeline(in _: Context, completion: @escaping (Timeline<TrioWatchComplicationEntry>) -> Void) {
-        let entry = TrioWatchComplicationEntry(date: Date())
-        let timeline = Timeline(entries: [entry], policy: .never)
+        let snap = loadSnapshot()
+        let entry = TrioWatchComplicationEntry(
+            date: Date(),
+            currentGlucose: (snap?[WatchMessageKeys.currentGlucose] as? String) ?? "--",
+            colorHex: (snap?[WatchMessageKeys.currentGlucoseColorString] as? String) ?? "#ffffff",
+            trend: (snap?[WatchMessageKeys.trend] as? String) ?? ""
+        )
+        // Ensure periodic refresh ~ every 5 minutes
+        let timeline = Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(5 * 60)))
         completion(timeline)
     }
 }
@@ -67,10 +91,17 @@ struct TrioAccessoryCircularView: View {
     var entry: TrioWatchComplicationProvider.Entry
 
     var body: some View {
-        Image("ComplicationIcon")
-            .resizable()
-            .widgetAccentable()
-            .widgetBackground(backgroundView: Color.clear)
+        ZStack {
+            // Use accent color based on glucose color
+            if let color = Color(hex: entry.colorHex) {
+                Circle().fill(color.opacity(0.2))
+            }
+            Text(entry.currentGlucose)
+                .font(.system(size: 14, weight: .semibold))
+                .minimumScaleFactor(0.6)
+        }
+        .widgetAccentable()
+        .widgetBackground(backgroundView: Color.clear)
     }
 }
 
@@ -101,5 +132,18 @@ extension View {
         } else {
             return background(backgroundView)
         }
+    }
+}
+
+// MARK: - Color helper
+private extension Color {
+    init?(hex: String) {
+        var hexString = hex
+        if hexString.hasPrefix("#") { hexString.removeFirst() }
+        guard hexString.count == 6, let value = Int(hexString, radix: 16) else { return nil }
+        let red = Double((value >> 16) & 0xFF) / 255.0
+        let green = Double((value >> 8) & 0xFF) / 255.0
+        let blue = Double(value & 0xFF) / 255.0
+        self = Color(red: red, green: green, blue: blue)
     }
 }

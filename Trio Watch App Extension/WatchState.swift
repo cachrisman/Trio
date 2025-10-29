@@ -62,6 +62,14 @@ import WatchConnectivity
 
     var recommendedBolus: Decimal = 0
 
+    // MARK: - Cold start window
+
+    /// Indicates if the app is within the initial cold-start window after process start
+    var isColdStartWindowActive: Bool = true
+    /// Tunable cold-start window duration in seconds
+    var coldStartWindowSeconds: TimeInterval = 60
+    private var coldStartWorkItem: DispatchWorkItem?
+
     // MARK: - Debouncing and batch processing helpers
 
     /// Temporary storage for new data arriving via WatchConnectivity.
@@ -75,9 +83,23 @@ import WatchConnectivity
 
     var deviceType = WatchSize.current
 
+    // MARK: - Correlation ID dedupe for acks
+    private var recentAckCorrelationIds: [String] = []
+    private let ackCapacity = 50
+    private func shouldProcessAck(correlationId: String?) -> Bool {
+        guard let id = correlationId, !id.isEmpty else { return true }
+        if recentAckCorrelationIds.contains(id) { return false }
+        recentAckCorrelationIds.append(id)
+        if recentAckCorrelationIds.count > ackCapacity {
+            recentAckCorrelationIds.removeFirst(recentAckCorrelationIds.count - ackCapacity)
+        }
+        return true
+    }
+
     override init() {
         super.init()
         setupSession()
+        startColdStartWindow()
     }
 
     /// Configures the WatchConnectivity session if supported on the device
@@ -95,6 +117,16 @@ import WatchConnectivity
                 await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
             }
         }
+    }
+
+    private func startColdStartWindow() {
+        isColdStartWindowActive = true
+        coldStartWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.isColdStartWindowActive = false
+        }
+        coldStartWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + coldStartWindowSeconds, execute: work)
     }
 
     // MARK: – Handle Acknowledgement Messages FROM Phone
@@ -163,6 +195,8 @@ import WatchConnectivity
                     await WatchLogger.shared.log("⌚️ Watch session activated with state: \(activationState.rawValue)")
                 }
 
+                // Begin cold-start window on first activation
+                self.startColdStartWindow()
                 self.forceConditionalWatchStateUpdate()
 
                 self.isReachable = session.isReachable
@@ -210,6 +244,13 @@ import WatchConnectivity
             let ackMessage = message[WatchMessageKeys.message] as? String,
             let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
         {
+            let corrId = message[WatchMessageKeys.correlationId] as? String
+            if !self.shouldProcessAck(correlationId: corrId) {
+                Task {
+                    await WatchLogger.shared.log("⌚️ Duplicate ack ignored (correlationId=\(corrId ?? "nil"))")
+                }
+                return
+            }
             Task {
                 await WatchLogger.shared
                     .log("⌚️ Handling ack with message: \(ackMessage), success: \(acknowledged), ackCode: \(ackCodeRaw)")
@@ -436,6 +477,12 @@ import WatchConnectivity
 
         // Actually set your main UI properties here
         processRawDataForWatchState(pendingData)
+
+        // Persist snapshot for complication and trigger reloads with throttling
+        TrioComplicationDataStore.shared.saveSnapshotAndReloadIfNeeded(
+            snapshot: pendingData,
+            isColdStart: isColdStartWindowActive
+        )
 
         // Clear
         pendingData.removeAll()
