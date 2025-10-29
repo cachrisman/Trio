@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import WatchConnectivity
+import WatchKit
 
 /// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
 /// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
