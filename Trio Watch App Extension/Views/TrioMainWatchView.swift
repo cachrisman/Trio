@@ -69,6 +69,10 @@ struct TrioMainWatchView: View {
                         rotationDegrees: rotationDegrees,
                         isWatchStateDated: isWatchStateDated || isSessionUnreachable
                     )
+                    .onLongPressGesture(minimumDuration: 1.0) {
+                        // Trigger manual refresh on long-press
+                        state.triggerManualRefresh()
+                    }
 
                     if state.showSyncingAnimation {
                         Image(systemName: "iphone.radiowaves.left.and.right")
@@ -85,6 +89,13 @@ struct TrioMainWatchView: View {
                                     7 // Font .body == 14, so half of default size for the SF Symbol image
                             )
                     }
+                    
+                    // Manual refresh overlay
+                    ManualRefreshOverlay(
+                        isRefreshing: state.isManualRefreshing,
+                        showSuccess: state.showManualRefreshSuccess,
+                        message: state.manualRefreshMessage
+                    )
                 }.tag(0)
 
                 // Page 2: Glucose chart

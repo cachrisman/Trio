@@ -88,6 +88,17 @@ import WatchConnectivity
     
     /// Complication data store
     private let complicationStore = TrioComplicationDataStore.shared
+    
+    // MARK: - Manual Refresh State
+    
+    /// Indicates if manual refresh is in progress
+    var isManualRefreshing: Bool = false
+    
+    /// Manual refresh result message
+    var manualRefreshMessage: String = ""
+    
+    /// Show manual refresh success overlay
+    var showManualRefreshSuccess: Bool = false
 
     // MARK: - Debouncing and batch processing helpers
 
@@ -763,6 +774,63 @@ import WatchConnectivity
             
             // Save glucose history (24h)
             complicationStore.saveGlucoseHistory(self.glucoseValues)
+        }
+    }
+    
+    // MARK: - Manual Refresh
+    
+    /// Triggers a manual full refresh (resets sequences and requests fresh data)
+    func triggerManualRefresh() {
+        Task {
+            await WatchLogger.shared.log("⌚️ 🔄 Manual refresh triggered")
+        }
+        
+        guard let session = session, session.isReachable else {
+            Task {
+                await WatchLogger.shared.log("⌚️ Manual refresh aborted: session not reachable")
+            }
+            
+            DispatchQueue.main.async {
+                self.manualRefreshMessage = "Phone not reachable"
+                self.isManualRefreshing = false
+                self.showManualRefreshSuccess = true
+                
+                // Auto-dismiss after 2 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    self.showManualRefreshSuccess = false
+                }
+            }
+            return
+        }
+        
+        DispatchQueue.main.async {
+            self.isManualRefreshing = true
+            self.showSyncingAnimation = true
+        }
+        
+        Task {
+            await WatchLogger.shared.log("⌚️ Resetting sequence tracking for manual refresh")
+        }
+        
+        // Reset sequence tracking
+        resetSequenceTracking()
+        
+        // Request fresh data
+        requestWatchStateUpdate()
+        
+        // Set success state after a short delay (data will arrive separately)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            self.manualRefreshMessage = "Refreshing..."
+            self.isManualRefreshing = false
+            self.showManualRefreshSuccess = true
+            
+            // Reload complication
+            self.complicationStore.forceReload()
+            
+            // Auto-dismiss after 2 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                self.showManualRefreshSuccess = false
+            }
         }
     }
 }
