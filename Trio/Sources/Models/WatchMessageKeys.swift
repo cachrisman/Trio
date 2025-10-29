@@ -4,9 +4,19 @@ enum WatchMessageKeys {
     static let units = "units"
     static let requestWatchUpdate = "requestWatchUpdate"
     static let watchState = "watchState"
+    static let watchDelta = "watchDelta"
     static let acknowledged = "acknowledged"
     static let ackCode = "ackCode"
     static let message = "message"
+    static let correlationId = "correlationId"
+    
+    // Delta-specific keys
+    static let sequenceNumber = "sequenceNumber"
+    static let newReadings = "newReadings"
+    static let activeOverrideName = "activeOverrideName"
+    static let activeTempTargetName = "activeTempTargetName"
+    static let manualRefresh = "manualRefresh"
+    static let manualRefreshRequestId = "manualRefreshRequestId"
 
     // Treatment Keys
     static let bolus = "bolus"

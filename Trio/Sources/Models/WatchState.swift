@@ -26,6 +26,9 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
     // Pump specific dosing increment
     var bolusIncrement: Decimal = 0.05
     var confirmBolusFaster: Bool = false
+    
+    // Correlation ID for deduplication
+    var correlationId: String = UUID().uuidString
 
     static func == (lhs: WatchState, rhs: WatchState) -> Bool {
         lhs.date == rhs.date &&
@@ -50,6 +53,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
             lhs.maxProtein == rhs.maxProtein &&
             lhs.bolusIncrement == rhs.bolusIncrement &&
             lhs.confirmBolusFaster == rhs.confirmBolusFaster
+            // Note: correlationId is intentionally NOT compared for state equality
     }
 
     func hash(into hasher: inout Hasher) {
@@ -76,5 +80,6 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
         hasher.combine(maxProtein)
         hasher.combine(bolusIncrement)
         hasher.combine(confirmBolusFaster)
+        // Note: correlationId is intentionally NOT hashed for state comparison
     }
 }
