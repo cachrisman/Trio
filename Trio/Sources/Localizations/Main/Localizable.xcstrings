@@ -86487,6 +86487,9 @@
         }
       }
     },
+    "Deselect All" : {
+
+    },
     "Detailed" : {
       "localizations" : {
         "bg" : {
@@ -107920,6 +107923,9 @@
         }
       }
     },
+    "External Bolus" : {
+
+    },
     "External Insulin" : {
       "comment" : "A manually entered dose of external insulin",
       "localizations" : {
@@ -111907,6 +111913,9 @@
           }
         }
       }
+    },
+    "Filter" : {
+
     },
     "Fine-tune the ring’s Width and Gap to suit your design preferences." : {
       "localizations" : {
@@ -200433,6 +200442,9 @@
           }
         }
       }
+    },
+    "Select All" : {
+
     },
     "Select CGM Model" : {
       "localizations" : {
