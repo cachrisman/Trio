@@ -1,12 +1,14 @@
 import CoreData
 import Foundation
 import SwiftUI
+import UIKit
 
 extension AddCarbs {
     final class StateModel: BaseStateModel<Provider> {
         @Injected() var carbsStorage: CarbsStorage!
         @Injected() var apsManager: APSManager!
         @Injected() var settings: SettingsManager!
+        @Injected() var keychain: Keychain!
         @Published var carbs: Decimal = 0
         @Published var date = Date()
         @Published var protein: Decimal = 0
@@ -20,6 +22,8 @@ extension AddCarbs {
         @Published var maxFat: Decimal = 250
         @Published var maxProtein: Decimal = 250
         @Published var note: String = ""
+        
+        private let visionService = OpenAIVisionService()
 
         let coredataContext = CoreDataStack.shared.persistentContainer.viewContext
 
@@ -174,6 +178,41 @@ extension AddCarbs {
                 return "\(NSLocalizedString("Max Protein of", comment: "")) \(maxProtein) \(NSLocalizedString("g", comment: "")) \(NSLocalizedString("exceeded", comment: ""))"
             } else {
                 return NSLocalizedString("Save and continue", comment: "")
+            }
+        }
+        
+        func analyzeMealPhoto(image: UIImage, completion: @escaping (String?) -> Void) {
+            // Retrieve API key from keychain
+            let apiKeyResult = keychain.getValue(String.self, forKey: OpenAIConfig.Config.apiKeyKey)
+            
+            guard case .success(let apiKey?) = apiKeyResult, !apiKey.isEmpty else {
+                completion("OpenAI API key not configured. Please add your API key in Settings > Services > OpenAI.")
+                return
+            }
+            
+            // Call the vision service
+            visionService.analyzeMealPhoto(image: image, apiKey: apiKey) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    
+                    switch result {
+                    case .success(let estimate):
+                        // Update the form fields with the estimates
+                        self.carbs = Decimal(Double(estimate.carbs))
+                        self.fat = Decimal(Double(estimate.fat))
+                        self.protein = Decimal(Double(estimate.protein))
+                        
+                        // Ensure FPU conversion is visible if fat or protein are non-zero
+                        if estimate.fat > 0 || estimate.protein > 0 {
+                            self.useFPUconversion = true
+                        }
+                        
+                        completion(nil)
+                        
+                    case .failure(let error):
+                        completion(error.localizedDescription)
+                    }
+                }
             }
         }
     }
