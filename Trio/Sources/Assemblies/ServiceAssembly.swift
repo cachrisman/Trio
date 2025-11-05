@@ -29,5 +29,15 @@ final class ServiceAssembly: Assembly {
             }
         }
         container.register(IOBService.self) { r in BaseIOBService(resolver: r) }
+
+        // OpenAI Config State Model
+        container.register(OpenAIConfig.StateModel.self) { r in
+            let state = OpenAIConfig.StateModel()
+            state.resolver = r
+            return state
+        }
+
+        // OpenAI Vision Service
+        container.register(VisionNutritionAnalyzing.self) { _ in OpenAIVisionService() }
     }
 }
