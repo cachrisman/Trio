@@ -2,7 +2,7 @@ import AppIntents
 import Foundation
 
 /// An App Intent that allows users to apply a temporary target preset through the Shortcuts app.
-struct ApplyTempPresetIntent: AppIntent {
+@available(iOS 16.0, *) struct ApplyTempPresetIntent: AppIntent {
     /// The title displayed for this action in the Shortcuts app.
     static var title: LocalizedStringResource = "Apply a Temporary Target"
 

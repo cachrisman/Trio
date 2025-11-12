@@ -4,7 +4,7 @@ import Intents
 import Swinject
 
 /// Represents an override preset that can be used in the app.
-struct OverridePreset: AppEntity, Identifiable {
+@available(iOS 16.0, *) struct OverridePreset: AppEntity, Identifiable {
     /// Default query instance for fetching override presets.
     static var defaultQuery = OverridePresetsQuery()
 
@@ -24,7 +24,7 @@ struct OverridePreset: AppEntity, Identifiable {
 }
 
 /// Query structure for fetching override presets in an App Intent.
-struct OverridePresetsQuery: EntityQuery {
+@available(iOS 16.0, *) struct OverridePresetsQuery: EntityQuery {
     /// Fetches a list of override presets matching the given identifiers.
     ///
     /// - Parameter identifiers: A list of override preset IDs to fetch.

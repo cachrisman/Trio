@@ -2,7 +2,7 @@ import AppIntents
 import Foundation
 
 /// An App Intent that allows users to activate an override preset through the Shortcuts app.
-struct ApplyOverridePresetIntent: AppIntent {
+@available(iOS 16.0, *) struct ApplyOverridePresetIntent: AppIntent {
     /// The title displayed for this action in the Shortcuts app.
     static var title = LocalizedStringResource("Activate an override")
 
