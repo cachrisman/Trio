@@ -10,6 +10,9 @@ import Swinject
     // Description of the action in the Shortcuts app
     static var description = IntentDescription(LocalizedStringResource("Allow to add carbs in Trio."))
 
+    // Avoid launching the app UI when running the shortcut
+    static var openAppWhenRun: Bool { false }
+
     @Parameter(
         title: "Quantity Carbs",
         description: "Quantity of carbs in g",

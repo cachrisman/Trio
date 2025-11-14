@@ -10,6 +10,9 @@ import Foundation
         "Allow to list the last glucose reading, trends, IOB and COB available in Trio"
     )
 
+    // Avoid launching the app UI when running the shortcut
+    static var openAppWhenRun: Bool { false }
+
     static var parameterSummary: some ParameterSummary {
         Summary("List all states of Trio")
     }
