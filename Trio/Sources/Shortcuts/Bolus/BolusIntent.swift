@@ -9,6 +9,9 @@ import Swinject
 
     // Description of the action in the Shortcuts app
     static var description = IntentDescription(.init("Allow to send a bolus to the app"))
+    
+    // Open the app when running this intent for better visibility and safety
+    static var openAppWhenRun: Bool = true
 
     @Parameter(
         title: LocalizedStringResource("Amount"),

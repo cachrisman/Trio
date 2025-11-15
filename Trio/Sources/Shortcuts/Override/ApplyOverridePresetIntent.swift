@@ -8,6 +8,9 @@ struct ApplyOverridePresetIntent: AppIntent {
 
     /// The description displayed for this action in the Shortcuts app.
     static var description = IntentDescription(.init("Activate an override"))
+    
+    /// Open the app when running this intent for better visibility
+    static var openAppWhenRun: Bool = true
 
     /// The override preset to be applied.
     @Parameter(

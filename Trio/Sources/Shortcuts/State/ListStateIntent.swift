@@ -9,6 +9,9 @@ import Foundation
     static var description = IntentDescription(
         "Allow to list the last glucose reading, trends, IOB and COB available in Trio"
     )
+    
+    // Don't open the app - show snippet view instead for quick glance
+    static var openAppWhenRun: Bool = false
 
     static var parameterSummary: some ParameterSummary {
         Summary("List all states of Trio")

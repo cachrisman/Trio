@@ -8,6 +8,9 @@ struct CancelTempPresetIntent: AppIntent {
 
     /// The description displayed for this action in the Shortcuts app.
     static var description = IntentDescription("Cancel Temporary Target.")
+    
+    // Open the app when canceling for visibility
+    static var openAppWhenRun: Bool = true
 
     /// Performs the intent action to cancel an active temporary target.
     ///
