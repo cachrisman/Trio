@@ -1,12 +1,15 @@
 import CoreData
 import Foundation
 import SwiftUI
+import UIKit
 
 extension AddCarbs {
-    final class StateModel: BaseStateModel<Provider> {
+    final class StateModel: BaseStateModel<AddCarbs.Provider> {
         @Injected() var carbsStorage: CarbsStorage!
         @Injected() var apsManager: APSManager!
         @Injected() var settings: SettingsManager!
+        @Injected() var keychain: Keychain!
+        @Injected() var visionService: OpenAIVisionServiceProtocol!
         @Published var carbs: Decimal = 0
         @Published var date = Date()
         @Published var protein: Decimal = 0
@@ -20,6 +23,8 @@ extension AddCarbs {
         @Published var maxFat: Decimal = 250
         @Published var maxProtein: Decimal = 250
         @Published var note: String = ""
+        @Published var isAnalyzingPhoto = false
+        @Published var visionError: String?
 
         let coredataContext = CoreDataStack.shared.persistentContainer.viewContext
 
@@ -174,6 +179,46 @@ extension AddCarbs {
                 return "\(NSLocalizedString("Max Protein of", comment: "")) \(maxProtein) \(NSLocalizedString("g", comment: "")) \(NSLocalizedString("exceeded", comment: ""))"
             } else {
                 return NSLocalizedString("Save and continue", comment: "")
+            }
+        }
+        
+        func analyzeMealPhoto(_ image: UIImage, completion: @escaping (String?) -> Void) {
+            guard !isAnalyzingPhoto else { return }
+            
+            isAnalyzingPhoto = true
+            visionError = nil
+            
+            // Get API key from keychain
+            switch keychain.getValue(String.self, forKey: OpenAIConfig.Config.apiKeyKey) {
+            case .success(let apiKey):
+                guard let apiKey = apiKey, !apiKey.isEmpty else {
+                    isAnalyzingPhoto = false
+                    visionError = "OpenAI API key not configured. Please set it in Settings."
+                    completion(visionError)
+                    return
+                }
+                
+                visionService.analyzeMealPhoto(image, apiKey: apiKey) { [weak self] result in
+                    DispatchQueue.main.async {
+                        self?.isAnalyzingPhoto = false
+                        
+                        switch result {
+                        case .success(let nutrition):
+                            self?.carbs = Decimal(nutrition.carbs)
+                            self?.fat = Decimal(nutrition.fat)
+                            self?.protein = Decimal(nutrition.protein)
+                            self?.visionError = nil
+                            completion(nil)
+                        case .failure(let error):
+                            self?.visionError = error.localizedDescription
+                            completion(error.localizedDescription)
+                        }
+                    }
+                }
+            case .failure:
+                isAnalyzingPhoto = false
+                visionError = "Failed to retrieve API key from secure storage."
+                completion(visionError)
             }
         }
     }
