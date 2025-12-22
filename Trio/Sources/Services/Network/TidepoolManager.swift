@@ -50,6 +50,10 @@ final class BaseTidepoolManager: TidepoolManager, Injectable {
 
     init(resolver: Resolver) {
         injectServices(resolver)
+
+        // Initialize TidepoolState file if it doesn't exist
+        initializeTidepoolStateIfNeeded()
+
         loadTidepoolManager()
 
         coreDataPublisher =
@@ -69,6 +73,13 @@ final class BaseTidepoolManager: TidepoolManager, Injectable {
             .store(in: &subscriptions)
 
         registerHandlers()
+    }
+
+    /// Initializes TidepoolState file if it doesn't exist to prevent file not found errors
+    private func initializeTidepoolStateIfNeeded() {
+        // The @PersistedProperty will handle file creation, but we can ensure it's properly initialized
+        // by accessing the property once during initialization
+        _ = rawTidepoolManager
     }
 
     /// Loads the Tidepool service from saved state
