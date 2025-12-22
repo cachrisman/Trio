@@ -3,7 +3,7 @@ import SwiftUI
 import WatchKit
 
 struct TrioMainWatchView: View {
-    @State private var state = WatchState()
+    @State private var state = WatchState.shared
 
     // misc
     @State private var currentPage: Int = 0
@@ -25,8 +25,8 @@ struct TrioMainWatchView: View {
         guard let lastUpdateTimestamp = state.lastWatchStateUpdate else {
             return true
         }
-        let now = Date().timeIntervalSince1970
-        let secondsSinceUpdate = now - lastUpdateTimestamp
+        let now = Date()
+        let secondsSinceUpdate = now.timeIntervalSince(lastUpdateTimestamp)
         // Return true if last update older than 5 min, so 1 loop cycle
         return secondsSinceUpdate > 5 * 60
     }
@@ -96,6 +96,49 @@ struct TrioMainWatchView: View {
                 .tag(1)
             }
             .onAppear {
+                /// Always request fresh data immediately when app appears
+                Task {
+                    await WatchLogger.shared.log("⌚️ App appeared - requesting fresh data immediately")
+                }
+                state.requestWatchStateUpdate()
+
+                /// Only load from complication as fallback if we have no data at all
+                let hasValidWatchData = state.currentGlucose != "--" && !state.currentGlucose.isEmpty
+                if !hasValidWatchData {
+                    if let snapshot = TrioComplicationDataStore.shared.latestSnapshot() {
+                        // Update UI immediately with complication data as fallback
+                        state.currentGlucose = snapshot.glucose
+                        state.trend = snapshot.trend
+                        state.delta = snapshot.delta
+                        state.lastWatchStateUpdate = snapshot.readingDate
+                        state.showSyncingAnimation = true // Show syncing while we get fresh data
+
+                        Task {
+                            await WatchLogger.shared.log("🔄 Loaded fallback data from complication:")
+                            await WatchLogger.shared.log("   🩸 Glucose: \(snapshot.glucose)")
+                            await WatchLogger.shared.log("   📈 Trend: \(snapshot.trend)")
+                            await WatchLogger.shared.log("   📊 Delta: \(snapshot.delta)")
+                        }
+                    }
+                } else {
+                    /// Check if complication has newer data than watch app
+                    if let snapshot = TrioComplicationDataStore.shared.latestSnapshot(),
+                       let lastUpdate = state.lastWatchStateUpdate,
+                       snapshot.readingDate > lastUpdate
+                    {
+                        // Update UI with newer complication data
+                        state.currentGlucose = snapshot.glucose
+                        state.trend = snapshot.trend
+                        state.delta = snapshot.delta
+                        state.lastWatchStateUpdate = snapshot.readingDate
+                        state.showSyncingAnimation = false
+
+                        Task {
+                            await WatchLogger.shared.log("🔄 Updated with newer complication data on app appear")
+                        }
+                    }
+                }
+
                 /// Hard reset variables when main view appears
                 /// Reset `bolusAmount` and `recommendedBolus` to ensure no stale / old value is set when user opens bolus input or meal combo the next time.
                 state.bolusAmount = 0
