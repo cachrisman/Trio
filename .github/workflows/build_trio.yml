@@ -190,8 +190,33 @@ jobs:
 
           # Trio workspace patches
           # -applies any patches located in the Trio/patches/ directory
-          if $(ls ./patches/* &> /dev/null); then
-          git apply ./patches/* --allow-empty -v --whitespace=fix
+          echo "Checking for patches in ./patches directory..."
+          if $(ls ./patches/*.patch &> /dev/null); then
+            echo "Found patches to apply. Listing patches:"
+            ls -l ./patches/*.patch
+            
+            # Apply each patch individually for better error tracking
+            for patch in ./patches/*.patch; do
+              echo "Attempting to apply patch: $patch"
+              if git apply "$patch" --check --verbose --whitespace=fix; then
+                echo "✓ Patch check passed for: $patch"
+                if git apply "$patch" --verbose --whitespace=fix; then
+                  echo "✅ Successfully applied patch: $patch"
+                else
+                  echo "❌ Failed to apply patch: $patch"
+                  echo "Error details:"
+                  git apply "$patch" --verbose --whitespace=fix 2>&1
+                  exit 1
+                fi
+              else
+                echo "❌ Patch check failed for: $patch"
+                echo "Error details:"
+                git apply "$patch" --check --verbose --whitespace=fix 2>&1
+                exit 1
+              fi
+            done
+          else
+            echo "No patches found in ./patches directory"
           fi
 
           # Download and apply Trio patches from GitHub:
@@ -213,6 +238,7 @@ jobs:
           # and make sure to specify the submodule by setting "--directory=(submodule_name)".
           # Several patches may be added per submodule.
           # Adding comments (#) is strongly recommended to easily tell the individual patches apart.
+
 
       # Patch Fastlane Match to not print tables
       - name: Patch Match Tables
