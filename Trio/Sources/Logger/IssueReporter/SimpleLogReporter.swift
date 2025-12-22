@@ -1,5 +1,4 @@
 import Foundation
-import SwiftDate
 
 final class SimpleLogReporter: IssueReporter {
     private let fileManager = FileManager.default
@@ -32,17 +31,16 @@ final class SimpleLogReporter: IssueReporter {
 
         if !fileManager.fileExists(atPath: SimpleLogReporter.logFile) {
             createFile(at: startOfDay)
-        } else {
-            if let attributes = try? fileManager.attributesOfItem(atPath: SimpleLogReporter.logFile),
-               let creationDate = attributes[.creationDate] as? Date, creationDate < startOfDay
-            {
-                try? fileManager.removeItem(atPath: SimpleLogReporter.logFilePrev)
-                try? fileManager.moveItem(atPath: SimpleLogReporter.logFile, toPath: SimpleLogReporter.logFilePrev)
-                createFile(at: startOfDay)
-            }
+        } else if let attributes = try? fileManager.attributesOfItem(atPath: SimpleLogReporter.logFile),
+                  let creationDate = attributes[.creationDate] as? Date, creationDate < startOfDay
+        {
+            try? fileManager.removeItem(atPath: SimpleLogReporter.logFilePrev)
+            try? fileManager.moveItem(atPath: SimpleLogReporter.logFile, toPath: SimpleLogReporter.logFilePrev)
+            createFile(at: startOfDay)
         }
 
-        let logEntry = "\(dateFormatter.string(from: now)) [\(category)] \(file.file) - \(function) - \(line) - \(message)\n"
+        let logEntry = "\(dateFormatter.string(from: now)) [\(category)] \(file.file) - \(function) - \(line) - " +
+            "\(message)\n"
         let data = logEntry.data(using: .utf8)!
         try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
     }
@@ -52,15 +50,21 @@ final class SimpleLogReporter: IssueReporter {
     }
 
     static var logFile: String {
-        getDocumentsDirectory().appendingPathComponent("logs/log.txt").path
+        getDocumentsDirectory().appendingPathComponent("logs/\(currentVersionFolder)/log.txt").path
     }
 
     static var logDir: String {
-        getDocumentsDirectory().appendingPathComponent("logs").path
+        getDocumentsDirectory().appendingPathComponent("logs/\(currentVersionFolder)").path
     }
 
     static var logFilePrev: String {
-        getDocumentsDirectory().appendingPathComponent("logs/log_prev.txt").path
+        getDocumentsDirectory().appendingPathComponent("logs/\(currentVersionFolder)/log_prev.txt").path
+    }
+
+    private static var currentVersionFolder: String {
+        let version = Bundle.main.appDevVersion ?? Bundle.main.releaseVersionNumber ?? "unknown"
+        let buildNumber = Bundle.main.buildVersionNumber ?? "unknown"
+        return "\(version)-\(buildNumber)"
     }
 
     static func getDocumentsDirectory() -> URL {
@@ -72,16 +76,16 @@ final class SimpleLogReporter: IssueReporter {
 
 extension SimpleLogReporter {
     static var watchLogFile: String {
-        getDocumentsDirectory().appendingPathComponent("logs/watch_log.txt").path
+        getDocumentsDirectory().appendingPathComponent("logs/\(currentVersionFolder)/watch_log.txt").path
     }
 
     static var watchLogFilePrev: String {
-        getDocumentsDirectory().appendingPathComponent("logs/watch_log_prev.txt").path
+        getDocumentsDirectory().appendingPathComponent("logs/\(currentVersionFolder)/watch_log_prev.txt").path
     }
 
     static func appendToWatchLog(_ logContent: String) {
         let fileManager = FileManager.default
-        let logDir = getDocumentsDirectory().appendingPathComponent("logs")
+        let logDir = getDocumentsDirectory().appendingPathComponent("logs/\(currentVersionFolder)")
         let logFile = URL(fileURLWithPath: watchLogFile)
         let prevLogFile = URL(fileURLWithPath: watchLogFilePrev)
 
