@@ -1,0 +1,27 @@
+diff --git a/G7SensorKit/G7SensorKitUI/Views/G7SettingsView.swift b/G7SensorKit/G7SensorKitUI/Views/G7SettingsView.swift
+--- a/G7SensorKit/G7SensorKitUI/Views/G7SettingsView.swift
++++ b/G7SensorKit/G7SensorKitUI/Views/G7SettingsView.swift
+@@ -39,6 +39,13 @@ struct G7SettingsView: View {
+         return formatter
+     }()
+ 
++    private var dateFormatterWithSeconds: DateFormatter = {
++        let formatter = DateFormatter()
++        formatter.dateStyle = .short
++        formatter.timeStyle = .medium
++        return formatter
++    }()
++
+     var body: some View {
+         List {
+             Section() {
+@@ -82,7 +89,7 @@ struct G7SettingsView: View {
+                 LabeledValueView(label: LocalizedString("Glucose", comment: "Field label"),
+                                  value: viewModel.lastGlucoseString)
+                 LabeledDateView(label: LocalizedString("Time", comment: "Field label"),
+-                                date: viewModel.latestReadingTimestamp,
+-                                dateFormatter: viewModel.dateFormatter)
++                                date: viewModel.latestReadingTimestamp,
++                                dateFormatter: dateFormatterWithSeconds)
+                 LabeledValueView(label: LocalizedString("Trend", comment: "Field label"),
+                                  value: viewModel.lastGlucoseTrendString)
