@@ -1,7 +1,13 @@
 import SwiftUI
+import UserNotifications
 
 @main struct TrioWatchApp: App {
+    @WKApplicationDelegateAdaptor(ExtensionDelegate.self) var appDelegate
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        WatchNotificationHandler.shared.configure()
+    }
 
     var body: some Scene {
         WindowGroup {
