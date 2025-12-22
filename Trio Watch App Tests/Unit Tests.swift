@@ -1,4 +1,4 @@
-import SwiftUICore
+import SwiftUI
 import Testing
 @testable import Trio_Watch_App
 import XCTest
