@@ -23,6 +23,21 @@ DEVICE_NAME = ENV["DEVICE_NAME"]
 DEVICE_ID = ENV["DEVICE_ID"]
 ENV["FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"] = "120"
 
+def find_crashlytics_upload_symbols
+  env_path = ENV["CRASHLYTICS_UPLOAD_SYMBOLS"]
+  if env_path && File.file?(env_path)
+    return env_path
+  end
+
+  workspace_root = GITHUB_WORKSPACE || Dir.pwd
+  candidates = []
+  candidates.concat(Dir.glob(File.expand_path("~/Library/Developer/Xcode/DerivedData/**/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/upload-symbols")))
+  candidates.concat(Dir.glob(File.join(workspace_root, "SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/upload-symbols")))
+  candidates.concat(Dir.glob(File.join(workspace_root, "Pods/FirebaseCrashlytics/upload-symbols")))
+  candidates.concat(Dir.glob("/Applications/Fabric.app/**/upload-symbols"))
+
+  candidates.find { |path| File.file?(path) }
+end
 
 # Define method to parse xcconfig file, and replace $(DEVELOPMENT_TEAM) with ENV["TEAMID"]
 def parse_xcconfig_file(path)

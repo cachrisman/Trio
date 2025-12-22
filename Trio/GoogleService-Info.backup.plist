@@ -3,28 +3,28 @@
 <plist version="1.0">
 <dict>
 	<key>API_KEY</key>
-	<string>AIzaSyCvhDSWBaW3ryosBhePz0VZRtQ_sPrAHn0</string>
+	<string>AIzaSyBXceaGy1LrHLHfCNxhGqjxyjDR0fOLkOM</string>
 	<key>GCM_SENDER_ID</key>
-	<string>500047211242</string>
+	<string>376584015262</string>
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>org.nightscout.5QE6TMMEH2.trio</string>
+	<string>org.nightscout.trio</string>
 	<key>PROJECT_ID</key>
-	<string>trio-cachrisman</string>
+	<string>trio-e776c</string>
 	<key>STORAGE_BUCKET</key>
-	<string>trio-cachrisman.firebasestorage.app</string>
+	<string>trio-e776c.firebasestorage.app</string>
 	<key>IS_ADS_ENABLED</key>
 	<false></false>
 	<key>IS_ANALYTICS_ENABLED</key>
 	<false></false>
 	<key>IS_APPINVITE_ENABLED</key>
-	<true></true>
+	<false></false>
 	<key>IS_GCM_ENABLED</key>
-	<true></true>
+	<false></false>
 	<key>IS_SIGNIN_ENABLED</key>
-	<true></true>
+	<false></false>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:500047211242:ios:165493fe94f11b0aa8c593</string>
+	<string>1:376584015262:ios:7a4dd770ce4c46b486da8f</string>
 </dict>
 </plist>
