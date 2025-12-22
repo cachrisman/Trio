@@ -19,9 +19,51 @@ GITHUB_REPOSITORY_OWNER = ENV["GITHUB_REPOSITORY_OWNER"]
 FASTLANE_KEY_ID = ENV["FASTLANE_KEY_ID"]
 FASTLANE_ISSUER_ID = ENV["FASTLANE_ISSUER_ID"]
 FASTLANE_KEY = ENV["FASTLANE_KEY"]
-DEVICE_NAME = ENV["DEVICE_NAME"]
-DEVICE_ID = ENV["DEVICE_ID"]
 ENV["FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"] = "120"
+
+require "set"
+
+def swift_files_from_patches(workspace_root)
+  patches_dir = File.join(workspace_root, "patches")
+  return [] unless Dir.exist?(patches_dir)
+
+  Dir.glob(File.join(patches_dir, "**/*.patch"))
+     .flat_map { |patch| extract_swift_paths_from_patch(patch) }
+     .uniq
+     .select { |relative_path| File.exist?(File.join(workspace_root, relative_path)) }
+end
+
+def extract_swift_paths_from_patch(path)
+  new_files = []
+  lines = File.readlines(path, chomp: true)
+  
+  lines.each_with_index do |line, i|
+    # Look for diff headers
+    if line.start_with?("diff --git")
+      # Check the next line to determine if this is a new file
+      next_line = lines[i + 1] if i + 1 < lines.length
+      
+      # Only process if it's a new file (indicated by "new file mode")
+      # If next line starts with "index", it's a modified existing file - skip it
+      if next_line && next_line.start_with?("new file mode")
+        # This is a new file - find the +++ b/ line (usually 2-3 lines after)
+        (i + 2..[i + 5, lines.length - 1].min).each do |j|
+          if lines[j] && lines[j].start_with?("+++ b/")
+            file_path = lines[j].delete_prefix("+++ b/").strip
+            if file_path.end_with?(".swift")
+              new_files << file_path
+            end
+            break
+          end
+        end
+      end
+      # Explicitly skip if next line is "index" (modified file) or "--- a/" (modified file)
+      # No action needed - we just don't add it to new_files
+    end
+  end
+  
+  new_files
+end
 
 def find_crashlytics_upload_symbols
   env_path = ENV["CRASHLYTICS_UPLOAD_SYMBOLS"]
@@ -67,6 +109,14 @@ def find_crashlytics_upload_symbols
   result
 end
 
+def get_app_store_connect_api_key
+  app_store_connect_api_key(
+    key_id: FASTLANE_KEY_ID,
+    issuer_id: FASTLANE_ISSUER_ID,
+    key_content: FASTLANE_KEY
+  )
+end
+
 # Define method to parse xcconfig file, and replace $(DEVELOPMENT_TEAM) with ENV["TEAMID"]
 def parse_xcconfig_file(path)
   xcconfig = {}
@@ -98,17 +148,27 @@ platform :ios do
   lane :build_trio do
     setup_ci if ENV['CI']
     BUNDLE_ID = ENV["BUNDLE_ID"]
+    workspace_root = GITHUB_WORKSPACE || Dir.pwd
+
+    new_swift_files = swift_files_from_patches(workspace_root)
+    if new_swift_files.empty?
+      UI.message("No new Swift files found in patches; skipping project file sync.")
+    else
+      UI.message("Ensuring new Swift files are added to the project...")
+      sync_script = File.join(workspace_root, "scripts", "sync_project_files.rb")
+      if File.exist?(sync_script)
+        sh("ruby", sync_script, *new_swift_files)
+      else
+        UI.user_error!("Missing #{sync_script} - include scripts/sync_project_files.rb in the patch.")
+      end
+    end
 
     update_project_team(
       path: "#{GITHUB_WORKSPACE}/Trio.xcodeproj",
       teamid: "#{TEAMID}"
     )
 
-    api_key = app_store_connect_api_key(
-      key_id: "#{FASTLANE_KEY_ID}",
-      issuer_id: "#{FASTLANE_ISSUER_ID}",
-      key_content: "#{FASTLANE_KEY}"
-    )
+    api_key = get_app_store_connect_api_key
 
     previous_build_number = latest_testflight_build_number(
       app_identifier: "#{BUNDLE_ID}",
@@ -172,7 +232,11 @@ platform :ios do
       output_name: "Trio.ipa",
       configuration: "Release",
       destination: 'generic/platform=iOS',
-      buildlog_path: 'buildlog'
+      buildlog_path: 'build/buildlog',
+      clean: true,
+      export_options: {
+        uploadSymbols: false
+      }
     )
 
     copy_artifacts(
@@ -268,11 +332,7 @@ platform :ios do
 
   desc "Push to TestFlight"
   lane :release do
-    api_key = app_store_connect_api_key(
-      key_id: "#{FASTLANE_KEY_ID}",
-      issuer_id: "#{FASTLANE_ISSUER_ID}",
-      key_content: "#{FASTLANE_KEY}"
-    )
+    api_key = get_app_store_connect_api_key
     
     upload_to_testflight(
       api_key: api_key,
@@ -289,11 +349,7 @@ platform :ios do
     ENV["MATCH_READONLY"] = false.to_s
     BUNDLE_ID = ENV["BUNDLE_ID"]
     
-    app_store_connect_api_key(
-      key_id: "#{FASTLANE_KEY_ID}",
-      issuer_id: "#{FASTLANE_ISSUER_ID}",
-      key_content: "#{FASTLANE_KEY}"
-    )
+    get_app_store_connect_api_key
 
     def configure_bundle_id(name, identifier, capabilities)
       bundle_id = Spaceship::ConnectAPI::BundleId.find(identifier) || Spaceship::ConnectAPI::BundleId.create(
@@ -333,11 +389,7 @@ platform :ios do
     ENV["MATCH_READONLY"] = false.to_s
     BUNDLE_ID = ENV["BUNDLE_ID"]
     
-    app_store_connect_api_key(
-      key_id: "#{FASTLANE_KEY_ID}",
-      issuer_id: "#{FASTLANE_ISSUER_ID}",
-      key_content: "#{FASTLANE_KEY}"
-    )
+    get_app_store_connect_api_key
     
     match(
       type: "appstore",
@@ -359,17 +411,9 @@ platform :ios do
     ENV["MATCH_READONLY"] = true.to_s
     BUNDLE_ID = ENV["BUNDLE_ID"]
 
-    app_store_connect_api_key(
-      key_id: "#{FASTLANE_KEY_ID}",
-      issuer_id: "#{FASTLANE_ISSUER_ID}",
-      key_content: "#{FASTLANE_KEY}"
-    )
+    get_app_store_connect_api_key
 
-    def find_bundle_id(identifier)
-      bundle_id = Spaceship::ConnectAPI::BundleId.find(identifier)
-    end
-
-    find_bundle_id("#{BUNDLE_ID}")
+    Spaceship::ConnectAPI::BundleId.find(BUNDLE_ID)
 
     match(
       type: "appstore",
@@ -383,11 +427,7 @@ platform :ios do
     setup_ci if ENV['CI']
     ENV["MATCH_READONLY"] = false.to_s
     
-    app_store_connect_api_key(
-      key_id: "#{FASTLANE_KEY_ID}",
-      issuer_id: "#{FASTLANE_ISSUER_ID}",
-      key_content: "#{FASTLANE_KEY}"
-    )
+    get_app_store_connect_api_key
     
     match_nuke(
       type: "appstore",
@@ -402,12 +442,7 @@ platform :ios do
     setup_ci if ENV['CI']
     ENV["MATCH_READONLY"] = false.to_s
   
-    # Authenticate using App Store Connect API Key
-    api_key = app_store_connect_api_key(
-      key_id: ENV["FASTLANE_KEY_ID"],
-      issuer_id: ENV["FASTLANE_ISSUER_ID"],
-      key_content: ENV["FASTLANE_KEY"] # Ensure valid key content
-    )
+    get_app_store_connect_api_key
   
     # Initialize flag to track if renewal of certificates is needed
     new_certificate_needed = false
