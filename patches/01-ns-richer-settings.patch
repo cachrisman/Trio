@@ -1,0 +1,206 @@
+diff --git a/Trio/Sources/Models/NightscoutAlgorithmSettings.swift b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
+new file mode 100644
+index 000000000..e187db792
+--- /dev/null
++++ b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
+@@ -0,0 +1,87 @@
++import Foundation
++
++struct NightscoutAlgorithmSettings: Codable {
++    // Meta
++    let schemaVersion: Int? // = 1
++    let algorithmVersion: String?
++    let units: String? // "mg/dL" or "mmol/L"
++    let preferencesTimestamp: Date?
++
++    // Loop & SMB/UAM
++    let closedLoop: Bool?
++    let enableUAM: Bool?
++    let enableSMBAlways: Bool?
++    let enableSMBWithCOB: Bool?
++    let enableSMBAfterCarbs: Bool?
++    let enableSMBWithTemptarget: Bool?
++    let allowSMBWithHighTemptarget: Bool?
++    let smbDeliveryRatio: Decimal?
++    let smbInterval: Decimal?
++    let maxSMBBasalMinutes: Decimal?
++    let maxUAMSMBBasalMinutes: Decimal?
++
++    // Sensitivity / targets
++    let autosensMax: Decimal?
++    let autosensMin: Decimal?
++    let rewindResetsAutosens: Bool?
++    let highTemptargetRaisesSensitivity: Bool?
++    let lowTemptargetLowersSensitivity: Bool?
++    let sensitivityRaisesTarget: Bool?
++    let resistanceLowersTarget: Bool?
++    let advTargetAdjustments: Bool?
++
++    // Safety rails
++    let maxIOB: Decimal?
++    let maxCOB: Decimal?
++    let maxDailySafetyMultiplier: Decimal?
++    let currentBasalSafetyMultiplier: Decimal?
++
++    // Insulin model
++    let curve: String? // Preferences.InsulinCurve rawValue
++    let useCustomPeakTime: Bool?
++    let insulinPeakTime: Decimal?
++    let insulinActionCurve: Decimal? // Pump reality
++
++    // Exercise / temp targets
++    let exerciseMode: Bool?
++    let halfBasalExerciseTarget: Decimal?
++
++    // Carb absorption / UAM
++    let maxMealAbsorptionTime: Decimal?
++    let min5mCarbimpact: Decimal?
++    let remainingCarbsFraction: Decimal?
++    let remainingCarbsCap: Decimal?
++
++    // Heuristics & advanced math
++    let adjustmentFactor: Decimal?
++    let adjustmentFactorSigmoid: Decimal?
++    let sigmoid: Bool?
++    let useNewFormula: Bool?
++    let useWeightedAverage: Bool?
++    let weightPercentage: Decimal?
++    let tddAdjBasal: Bool?
++    let updateInterval: Decimal?
++    let maxDeltaBGthreshold: Decimal?
++    let noisyCGMTargetMultiplier: Decimal?
++    let carbsReqThreshold: Decimal?
++    let threshold_setting: Decimal?
++    let suspendZerosIOB: Bool?
++    let unsuspendIfNoTemp: Bool?
++    let skipNeutralTemps: Bool?
++
++    // Food processing helpers
++    let useFPUconversion: Bool?
++    let fattyMeals: Bool?
++    let fattyMealFactor: Decimal?
++    let sweetMeals: Bool?
++    let sweetMealFactor: Decimal?
++    let overrideFactor: Decimal?
++    let individualAdjustmentFactor: Decimal?
++    let timeCap: Decimal?
++    let minuteInterval: Decimal?
++    let delay: Decimal?
++
++    // Pump hard limits
++    let maxBolus: Decimal?
++    let maxBasal: Decimal?
++}
+diff --git a/Trio/Sources/Models/NightscoutStatus.swift b/Trio/Sources/Models/NightscoutStatus.swift
+index 65065783b..6c5a36aa4 100644
+--- a/Trio/Sources/Models/NightscoutStatus.swift
++++ b/Trio/Sources/Models/NightscoutStatus.swift
+@@ -5,6 +5,8 @@ struct NightscoutStatus: JSON {
+     let openaps: OpenAPSStatus
+     let pump: NSPumpStatus
+     let uploader: Uploader
++    /// Trio‑specific advanced algorithm settings (optional).
++    let trioSettings: NightscoutAlgorithmSettings?
+ }
+ 
+ struct OpenAPSStatus: JSON {
+diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
+index caf651201..0cfff0cde 100644
+--- a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
++++ b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
+@@ -621,11 +621,94 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
+             battery: Int(batteryLevel * 100),
+             isCharging: batteryState == .charging || batteryState == .full
+         )
++
++        let s = settingsManager.settings
++        let p = settingsManager.preferences
++        let ps = settingsManager.pumpSettings
++
++        let trioSettings = NightscoutAlgorithmSettings(
++            schemaVersion: 1,
++            algorithmVersion: Bundle.main.releaseVersionNumber,
++            units: s.units.rawValue,
++            preferencesTimestamp: p.timestamp,
++
++            closedLoop: s.closedLoop,
++            enableUAM: p.enableUAM,
++            enableSMBAlways: p.enableSMBAlways,
++            enableSMBWithCOB: p.enableSMBWithCOB,
++            enableSMBAfterCarbs: p.enableSMBAfterCarbs,
++            enableSMBWithTemptarget: p.enableSMBWithTemptarget,
++            allowSMBWithHighTemptarget: p.allowSMBWithHighTemptarget,
++            smbDeliveryRatio: p.smbDeliveryRatio,
++            smbInterval: p.smbInterval,
++            maxSMBBasalMinutes: p.maxSMBBasalMinutes,
++            maxUAMSMBBasalMinutes: p.maxUAMSMBBasalMinutes,
++
++            autosensMax: p.autosensMax,
++            autosensMin: p.autosensMin,
++            rewindResetsAutosens: p.rewindResetsAutosens,
++            highTemptargetRaisesSensitivity: p.highTemptargetRaisesSensitivity,
++            lowTemptargetLowersSensitivity: p.lowTemptargetLowersSensitivity,
++            sensitivityRaisesTarget: p.sensitivityRaisesTarget,
++            resistanceLowersTarget: p.resistanceLowersTarget,
++            advTargetAdjustments: p.advTargetAdjustments,
++
++            maxIOB: p.maxIOB,
++            maxCOB: p.maxCOB,
++            maxDailySafetyMultiplier: p.maxDailySafetyMultiplier,
++            currentBasalSafetyMultiplier: p.currentBasalSafetyMultiplier,
++
++            curve: p.curve.rawValue,
++            useCustomPeakTime: p.useCustomPeakTime,
++            insulinPeakTime: p.insulinPeakTime,
++            insulinActionCurve: ps.insulinActionCurve,
++
++            exerciseMode: p.exerciseMode,
++            halfBasalExerciseTarget: p.halfBasalExerciseTarget,
++
++            maxMealAbsorptionTime: p.maxMealAbsorptionTime,
++            min5mCarbimpact: p.min5mCarbimpact,
++            remainingCarbsFraction: p.remainingCarbsFraction,
++            remainingCarbsCap: p.remainingCarbsCap,
++
++            adjustmentFactor: p.adjustmentFactor,
++            adjustmentFactorSigmoid: p.adjustmentFactorSigmoid,
++            sigmoid: p.sigmoid,
++            useNewFormula: p.useNewFormula,
++            useWeightedAverage: p.useWeightedAverage,
++            weightPercentage: p.weightPercentage,
++            tddAdjBasal: p.tddAdjBasal,
++            updateInterval: p.updateInterval,
++            maxDeltaBGthreshold: p.maxDeltaBGthreshold,
++            noisyCGMTargetMultiplier: p.noisyCGMTargetMultiplier,
++            carbsReqThreshold: p.carbsReqThreshold,
++            threshold_setting: p.threshold_setting,
++            suspendZerosIOB: p.suspendZerosIOB,
++            unsuspendIfNoTemp: p.unsuspendIfNoTemp,
++            skipNeutralTemps: p.skipNeutralTemps,
++
++            useFPUconversion: s.useFPUconversion,
++            fattyMeals: s.fattyMeals,
++            fattyMealFactor: s.fattyMealFactor,
++            sweetMeals: s.sweetMeals,
++            sweetMealFactor: s.sweetMealFactor,
++            overrideFactor: s.overrideFactor,
++            individualAdjustmentFactor: s.individualAdjustmentFactor,
++            timeCap: s.timeCap,
++            minuteInterval: s.minuteInterval,
++            delay: s.delay,
++
++            maxBolus: ps.maxBolus,
++            maxBasal: ps.maxBasal
++        )
++        // pass trioSettings when building NightscoutStatus(...)
++
+         let status = NightscoutStatus(
+             device: NightscoutTreatment.local,
+             openaps: openapsStatus,
+             pump: pump,
+-            uploader: uploader
++            uploader: uploader,
++            trioSettings: trioSettings
+         )
+ 
+         do {
