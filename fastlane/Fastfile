@@ -23,6 +23,49 @@ DEVICE_NAME = ENV["DEVICE_NAME"]
 DEVICE_ID = ENV["DEVICE_ID"]
 ENV["FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"] = "120"
 
+def find_crashlytics_upload_symbols
+  env_path = ENV["CRASHLYTICS_UPLOAD_SYMBOLS"]
+  if env_path && File.file?(env_path)
+    UI.message("Using CRASHLYTICS_UPLOAD_SYMBOLS env var: #{env_path}")
+    return env_path
+  end
+
+  workspace_root = GITHUB_WORKSPACE || Dir.pwd
+  candidates = []
+  
+  # SPM: Check DerivedData for upload-symbols (built during Xcode build)
+  candidates.concat(Dir.glob(File.expand_path("~/Library/Developer/Xcode/DerivedData/**/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/upload-symbols")))
+  
+  # SPM: Check workspace-level SourcePackages
+  candidates.concat(Dir.glob(File.join(workspace_root, "SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/upload-symbols")))
+  
+  # SPM: Also check for the 'run' script which can be used as alternative
+  candidates.concat(Dir.glob(File.expand_path("~/Library/Developer/Xcode/DerivedData/**/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/run")))
+  
+  # CocoaPods path
+  candidates.concat(Dir.glob(File.join(workspace_root, "Pods/FirebaseCrashlytics/upload-symbols")))
+  
+  # Legacy Fabric path
+  candidates.concat(Dir.glob("/Applications/Fabric.app/**/upload-symbols"))
+
+  # Filter to only existing files
+  existing = candidates.select { |path| File.file?(path) }
+  
+  if existing.empty?
+    UI.message("Crashlytics upload tool search paths checked:")
+    UI.message("  - ~/Library/Developer/Xcode/DerivedData/**/firebase-ios-sdk/Crashlytics/upload-symbols")
+    UI.message("  - #{workspace_root}/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/upload-symbols")
+    UI.message("  - ~/Library/Developer/Xcode/DerivedData/**/firebase-ios-sdk/Crashlytics/run")
+    UI.message("  - #{workspace_root}/Pods/FirebaseCrashlytics/upload-symbols")
+    return nil
+  end
+  
+  # Prefer upload-symbols over run script
+  upload_symbols = existing.find { |p| p.end_with?("upload-symbols") }
+  result = upload_symbols || existing.first
+  UI.message("Found Crashlytics upload tool: #{result}")
+  result
+end
 
 # Define method to parse xcconfig file, and replace $(DEVELOPMENT_TEAM) with ENV["TEAMID"]
 def parse_xcconfig_file(path)
@@ -136,6 +179,91 @@ platform :ios do
       target_path: "artifacts",
       artifacts: ["*.mobileprovision", "*.ipa", "*.dSYM.zip"]
     )
+
+    # Upload dSYMs to Firebase Crashlytics
+    upload_dsyms_to_crashlytics
+  end
+
+  desc "Upload dSYMs to Firebase Crashlytics"
+  lane :upload_dsyms_to_crashlytics do
+    workspace_root = GITHUB_WORKSPACE || Dir.pwd
+
+    # Try multiple possible locations for the dSYM zip
+    dsym_candidates = [
+      File.join(workspace_root, "artifacts", "Trio.app.dSYM.zip"),
+      File.join(workspace_root, "Trio.app.dSYM.zip")
+    ]
+    dsym_zip = dsym_candidates.find { |p| File.exist?(p) }
+
+    gsp_path = File.join(workspace_root, "Trio", "GoogleService-Info.plist")
+
+    unless dsym_zip
+      UI.important("dSYM zip not found at any of these locations:")
+      dsym_candidates.each { |p| UI.important("  - #{p}") }
+      UI.important("Skipping Crashlytics upload")
+      next
+    end
+
+    unless File.exist?(gsp_path)
+      UI.important("GoogleService-Info.plist not found at #{gsp_path}, skipping Crashlytics upload")
+      next
+    end
+
+    # Extract Firebase App ID from GoogleService-Info.plist
+    app_id = nil
+    begin
+      require 'plist'
+      plist_data = Plist.parse_xml(gsp_path)
+      app_id = plist_data["GOOGLE_APP_ID"] if plist_data
+    rescue LoadError
+      # Plist gem not available, try shell parsing
+      app_id = `plutil -extract GOOGLE_APP_ID raw -o - "#{gsp_path}" 2>/dev/null`.strip
+      app_id = nil if app_id.empty?
+    rescue => e
+      UI.message("Could not parse GoogleService-Info.plist: #{e.message}")
+    end
+
+    UI.message("Uploading dSYMs to Firebase Crashlytics...")
+    UI.message("  dSYM: #{dsym_zip}")
+    UI.message("  GoogleService-Info.plist: #{gsp_path}")
+    UI.message("  Firebase App ID: #{app_id || 'not found'}")
+
+    uploaded = false
+
+    # Method 1: Try Firebase CLI first (installed via npm in CI)
+    firebase_cli = `which firebase 2>/dev/null`.strip
+    if !firebase_cli.empty? && app_id
+      UI.message("Using Firebase CLI for dSYM upload...")
+      begin
+        sh("firebase", "crashlytics:symbols:upload", "--app=#{app_id}", dsym_zip)
+        UI.success("Successfully uploaded dSYMs via Firebase CLI")
+        uploaded = true
+      rescue => e
+        UI.message("Firebase CLI upload failed: #{e.message}, trying fallback...")
+      end
+    end
+
+    # Method 2: Fall back to upload-symbols tool
+    unless uploaded
+      upload_tool = find_crashlytics_upload_symbols
+      if upload_tool
+        UI.message("Using upload-symbols tool: #{upload_tool}")
+        begin
+          sh(upload_tool, "-gsp", gsp_path, "-p", "ios", dsym_zip)
+          UI.success("Successfully uploaded dSYMs via upload-symbols")
+          uploaded = true
+        rescue => e
+          UI.error("upload-symbols failed: #{e.message}")
+        end
+      end
+    end
+
+    unless uploaded
+      UI.important("Could not upload dSYMs automatically.")
+      UI.important("You can manually upload using:")
+      UI.important("  firebase crashlytics:symbols:upload --app=#{app_id || '<APP_ID>'} #{dsym_zip}")
+      UI.important("Or use the upload-symbols tool locally.")
+    end
   end
 
   desc "Push to TestFlight"
