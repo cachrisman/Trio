@@ -292,41 +292,22 @@ platform :ios do
     UI.message("  GoogleService-Info.plist: #{gsp_path}")
     UI.message("  Firebase App ID: #{app_id || 'not found'}")
 
-    uploaded = false
-
-    # Method 1: Try Firebase CLI first (installed via npm in CI)
-    firebase_cli = `which firebase 2>/dev/null`.strip
-    if !firebase_cli.empty? && app_id
-      UI.message("Using Firebase CLI for dSYM upload...")
+    # Use upload-symbols tool from Firebase iOS SDK (the correct tool for iOS dSYMs)
+    # Note: Firebase CLI's crashlytics:symbols:upload is designed for Android NDK, not iOS
+    upload_tool = find_crashlytics_upload_symbols
+    if upload_tool
+      UI.message("Using upload-symbols tool: #{upload_tool}")
       begin
-        sh("firebase", "crashlytics:symbols:upload", "--app=#{app_id}", dsym_zip)
-        UI.success("Successfully uploaded dSYMs via Firebase CLI")
-        uploaded = true
+        sh(upload_tool, "-gsp", gsp_path, "-p", "ios", dsym_zip)
+        UI.success("Successfully uploaded dSYMs to Firebase Crashlytics")
       rescue => e
-        UI.message("Firebase CLI upload failed: #{e.message}, trying fallback...")
+        UI.error("Failed to upload dSYMs: #{e.message}")
+        UI.important("You can manually upload using the upload-symbols tool locally.")
       end
-    end
-
-    # Method 2: Fall back to upload-symbols tool
-    unless uploaded
-      upload_tool = find_crashlytics_upload_symbols
-      if upload_tool
-        UI.message("Using upload-symbols tool: #{upload_tool}")
-        begin
-          sh(upload_tool, "-gsp", gsp_path, "-p", "ios", dsym_zip)
-          UI.success("Successfully uploaded dSYMs via upload-symbols")
-          uploaded = true
-        rescue => e
-          UI.error("upload-symbols failed: #{e.message}")
-        end
-      end
-    end
-
-    unless uploaded
-      UI.important("Could not upload dSYMs automatically.")
-      UI.important("You can manually upload using:")
-      UI.important("  firebase crashlytics:symbols:upload --app=#{app_id || '<APP_ID>'} #{dsym_zip}")
-      UI.important("Or use the upload-symbols tool locally.")
+    else
+      UI.important("Could not find upload-symbols tool.")
+      UI.important("dSYMs are available at: #{dsym_zip}")
+      UI.important("Download and run upload-symbols manually, or use Firebase console.")
     end
   end
 

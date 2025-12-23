@@ -255,13 +255,6 @@ jobs:
       - name: Install Project Dependencies
         run: bundle install
 
-      # Install Firebase CLI for Crashlytics dSYM upload
-      - name: Install Firebase CLI
-        run: |
-          # Install Firebase CLI via npm (available on macOS runners)
-          npm install -g firebase-tools
-          echo "Firebase CLI version: $(firebase --version)"
-
       # Sync the GitHub runner clock with the Windows time server (workaround as suggested in https://github.com/actions/runner/issues/2996)
       - name: Sync clock
         run: sudo sntp -sS time.windows.com
