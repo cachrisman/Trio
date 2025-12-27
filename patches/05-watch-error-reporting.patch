@@ -1,0 +1,1278 @@
+diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
+index fe8e7f96cefbc2eb99beded88a1024baacbd3490..ccc8911ca2e6677db4f3d30a63e553b53e4c79c7 100644
+--- a/Trio Watch App Extension/TrioWatchApp.swift	
++++ b/Trio Watch App Extension/TrioWatchApp.swift	
+@@ -13,10 +13,18 @@ import UserNotifications
+             TrioMainWatchView()
+         }
+         .onChange(of: scenePhase) { _, newScenePhase in
+-            if newScenePhase == .background {
++            if newScenePhase == .active {
+                 Task {
++                    // Check for crashes and mark as active
++                    await WatchErrorReporter.shared.startup()
++                    await WatchErrorReporter.shared.markBecameActive()
++                    // Flush persisted logs (will query ACKs first, then resend pending payloads)
+                     await WatchLogger.shared.flushPersistedLogs()
+                 }
++            } else if newScenePhase == .background || newScenePhase == .inactive {
++                Task {
++                    await WatchErrorReporter.shared.markEnteredBackgroundOrInactive()
++                }
+             }
+         }
+     }
+diff --git a/Trio Watch App Extension/WatchErrorReporter.swift b/Trio Watch App Extension/WatchErrorReporter.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5bcabd5794bcd551f4d32fc30a9b5838ef8886d
+--- /dev/null
++++ b/Trio Watch App Extension/WatchErrorReporter.swift	
+@@ -0,0 +1,363 @@
++import Foundation
++import WatchConnectivity
++
++/// Forwards errors from watchOS to iOS via WatchConnectivity for logging to Crashlytics.
++/// This is the recommended approach since Crashlytics isn't fully supported on watchOS.
++actor WatchErrorReporter {
++    static let shared = WatchErrorReporter()
++
++    private let session = WCSession.default
++    private let watchLastRunWasForegroundKey = "watchLastRunWasForeground"
++    private let crashContextKey = "watchAppCrashContext"
++    private let firstLaunchKey = "watchAppHasLaunchedBefore"
++    private let pendingPayloadsKey = "watchPendingPayloads"
++
++    // TTL and caps
++    private let savedContextMaxEntries = 5
++    private let savedContextMaxAge: TimeInterval = 7 * 24 * 60 * 60 // 7 days
++    private let valueLengthCap = 512
++    private let recentLogsSizeCap = 16 * 1024 // 16 KB
++
++    private var hasCheckedForCrash = false
++    private static let dateFormatter: ISO8601DateFormatter = {
++        let formatter = ISO8601DateFormatter()
++        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        return formatter
++    }()
++
++    private init() {
++        // No automatic crash check - must call startup() explicitly
++    }
++
++    /// Startup method - safe to call multiple times (idempotent).
++    /// Checks for previous crash and marks the session as checked.
++    func startup() async {
++        guard !hasCheckedForCrash else { return }
++        hasCheckedForCrash = true
++        await checkForPreviousCrash()
++    }
++
++    /// Checks if the app crashed on the previous launch and reports it.
++    private func checkForPreviousCrash() async {
++        let userDefaults = UserDefaults.standard
++        let hasLaunchedBefore = userDefaults.bool(forKey: firstLaunchKey)
++
++        // First launch
++        if !hasLaunchedBefore {
++            userDefaults.set(true, forKey: firstLaunchKey)
++            userDefaults.set(false, forKey: watchLastRunWasForegroundKey)
++            return
++        }
++
++        // Subsequent launches - check if previous run was foreground
++        let lastRunWasForeground = userDefaults.bool(forKey: watchLastRunWasForegroundKey)
++
++        if lastRunWasForeground {
++            // Previous run was foreground and didn't transition to background - likely crashed
++            await reportPotentialCrash()
++            // Clear the marker to prevent repeated reporting in the same session
++            userDefaults.set(false, forKey: watchLastRunWasForegroundKey)
++        }
++    }
++
++    /// Reports a potential crash from the previous session.
++    private func reportPotentialCrash() async {
++        var crashInfo: [String: Any] = [
++            "type": "potentialCrash",
++            "platform": "watchOS",
++            "detectedAt": Self.dateFormatter.string(from: Date())
++        ]
++
++        // Add version info
++        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
++           let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
++            crashInfo["appVersion"] = "\(version) (\(build))"
++        }
++
++        // Try to read persisted logs for context (with size cap)
++        if let logContext = await readRecentLogs() {
++            crashInfo["recentLogs"] = logContext
++        }
++
++        // Read any saved crash context from UserDefaults (with TTL/cap enforcement)
++        if let savedContext = await getSavedCrashContext() {
++            crashInfo["savedContext"] = savedContext
++        }
++
++        await sendErrorToPhone(crashInfo)
++
++        await WatchLogger.shared.log("⌚️ Detected potential crash from previous session, reported to iOS")
++    }
++
++    /// Gets saved crash context with TTL and cap enforcement.
++    private func getSavedCrashContext() async -> [String: String]? {
++        guard let contextDict = UserDefaults.standard.dictionary(forKey: crashContextKey) as? [String: String] else {
++            return nil
++        }
++
++        // Apply TTL - remove entries older than maxAge
++        let now = Date()
++        var validContext: [String: String] = [:]
++        var contextMetadata: [String: TimeInterval] = [:]
++
++        // Try to get metadata if it exists
++        if let metadata = UserDefaults.standard.dictionary(forKey: "\(crashContextKey)_metadata") as? [String: TimeInterval] {
++            contextMetadata = metadata
++        }
++
++        for (key, value) in contextDict {
++            // Check TTL
++            if let createdAt = contextMetadata[key] {
++                let age = now.timeIntervalSince1970 - createdAt
++                if age > savedContextMaxAge {
++                    continue // Skip expired entries
++                }
++            }
++
++            // Apply value length cap
++            let cappedValue = String(value.prefix(valueLengthCap))
++            validContext[key] = cappedValue
++        }
++
++        // Enforce max entries (keep most recent)
++        if validContext.count > savedContextMaxEntries {
++            // Sort by creation time and keep most recent
++            let sortedKeys = validContext.keys.sorted { key1, key2 in
++                let time1 = contextMetadata[key1] ?? 0
++                let time2 = contextMetadata[key2] ?? 0
++                return time1 > time2
++            }
++            let keysToKeep = Array(sortedKeys.prefix(savedContextMaxEntries))
++            validContext = Dictionary(uniqueKeysWithValues: keysToKeep.compactMap { key in
++                guard let value = validContext[key] else { return nil }
++                return (key, value)
++            })
++        }
++
++        return validContext.isEmpty ? nil : validContext
++    }
++
++    /// Reads recent log entries from persisted logs for crash context (with size cap).
++    private func readRecentLogs() async -> String? {
++        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
++            .appendingPathComponent("logs", isDirectory: true)
++
++        // Try to read from daily log file
++        let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
++
++        guard let data = try? Data(contentsOf: dailyLogFile),
++              let logString = String(data: data, encoding: .utf8),
++              !logString.isEmpty
++        else { return nil }
++
++        // Apply size cap
++        let cappedString: String
++        if logString.utf8.count > recentLogsSizeCap {
++            // Take last N bytes that fit within cap
++            let cappedData = data.suffix(recentLogsSizeCap)
++            cappedString = String(data: cappedData, encoding: .utf8) ?? String(logString.suffix(recentLogsSizeCap))
++        } else {
++            cappedString = logString
++        }
++
++        // Return last 50 lines for context
++        let lines = cappedString.components(separatedBy: .newlines)
++        let recentLines = Array(lines.suffix(50))
++        return recentLines.joined(separator: "\n")
++    }
++
++    /// Marks the app as having become active (foreground).
++    func markBecameActive() async {
++        UserDefaults.standard.set(true, forKey: watchLastRunWasForegroundKey)
++    }
++
++    /// Marks the app as having entered background or inactive state.
++    func markEnteredBackgroundOrInactive() async {
++        UserDefaults.standard.set(false, forKey: watchLastRunWasForegroundKey)
++    }
++
++    /// Saves context that should be included if the app crashes.
++    /// Useful for saving state before operations that might crash.
++    func saveCrashContext(_ context: [String: String]) async {
++        // Apply value length cap
++        var cappedContext: [String: String] = [:]
++        var metadata: [String: TimeInterval] = [:]
++        let now = Date().timeIntervalSince1970
++
++        for (key, value) in context.prefix(savedContextMaxEntries) {
++            let cappedValue = String(value.prefix(valueLengthCap))
++            cappedContext[key] = cappedValue
++            metadata[key] = now
++        }
++
++        UserDefaults.standard.set(cappedContext, forKey: crashContextKey)
++        UserDefaults.standard.set(metadata, forKey: "\(crashContextKey)_metadata")
++    }
++
++    /// Clears saved context for a specific payloadId after ACK.
++    func clearSavedContextForPayload(_ payloadId: String) async {
++        // Context is cleared when payload is acknowledged
++        // This is called from ACK handler
++        UserDefaults.standard.removeObject(forKey: crashContextKey)
++        UserDefaults.standard.removeObject(forKey: "\(crashContextKey)_metadata")
++    }
++
++    /// Reports a non-fatal error from the watch app to iOS for Crashlytics logging.
++    /// - Parameters:
++    ///   - error: The error to report
++    ///   - context: Optional context information (e.g., function name, file name)
++    func reportError(_ error: Error, context: [String: String]? = nil) async {
++        var errorInfo: [String: Any] = [
++            "errorDomain": (error as NSError).domain,
++            "errorCode": (error as NSError).code,
++            "errorDescription": error.localizedDescription,
++            "platform": "watchOS"
++        ]
++
++        // Add version info
++        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
++           let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
++            errorInfo["appVersion"] = "\(version) (\(build))"
++        }
++
++        // Add context if provided (with caps)
++        if let context = context {
++            var cappedContext: [String: String] = [:]
++            for (key, value) in context.prefix(10) {
++                cappedContext[key] = String(value.prefix(valueLengthCap))
++            }
++            errorInfo["context"] = cappedContext
++        }
++
++        // Add stack trace info if available (renamed to reportingStackTrace)
++        let stackSymbols = Thread.callStackSymbols
++        if !stackSymbols.isEmpty {
++            errorInfo["reportingStackTrace"] = Array(stackSymbols.prefix(10)) // Limit to first 10 frames
++        }
++
++        await sendErrorToPhone(errorInfo)
++    }
++
++    /// Reports a non-fatal issue with a custom message.
++    /// - Parameters:
++    ///   - message: Description of the issue
++    ///   - context: Optional context information
++    func reportNonFatalIssue(_ message: String, context: [String: String]? = nil) async {
++        var errorInfo: [String: Any] = [
++            "message": message,
++            "platform": "watchOS",
++            "type": "nonFatalIssue"
++        ]
++
++        // Add version info
++        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
++           let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
++            errorInfo["appVersion"] = "\(version) (\(build))"
++        }
++
++        // Add context if provided (with caps)
++        if let context = context {
++            var cappedContext: [String: String] = [:]
++            for (key, value) in context.prefix(10) {
++                cappedContext[key] = String(value.prefix(valueLengthCap))
++            }
++            errorInfo["context"] = cappedContext
++        }
++
++        await sendErrorToPhone(errorInfo)
++    }
++
++    /// Stores a pending payload record for later ACK matching.
++    func storePendingPayload(payloadId: String, type: String, filePath: String?) async {
++        var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
++
++        let record: [String: Any] = [
++            "payloadId": payloadId,
++            "type": type,
++            "filePath": filePath as Any,
++            "createdAtEpoch": Date().timeIntervalSince1970
++        ]
++
++        pendingPayloads.append(record)
++
++        // Clean up old records (older than 7 days)
++        let now = Date().timeIntervalSince1970
++        pendingPayloads = pendingPayloads.filter { record in
++            if let createdAt = record["createdAtEpoch"] as? TimeInterval {
++                return (now - createdAt) < (7 * 24 * 60 * 60)
++            }
++            return true
++        }
++
++        UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
++    }
++
++    /// Removes a pending payload record after ACK.
++    func removePendingPayload(_ payloadId: String) async {
++        var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
++        pendingPayloads.removeAll { record in
++            record["payloadId"] as? String == payloadId
++        }
++        UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
++    }
++
++    /// Gets all pending payload records.
++    func getPendingPayloads() async -> [[String: Any]] {
++        return UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
++    }
++
++    private func sendErrorToPhone(_ errorInfo: [String: Any]) async {
++        // Don't block if WatchConnectivity isn't supported (shouldn't happen on watchOS, but be safe)
++        guard WCSession.isSupported() else {
++            await WatchLogger.shared.log("⌚️ WatchConnectivity not supported, cannot send error to phone")
++            return
++        }
++
++        // Generate payloadId
++        let payloadId = UUID().uuidString
++
++        // Wrap in envelope structure
++        let envelope: [String: Any] = [
++            "type": "watchError",
++            "payloadId": payloadId,
++            "data": errorInfo
++        ]
++
++        // Do NOT activate session - WatchState owns activation
++        // If session is not activated or reachable, use transferUserInfo or persist locally
++
++        if session.isReachable && session.activationState == .activated {
++            // Use sendMessage with replyHandler for immediate ACK
++            session.sendMessage(
++                envelope,
++                replyHandler: { reply in
++                    Task {
++                        // Check if ACK received
++                        if let ackType = reply["type"] as? String,
++                           ackType == "ack",
++                           let ackPayloadId = reply["payloadId"] as? String,
++                           ackPayloadId == payloadId {
++                            // ACK received - clear saved context for this payloadId
++                            await WatchErrorReporter.shared.clearSavedContextForPayload(payloadId)
++                            await WatchErrorReporter.shared.removePendingPayload(payloadId)
++                            await WatchLogger.shared.log("⌚️ Error ACK received from phone for payloadId: \(payloadId)")
++                        }
++                    }
++                },
++                errorHandler: { error in
++                    Task {
++                        await WatchLogger.shared.log("⌚️ Failed to send error to phone: \(error.localizedDescription)")
++                        // Store as pending for retry
++                        await WatchErrorReporter.shared.storePendingPayload(payloadId: payloadId, type: "watchError", filePath: nil)
++                    }
++                }
++            )
++        } else {
++            // Fallback to transferUserInfo for background delivery
++            _ = session.transferUserInfo(envelope)
++            // Store as pending - will need ACK later
++            await storePendingPayload(payloadId: payloadId, type: "watchError", filePath: nil)
++            await WatchLogger.shared.log("⌚️ Error queued for background delivery to phone (payloadId: \(payloadId))")
++        }
++    }
++}
+diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
+index ff6d87f13dd197077c745ca644131d3d2372d052..3f9a83de5a07c71c2d5de5f4c7f322a8af62f822 100644
+--- a/Trio Watch App Extension/WatchLogger.swift	
++++ b/Trio Watch App Extension/WatchLogger.swift	
+@@ -10,9 +10,16 @@ actor WatchLogger {
+     private let flushSizeThreshold = 100
+     private var lastFlush = Date()
+ 
++    // Size caps
++    private let logSizeCap = 16 * 1024 // 16 KB
++    private let maxPerPayloadFiles = 20
++    private let maxFileAge: TimeInterval = 7 * 24 * 60 * 60 // 7 days
++
+     private let session = WCSession.default
+     private var timerTask: Task<Void, Never>?
+ 
++    private let pendingPayloadsKey = "watchLoggerPendingPayloads"
++
+     private init() {
+         Task {
+             await startFlushTimer()
+@@ -51,9 +58,34 @@ actor WatchLogger {
+         }
+ 
+         print(entry)
++
++        // Also append to daily log for local debugging
++        await appendToDailyLog(entry)
++
+         await flushIfNeeded(force: force)
+     }
+ 
++    /// Appends text to the daily local debug log (never sent to phone).
++    func appendToDailyLog(_ text: String) async {
++        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
++            .appendingPathComponent("logs", isDirectory: true)
++
++        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
++
++        let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
++        let logEntry = text + "\n"
++
++        if let data = logEntry.data(using: .utf8) {
++            if let handle = try? FileHandle(forWritingTo: dailyLogFile) {
++                _ = try? handle.seekToEnd()
++                handle.write(data)
++                try? handle.close()
++            } else {
++                try? data.write(to: dailyLogFile)
++            }
++        }
++    }
++
+     func flushIfNeeded(force: Bool = false) async {
+         let now = Date()
+         let shouldFlush = force || now.timeIntervalSince(lastFlush) >= flushInterval || logs.count >= flushSizeThreshold
+@@ -68,83 +100,276 @@ actor WatchLogger {
+             return
+         }
+ 
+-        let payload: [String: Any] = ["watchLogs": logs.joined(separator: "\n")]
++        // Capture logsToSend BEFORE sending
++        var logsToSend = logs.joined(separator: "\n")
+ 
+-        if session.activationState != .activated {
+-            session.activate()
++        // Truncate to size cap
++        if logsToSend.utf8.count > logSizeCap {
++            let cappedData = logsToSend.data(using: .utf8)?.prefix(logSizeCap) ?? Data()
++            logsToSend = String(data: cappedData, encoding: .utf8) ?? String(logsToSend.prefix(logSizeCap))
+         }
+ 
+-        if session.isReachable {
+-            session.sendMessage(payload, replyHandler: nil) { _ in
+-                Task {
+-                    await self.persistLogsLocally()
+-                }
+-            }
+-        } else {
+-            await persistLogsLocally()
++        // Generate payloadId
++        let payloadId = UUID().uuidString
++
++        // Write to per-payload file BEFORE sending
++        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
++            .appendingPathComponent("logs", isDirectory: true)
++        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
++
++        let perPayloadFile = logDir.appendingPathComponent("watch_log_\(payloadId).txt")
++        if let data = logsToSend.data(using: .utf8) {
++            try? data.write(to: perPayloadFile)
+         }
+ 
+-        lastFlush = Date()
++        // Clear in-memory logs ONLY after file write
+         logs.removeAll()
++        lastFlush = Date()
++
++        // Create envelope
++        let envelope: [String: Any] = [
++            "type": "watchLogs",
++            "payloadId": payloadId,
++            "data": logsToSend
++        ]
++
++        // Do NOT activate session - WatchState owns activation
++        if session.isReachable && session.activationState == .activated {
++            // Use sendMessage with replyHandler for immediate ACK
++            let filePath = perPayloadFile.path
++            session.sendMessage(
++                envelope,
++                replyHandler: { reply in
++                    Task {
++                        // Check if ACK received
++                        if let ackType = reply["type"] as? String,
++                           ackType == "ack",
++                           let ackPayloadId = reply["payloadId"] as? String,
++                           ackPayloadId == payloadId {
++                            // ACK received - delete file
++                            try? FileManager.default.removeItem(at: perPayloadFile)
++                            await WatchLogger.shared.removePendingPayload(payloadId)
++                            await WatchLogger.shared.log("⌚️ Logs ACK received from phone for payloadId: \(payloadId)")
++                        }
++                    }
++                },
++                errorHandler: { error in
++                    Task {
++                        await WatchLogger.shared.log("⌚️ Failed to send logs to phone: \(error.localizedDescription)")
++                        // Keep file, mark as pending for retry
++                        await WatchLogger.shared.storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
++                    }
++                }
++            )
++        } else {
++            // Not reachable - persist locally and mark as pending
++            await storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: perPayloadFile.path)
++            // Optionally use transferUserInfo for background delivery
++            _ = session.transferUserInfo(envelope)
++            await log("⌚️ Logs queued for background delivery to phone (payloadId: \(payloadId))")
++        }
+     }
+ 
+-    func persistLogsLocally() async {
++    func flushPersistedLogs() async {
+         let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+             .appendingPathComponent("logs", isDirectory: true)
+ 
+-        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
++        // Scan for per-payload log files
++        guard let files = try? FileManager.default.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]) else {
++            return
++        }
+ 
+-        let logFile = logDir.appendingPathComponent("watch_log.txt")
+-        let previousLogFile = logDir.appendingPathComponent("watch_log_prev.txt")
+-        let startOfDay = Calendar.current.startOfDay(for: Date())
++        let perPayloadFiles = files.filter { file in
++            file.lastPathComponent.hasPrefix("watch_log_") &&
++            file.lastPathComponent.hasSuffix(".txt") &&
++            file.lastPathComponent != "watch_log_daily.txt"
++        }
+ 
+-        if let attributes = try? FileManager.default.attributesOfItem(atPath: logFile.path),
+-           let creationDate = attributes[.creationDate] as? Date,
+-           creationDate < startOfDay
+-        {
+-            try? FileManager.default.removeItem(at: previousLogFile)
+-            try? FileManager.default.moveItem(at: logFile, to: previousLogFile)
+-            FileManager.default.createFile(atPath: logFile.path, contents: nil, attributes: [.creationDate: startOfDay])
++        // Apply retention caps
++        let now = Date()
++        var validFiles: [URL] = []
++        var filesToDelete: [URL] = []
++
++        for file in perPayloadFiles {
++            // Check age
++            if let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
++               let creationDate = attributes[.creationDate] as? Date {
++                let age = now.timeIntervalSince(creationDate)
++                if age > maxFileAge {
++                    filesToDelete.append(file)
++                    continue
++                }
++            }
++            validFiles.append(file)
+         }
+ 
+-        let fullLog = logs.joined(separator: "\n") + "\n"
+-        if let data = fullLog.data(using: .utf8) {
+-            if let handle = try? FileHandle(forWritingTo: logFile) {
+-                try? handle.seekToEnd()
+-                handle.write(data)
+-                try? handle.close()
++        // Delete old files
++        for file in filesToDelete {
++            try? FileManager.default.removeItem(at: file)
++        }
++
++        // Enforce max files (keep most recent)
++        if validFiles.count > maxPerPayloadFiles {
++            // Sort by creation date, keep most recent
++            let sortedFiles = validFiles.sorted { file1, file2 in
++                let date1 = ((try? FileManager.default.attributesOfItem(atPath: file1.path))?[.creationDate] as? Date) ?? Date.distantPast
++                let date2 = ((try? FileManager.default.attributesOfItem(atPath: file2.path))?[.creationDate] as? Date) ?? Date.distantPast
++                return date1 > date2
++            }
++            let filesToRemove = sortedFiles.suffix(validFiles.count - maxPerPayloadFiles)
++            for file in filesToRemove {
++                try? FileManager.default.removeItem(at: file)
++            }
++            validFiles = Array(sortedFiles.prefix(maxPerPayloadFiles))
++        }
++
++        // If reachable, query ACKs first, then resend remaining files
++        if session.isReachable && session.activationState == .activated {
++            // 1. Query ACKs for pending payloads
++            let pendingPayloads = await getPendingPayloads()
++            let pendingIds = pendingPayloads.compactMap { $0["payloadId"] as? String }
++
++            if !pendingIds.isEmpty {
++                let queryEnvelope: [String: Any] = [
++                    "type": "queryAcks",
++                    "pendingIds": pendingIds
++                ]
++
++                session.sendMessage(
++                    queryEnvelope,
++                    replyHandler: { reply in
++                        Task {
++                            // Handle batchAck response
++                            if let batchAckType = reply["type"] as? String,
++                               batchAckType == "batchAck",
++                               let ackIds = reply["ackIds"] as? [String] {
++                                // Delete acknowledged files
++                                for ackId in ackIds {
++                                    let filePath = logDir.appendingPathComponent("watch_log_\(ackId).txt")
++                                    try? FileManager.default.removeItem(at: filePath)
++                                    await WatchLogger.shared.removePendingPayload(ackId)
++                                }
++                                // Resend remaining files
++                                await WatchLogger.shared.resendPendingPayloads()
++                            }
++                        }
++                    },
++                    errorHandler: { error in
++                        Task {
++                            await WatchLogger.shared.log("⌚️ Failed to query ACKs: \(error.localizedDescription)")
++                            // Still try to resend
++                            await WatchLogger.shared.resendPendingPayloads()
++                        }
++                    }
++                )
+             } else {
+-                try? data.write(to: logFile)
++                // No pending payloads, just resend any remaining files
++                await resendPendingPayloads()
+             }
++        } else {
++            // Not reachable - do NOT delete files, optionally use transferUserInfo
++            // Files will be resent when reachable
+         }
+     }
+ 
+-    func flushPersistedLogs() async {
+-        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+-            .appendingPathComponent("logs", isDirectory: true)
+-        let logFile = logDir.appendingPathComponent("watch_log.txt")
++    /// Resends pending payload files using sendMessage (not transferUserInfo) when reachable.
++    func resendPendingPayloads() async {
++        guard session.isReachable && session.activationState == .activated else {
++            return
++        }
+ 
+-        guard let data = try? Data(contentsOf: logFile),
+-              let logString = String(data: data, encoding: .utf8),
+-              !logString.isEmpty
+-        else { return }
++        // Get pending payloads
++        let pendingPayloads = await getPendingPayloads()
+ 
+-        let payload: [String: Any] = ["watchLogs": logString]
++        for pendingRecord in pendingPayloads {
++            guard let payloadId = pendingRecord["payloadId"] as? String,
++                  let type = pendingRecord["type"] as? String,
++                  type == "watchLogs",
++                  let filePath = pendingRecord["filePath"] as? String else {
++                continue
++            }
+ 
+-        if session.activationState != .activated {
+-            session.activate()
+-        }
++            let fileURL = URL(fileURLWithPath: filePath)
++
++            // Read file
++            guard let data = try? Data(contentsOf: fileURL),
++                  let logString = String(data: data, encoding: .utf8),
++                  !logString.isEmpty else {
++                // File doesn't exist or is empty - remove from pending
++                await removePendingPayload(payloadId)
++                continue
++            }
++
++            // Create envelope
++            let envelope: [String: Any] = [
++                "type": "watchLogs",
++                "payloadId": payloadId,
++                "data": logString
++            ]
+ 
+-        if session.isReachable {
+-            session.sendMessage(payload, replyHandler: nil) { _ in
+-                Task {
+-                    await self.persistLogsLocally()
++            // Resend using sendMessage (not transferUserInfo) to get immediate ACK
++            session.sendMessage(
++                envelope,
++                replyHandler: { reply in
++                    Task {
++                        // Check if ACK received
++                        if let ackType = reply["type"] as? String,
++                           ackType == "ack",
++                           let ackPayloadId = reply["payloadId"] as? String,
++                           ackPayloadId == payloadId {
++                            // ACK received - delete file
++                            try? FileManager.default.removeItem(at: fileURL)
++                            await WatchLogger.shared.removePendingPayload(payloadId)
++                            await WatchLogger.shared.log("⌚️ Resent logs ACK received for payloadId: \(payloadId)")
++                        }
++                    }
++                },
++                errorHandler: { error in
++                    Task {
++                        await WatchLogger.shared.log("⌚️ Failed to resend logs for payloadId \(payloadId): \(error.localizedDescription)")
++                        // Keep file for next retry
++                    }
+                 }
++            )
++        }
++    }
++
++    /// Stores a pending payload record for later ACK matching.
++    func storePendingPayload(payloadId: String, type: String, filePath: String) async {
++        var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
++
++        let record: [String: Any] = [
++            "payloadId": payloadId,
++            "type": type,
++            "filePath": filePath,
++            "createdAtEpoch": Date().timeIntervalSince1970
++        ]
++
++        pendingPayloads.append(record)
++
++        // Clean up old records (older than 7 days)
++        let now = Date().timeIntervalSince1970
++        pendingPayloads = pendingPayloads.filter { record in
++            if let createdAt = record["createdAtEpoch"] as? TimeInterval {
++                return (now - createdAt) < (7 * 24 * 60 * 60)
+             }
+-            try? FileManager.default.removeItem(at: logFile)
+-        } else {
+-            _ = session.transferUserInfo(payload)
+-            try? FileManager.default.removeItem(at: logFile)
++            return true
+         }
++
++        UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
++    }
++
++    /// Removes a pending payload record after ACK.
++    func removePendingPayload(_ payloadId: String) async {
++        var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
++        pendingPayloads.removeAll { record in
++            record["payloadId"] as? String == payloadId
++        }
++        UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
++    }
++
++    /// Gets all pending payload records.
++    func getPendingPayloads() async -> [[String: Any]] {
++        return UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
+     }
+ }
+diff --git a/Trio Watch App Extension/WatchState+Requests.swift b/Trio Watch App Extension/WatchState+Requests.swift
+index 59b3a0652a01556339df0025cecf999a54298c99..d47a971c9c41703b6de101633fdeaad6ebd2e219 100644
+--- a/Trio Watch App Extension/WatchState+Requests.swift	
++++ b/Trio Watch App Extension/WatchState+Requests.swift	
+@@ -61,7 +61,7 @@ extension WatchState {
+             Task {
+                 await WatchLogger.shared.log("Error sending carbs request: \(error)")
+                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+-                await WatchLogger.shared.persistLogsLocally()
++                await WatchLogger.shared.flushPersistedLogs()
+             }
+         }
+ 
+@@ -93,7 +93,7 @@ extension WatchState {
+             Task {
+                 await WatchLogger.shared.log("⌚️ Error sending cancel override request: \(error)")
+                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+-                await WatchLogger.shared.persistLogsLocally()
++                await WatchLogger.shared.flushPersistedLogs()
+             }
+         }
+ 
+@@ -126,7 +126,7 @@ extension WatchState {
+             Task {
+                 await WatchLogger.shared.log("⌚️ Error sending activate override request: \(error)")
+                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+-                await WatchLogger.shared.persistLogsLocally()
++                await WatchLogger.shared.flushPersistedLogs()
+             }
+         }
+ 
+@@ -158,7 +158,7 @@ extension WatchState {
+             Task {
+                 await WatchLogger.shared.log("⌚️ Error sending cancel temp target request: \(error)")
+                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+-                await WatchLogger.shared.persistLogsLocally()
++                await WatchLogger.shared.flushPersistedLogs()
+             }
+         }
+ 
+@@ -191,7 +191,7 @@ extension WatchState {
+             Task {
+                 await WatchLogger.shared.log("⌚️ Error sending activate temp target request: \(error)")
+                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+-                await WatchLogger.shared.persistLogsLocally()
++                await WatchLogger.shared.flushPersistedLogs()
+             }
+         }
+ 
+@@ -224,7 +224,7 @@ extension WatchState {
+             Task {
+                 await WatchLogger.shared.log("Error requesting bolus recommendation: \(error)")
+                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+-                await WatchLogger.shared.persistLogsLocally()
++                await WatchLogger.shared.flushPersistedLogs()
+             }
+         }
+     }
+@@ -256,7 +256,7 @@ extension WatchState {
+                 Task {
+                     await WatchLogger.shared.log("⌚️ Error requesting WatchState update: \(error)")
+                     await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+-                    await WatchLogger.shared.persistLogsLocally()
++                    await WatchLogger.shared.flushPersistedLogs()
+                 }
+             }
+         } else {
+diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
+index 2b174301c021dea5ad763997372f91a85512ea51..f4fb33fde6e83eb344469df2ef121c00ef114583 100644
+--- a/Trio Watch App Extension/WatchState.swift	
++++ b/Trio Watch App Extension/WatchState.swift	
+@@ -153,7 +153,7 @@ import WatchConnectivity
+                 Task {
+                     await WatchLogger.shared.log("⌚️ Watch session activation failed: \(error)", force: true)
+                     await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+-                    await WatchLogger.shared.persistLogsLocally()
++                    await WatchLogger.shared.flushPersistedLogs()
+                 }
+                 return
+             }
+@@ -274,7 +274,7 @@ import WatchConnectivity
+             Task {
+                 await WatchLogger.shared.log("⌚️ transferUserInfo failed with error: \(error)")
+                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+-                await WatchLogger.shared.persistLogsLocally()
++                await WatchLogger.shared.flushPersistedLogs()
+             }
+         }
+     }
+diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+index 63e7f8998b1d4a19f6a5b7ff955c581815ef9325..27b6ac788ff547bddef28791af2b48c062ae0259 100644
+--- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
++++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+@@ -1,5 +1,6 @@
+ import Combine
+ import CoreData
++import FirebaseCrashlytics
+ import Foundation
+ import Swinject
+ import UIKit
+@@ -39,6 +40,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
+     private var subscriptions = Set<AnyCancellable>()
+ 
++    // Processed payload IDs for deduplication (LRU with TTL)
++    private let processedIdsKey = "watchProcessedIds"
++    private let processedIdsMaxCount = 100
++    private let processedIdsTTL: TimeInterval = 7 * 24 * 60 * 60 // 7 days
++    private let pendingAcksKey = "watchPendingAcks"
++
+     typealias PumpEvent = PumpEventStored.EventType
+ 
+     let backgroundContext = CoreDataStack.shared.newTaskContext()
+@@ -351,11 +358,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                 watchState.bolusIncrement = self.settingsManager.preferences.bolusIncrement
+                 watchState.confirmBolusFaster = self.settingsManager.settings.confirmBolusFaster
+ 
+-                debug(
+-                    .watchManager,
+-
+-                    "📱 Setup WatchState - currentGlucose: \(watchState.currentGlucose ?? "nil"), trend: \(watchState.trend ?? "nil"), delta: \(watchState.delta ?? "nil"), values: \(watchState.glucoseValues.count)"
+-                )
++                let glucoseInfo = "currentGlucose: \(watchState.currentGlucose ?? "nil"), " +
++                    "trend: \(watchState.trend ?? "nil"), " +
++                    "delta: \(watchState.delta ?? "nil"), " +
++                    "values: \(watchState.glucoseValues.count)"
++                debug(.watchManager, "📱 Setup WatchState - \(glucoseInfo)")
+ 
+                 return watchState
+             }
+@@ -551,12 +558,209 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         }
+     }
+ 
++    // MARK: - Processed IDs Management
++
++    /// Checks if a payloadId has been processed (deduplication).
++    private func isProcessed(_ payloadId: String) -> Bool {
++        guard let processedIds = UserDefaults.standard.dictionary(forKey: processedIdsKey) as? [String: TimeInterval] else {
++            return false
++        }
++
++        guard let timestamp = processedIds[payloadId] else {
++            return false
++        }
++
++        // Check TTL
++        let now = Date().timeIntervalSince1970
++        if (now - timestamp) > processedIdsTTL {
++            // Expired - remove it
++            var updatedIds = processedIds
++            updatedIds.removeValue(forKey: payloadId)
++            UserDefaults.standard.set(updatedIds, forKey: processedIdsKey)
++            return false
++        }
++
++        return true
++    }
++
++    /// Records a payloadId as processed (durable storage).
++    private func recordProcessed(_ payloadId: String) {
++        var processedIds = UserDefaults.standard.dictionary(forKey: processedIdsKey) as? [String: TimeInterval] ?? [:]
++        let now = Date().timeIntervalSince1970
++
++        // Add new ID
++        processedIds[payloadId] = now
++
++        // Clean up expired entries
++        processedIds = processedIds.filter { (_, timestamp) in
++            (now - timestamp) <= processedIdsTTL
++        }
++
++        // Enforce LRU (keep most recent N)
++        if processedIds.count > processedIdsMaxCount {
++            let sorted = processedIds.sorted { $0.value > $1.value }
++            let toKeep = Dictionary(uniqueKeysWithValues: Array(sorted.prefix(processedIdsMaxCount)))
++            processedIds = toKeep
++        }
++
++        UserDefaults.standard.set(processedIds, forKey: processedIdsKey)
++    }
++
++    /// Gets acknowledged payloadIds from processedIds for a list of pending IDs.
++    private func getAcknowledgedIds(from pendingIds: [String]) -> [String] {
++        guard let processedIds = UserDefaults.standard.dictionary(forKey: processedIdsKey) as? [String: TimeInterval] else {
++            return []
++        }
++
++        let now = Date().timeIntervalSince1970
++        return pendingIds.filter { payloadId in
++            if let timestamp = processedIds[payloadId] {
++                return (now - timestamp) <= processedIdsTTL
++            }
++            return false
++        }
++    }
++
++    /// Stores a pending ACK for later delivery when watch becomes reachable.
++    private func storePendingAck(_ payloadId: String) {
++        var pendingAcks = UserDefaults.standard.array(forKey: pendingAcksKey) as? [[String: Any]] ?? []
++
++        let record: [String: Any] = [
++            "payloadId": payloadId,
++            "timestamp": Date().timeIntervalSince1970
++        ]
++
++        pendingAcks.append(record)
++
++        // Clean up old records (older than 7 days)
++        let now = Date().timeIntervalSince1970
++        pendingAcks = pendingAcks.filter { record in
++            if let timestamp = record["timestamp"] as? TimeInterval {
++                return (now - timestamp) < (7 * 24 * 60 * 60)
++            }
++            return true
++        }
++
++        UserDefaults.standard.set(pendingAcks, forKey: pendingAcksKey)
++    }
++
++    /// Sends pending ACKs when watch becomes reachable.
++    private func sendPendingAcksIfReachable() {
++        guard let session = session, session.isReachable else {
++            return
++        }
++
++        guard let pendingAcks = UserDefaults.standard.array(forKey: pendingAcksKey) as? [[String: Any]],
++              !pendingAcks.isEmpty else {
++            return
++        }
++
++        let ackIds = pendingAcks.compactMap { $0["payloadId"] as? String }
++
++        if !ackIds.isEmpty {
++            let batchAck: [String: Any] = [
++                "type": "batchAck",
++                "ackIds": ackIds
++            ]
++
++            session.sendMessage(batchAck, replyHandler: nil) { error in
++                debug(.watchManager, "📱 Failed to send batchAck: \(error.localizedDescription)")
++            }
++
++            // Clear pending ACKs after sending
++            UserDefaults.standard.removeObject(forKey: pendingAcksKey)
++        }
++    }
++
++    // MARK: - WCSessionDelegate Methods
++
++    /// Implements the replyHandler version of didReceiveMessage for ACK support.
++    func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
++        // Validate envelope structure
++        guard let type = message["type"] as? String,
++              let payloadId = message["payloadId"] as? String else {
++            // Not an envelope message - delegate to legacy handler
++            self.session(session, didReceiveMessage: message)
++            replyHandler([:])
++            return
++        }
++
++        // Handle ACK query
++        if type == "queryAcks" {
++            if let pendingIds = message["pendingIds"] as? [String] {
++                let ackIds = getAcknowledgedIds(from: pendingIds)
++                let batchAck: [String: Any] = [
++                    "type": "batchAck",
++                    "ackIds": ackIds
++                ]
++                replyHandler(batchAck)
++                return
++            }
++        }
++
++        // Deduplicate BEFORE any Crashlytics calls
++        if isProcessed(payloadId) {
++            // Duplicate - send ACK immediately but skip processing
++            let ack: [String: Any] = [
++                "type": "ack",
++                "payloadId": payloadId
++            ]
++            replyHandler(ack)
++            return
++        }
++
++        // New payload - record as processed (durable) BEFORE processing
++        recordProcessed(payloadId)
++
++        // Enqueue payload handling (durable enqueue)
++        DispatchQueue.main.async { [weak self] in
++            if type == "watchLogs" {
++                if let logData = message["data"] as? String {
++                    SimpleLogReporter.appendToWatchLog(logData)
++                }
++            } else if type == "watchError" {
++                if let errorData = message["data"] as? [String: Any] {
++                    self?.handleWatchError(errorData)
++                }
++            }
++        }
++
++        // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
++        let ack: [String: Any] = [
++            "type": "ack",
++            "payloadId": payloadId
++        ]
++        replyHandler(ack)
++    }
++
+     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
+         DispatchQueue.main.async { [weak self] in
++            // Check if this is an envelope message
++            if let type = message["type"] as? String,
++               let payloadId = message["payloadId"] as? String {
++                // This is an envelope message but no replyHandler - handle it
++                if type == "watchLogs" {
++                    if let logData = message["data"] as? String {
++                        SimpleLogReporter.appendToWatchLog(logData)
++                    }
++                } else if type == "watchError" {
++                    if let errorData = message["data"] as? [String: Any] {
++                        self?.handleWatchError(errorData)
++                    }
++                }
++                return
++            }
++
++            // Legacy message format
+             if let logs = message["watchLogs"] as? String {
+                 SimpleLogReporter.appendToWatchLog(logs)
+             }
+ 
++            // Handle watch errors forwarded for Crashlytics logging
++            if let errorInfo = message["watchError"] as? [String: Any] {
++                self?.handleWatchError(errorInfo)
++            }
++
+             if let requestWatchUpdate = message[WatchMessageKeys.requestWatchUpdate] as? String,
+                requestWatchUpdate == WatchMessageKeys.watchState
+             {
+@@ -687,10 +891,58 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     }
+ 
+     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
++        // Check if this is an envelope message
++        if let type = userInfo["type"] as? String,
++           let payloadId = userInfo["payloadId"] as? String {
++            // Validate envelope structure
++            // Deduplicate
++            if isProcessed(payloadId) {
++                // Duplicate - skip processing but store for ACK later
++                storePendingAck(payloadId)
++                return
++            }
++
++            // New payload - record as processed (durable)
++            recordProcessed(payloadId)
++
++            // Handle payload
++            if type == "watchLogs" {
++                if let logData = userInfo["data"] as? String {
++                    SimpleLogReporter.appendToWatchLog(logData)
++                }
++            } else if type == "watchError" {
++                if let errorData = userInfo["data"] as? [String: Any] {
++                    handleWatchError(errorData)
++                }
++            }
++
++            // Store pending ACK for later delivery when watch becomes reachable
++            storePendingAck(payloadId)
++
++            // Try to send ACK immediately if reachable (best-effort)
++            if let session = session, session.isReachable {
++                let ack: [String: Any] = [
++                    "type": "ack",
++                    "payloadId": payloadId
++                ]
++                session.sendMessage(ack, replyHandler: nil) { error in
++                    debug(.watchManager, "📱 Failed to send ACK for userInfo payloadId \(payloadId): \(error.localizedDescription)")
++                }
++            }
++
++            return
++        }
++
++        // Legacy message format
+         if let logs = userInfo["watchLogs"] as? String {
+             SimpleLogReporter.appendToWatchLog(logs)
+         }
+ 
++        // Handle watch errors forwarded for Crashlytics logging
++        if let errorInfo = userInfo["watchError"] as? [String: Any] {
++            handleWatchError(errorInfo)
++        }
++
+         if let snoozeMinutes = userInfo[WatchMessageKeys.snoozeDuration] as? Int {
+             debug(.watchManager, "📱 Received snooze userInfo from watch: \(snoozeMinutes) minutes")
+             Task { @MainActor in
+@@ -715,6 +967,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                 let state = await self.setupWatchState()
+                 await self.sendDataToWatch(state)
+             }
++
++            // Send pending ACKs when watch becomes reachable
++            sendPendingAcksIfReachable()
+         } else {
+             // Try to reconnect after a short delay
+             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+@@ -1260,6 +1515,91 @@ extension BaseWatchManager {
+ 
+         return nil
+     }
++
++    /// Handles errors forwarded from the watch app and logs them to Crashlytics.
++    /// - Parameter errorInfo: Dictionary containing error information from watchOS
++    private func handleWatchError(_ errorInfo: [String: Any]) {
++        // Set custom keys for watch errors
++        Crashlytics.crashlytics().setCustomValue("watchOS", forKey: "platform")
++
++        if let appVersion = errorInfo["appVersion"] as? String {
++            Crashlytics.crashlytics().setCustomValue(appVersion, forKey: "watch_app_version")
++        }
++
++        // Add context if available (limit to first 10 keys, truncate values to 256-512 chars)
++        if let context = errorInfo["context"] as? [String: String] {
++            let limitedContext = context.prefix(10)
++            for (key, value) in limitedContext {
++                let truncatedValue = String(value.prefix(512))
++                Crashlytics.crashlytics().setCustomValue(truncatedValue, forKey: "watch_\(key)")
++            }
++        }
++
++        // Handle saved context from crash recovery (limit and truncate)
++        if let savedContext = errorInfo["savedContext"] as? [String: String] {
++            let limitedContext = savedContext.prefix(10)
++            for (key, value) in limitedContext {
++                let truncatedValue = String(value.prefix(512))
++                Crashlytics.crashlytics().setCustomValue(truncatedValue, forKey: "watch_crash_\(key)")
++            }
++        }
++
++        // Handle different error types
++        let errorType = errorInfo["type"] as? String
++
++        if errorType == "potentialCrash" {
++            // Handle crash detection from previous session
++            let crashMessage = "Watch app detected potential crash from previous session"
++
++            Crashlytics.crashlytics().log("Watch crash detected: \(crashMessage)")
++
++            // Log recent logs if available
++            if let recentLogs = errorInfo["recentLogs"] as? String {
++                Crashlytics.crashlytics().log("Watch recent logs before crash:\n\(recentLogs)")
++            }
++
++            // Create a non-fatal error to represent the crash
++            let crashError = NSError(
++                domain: "watchOS",
++                code: -1,
++                userInfo: [
++                    NSLocalizedDescriptionKey: crashMessage,
++                    "source": "watchOS",
++                    "errorType": "potentialCrash"
++                ]
++            )
++            Crashlytics.crashlytics().record(error: crashError)
++            debug(.watchManager, "📱 Recorded watch crash detection to Crashlytics: \(crashMessage)")
++        } else if let errorDomain = errorInfo["errorDomain"] as? String,
++                  let errorCode = errorInfo["errorCode"] as? Int,
++                  let errorDescription = errorInfo["errorDescription"] as? String {
++            // Create an NSError from the watch error info
++            let error = NSError(
++                domain: errorDomain,
++                code: errorCode,
++                userInfo: [
++                    NSLocalizedDescriptionKey: errorDescription,
++                    "source": "watchOS"
++                ]
++            )
++            Crashlytics.crashlytics().record(error: error)
++            debug(.watchManager, "📱 Recorded watch error to Crashlytics: \(errorDescription)")
++        } else if let message = errorInfo["message"] as? String {
++            // Non-fatal issue with custom message
++            Crashlytics.crashlytics().log("Watch non-fatal issue: \(message)")
++            debug(.watchManager, "📱 Logged watch non-fatal issue to Crashlytics: \(message)")
++        }
++
++        // Log stack trace if available (use reportingStackTrace, fallback to stackTrace)
++        if let reportingStackTrace = errorInfo["reportingStackTrace"] as? [String] {
++            let stackTraceString = reportingStackTrace.joined(separator: "\n")
++            Crashlytics.crashlytics().log("Watch reporting stack trace:\n\(stackTraceString)")
++        } else if let stackTrace = errorInfo["stackTrace"] as? [String] {
++            // Fallback to legacy field name
++            let stackTraceString = stackTrace.joined(separator: "\n")
++            Crashlytics.crashlytics().log("Watch stack trace:\n\(stackTraceString)")
++        }
++    }
+ }
+ 
+ extension BaseWatchManager {
