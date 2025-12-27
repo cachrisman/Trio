@@ -30,6 +30,15 @@ TARGET_GLOBS = {
   "LiveActivityExtension" => ["LiveActivity/**/*.{swift,m,mm}"]
 }.freeze
 
+# Map target names to resource file globs
+TARGET_RESOURCE_GLOBS = {
+  "Trio Watch App" => ["Trio Watch App Extension/**/*.plist"]
+}.freeze
+
+# Map target names to package dependencies (package name => product name)
+TARGET_PACKAGE_DEPS = {
+}.freeze
+
 def expand_brace(pattern)
   return [pattern] unless pattern.include?("{") && pattern.include?("}")
 
@@ -107,11 +116,89 @@ def already_in_phase?(phase, file_ref)
   end
 end
 
+def sync_resources(project)
+  additions = []
+  
+  TARGET_RESOURCE_GLOBS.each do |target_name, patterns|
+    target = project.targets.find { |t| t.name == target_name }
+    unless target
+      warn "⚠️  Skipping missing target #{target_name}"
+      next
+    end
+
+    files = resolved_files(patterns)
+    resources_phase = target.resources_build_phase
+
+    files.each do |path|
+      file_ref = file_ref_for(project, path)
+      next if already_in_phase?(resources_phase, file_ref)
+
+      resources_phase.add_file_reference(file_ref, true)
+      additions << [target_name, path, "resource"]
+    end
+  end
+
+  additions
+end
+
+def sync_package_dependencies(project)
+  additions = []
+  
+  TARGET_PACKAGE_DEPS.each do |target_name, deps|
+    target = project.targets.find { |t| t.name == target_name }
+    unless target
+      warn "⚠️  Skipping missing target #{target_name}"
+      next
+    end
+
+    deps.each do |dep|
+      package_name = dep[:package_name]
+      product_name = dep[:product_name]
+      
+      # Find the package reference by repository URL
+      package_ref = project.root_object.package_references.find do |ref|
+        ref.repositoryURL&.include?(package_name)
+      end
+      
+      unless package_ref
+        warn "⚠️  Package #{package_name} not found in project"
+        next
+      end
+
+      # Check if dependency already exists
+      existing_dep = target.package_product_dependencies.find do |pd|
+        pd.package == package_ref && pd.product_name == product_name
+      end
+      
+      if existing_dep
+        next
+      end
+
+      # Create new package product dependency
+      dep_obj = project.new(Xcodeproj::Project::Object::XCSwiftPackageProductDependency)
+      dep_obj.package = package_ref
+      dep_obj.product_name = product_name
+      
+      # Add to target's package dependencies
+      target.package_product_dependencies << dep_obj
+      
+      # Add to frameworks build phase
+      frameworks_phase = target.frameworks_build_phase
+      build_file = frameworks_phase.add_file_reference(dep_obj, true)
+      
+      additions << [target_name, "#{package_name}/#{product_name}", "package"]
+    end
+  end
+
+  additions
+end
+
 def sync_project
   Dir.chdir(PROJECT_ROOT) do
     project = Xcodeproj::Project.open(PROJECT_PATH)
     additions = []
 
+    # Sync source files
     TARGET_GLOBS.each do |target_name, patterns|
       target = project.targets.find { |t| t.name == target_name }
       unless target
@@ -127,16 +214,24 @@ def sync_project
         next if already_in_phase?(phase, file_ref)
 
         phase.add_file_reference(file_ref, true)
-        additions << [target_name, path]
+        additions << [target_name, path, "source"]
       end
     end
+
+    # Sync resource files
+    additions.concat(sync_resources(project))
+
+    # Sync package dependencies
+    additions.concat(sync_package_dependencies(project))
 
     project.save
 
     if additions.empty?
-      puts "No new source files to add."
+      puts "No new files or dependencies to add."
     else
-      additions.each { |target, path| puts "Added #{path} -> #{target}" }
+      additions.each do |target, path, type|
+        puts "Added #{path} -> #{target} (#{type})"
+      end
     end
   end
 end

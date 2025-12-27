@@ -150,17 +150,19 @@ platform :ios do
     BUNDLE_ID = ENV["BUNDLE_ID"]
     workspace_root = GITHUB_WORKSPACE || Dir.pwd
 
+    # Sync project files (sources, resources, package dependencies)
+    sync_script = File.join(workspace_root, "scripts", "sync_project_files.rb")
+    if File.exist?(sync_script)
     new_swift_files = swift_files_from_patches(workspace_root)
     if new_swift_files.empty?
-      UI.message("No new Swift files found in patches; skipping project file sync.")
+        UI.message("Syncing project files (resources, package dependencies)...")
+        sh("ruby", sync_script)
     else
-      UI.message("Ensuring new Swift files are added to the project...")
-      sync_script = File.join(workspace_root, "scripts", "sync_project_files.rb")
-      if File.exist?(sync_script)
+        UI.message("Syncing project files (sources, resources, package dependencies)...")
         sh("ruby", sync_script, *new_swift_files)
-      else
-        UI.user_error!("Missing #{sync_script} - include scripts/sync_project_files.rb in the patch.")
       end
+    else
+      UI.user_error!("Missing #{sync_script} - include scripts/sync_project_files.rb in the patch.")
     end
 
     update_project_team(
