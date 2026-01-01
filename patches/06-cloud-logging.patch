@@ -24,25 +24,28 @@ index fea855ed8afefac1ff2d8b32d198feacbcc16e3c..94a505ebad4f7039b5b7857f716d8e5a
                  LiveActivityManager(resolver: r)
 diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..ff6575648f556afbce2fd31c8f11870d0e6651e7
+index 0000000000000000000000000000000000000000..721e7889a2c323335a23b82c71e71c0945d2624e
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,68 @@
 +import Foundation
 +
 +/// Better Stack / Logtail provider.
 +///
-+/// Endpoint: POST https://in.logs.betterstack.com/
++/// Endpoint: POST <ingestion URL>
 +/// Success: HTTP 202 only
 +final class BetterStackLogtailProvider: CloudLogProvider {
 +    private let tokenProvider: () -> String?
++    private let ingestionURLProvider: () -> URL?
 +    private let session: URLSession
 +
 +    init(
 +        tokenProvider: @escaping () -> String?,
++        ingestionURLProvider: @escaping () -> URL? = { URL(string: "https://in.logs.betterstack.com/") },
 +        session: URLSession = .shared
 +    ) {
 +        self.tokenProvider = tokenProvider
++        self.ingestionURLProvider = ingestionURLProvider
 +        self.session = session
 +    }
 +
@@ -53,7 +56,7 @@ index 0000000000000000000000000000000000000000..ff6575648f556afbce2fd31c8f11870d
 +            return .failure(.notConfigured)
 +        }
 +
-+        guard let url = URL(string: "https://in.logs.betterstack.com/") else {
++        guard let url = ingestionURLProvider() else {
 +            return .failure(.invalidURL)
 +        }
 +
@@ -90,6 +93,48 @@ index 0000000000000000000000000000000000000000..ff6575648f556afbce2fd31c8f11870d
 +        } catch {
 +            return .failure(.transport(error))
 +        }
++    }
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift b/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..08340686e67cbf955d382159b83a7d2c64758b1b
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
+@@ -0,0 +1,36 @@
++import Foundation
++
++struct BetterStackSettings: Decodable {
++    let BetterStackSourceToken: String?
++    let BetterStackIngestionUrl: String?
++}
++
++enum BetterStackSettingsStore {
++    static let relativePath = "settings/BetterStack.json"
++
++    /// Loads Better Stack settings from the app group container (preferred) and falls back to app documents.
++    static func load() -> BetterStackSettings? {
++        // Prefer the configured AppGroupID (Info.plist key "AppGroupID") if present.
++        if let suite = Bundle.main.appGroupSuiteName, !suite.isEmpty {
++            if let settings = load(from: .sharedContainer(appGroupName: suite)) {
++                return settings
++            }
++        }
++
++        // Fallback: some builds use a short app group name like "Trio".
++        if let settings = load(from: .sharedContainer(appGroupName: "Trio")) {
++            return settings
++        }
++
++        // Fallback to local documents directory (useful for simulator/dev environments).
++        return load(from: .documents)
++    }
++
++    private static func load(from directory: Disk.Directory) -> BetterStackSettings? {
++        guard let data = try? Disk.retrieve(relativePath, from: directory, as: Data.self) else {
++            return nil
++        }
++        return try? JSONDecoder().decode(BetterStackSettings.self, from: data)
 +    }
 +}
 +
@@ -277,10 +322,10 @@ index 0000000000000000000000000000000000000000..acee295f8836b831b821be9289223353
 +
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..558a871c2d9b3c34d440c31a7b3232735ba8e98f
+index 0000000000000000000000000000000000000000..c65d119a2941947d11139fe6e28f00ce6c151a86
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,128 @@
 +import Foundation
 +import UIKit
 +
@@ -296,16 +341,36 @@ index 0000000000000000000000000000000000000000..558a871c2d9b3c34d440c31a7b323273
 +    private var timer: Timer?
 +    private var observers: [NSObjectProtocol] = []
 +    private let tokenProvider: () -> String?
++    private let ingestionURLProvider: () -> URL?
 +
 +    init() {
 +        tokenProvider = {
-+            // Priority: UserDefaults (future UI) → Info.plist → Process environment (dev builds).
++            // Priority: AppGroup settings/BetterStack.json → UserDefaults (future UI) → Info.plist → Process environment (dev builds).
++            if let settings = BetterStackSettingsStore.load(),
++               let t = settings.BetterStackSourceToken,
++               !t.isEmpty
++            {
++                return t
++            }
 +            if let t = UserDefaults.standard.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
 +            if let t = Bundle.main.object(forInfoDictionaryKey: "BetterStackSourceToken") as? String, !t.isEmpty { return t }
 +            return ProcessInfo.processInfo.environment["BETTERSTACK_SOURCE_TOKEN"]
 +        }
 +
-+        let provider = BetterStackLogtailProvider(tokenProvider: tokenProvider)
++        ingestionURLProvider = {
++            if let settings = BetterStackSettingsStore.load(),
++               let raw = settings.BetterStackIngestionUrl,
++               let url = URL(string: raw)
++            {
++                return url
++            }
++            return URL(string: "https://in.logs.betterstack.com/")
++        }
++
++        let provider = BetterStackLogtailProvider(
++            tokenProvider: tokenProvider,
++            ingestionURLProvider: ingestionURLProvider
++        )
 +
 +        let pairs: [CloudLogUploader.RotatingPair] = [
 +            .init(
@@ -334,6 +399,9 @@ index 0000000000000000000000000000000000000000..558a871c2d9b3c34d440c31a7b323273
 +    func uploadNow() {
 +        // Only run when configured (no privacy gating in this repo).
 +        guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            return
++        }
++        guard ingestionURLProvider() != nil else {
 +            return
 +        }
 +
@@ -721,10 +789,10 @@ index 0000000000000000000000000000000000000000..1ac2bd4b85d697ef7c8a2259f34773ff
 +
 diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..1409bcf61ff500eadecec54b751c74a7a9ca0e50
+index 0000000000000000000000000000000000000000..7dcfc9025ea8885b83ba2b0440c42f501d271a71
 --- /dev/null
 +++ b/docs/cloud-logging.md
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,153 @@
 +# Cloud logging (Better Stack / Logtail)
 +
 +## Goals / constraints
@@ -841,13 +909,26 @@ index 0000000000000000000000000000000000000000..1409bcf61ff500eadecec54b751c74a7
 +
 +## Setup (token)
 +
-+You must provide a Better Stack **source token**.
++Trio reads Better Stack settings from a JSON file in the **Trio app group container**:
++
++- Path: `settings/BetterStack.json`
++- Example:
++
++```json
++{
++  "BetterStackSourceToken": "TzZdDRFCDTCXhYTZVLWHhNsk",
++  "BetterStackIngestionUrl": "https://s1658969.eu-nbg-2.betterstackdata.com/"
++}
++```
++
++This file is **generated on-device** and should **not** be committed.
 +
 +Currently supported injection points (in priority order):
 +
-+1. `UserDefaults` key: `cloudLogging.betterStackSourceToken` (intended for a future in-app UI)
-+2. `Info.plist` key: `BetterStackSourceToken` (build-time injection recommended; do not commit secrets)
-+3. Process environment variable: `BETTERSTACK_SOURCE_TOKEN` (useful for local/dev builds)
++1. App group file: `settings/BetterStack.json`
++2. `UserDefaults` key: `cloudLogging.betterStackSourceToken` (fallback)
++3. `Info.plist` key: `BetterStackSourceToken` (fallback; do not commit secrets)
++4. Process environment variable: `BETTERSTACK_SOURCE_TOKEN` (dev-only fallback)
 +
 +## Querying + export for AI analysis
 +
