@@ -15,34 +15,39 @@ struct CloudParsedLogLine {
 enum CloudLogLineParser {
     // iPhone format:
     // <TIMESTAMP> [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>: <message>
-    static func parseIOS(_ line: String) -> CloudParsedLogLine? {
-        let trimmed = line.trimmingCharacters(in: .newlines)
-        guard !trimmed.isEmpty else { return nil }
+    static func parseIOS(_ entry: String) -> CloudParsedLogLine? {
+        let trimmedEntry = entry.trimmingCharacters(in: .newlines)
+        guard !trimmedEntry.isEmpty else { return nil }
+
+        let lines = trimmedEntry.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let header = lines.first ?? trimmedEntry
+        let continuation = lines.dropFirst().joined(separator: "\n")
 
         // Timestamp = first token
-        let tokens = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        let tokens = header.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
         let rawTs = tokens.first.map(String.init)
         let dt = rawTs.flatMap(normalizeTimestamp)
 
         // Category = first [...] after timestamp
         var category: String?
-        if let range = trimmed.range(of: #"^\S+\s+\[([^\]]+)\]"#, options: [.regularExpression]) {
+        if let range = header.range(of: #"^\S+\s+\[([^\]]+)\]"#, options: [.regularExpression]) {
             // Extract using a second regex capture to keep code simple.
-            if let match = trimmed[range].range(of: #"\[([^\]]+)\]"#, options: .regularExpression) {
-                let bracketed = String(trimmed[match])
+            if let match = header[range].range(of: #"\[([^\]]+)\]"#, options: .regularExpression) {
+                let bracketed = String(header[match])
                 category = bracketed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
             }
         }
 
         // Level = delimiter-aware: " - (DEV|INFO|WARN|ERR):"
         let levelRegex = #"\s-\s(DEV|INFO|WARN|ERR):\s"#
-        guard let levelMatch = trimmed.range(of: levelRegex, options: .regularExpression) else {
+        guard let levelMatch = header.range(of: levelRegex, options: .regularExpression) else {
             // If we can't confidently parse, still return the original line as message.
-            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: trimmed)
+            let msg = continuation.isEmpty ? header : "\(header)\n\(continuation)"
+            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg)
         }
 
         // Extract the actual level token and normalize
-        let levelToken = String(trimmed[levelMatch])
+        let levelToken = String(header[levelMatch])
             .replacingOccurrences(of: " - ", with: "")
             .replacingOccurrences(of: ":", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -57,27 +62,33 @@ enum CloudLogLineParser {
         }
 
         // Message = everything after "<LEVEL>: "
-        let messageStart = trimmed.index(levelMatch.upperBound, offsetBy: 0)
-        let parsedMessage = String(trimmed[messageStart...]).trimmingCharacters(in: .newlines)
+        let messageStart = header.index(levelMatch.upperBound, offsetBy: 0)
+        let parsedFirstLineMessage = String(header[messageStart...]).trimmingCharacters(in: .newlines)
+        let firstLineMessage = parsedFirstLineMessage.isEmpty ? header : parsedFirstLineMessage
+        let fullMessage = continuation.isEmpty ? firstLineMessage : "\(firstLineMessage)\n\(continuation)"
 
         return CloudParsedLogLine(
             dt: dt,
             category: category,
             level: normalizedLevel,
-            message: parsedMessage.isEmpty ? trimmed : parsedMessage
+            message: fullMessage
         )
     }
 
     // Watch format:
     // [<TIMESTAMP>] [<File.swift>:<line>] <function>() → <message>
-    static func parseWatch(_ line: String) -> CloudParsedLogLine? {
-        let trimmed = line.trimmingCharacters(in: .newlines)
-        guard !trimmed.isEmpty else { return nil }
+    static func parseWatch(_ entry: String) -> CloudParsedLogLine? {
+        let trimmedEntry = entry.trimmingCharacters(in: .newlines)
+        guard !trimmedEntry.isEmpty else { return nil }
+
+        let lines = trimmedEntry.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let header = lines.first ?? trimmedEntry
+        let continuation = lines.dropFirst().joined(separator: "\n")
 
         // Timestamp = first [...] token
         var dt: String?
-        if let tsRange = trimmed.range(of: #"^\[([^\]]+)\]"#, options: [.regularExpression]) {
-            let bracketed = String(trimmed[tsRange])
+        if let tsRange = header.range(of: #"^\[([^\]]+)\]"#, options: [.regularExpression]) {
+            let bracketed = String(header[tsRange])
             let raw = bracketed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
             dt = normalizeTimestamp(raw)
         }
@@ -85,15 +96,18 @@ enum CloudLogLineParser {
         // Category = filename from "[File.swift:line]"
         // Regex: ^\[[^\]]+\]\s+\[([^\]:]+)\.swift:\d+\]
         var category: String?
-        category = extractWatchCategory(from: trimmed)
+        category = extractWatchCategory(from: header)
 
         // Message = everything after the arrow
-        if let arrowRange = trimmed.range(of: "→") {
-            let msg = trimmed[arrowRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg.isEmpty ? trimmed : String(msg))
+        if let arrowRange = header.range(of: "→") {
+            let msg = header[arrowRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            let firstLineMessage = msg.isEmpty ? header : String(msg)
+            let fullMessage = continuation.isEmpty ? firstLineMessage : "\(firstLineMessage)\n\(continuation)"
+            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: fullMessage)
         }
 
-        return CloudParsedLogLine(dt: dt, category: category, level: nil, message: trimmed)
+        let fallbackMessage = continuation.isEmpty ? header : "\(header)\n\(continuation)"
+        return CloudParsedLogLine(dt: dt, category: category, level: nil, message: fallbackMessage)
     }
 
     /// Normalizes "yyyy-MM-dd'T'HH:mm:ssZ" like "...+0100" into "...+01:00" if possible.

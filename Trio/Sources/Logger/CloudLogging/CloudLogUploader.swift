@@ -120,11 +120,17 @@ actor CloudLogUploader {
             return true
         }
 
+        let entries = aggregateEntries(physicalLines: lines, platform: platform)
+        guard !entries.isEmpty else {
+            saveState(TailState(offset: nextOffset), for: filePathKey)
+            return true
+        }
+
         let commonAttributes = buildCommonAttributes(platform: platform)
 
         // Build events (best-effort parsing; always upload the line).
-        let events: [CloudLogEvent] = lines.compactMap { line in
-            let parsed = parser(line)
+        let events: [CloudLogEvent] = entries.compactMap { entry in
+            let parsed = parser(entry)
             var attrs = commonAttributes
             if let parsed {
                 if let c = parsed.category { attrs["category"] = c }
@@ -132,7 +138,7 @@ actor CloudLogUploader {
                 let msg = truncateMessage(parsed.message)
                 return CloudLogEvent(message: msg, dt: parsed.dt, attributes: attrs)
             } else {
-                let msg = truncateMessage(line)
+                let msg = truncateMessage(entry)
                 return CloudLogEvent(message: msg, dt: nil, attributes: attrs)
             }
         }
@@ -176,15 +182,36 @@ actor CloudLogUploader {
             let completeData = data.prefix(upTo: data.index(after: lastNewlineIdx))
             let text = String(decoding: completeData, as: UTF8.self)
 
-            let lines = text
-                .split(separator: "\n", omittingEmptySubsequences: true)
-                .map { String($0).trimmingCharacters(in: .newlines) }
+            var lines = text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map(String.init)
+            // Because `text` ends with '\n', split(...) includes a final empty element; drop it.
+            if lines.last == "" {
+                lines.removeLast()
+            }
 
             let nextOffset = startOffset + UInt64(completeData.count)
             return (lines, nextOffset)
         } catch {
             return nil
         }
+    }
+
+    private func aggregateEntries(physicalLines: [String], platform: CloudLogPlatform) -> [String] {
+        let pattern: String
+        switch platform {
+        case .ios:
+            pattern = #"^\d{4}-\d{2}-\d{2}T"#
+        case .watchos:
+            pattern = #"^\[\d{4}-\d{2}-\d{2}T"#
+        }
+
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            // Fallback to line-by-line if regex compilation fails (shouldn't happen).
+            return physicalLines
+        }
+
+        return CloudLogEntryAggregator.aggregate(lines: physicalLines, startPattern: regex)
     }
 
     // MARK: - Attributes
