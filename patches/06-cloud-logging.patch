@@ -24,16 +24,16 @@ index fea855ed8afefac1ff2d8b32d198feacbcc16e3c..94a505ebad4f7039b5b7857f716d8e5a
                  LiveActivityManager(resolver: r)
 diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..4eb464c297bf96ee821b9691bf2598bd3976aa6f
+index 0000000000000000000000000000000000000000..ff6575648f556afbce2fd31c8f11870d0e6651e7
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,65 @@
 +import Foundation
 +
 +/// Better Stack / Logtail provider.
 +///
 +/// Endpoint: POST https://in.logs.betterstack.com/
-+/// Success: any HTTP 2xx
++/// Success: HTTP 202 only
 +final class BetterStackLogtailProvider: CloudLogProvider {
 +    private let tokenProvider: () -> String?
 +    private let session: URLSession
@@ -74,9 +74,15 @@ index 0000000000000000000000000000000000000000..4eb464c297bf96ee821b9691bf2598bd
 +                return .failure(.invalidResponse)
 +            }
 +
-+            // Treat any 2xx as success.
-+            guard 200 <= http.statusCode, http.statusCode < 300 else {
-+                let preview = String(data: data.prefix(512), encoding: .utf8)
++            // Better Stack ingestion success is HTTP 202.
++            guard http.statusCode == 202 else {
++                let preview = String(data: data.prefix(4096), encoding: .utf8)
++
++                debug(
++                    .service,
++                    "Cloud logging upload failed: status=\(http.statusCode) events=\(events.count) bodyPreview=\(preview ?? "<non-utf8>")"
++                )
++
 +                return .failure(.unexpectedStatus(code: http.statusCode, bodyPreview: preview))
 +            }
 +
@@ -382,10 +388,10 @@ index 0000000000000000000000000000000000000000..558a871c2d9b3c34d440c31a7b323273
 +
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c1a81516f
+index 0000000000000000000000000000000000000000..7c65cc97c48a7855cda4b3980a49784ba3ad8673
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,313 @@
 +import Foundation
 +
 +/// iPhone-only log tailer/uploader.
@@ -403,7 +409,6 @@ index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c
 +
 +    private struct TailState: Codable {
 +        var offset: UInt64
-+        var creationDateEpoch: TimeInterval?
 +    }
 +
 +    private let provider: CloudLogProvider
@@ -461,59 +466,18 @@ index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c
 +        // Reset offsets if file shrank (rotation or truncation).
 +        if let currentSize = fileSize(currentURL), currentSize < currentState.offset {
 +            currentState.offset = 0
++            saveState(currentState, for: pair.currentPath)
 +        }
 +        if let prevSize = fileSize(prevURL), prevSize < prevState.offset {
 +            prevState.offset = 0
-+        }
-+
-+        // Detect rotation: if current creationDate changed, the previous file likely holds the prior content.
-+        let currentCreationEpoch = fileCreationEpoch(currentURL)
-+        if let storedEpoch = currentState.creationDateEpoch,
-+           let currentCreationEpoch,
-+           storedEpoch != currentCreationEpoch
-+        {
-+            // Map the old current offset onto the previous file so we don't re-upload already-uploaded bytes.
-+            // (Rotation moves current -> previous, and creates a new current file.)
-+            let oldCurrentOffset = currentState.offset
-+            if let prevSize = fileSize(prevURL), prevSize > 0 {
-+                prevState.offset = max(prevState.offset, min(oldCurrentOffset, prevSize))
-+                prevState.creationDateEpoch = fileCreationEpoch(prevURL)
-+                saveState(prevState, for: pair.previousPath)
-+            }
-+
-+            // Best-effort: upload missed tail from previous file using the old offset.
-+            if let prevSize = fileSize(prevURL), prevSize > 0 {
-+                let startOffset = min(oldCurrentOffset, prevSize)
-+                let ok = await uploadNewContent(
-+                    fileURL: prevURL,
-+                    filePathKey: pair.previousPath,
-+                    startOffset: startOffset,
-+                    platform: pair.platform,
-+                    parser: pair.parser
-+                )
-+                if !ok { succeeded = false }
-+
-+                // Regardless of whether the upload succeeded, keep prevState stable.
-+                // Only advance on success is handled in uploadNewContent.
-+            }
-+
-+            // Reset current state for the new day (new file).
-+            currentState.offset = 0
-+            currentState.creationDateEpoch = currentCreationEpoch
-+            saveState(currentState, for: pair.currentPath)
-+        } else {
-+            // Persist current creation date if we don't have it yet.
-+            if currentState.creationDateEpoch == nil {
-+                currentState.creationDateEpoch = currentCreationEpoch
-+                saveState(currentState, for: pair.currentPath)
-+            }
++            saveState(prevState, for: pair.previousPath)
 +        }
 +
 +        // Upload current tail.
 +        let okCurrent = await uploadNewContent(
 +            fileURL: currentURL,
 +            filePathKey: pair.currentPath,
-+            startOffset: loadState(for: pair.currentPath).offset,
++            startOffset: currentState.offset,
 +            platform: pair.platform,
 +            parser: pair.parser
 +        )
@@ -523,7 +487,7 @@ index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c
 +        let okPrev = await uploadNewContent(
 +            fileURL: prevURL,
 +            filePathKey: pair.previousPath,
-+            startOffset: loadState(for: pair.previousPath).offset,
++            startOffset: prevState.offset,
 +            platform: pair.platform,
 +            parser: pair.parser
 +        )
@@ -546,7 +510,7 @@ index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c
 +            return true
 +        }
 +        guard !lines.isEmpty else {
-+            saveState(TailState(offset: nextOffset, creationDateEpoch: fileCreationEpoch(fileURL)), for: filePathKey)
++            saveState(TailState(offset: nextOffset), for: filePathKey)
 +            return true
 +        }
 +
@@ -559,22 +523,21 @@ index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c
 +            if let parsed {
 +                if let c = parsed.category { attrs["category"] = c }
 +                if let l = parsed.level { attrs["level"] = l }
-+                return CloudLogEvent(message: parsed.message, dt: parsed.dt, attributes: attrs)
++                let msg = truncateMessage(parsed.message)
++                return CloudLogEvent(message: msg, dt: parsed.dt, attributes: attrs)
 +            } else {
-+                return CloudLogEvent(message: line, dt: nil, attributes: attrs)
++                let msg = truncateMessage(line)
++                return CloudLogEvent(message: msg, dt: nil, attributes: attrs)
 +            }
 +        }
 +
-+        // Upload in batches to avoid oversized payloads.
-+        let batchSize = 250
-+        var start = 0
-+        while start < events.count {
-+            let end = min(start + batchSize, events.count)
-+            let batch = Array(events[start..<end])
-+
++        // Upload in batches with both count and byte-budget caps.
++        // This helps avoid 413 errors regardless of log verbosity.
++        let batches = buildBatches(events: events)
++        for batch in batches {
 +            switch await provider.upload(events: batch) {
 +            case .success:
-+                start = end
++                continue
 +            case .failure:
 +                // Critical: do NOT advance offsets.
 +                return false
@@ -584,9 +547,6 @@ index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c
 +        // Only advance the file offset after the final batch succeeds.
 +        var state = loadState(for: filePathKey)
 +        state.offset = nextOffset
-+        if state.creationDateEpoch == nil {
-+            state.creationDateEpoch = fileCreationEpoch(fileURL)
-+        }
 +        saveState(state, for: filePathKey)
 +        return true
 +    }
@@ -656,7 +616,7 @@ index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c
 +              let dict = try? JSONDecoder().decode([String: TailState].self, from: data),
 +              let state = dict[path]
 +        else {
-+            return TailState(offset: 0, creationDateEpoch: nil)
++            return TailState(offset: 0)
 +        }
 +        return state
 +    }
@@ -683,20 +643,74 @@ index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c
 +        return size.uint64Value
 +    }
 +
-+    private func fileCreationEpoch(_ url: URL) -> TimeInterval? {
-+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-+              let date = attrs[.creationDate] as? Date
-+        else { return nil }
-+        return date.timeIntervalSince1970
++    // MARK: - Request sizing helpers
++
++    private let maxMessageBytes = 256 * 1024
++    private let maxRequestBytes = 8 * 1024 * 1024
++    private let maxEventsPerRequest = 250
++
++    private func truncateMessage(_ message: String) -> String {
++        guard message.utf8.count > maxMessageBytes else { return message }
++        let data = message.data(using: .utf8) ?? Data()
++        let truncated = data.prefix(maxMessageBytes)
++        return String(decoding: truncated, as: UTF8.self)
++    }
++
++    private func buildBatches(events: [CloudLogEvent]) -> [[CloudLogEvent]] {
++        guard !events.isEmpty else { return [] }
++
++        var result: [[CloudLogEvent]] = []
++        var current: [CloudLogEvent] = []
++
++        let encoder = JSONEncoder()
++
++        func encodedSize(of batch: [CloudLogEvent]) -> Int {
++            (try? encoder.encode(batch).count) ?? Int.max
++        }
++
++        for event in events {
++            if current.isEmpty {
++                current = [event]
++                // A single event should always fit due to message truncation, but be defensive.
++                if encodedSize(of: current) > maxRequestBytes {
++                    result.append(current)
++                    current.removeAll(keepingCapacity: true)
++                }
++                continue
++            }
++
++            if current.count >= maxEventsPerRequest {
++                result.append(current)
++                current = [event]
++                continue
++            }
++
++            var candidate = current
++            candidate.append(event)
++
++            if encodedSize(of: candidate) > maxRequestBytes {
++                // Flush current and start a new batch with this event.
++                result.append(current)
++                current = [event]
++            } else {
++                current = candidate
++            }
++        }
++
++        if !current.isEmpty {
++            result.append(current)
++        }
++
++        return result
 +    }
 +}
 +
 diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c4258e994a164d43fdb0be3c61e085fe27fcf3e
+index 0000000000000000000000000000000000000000..1409bcf61ff500eadecec54b751c74a7a9ca0e50
 --- /dev/null
 +++ b/docs/cloud-logging.md
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,140 @@
 +# Cloud logging (Better Stack / Logtail)
 +
 +## Goals / constraints
@@ -719,7 +733,7 @@ index 0000000000000000000000000000000000000000..6c4258e994a164d43fdb0be3c61e085f
 +  - `Authorization: Bearer <SOURCE_TOKEN>`
 +  - `Content-Type: application/json`
 +- **Success criteria**:
-+  - **Any HTTP 2xx** is treated as success.
++  - **HTTP 202 only** is treated as success.
 +  - Any other status does **not** advance offsets (uploads are safe to retry).
 +
 +## Log files (authoritative on-device sources)
@@ -794,9 +808,12 @@ index 0000000000000000000000000000000000000000..6c4258e994a164d43fdb0be3c61e085f
 +Uploads tail each file using a **byte offset** stored on-device.
 +
 +- On each run, only newly appended **complete lines** (ending in `\n`) are uploaded.
-+- Uploads are **batched** (default: 250 events per request). Offsets only advance after the final batch succeeds.
++- Uploads are **batched** with both:
++  - a **count cap** (default: 250 events per request), and
++  - a **byte-budget cap** (conservative ~8 MiB uncompressed JSON per request, estimated via encoder size).
++  Offsets only advance after the final batch succeeds.
 +- If the file **shrinks** (truncation / rotation), its offset is reset to `0`.
-+- For daily rotation where `*_log.txt` is moved to `*_log_prev.txt`, the uploader best-effort uploads any missed tail from `*_log_prev.txt` before continuing with the new day’s `*_log.txt`.
++- Rotation handling is intentionally simple: it only uses the **byte-offset tail model** and resets offsets when the file shrinks.
 +
 +## Triggers
 +
