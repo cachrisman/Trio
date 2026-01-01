@@ -1,0 +1,1000 @@
+diff --git a/Trio.xcodeproj/project.pbxproj b/Trio.xcodeproj/project.pbxproj
+index be060667106b444c8bab6e82675e195bd9e38cce..d296d915c56e0cd99091eac4f7939e659b861e50 100644
+--- a/Trio.xcodeproj/project.pbxproj
++++ b/Trio.xcodeproj/project.pbxproj
+@@ -57,7 +57,7 @@
+ 		1D845DF2E3324130E1D95E67 /* DataTableProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60744C3E9BB3652895C908CC /* DataTableProvider.swift */; };
+ 		23888883D4EA091C88480FF2 /* TreatmentsProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19984D62EFC0035A9E9644D /* TreatmentsProvider.swift */; };
+ 		3171D2818C7C72CD1584BB5E /* GlucoseNotificationSettingsStateModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC2C6489D29ECCCAD78E0721 /* GlucoseNotificationSettingsStateModel.swift */; };
+-		320D030F724170A637F06D50 /* (null) in Sources */ = {isa = PBXBuildFile; };
++		320D030F724170A637F06D50 /* BuildFile in Sources */ = {isa = PBXBuildFile; };
+ 		3811DE0B25C9D32F00A708ED /* BaseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3811DE0725C9D32E00A708ED /* BaseView.swift */; };
+ 		3811DE0C25C9D32F00A708ED /* BaseProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3811DE0825C9D32F00A708ED /* BaseProvider.swift */; };
+ 		3811DE1025C9D37700A708ED /* Swinject in Frameworks */ = {isa = PBXBuildFile; productRef = 3811DE0F25C9D37700A708ED /* Swinject */; };
+@@ -259,9 +259,11 @@
+ 		3BD9687C2D8DDD4600899469 /* SlideButton in Frameworks */ = {isa = PBXBuildFile; productRef = 3BD9687B2D8DDD4600899469 /* SlideButton */; };
+ 		3BD9687F2D8DDD8800899469 /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 3BD9687E2D8DDD8800899469 /* CryptoSwift */; };
+ 		3BF85FE32E427312000D7351 /* IOBService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BF85FE12E427312000D7351 /* IOBService.swift */; };
++		3D61060A6B8542C1A8DEAB49 /* CloudLogLineParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3266A087E8FBC424FABD77E /* CloudLogLineParsing.swift */; };
+ 		3E28F2AB2EB5337F00FB9EEB /* ConnectIQ in Frameworks */ = {isa = PBXBuildFile; productRef = 3E28F2AA2EB5337F00FB9EEB /* ConnectIQ */; };
+ 		45252C95D220E796FDB3B022 /* ConfigEditorDataFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F8A87AA037BD079BA3528BA /* ConfigEditorDataFlow.swift */; };
+ 		45717281F743594AA9D87191 /* ConfigEditorRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 920DDB21E5D0EB813197500D /* ConfigEditorRootView.swift */; };
++		46E87D4DA9CF10D1CF293D49 /* CloudLogUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1778D8811C03302D38BAF672 /* CloudLogUploader.swift */; };
+ 		491D6FBD2D56741C00C49F67 /* TempTargetStored+CoreDataProperties.swift in Sources */ = {isa = PBXBuildFile; fileRef = 491D6FBC2D56741C00C49F67 /* TempTargetStored+CoreDataProperties.swift */; };
+ 		491D6FBE2D56741C00C49F67 /* TempTargetRunStored+CoreDataClass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 491D6FB92D56741C00C49F67 /* TempTargetRunStored+CoreDataClass.swift */; };
+ 		491D6FBF2D56741C00C49F67 /* TempTargetRunStored+CoreDataProperties.swift in Sources */ = {isa = PBXBuildFile; fileRef = 491D6FBA2D56741C00C49F67 /* TempTargetRunStored+CoreDataProperties.swift */; };
+@@ -323,7 +325,7 @@
+ 		6B1F539F9FF75646D1606066 /* SnoozeDataFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A708CDB546692C2230B385 /* SnoozeDataFlow.swift */; };
+ 		6BCF84DD2B16843A003AD46E /* LiveActitiyAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BCF84DC2B16843A003AD46E /* LiveActitiyAttributes.swift */; };
+ 		6BCF84DE2B16843A003AD46E /* LiveActitiyAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BCF84DC2B16843A003AD46E /* LiveActitiyAttributes.swift */; };
+-		6EADD581738D64431902AC0A /* (null) in Sources */ = {isa = PBXBuildFile; };
++		6EADD581738D64431902AC0A /* BuildFile in Sources */ = {isa = PBXBuildFile; };
+ 		6FFAE524D1D9C262F2407CAE /* SnoozeProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CAE81192B118804DCD23034 /* SnoozeProvider.swift */; };
+ 		711C0CB42CAABE788916BC9D /* ManualTempBasalDataFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96653287EDB276A111288305 /* ManualTempBasalDataFlow.swift */; };
+ 		715120D22D3C2BB4005D9FB6 /* GlucoseNotificationsOption.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715120D12D3C2B84005D9FB6 /* GlucoseNotificationsOption.swift */; };
+@@ -336,12 +338,13 @@
+ 		8A91342A2D63D9A1007F8874 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 8A9134292D63D9A1007F8874 /* Localizable.xcstrings */; };
+ 		8A91342C2D63D9A2007F8874 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 8A91342B2D63D9A2007F8874 /* InfoPlist.xcstrings */; };
+ 		8B759CFCF47B392BB365C251 /* BasalProfileEditorDataFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67F94DD2853CF42BA4E30616 /* BasalProfileEditorDataFlow.swift */; };
++		9285C282001036ADE8B0C7AF /* CloudLogUploadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DC12F945989CC5462FB61BC /* CloudLogUploadService.swift */; };
+ 		9702FF92A09C53942F20D7EA /* TargetsEditorRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DD795BA46B193644D48138C /* TargetsEditorRootView.swift */; };
+ 		9825E5E923F0B8FA80C8C7C7 /* NightscoutConfigStateModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A48AE3AC813A49A517846A /* NightscoutConfigStateModel.swift */; };
+ 		98641AF4F92123DA668AB931 /* CarbRatioEditorRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0BDC6993C1087310EDFC428 /* CarbRatioEditorRootView.swift */; };
+ 		A33352ED40476125EBAC6EE0 /* CarbRatioEditorDataFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E22146D3DF4853786C78132 /* CarbRatioEditorDataFlow.swift */; };
+ 		AD3D2CD42CD01B9EB8F26522 /* PumpConfigDataFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF65DA88F972B56090AD6AC3 /* PumpConfigDataFlow.swift */; };
+-		B7C465E9472624D8A2BE2A6A /* (null) in Sources */ = {isa = PBXBuildFile; };
++		B7C465E9472624D8A2BE2A6A /* BuildFile in Sources */ = {isa = PBXBuildFile; };
+ 		B958F1B72BA0711600484851 /* MKRingProgressView in Frameworks */ = {isa = PBXBuildFile; productRef = B958F1B62BA0711600484851 /* MKRingProgressView */; };
+ 		BA00D96F7B2FF169A06FB530 /* CGMSettingsStateModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C018D1680307A31C9ED7120 /* CGMSettingsStateModel.swift */; };
+ 		BD04ECCE2D29952A008C5FEB /* BolusProgressOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD04ECCD2D299522008C5FEB /* BolusProgressOverlay.swift */; };
+@@ -448,6 +451,7 @@
+ 		BDFF7A882D25F97D0016C40C /* TrioMainWatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDFF7A842D25F97D0016C40C /* TrioMainWatchView.swift */; };
+ 		BDFF7A892D25F97D0016C40C /* TrioWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDFF7A852D25F97D0016C40C /* TrioWatchApp.swift */; };
+ 		BDFF7A8B2D25F97D0016C40C /* Unit Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDFF7A8A2D25F97D0016C40C /* Unit Tests.swift */; };
++		BF0659975D1AA352DAC02F2C /* BetterStackLogtailProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDBCAFDB4A0303036282FE16 /* BetterStackLogtailProvider.swift */; };
+ 		BF1667ADE69E4B5B111CECAE /* ManualTempBasalProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 680C4420C9A345D46D90D06C /* ManualTempBasalProvider.swift */; };
+ 		C21FE1E72DA59C6B007D550B /* GlucoseDailyDistributionChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = C21FE1E62DA59C6B007D550B /* GlucoseDailyDistributionChart.swift */; };
+ 		C263D59F2E4267F400CBF08C /* NightscoutUploadGlucoseStepView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C263D59E2E4267F400CBF08C /* NightscoutUploadGlucoseStepView.swift */; };
+@@ -456,6 +460,7 @@
+ 		C29E268A2DADFD2A00F87E75 /* GlucoseDailyPercentileChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = C29E26892DADFD2A00F87E75 /* GlucoseDailyPercentileChart.swift */; };
+ 		C2A0A42F2CE03131003B98E8 /* ConstantValues.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2A0A42E2CE0312C003B98E8 /* ConstantValues.swift */; };
+ 		C2A6D1E42DB1581D0036DB66 /* GlucoseStatsSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2A6D1E32DB1581D0036DB66 /* GlucoseStatsSetup.swift */; };
++		C61EE355EC4ACABB42C6509D /* CloudLogProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0E0E8CF2AC9CBF0E0DA6E00 /* CloudLogProvider.swift */; };
+ 		C967DACD3B1E638F8B43BE06 /* ManualTempBasalStateModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFCFE0781F9074C2917890E8 /* ManualTempBasalStateModel.swift */; };
+ 		CA370FC152BC98B3D1832968 /* BasalProfileEditorRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF8BCB0C37DEB5EC377B9612 /* BasalProfileEditorRootView.swift */; };
+ 		CC6C406E2ACDD69E009B8058 /* RawFetchedProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC6C406D2ACDD69E009B8058 /* RawFetchedProfile.swift */; };
+@@ -850,6 +855,7 @@
+ 		118DF7652C5ECBC60067FEB7 /* CancelOverrideIntent.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CancelOverrideIntent.swift; sourceTree = "<group>"; };
+ 		118DF7672C5ECBC60067FEB7 /* OverridePresetEntity.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = OverridePresetEntity.swift; sourceTree = "<group>"; };
+ 		118DF7682C5ECBC60067FEB7 /* OverridePresetsIntentRequest.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = OverridePresetsIntentRequest.swift; sourceTree = "<group>"; };
++		1778D8811C03302D38BAF672 /* CloudLogUploader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CloudLogUploader.swift; sourceTree = "<group>"; };
+ 		19012CDB291D2CB900FB8210 /* LoopStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopStats.swift; sourceTree = "<group>"; };
+ 		190EBCC329FF136900BA767D /* UserInterfaceSettingsDataFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserInterfaceSettingsDataFlow.swift; sourceTree = "<group>"; };
+ 		190EBCC529FF138000BA767D /* UserInterfaceSettingsProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserInterfaceSettingsProvider.swift; sourceTree = "<group>"; };
+@@ -1158,6 +1164,7 @@
+ 		881E04BA5E0A003DE8E0A9C6 /* DataTableRootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DataTableRootView.swift; sourceTree = "<group>"; };
+ 		8A9134292D63D9A1007F8874 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+ 		8A91342B2D63D9A2007F8874 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
++		8DC12F945989CC5462FB61BC /* CloudLogUploadService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CloudLogUploadService.swift; sourceTree = "<group>"; };
+ 		920DDB21E5D0EB813197500D /* ConfigEditorRootView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConfigEditorRootView.swift; sourceTree = "<group>"; };
+ 		9455FA2D92E77A6C4AFED8A3 /* DataTableStateModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DataTableStateModel.swift; sourceTree = "<group>"; };
+ 		96653287EDB276A111288305 /* ManualTempBasalDataFlow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ManualTempBasalDataFlow.swift; sourceTree = "<group>"; };
+@@ -1461,6 +1468,7 @@
+ 		DDB37CC32D05044D00D99BF4 /* ContactTrickEntryStored+CoreDataProperties.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContactTrickEntryStored+CoreDataProperties.swift"; sourceTree = "<group>"; };
+ 		DDB37CC42D05048F00D99BF4 /* ContactImageStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactImageStorage.swift; sourceTree = "<group>"; };
+ 		DDB37CC62D05127500D99BF4 /* FontExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FontExtensions.swift; sourceTree = "<group>"; };
++		DDBCAFDB4A0303036282FE16 /* BetterStackLogtailProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BetterStackLogtailProvider.swift; sourceTree = "<group>"; };
+ 		DDBD53FB2DAA903100F940A6 /* OverviewStepView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewStepView.swift; sourceTree = "<group>"; };
+ 		DDC38E0F2D9B376900ADCB46 /* OnboardingView+Util.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OnboardingView+Util.swift"; sourceTree = "<group>"; };
+ 		DDC6CA6C2DD90A2A0060EE25 /* LocalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationTests.swift; sourceTree = "<group>"; };
+@@ -1538,7 +1546,9 @@
+ 		E06B9119275B5EEA003C04B6 /* Array+Extension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Array+Extension.swift"; sourceTree = "<group>"; };
+ 		E0CC2C5B275B9DAE00A7BC71 /* HealthKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HealthKit.framework; path = System/Library/Frameworks/HealthKit.framework; sourceTree = SDKROOT; };
+ 		E0D4F80427513ECF00BDF1FE /* HealthKitSample.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitSample.swift; sourceTree = "<group>"; };
++		E0E0E8CF2AC9CBF0E0DA6E00 /* CloudLogProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CloudLogProvider.swift; sourceTree = "<group>"; };
+ 		E26904AACA8D9C15D229D675 /* SnoozeStateModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SnoozeStateModel.swift; sourceTree = "<group>"; };
++		E3266A087E8FBC424FABD77E /* CloudLogLineParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CloudLogLineParsing.swift; sourceTree = "<group>"; };
+ 		E592A36F2CEEC01E009A472C /* ContactTrickEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactTrickEntry.swift; sourceTree = "<group>"; };
+ 		E592A3712CEEC038009A472C /* ContactImageRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactImageRootView.swift; sourceTree = "<group>"; };
+ 		E592A3732CEEC038009A472C /* ContactImageDataFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactImageDataFlow.swift; sourceTree = "<group>"; };
+@@ -1559,8 +1569,28 @@
+ /* End PBXFileReference section */
+ 
+ /* Begin PBXFileSystemSynchronizedRootGroup section */
+-		BDFF7A9E2D25FA970016C40C /* Preview Content */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = "Preview Content"; sourceTree = "<group>"; };
+-		DDCEBF412CC1B42500DF4C36 /* Views */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Views; sourceTree = "<group>"; };
++		BDFF7A9E2D25FA970016C40C /* Preview Content */ = {
++			isa = PBXFileSystemSynchronizedRootGroup;
++			exceptions = (
++			);
++			explicitFileTypes = {
++			};
++			explicitFolders = (
++			);
++			path = "Preview Content";
++			sourceTree = "<group>";
++		};
++		DDCEBF412CC1B42500DF4C36 /* Views */ = {
++			isa = PBXFileSystemSynchronizedRootGroup;
++			exceptions = (
++			);
++			explicitFileTypes = {
++			};
++			explicitFolders = (
++			);
++			path = Views;
++			sourceTree = "<group>";
++		};
+ /* End PBXFileSystemSynchronizedRootGroup section */
+ 
+ /* Begin PBXFrameworksBuildPhase section */
+@@ -2571,6 +2601,7 @@
+ 				38E98A1C25F52C9300C0CED0 /* Logger.swift */,
+ 				38E98A1D25F52C9300C0CED0 /* IssueReporter */,
+ 				38E98A2225F52C9300C0CED0 /* Error+Extensions.swift */,
++				7DCA35EAC707049F8E4A4E9E /* CloudLogging */,
+ 			);
+ 			path = Logger;
+ 			sourceTree = "<group>";
+@@ -2773,6 +2804,19 @@
+ 			path = LiveActivity;
+ 			sourceTree = "<group>";
+ 		};
++		7DCA35EAC707049F8E4A4E9E /* CloudLogging */ = {
++			isa = PBXGroup;
++			children = (
++				DDBCAFDB4A0303036282FE16 /* BetterStackLogtailProvider.swift */,
++				E3266A087E8FBC424FABD77E /* CloudLogLineParsing.swift */,
++				E0E0E8CF2AC9CBF0E0DA6E00 /* CloudLogProvider.swift */,
++				8DC12F945989CC5462FB61BC /* CloudLogUploadService.swift */,
++				1778D8811C03302D38BAF672 /* CloudLogUploader.swift */,
++			);
++			name = CloudLogging;
++			path = CloudLogging;
++			sourceTree = "<group>";
++		};
+ 		84BDC840A57C65A1E6F9F780 /* View */ = {
+ 			isa = PBXGroup;
+ 			children = (
+@@ -3843,8 +3887,6 @@
+ 			dependencies = (
+ 			);
+ 			name = "Trio Watch Complication Extension";
+-			packageProductDependencies = (
+-			);
+ 			productName = "Trio Watch WidgetExtension";
+ 			productReference = BD8207C32D2B42E50023339D /* Trio Watch Complication Extension.appex */;
+ 			productType = "com.apple.product-type.app-extension";
+@@ -3867,8 +3909,6 @@
+ 				BDFF7A9E2D25FA970016C40C /* Preview Content */,
+ 			);
+ 			name = "Trio Watch App";
+-			packageProductDependencies = (
+-			);
+ 			productName = "TrioWatch Watch App";
+ 			productReference = BDFF797C2D25AA870016C40C /* Trio Watch App.app */;
+ 			productType = "com.apple.product-type.application";
+@@ -3887,8 +3927,6 @@
+ 				BDFF798D2D25AA890016C40C /* PBXTargetDependency */,
+ 			);
+ 			name = "Trio Watch AppTests";
+-			packageProductDependencies = (
+-			);
+ 			productName = "TrioWatch Watch AppTests";
+ 			productReference = BDFF798B2D25AA890016C40C /* Trio Watch AppTests.xctest */;
+ 			productType = "com.apple.product-type.bundle.unit-test";
+@@ -4637,16 +4675,16 @@
+ 				BDF34F952C10D27300D51995 /* DeterminationData.swift in Sources */,
+ 				BA00D96F7B2FF169A06FB530 /* CGMSettingsStateModel.swift in Sources */,
+ 				BD7DA9A52AE06DFC00601B20 /* BolusCalculatorConfigDataFlow.swift in Sources */,
+-				6EADD581738D64431902AC0A /* (null) in Sources */,
++				6EADD581738D64431902AC0A /* BuildFile in Sources */,
+ 				CE94598729E9E4110047C9C6 /* WatchConfigRootView.swift in Sources */,
+ 				DD5DC9FB2CF3E1B100AB8703 /* AdjustmentsStateModel+Helpers.swift in Sources */,
+ 				BD249D972D42FCBF00412DEB /* AreaChartSetup.swift in Sources */,
+ 				DDF847E42C5C288F0049BB3B /* LiveActivitySettingsRootView.swift in Sources */,
+ 				DD88C8E22C50420800F2D558 /* DefinitionRow.swift in Sources */,
+-				B7C465E9472624D8A2BE2A6A /* (null) in Sources */,
++				B7C465E9472624D8A2BE2A6A /* BuildFile in Sources */,
+ 				71D44AAB2CA5F5EA0036EE9E /* AlertPermissionsChecker.swift in Sources */,
+ 				DDF691032DA2CA1E008BF16C /* AppDiagnosticsProvider.swift in Sources */,
+-				320D030F724170A637F06D50 /* (null) in Sources */,
++				320D030F724170A637F06D50 /* BuildFile in Sources */,
+ 				19E1F7E829D082D0005C8D20 /* IconConfigDataFlow.swift in Sources */,
+ 				5A2325522BFCBF55003518CA /* NightscoutUploadView.swift in Sources */,
+ 				E3A08AAE59538BC8A8ABE477 /* GlucoseNotificationSettingsDataFlow.swift in Sources */,
+@@ -4701,6 +4739,11 @@
+ 				8194B80890CDD6A3C13B0FEE /* SnoozeStateModel.swift in Sources */,
+ 				BDA25EE42D260CD500035F34 /* AppleWatchManager.swift in Sources */,
+ 				0437CE46C12535A56504EC19 /* SnoozeRootView.swift in Sources */,
++				BF0659975D1AA352DAC02F2C /* BetterStackLogtailProvider.swift in Sources */,
++				3D61060A6B8542C1A8DEAB49 /* CloudLogLineParsing.swift in Sources */,
++				C61EE355EC4ACABB42C6509D /* CloudLogProvider.swift in Sources */,
++				9285C282001036ADE8B0C7AF /* CloudLogUploadService.swift in Sources */,
++				46E87D4DA9CF10D1CF293D49 /* CloudLogUploader.swift in Sources */,
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 		};
+diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
+index 1d148c93d49f80154179904b96f08cae4310b010..3535583c3cbf7b5fe9f39dd6b9ae04f19f8283ad 100644
+--- a/Trio/Sources/Application/TrioApp.swift
++++ b/Trio/Sources/Application/TrioApp.swift
+@@ -81,6 +81,7 @@ extension Notification.Name {
+         _ = resolver.resolve(BluetoothStateManager.self)!
+         _ = resolver.resolve(PluginManager.self)!
+         _ = resolver.resolve(AlertPermissionsChecker.self)!
++        _ = resolver.resolve(CloudLogUploadService.self)!
+         if #available(iOS 16.2, *) {
+             _ = resolver.resolve(LiveActivityManager.self)!
+         }
+diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
+index fea855ed8afefac1ff2d8b32d198feacbcc16e3c..94a505ebad4f7039b5b7857f716d8e5a40f42a3a 100644
+--- a/Trio/Sources/Assemblies/ServiceAssembly.swift
++++ b/Trio/Sources/Assemblies/ServiceAssembly.swift
+@@ -23,6 +23,7 @@ final class ServiceAssembly: Assembly {
+         container.register(GarminManager.self) { r in BaseGarminManager(resolver: r) }
+         container.register(ContactImageManager.self) { r in BaseContactImageManager(resolver: r) }
+         container.register(AlertPermissionsChecker.self) { r in AlertPermissionsChecker(resolver: r) }
++        container.register(CloudLogUploadService.self) { _ in CloudLogUploadService() }
+         if #available(iOS 16.2, *) {
+             container.register(LiveActivityManager.self) { r in
+                 LiveActivityManager(resolver: r)
+diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..0bc6904cfefb811ab325eec7932e1ba8ba561aa9
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
+@@ -0,0 +1,59 @@
++import Foundation
++
++/// Better Stack / Logtail provider.
++///
++/// Endpoint: POST https://in.logs.betterstack.com/
++/// Success: HTTP 202 only
++final class BetterStackLogtailProvider: CloudLogProvider {
++    private let tokenProvider: () -> String?
++    private let session: URLSession
++
++    init(
++        tokenProvider: @escaping () -> String?,
++        session: URLSession = .shared
++    ) {
++        self.tokenProvider = tokenProvider
++        self.session = session
++    }
++
++    func upload(events: [CloudLogEvent]) async -> Result<Void, CloudLogUploadError> {
++        guard !events.isEmpty else { return .success(()) }
++
++        guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            return .failure(.notConfigured)
++        }
++
++        guard let url = URL(string: "https://in.logs.betterstack.com/") else {
++            return .failure(.invalidURL)
++        }
++
++        var request = URLRequest(url: url)
++        request.httpMethod = "POST"
++        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
++        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
++
++        do {
++            request.httpBody = try JSONEncoder().encode(events)
++        } catch {
++            return .failure(.encoding(error))
++        }
++
++        do {
++            let (data, response) = try await session.data(for: request)
++            guard let http = response as? HTTPURLResponse else {
++                return .failure(.invalidResponse)
++            }
++
++            // Critical: treat HTTP 202 only as success.
++            guard http.statusCode == 202 else {
++                let preview = String(data: data.prefix(512), encoding: .utf8)
++                return .failure(.unexpectedStatus(code: http.statusCode, bodyPreview: preview))
++            }
++
++            return .success(())
++        } catch {
++            return .failure(.transport(error))
++        }
++    }
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc8bc74d0edd339871dd34b6d123623e9e2dbd2f
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
+@@ -0,0 +1,113 @@
++import Foundation
++
++enum CloudLogPlatform: String {
++    case ios
++    case watchos
++}
++
++struct CloudParsedLogLine {
++    let dt: String?
++    let category: String?
++    let level: String?
++    let message: String
++}
++
++enum CloudLogLineParser {
++    // iPhone format:
++    // <TIMESTAMP> [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>: <message>
++    static func parseIOS(_ line: String) -> CloudParsedLogLine? {
++        let trimmed = line.trimmingCharacters(in: .newlines)
++        guard !trimmed.isEmpty else { return nil }
++
++        // Timestamp = first token
++        let tokens = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
++        let rawTs = tokens.first.map(String.init)
++        let dt = rawTs.flatMap(normalizeTimestamp)
++
++        // Category = first [...] after timestamp
++        var category: String?
++        if let range = trimmed.range(of: #"^\S+\s+\[([^\]]+)\]"#, options: [.regularExpression]) {
++            // Extract using a second regex capture to keep code simple.
++            if let match = trimmed[range].range(of: #"\[([^\]]+)\]"#, options: .regularExpression) {
++                let bracketed = String(trimmed[match])
++                category = bracketed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
++            }
++        }
++
++        // Level = delimiter-aware: " - (DEV|INFO|WARN|ERR):"
++        let levelRegex = #"\s-\s(DEV|INFO|WARN|ERR):\s"#
++        guard let levelMatch = trimmed.range(of: levelRegex, options: .regularExpression) else {
++            // If we can't confidently parse, still return the original line as message.
++            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: trimmed)
++        }
++
++        // Extract the actual level token
++        let levelToken = String(trimmed[levelMatch])
++            .replacingOccurrences(of: " - ", with: "")
++            .replacingOccurrences(of: ":", with: "")
++            .trimmingCharacters(in: .whitespacesAndNewlines)
++
++        // Message = everything after "<LEVEL>: "
++        let messageStart = trimmed.index(levelMatch.upperBound, offsetBy: 0)
++        let parsedMessage = String(trimmed[messageStart...]).trimmingCharacters(in: .newlines)
++
++        return CloudParsedLogLine(dt: dt, category: category, level: levelToken, message: parsedMessage.isEmpty ? trimmed : parsedMessage)
++    }
++
++    // Watch format:
++    // [<TIMESTAMP>] [<File.swift>:<line>] <function>() → <message>
++    static func parseWatch(_ line: String) -> CloudParsedLogLine? {
++        let trimmed = line.trimmingCharacters(in: .newlines)
++        guard !trimmed.isEmpty else { return nil }
++
++        // Timestamp = first [...] token
++        var dt: String?
++        if let tsRange = trimmed.range(of: #"^\[([^\]]+)\]"#, options: [.regularExpression]) {
++            let bracketed = String(trimmed[tsRange])
++            let raw = bracketed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
++            dt = normalizeTimestamp(raw)
++        }
++
++        // Category = filename from [File.swift:line] (without .swift)
++        var category: String?
++        if let fileRange = trimmed.range(of: #"\]\s+\[([^\]]+)\]"#, options: [.regularExpression]) {
++            let bracketed = String(trimmed[fileRange])
++            // bracketed is like "] [WatchLogger.swift:169]"
++            if let inner = bracketed.range(of: #"\[([^\]]+)\]"#, options: .regularExpression) {
++                let inside = String(bracketed[inner]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
++                let filePart = inside.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init)
++                if let filePart {
++                    category = filePart.replacingOccurrences(of: ".swift", with: "")
++                }
++            }
++        }
++
++        // Message = everything after the arrow
++        if let arrowRange = trimmed.range(of: "→") {
++            let msg = trimmed[arrowRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
++            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg.isEmpty ? trimmed : String(msg))
++        }
++
++        return CloudParsedLogLine(dt: dt, category: category, level: nil, message: trimmed)
++    }
++
++    /// Normalizes "yyyy-MM-dd'T'HH:mm:ssZ" like "...+0100" into "...+01:00" if possible.
++    /// Returns nil if normalization is not possible.
++    static func normalizeTimestamp(_ raw: String) -> String? {
++        // Only normalize if it ends with "+HHMM" or "-HHMM"
++        let tzRegex = #"([+-]\d{2})(\d{2})$"#
++        guard let tzRange = raw.range(of: tzRegex, options: .regularExpression) else {
++            return nil
++        }
++
++        let tz = raw[tzRange]
++        let tzStr = String(tz)
++        guard tzStr.count == 5 else { return nil }
++
++        let hh = tzStr.prefix(3) // +01
++        let mm = tzStr.suffix(2) // 00
++        let normalized = raw.replacingCharacters(in: tzRange, with: "\(hh):\(mm)")
++        return normalized
++    }
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..acee295f8836b831b821be928922335304470910
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
+@@ -0,0 +1,41 @@
++import Foundation
++
++protocol CloudLogProvider {
++    /// Uploads a batch of events.
++    ///
++    /// - Important: Must only treat HTTP 202 as success.
++    func upload(events: [CloudLogEvent]) async -> Result<Void, CloudLogUploadError>
++}
++
++enum CloudLogUploadError: Error, CustomStringConvertible {
++    case notConfigured
++    case invalidURL
++    case transport(Error)
++    case invalidResponse
++    case unexpectedStatus(code: Int, bodyPreview: String?)
++    case encoding(Error)
++
++    var description: String {
++        switch self {
++        case .notConfigured:
++            return "Cloud logging not configured"
++        case .invalidURL:
++            return "Invalid cloud logging URL"
++        case let .transport(error):
++            return "Transport error: \(error)"
++        case .invalidResponse:
++            return "Invalid HTTP response"
++        case let .unexpectedStatus(code, bodyPreview):
++            return "Unexpected HTTP status: \(code) body: \(bodyPreview ?? "<nil>")"
++        case let .encoding(error):
++            return "Encoding error: \(error)"
++        }
++    }
++}
++
++struct CloudLogEvent: Encodable {
++    let message: String
++    let dt: String?
++    let attributes: [String: String]?
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9de3efe2ec5de99f2e6cb7dcbebcfc6e284ef7d
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
+@@ -0,0 +1,102 @@
++import Foundation
++import UIKit
++
++/// App lifecycle + periodic trigger wrapper.
++///
++/// - Manual trigger: `uploadNow()`
++/// - Lifecycle triggers: foreground/background
++/// - Periodic trigger: every 5 minutes while app is running
++final class CloudLogUploadService {
++    static let userDefaultsTokenKey = "cloudLogging.betterStackSourceToken"
++
++    private let uploader: CloudLogUploader
++    private var timer: Timer?
++    private var observers: [NSObjectProtocol] = []
++
++    init() {
++        let provider = BetterStackLogtailProvider(tokenProvider: {
++            // Priority: UserDefaults (future UI) → Info.plist → Process environment (dev builds).
++            if let t = UserDefaults.standard.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
++            if let t = Bundle.main.object(forInfoDictionaryKey: "BetterStackSourceToken") as? String, !t.isEmpty { return t }
++            return ProcessInfo.processInfo.environment["BETTERSTACK_SOURCE_TOKEN"]
++        })
++
++        let pairs: [CloudLogUploader.RotatingPair] = [
++            .init(
++                currentPath: SimpleLogReporter.logFile,
++                previousPath: SimpleLogReporter.logFilePrev,
++                platform: .ios,
++                parser: CloudLogLineParser.parseIOS
++            ),
++            .init(
++                currentPath: SimpleLogReporter.watchLogFile,
++                previousPath: SimpleLogReporter.watchLogFilePrev,
++                platform: .watchos,
++                parser: CloudLogLineParser.parseWatch
++            )
++        ]
++
++        uploader = CloudLogUploader(provider: provider, pairs: pairs)
++
++        start()
++    }
++
++    deinit {
++        stop()
++    }
++
++    func uploadNow() {
++        Task {
++            await uploader.uploadNow()
++        }
++    }
++
++    // MARK: - Scheduling
++
++    private func start() {
++        // Don’t upload if the user disabled diagnostics sharing (best-effort).
++        if PropertyPersistentFlags.shared.diagnosticsSharingEnabled == false {
++            return
++        }
++
++        // Foreground + background triggers
++        let center = NotificationCenter.default
++
++        observers.append(
++            center.addObserver(
++                forName: UIApplication.willEnterForegroundNotification,
++                object: nil,
++                queue: .main
++            ) { [weak self] _ in
++                self?.uploadNow()
++            }
++        )
++
++        observers.append(
++            center.addObserver(
++                forName: UIApplication.didEnterBackgroundNotification,
++                object: nil,
++                queue: .main
++            ) { [weak self] _ in
++                self?.uploadNow()
++            }
++        )
++
++        // Periodic trigger (while running)
++        timer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
++            self?.uploadNow()
++        }
++    }
++
++    private func stop() {
++        timer?.invalidate()
++        timer = nil
++
++        let center = NotificationCenter.default
++        for o in observers {
++            center.removeObserver(o)
++        }
++        observers.removeAll()
++    }
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..8469086bdb8b90e2c35115a45d65f295213137f6
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
+@@ -0,0 +1,276 @@
++import Foundation
++
++/// iPhone-only log tailer/uploader.
++///
++/// - Keeps file-based logs as the source of truth.
++/// - Tails files using byte offsets (no buffering).
++/// - Handles daily rotation where `*_log.txt` is moved to `*_log_prev.txt`.
++actor CloudLogUploader {
++    struct RotatingPair {
++        let currentPath: String
++        let previousPath: String
++        let platform: CloudLogPlatform
++        let parser: (String) -> CloudParsedLogLine?
++    }
++
++    private struct TailState: Codable {
++        var offset: UInt64
++        var creationDateEpoch: TimeInterval?
++    }
++
++    private let provider: CloudLogProvider
++    private let pairs: [RotatingPair]
++    private let userDefaults: UserDefaults
++    private let stateKey = "cloudLogUploader.tailState.v1"
++
++    private var isUploading = false
++
++    init(
++        provider: CloudLogProvider,
++        pairs: [RotatingPair],
++        userDefaults: UserDefaults = .standard
++    ) {
++        self.provider = provider
++        self.pairs = pairs
++        self.userDefaults = userDefaults
++    }
++
++    func uploadNow() async {
++        // Coalesce to avoid overlapping uploads on lifecycle + timer.
++        guard !isUploading else { return }
++        isUploading = true
++        defer { isUploading = false }
++
++        for pair in pairs {
++            await uploadRotatingPair(pair)
++        }
++    }
++
++    // MARK: - Rotation + tail logic
++
++    private func uploadRotatingPair(_ pair: RotatingPair) async {
++        let currentURL = URL(fileURLWithPath: pair.currentPath)
++        let prevURL = URL(fileURLWithPath: pair.previousPath)
++
++        var currentState = loadState(for: pair.currentPath)
++        var prevState = loadState(for: pair.previousPath)
++
++        // Reset offsets if file shrank (rotation or truncation).
++        if let currentSize = fileSize(currentURL), currentSize < currentState.offset {
++            currentState.offset = 0
++        }
++        if let prevSize = fileSize(prevURL), prevSize < prevState.offset {
++            prevState.offset = 0
++        }
++
++        // Detect rotation: if current creationDate changed, the previous file likely holds the prior content.
++        let currentCreationEpoch = fileCreationEpoch(currentURL)
++        if let storedEpoch = currentState.creationDateEpoch,
++           let currentCreationEpoch,
++           storedEpoch != currentCreationEpoch
++        {
++            // Map the old current offset onto the previous file so we don't re-upload already-uploaded bytes.
++            // (Rotation moves current -> previous, and creates a new current file.)
++            let oldCurrentOffset = currentState.offset
++            if let prevSize = fileSize(prevURL), prevSize > 0 {
++                prevState.offset = max(prevState.offset, min(oldCurrentOffset, prevSize))
++                prevState.creationDateEpoch = fileCreationEpoch(prevURL)
++                saveState(prevState, for: pair.previousPath)
++            }
++
++            // Best-effort: upload missed tail from previous file using the old offset.
++            if let prevSize = fileSize(prevURL), prevSize > 0 {
++                let startOffset = min(oldCurrentOffset, prevSize)
++                _ = await uploadNewContent(
++                    fileURL: prevURL,
++                    filePathKey: pair.previousPath,
++                    startOffset: startOffset,
++                    platform: pair.platform,
++                    parser: pair.parser
++                )
++
++                // Regardless of whether the upload succeeded, keep prevState stable.
++                // Only advance on success is handled in uploadNewContent.
++            }
++
++            // Reset current state for the new day (new file).
++            currentState.offset = 0
++            currentState.creationDateEpoch = currentCreationEpoch
++            saveState(currentState, for: pair.currentPath)
++        } else {
++            // Persist current creation date if we don't have it yet.
++            if currentState.creationDateEpoch == nil {
++                currentState.creationDateEpoch = currentCreationEpoch
++                saveState(currentState, for: pair.currentPath)
++            }
++        }
++
++        // Upload current tail.
++        _ = await uploadNewContent(
++            fileURL: currentURL,
++            filePathKey: pair.currentPath,
++            startOffset: loadState(for: pair.currentPath).offset,
++            platform: pair.platform,
++            parser: pair.parser
++        )
++
++        // Upload previous tail as well (best-effort for late rotation or missed uploads).
++        _ = await uploadNewContent(
++            fileURL: prevURL,
++            filePathKey: pair.previousPath,
++            startOffset: loadState(for: pair.previousPath).offset,
++            platform: pair.platform,
++            parser: pair.parser
++        )
++    }
++
++    private func uploadNewContent(
++        fileURL: URL,
++        filePathKey: String,
++        startOffset: UInt64,
++        platform: CloudLogPlatform,
++        parser: (String) -> CloudParsedLogLine?
++    ) async -> Bool {
++        guard FileManager.default.fileExists(atPath: fileURL.path) else { return true }
++        guard let size = fileSize(fileURL), size > startOffset else { return true }
++
++        guard let (lines, nextOffset) = readCompleteLines(fileURL: fileURL, startOffset: startOffset) else {
++            return true
++        }
++        guard !lines.isEmpty else {
++            saveState(TailState(offset: nextOffset, creationDateEpoch: fileCreationEpoch(fileURL)), for: filePathKey)
++            return true
++        }
++
++        let commonAttributes = buildCommonAttributes(platform: platform)
++
++        // Build events (best-effort parsing; always upload the line).
++        let events: [CloudLogEvent] = lines.compactMap { line in
++            let parsed = parser(line)
++            var attrs = commonAttributes
++            if let parsed {
++                if let c = parsed.category { attrs["category"] = c }
++                if let l = parsed.level { attrs["level"] = l }
++                attrs["raw"] = line
++                return CloudLogEvent(message: parsed.message, dt: parsed.dt, attributes: attrs)
++            } else {
++                attrs["raw"] = line
++                return CloudLogEvent(message: line, dt: nil, attributes: attrs)
++            }
++        }
++
++        switch await provider.upload(events: events) {
++        case .success:
++            var state = loadState(for: filePathKey)
++            state.offset = nextOffset
++            if state.creationDateEpoch == nil {
++                state.creationDateEpoch = fileCreationEpoch(fileURL)
++            }
++            saveState(state, for: filePathKey)
++            return true
++        case .failure:
++            // Critical: do NOT advance offsets.
++            return false
++        }
++    }
++
++    /// Reads from startOffset to EOF and returns only complete lines (ending with '\n').
++    /// The returned `nextOffset` is the byte offset right after the last complete newline.
++    private func readCompleteLines(fileURL: URL, startOffset: UInt64) -> ([String], UInt64)? {
++        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
++        defer { try? handle.close() }
++
++        do {
++            try handle.seek(toOffset: startOffset)
++            let data = try handle.readToEnd() ?? Data()
++            guard !data.isEmpty else { return ([], startOffset) }
++
++            // Only advance to the last newline to avoid uploading a partial final line.
++            guard let lastNewlineIdx = data.lastIndex(of: 0x0A) else {
++                return ([], startOffset)
++            }
++
++            let completeData = data.prefix(upTo: data.index(after: lastNewlineIdx))
++            let text = String(decoding: completeData, as: UTF8.self)
++
++            let lines = text
++                .split(separator: "\n", omittingEmptySubsequences: true)
++                .map { String($0).trimmingCharacters(in: .newlines) }
++
++            let nextOffset = startOffset + UInt64(completeData.count)
++            return (lines, nextOffset)
++        } catch {
++            return nil
++        }
++    }
++
++    // MARK: - Attributes
++
++    private func buildCommonAttributes(platform: CloudLogPlatform) -> [String: String] {
++        var attrs: [String: String] = [:]
++        attrs["platform"] = platform.rawValue
++
++        let env: String
++        if BuildDetails.shared.isTestFlightBuild() {
++            env = "testflight"
++        } else {
++            #if DEBUG
++                env = "debug"
++            #else
++                env = "release"
++            #endif
++        }
++        attrs["env"] = env
++
++        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
++            attrs["appVersion"] = version
++        }
++        if let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
++            attrs["build"] = build
++        }
++
++        return attrs
++    }
++
++    // MARK: - State store
++
++    private func loadState(for path: String) -> TailState {
++        guard let data = userDefaults.data(forKey: stateKey),
++              let dict = try? JSONDecoder().decode([String: TailState].self, from: data),
++              let state = dict[path]
++        else {
++            return TailState(offset: 0, creationDateEpoch: nil)
++        }
++        return state
++    }
++
++    private func saveState(_ state: TailState, for path: String) {
++        var dict: [String: TailState] = [:]
++        if let data = userDefaults.data(forKey: stateKey),
++           let decoded = try? JSONDecoder().decode([String: TailState].self, from: data)
++        {
++            dict = decoded
++        }
++        dict[path] = state
++        if let encoded = try? JSONEncoder().encode(dict) {
++            userDefaults.set(encoded, forKey: stateKey)
++        }
++    }
++
++    // MARK: - File helpers
++
++    private func fileSize(_ url: URL) -> UInt64? {
++        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
++              let size = attrs[.size] as? NSNumber
++        else { return nil }
++        return size.uint64Value
++    }
++
++    private func fileCreationEpoch(_ url: URL) -> TimeInterval? {
++        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
++              let date = attrs[.creationDate] as? Date
++        else { return nil }
++        return date.timeIntervalSince1970
++    }
++}
++
+diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..813156f04765e451e55b62744ca1e08e9848d1ca
+--- /dev/null
++++ b/docs/cloud-logging.md
+@@ -0,0 +1,132 @@
++# Cloud logging (Better Stack / Logtail)
++
++## Goals / constraints
++
++- **File-based logs remain the source of truth** (no changes to how logs are written).
++- **Watch → iPhone log transfer is reused** (watch logs are uploaded from the phone only).
++- **Cloud upload tails files using byte offsets** (no extra buffering system).
++- **Provider is swappable** (Better Stack is implemented; Axiom is a fallback design target).
++
++## Provider
++
++- **Primary**: Better Stack / Logtail
++- **Fallback**: Axiom (not implemented yet, but the code is structured around a `CloudLogProvider` protocol)
++
++### Better Stack endpoint
++
++- **URL**: `https://in.logs.betterstack.com/`
++- **Method**: `POST`
++- **Headers**:
++  - `Authorization: Bearer <SOURCE_TOKEN>`
++  - `Content-Type: application/json`
++- **Success criteria**:
++  - **HTTP 202 only** is treated as success.
++  - Any other status does **not** advance offsets (uploads are safe to retry).
++
++## Log files (authoritative on-device sources)
++
++### iPhone logs
++
++Written by existing file logging (`SimpleLogReporter`):
++
++- Current: `Documents/logs/log.txt`
++- Previous (daily rotation): `Documents/logs/log_prev.txt`
++
++Format:
++
++`<TIMESTAMP> [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>: <message>`
++
++Example:
++
++`2025-12-31T22:02:48+0100 [WatchManager] AppleWatchManager.swift - sendDataToWatch(_:) - 536 - DEV: 📤 Transferred new WatchState snapshot via userInfo`
++
++### Watch logs (on iPhone)
++
++The watch sends logs via WatchConnectivity; the iPhone already persists them (no changes required):
++
++- Current: `Documents/logs/watch_log.txt`
++- Previous (daily rotation): `Documents/logs/watch_log_prev.txt`
++
++Format:
++
++`[<TIMESTAMP>] [<File.swift>:<line>] <function>() → <message>`
++
++Example:
++
++`[2025-12-31T00:01:27+0100] [WatchLogger.swift:169] flushToPhone() → ⌚️ Logs queued for background delivery to phone`
++
++## Upload-time parsing (best-effort, non-destructive)
++
++Parsing is done **only at upload time** and is **tolerant of failures**: if parsing fails, the original line is still uploaded.
++
++### Timestamp normalization
++
++Both iPhone and watch timestamps use `+0100` style timezones. When possible, they are normalized to `+01:00`:
++
++- `2025-12-31T22:02:48+0100` → `2025-12-31T22:02:48+01:00`
++
++If normalization fails, `dt` is omitted.
++
++### iPhone parsing
++
++- **dt**: first token, normalized timezone
++- **category**: extracted from `[Category]` immediately after timestamp
++- **level**: extracted via delimiter-aware match: `\s-\s(DEV|INFO|WARN|ERR):\s`
++- **message**: everything after `<LEVEL>: `
++
++### watch parsing
++
++- **dt**: extracted from first `[ ... ]`, normalized timezone
++- **category**: derived from filename in `[File.swift:line]` (without `.swift`)
++- **level**: not inferred
++- **message**: everything after `→`
++
++### Platform tagging
++
++- iPhone files → `platform = ios`
++- watch files → `platform = watchos`
++
++## Offsets + rotation
++
++Uploads tail each file using a **byte offset** stored on-device.
++
++- On each run, only newly appended **complete lines** (ending in `\n`) are uploaded.
++- If the file **shrinks** (truncation / rotation), its offset is reset to `0`.
++- For daily rotation where `*_log.txt` is moved to `*_log_prev.txt`, the uploader best-effort uploads any missed tail from `*_log_prev.txt` before continuing with the new day’s `*_log.txt`.
++
++## Triggers
++
++Uploads are triggered from the iPhone app only:
++
++- **Manual**: `CloudLogUploadService.uploadNow()`
++- **Lifecycle**:
++  - app foreground
++  - app background
++- **Periodic**: every 5 minutes while the app is running
++
++## Setup (token)
++
++You must provide a Better Stack **source token**.
++
++Currently supported injection points (in priority order):
++
++1. `UserDefaults` key: `cloudLogging.betterStackSourceToken` (intended for a future in-app UI)
++2. `Info.plist` key: `BetterStackSourceToken` (build-time injection recommended; do not commit secrets)
++3. Process environment variable: `BETTERSTACK_SOURCE_TOKEN` (useful for local/dev builds)
++
++## Querying + export for AI analysis
++
++Recommended practice:
++
++- Filter by `attributes.platform`, `attributes.category`, `attributes.level`, `attributes.env`, `attributes.appVersion`, `attributes.build`.
++- Export by time range + filters for a focused dataset (e.g., around a crash or loop failure).
++- Include `attributes.raw` when you need to reconstruct the original log line format.
++
++## Future: on-device log viewer (Idea #1)
++
++This design supports an on-device log viewer without rework because:
++
++- The authoritative log files remain on disk (`Documents/logs/...`).
++- Cloud upload logic reads using byte offsets without changing log writes.
++- A future viewer can read the same files and optionally reuse the same parsing helpers.
++

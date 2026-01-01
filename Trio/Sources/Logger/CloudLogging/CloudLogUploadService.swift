@@ -1,0 +1,102 @@
+import Foundation
+import UIKit
+
+/// App lifecycle + periodic trigger wrapper.
+///
+/// - Manual trigger: `uploadNow()`
+/// - Lifecycle triggers: foreground/background
+/// - Periodic trigger: every 5 minutes while app is running
+final class CloudLogUploadService {
+    static let userDefaultsTokenKey = "cloudLogging.betterStackSourceToken"
+
+    private let uploader: CloudLogUploader
+    private var timer: Timer?
+    private var observers: [NSObjectProtocol] = []
+
+    init() {
+        let provider = BetterStackLogtailProvider(tokenProvider: {
+            // Priority: UserDefaults (future UI) → Info.plist → Process environment (dev builds).
+            if let t = UserDefaults.standard.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
+            if let t = Bundle.main.object(forInfoDictionaryKey: "BetterStackSourceToken") as? String, !t.isEmpty { return t }
+            return ProcessInfo.processInfo.environment["BETTERSTACK_SOURCE_TOKEN"]
+        })
+
+        let pairs: [CloudLogUploader.RotatingPair] = [
+            .init(
+                currentPath: SimpleLogReporter.logFile,
+                previousPath: SimpleLogReporter.logFilePrev,
+                platform: .ios,
+                parser: CloudLogLineParser.parseIOS
+            ),
+            .init(
+                currentPath: SimpleLogReporter.watchLogFile,
+                previousPath: SimpleLogReporter.watchLogFilePrev,
+                platform: .watchos,
+                parser: CloudLogLineParser.parseWatch
+            )
+        ]
+
+        uploader = CloudLogUploader(provider: provider, pairs: pairs)
+
+        start()
+    }
+
+    deinit {
+        stop()
+    }
+
+    func uploadNow() {
+        Task {
+            await uploader.uploadNow()
+        }
+    }
+
+    // MARK: - Scheduling
+
+    private func start() {
+        // Don’t upload if the user disabled diagnostics sharing (best-effort).
+        if PropertyPersistentFlags.shared.diagnosticsSharingEnabled == false {
+            return
+        }
+
+        // Foreground + background triggers
+        let center = NotificationCenter.default
+
+        observers.append(
+            center.addObserver(
+                forName: UIApplication.willEnterForegroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.uploadNow()
+            }
+        )
+
+        observers.append(
+            center.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.uploadNow()
+            }
+        )
+
+        // Periodic trigger (while running)
+        timer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
+            self?.uploadNow()
+        }
+    }
+
+    private func stop() {
+        timer?.invalidate()
+        timer = nil
+
+        let center = NotificationCenter.default
+        for o in observers {
+            center.removeObserver(o)
+        }
+        observers.removeAll()
+    }
+}
+
