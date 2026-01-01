@@ -86,7 +86,7 @@ final class CloudLogUploadService {
 
     private func start() {
         // Foreground + background triggers
-        let center = NotificationCenter.default
+        let center = Foundation.NotificationCenter.default
 
         observers.append(
             center.addObserver(
@@ -118,7 +118,7 @@ final class CloudLogUploadService {
         timer?.invalidate()
         timer = nil
 
-        let center = NotificationCenter.default
+        let center = Foundation.NotificationCenter.default
         for o in observers {
             center.removeObserver(o)
         }
