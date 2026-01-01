@@ -17,6 +17,11 @@ enum BetterStackSettingsStore {
             }
         }
 
+        // Fallback: some builds use a short app group name like "Trio".
+        if let settings = load(from: .sharedContainer(appGroupName: "Trio")) {
+            return settings
+        }
+
         // Fallback to local documents directory (useful for simulator/dev environments).
         return load(from: .documents)
     }
