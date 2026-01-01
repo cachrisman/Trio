@@ -35,25 +35,31 @@ actor CloudLogUploader {
         self.userDefaults = userDefaults
     }
 
-    func uploadNow() async {
+    /// Returns true if this run completed without provider failures.
+    @discardableResult
+    func uploadNow() async -> Bool {
         // Coalesce to avoid overlapping uploads on lifecycle + timer.
-        guard !isUploading else { return }
+        guard !isUploading else { return true }
         isUploading = true
         defer { isUploading = false }
 
+        var allSucceeded = true
         for pair in pairs {
-            await uploadRotatingPair(pair)
+            let ok = await uploadRotatingPair(pair)
+            if !ok { allSucceeded = false }
         }
+        return allSucceeded
     }
 
     // MARK: - Rotation + tail logic
 
-    private func uploadRotatingPair(_ pair: RotatingPair) async {
+    private func uploadRotatingPair(_ pair: RotatingPair) async -> Bool {
         let currentURL = URL(fileURLWithPath: pair.currentPath)
         let prevURL = URL(fileURLWithPath: pair.previousPath)
 
         var currentState = loadState(for: pair.currentPath)
         var prevState = loadState(for: pair.previousPath)
+        var succeeded = true
 
         // Reset offsets if file shrank (rotation or truncation).
         if let currentSize = fileSize(currentURL), currentSize < currentState.offset {
@@ -81,13 +87,14 @@ actor CloudLogUploader {
             // Best-effort: upload missed tail from previous file using the old offset.
             if let prevSize = fileSize(prevURL), prevSize > 0 {
                 let startOffset = min(oldCurrentOffset, prevSize)
-                _ = await uploadNewContent(
+                let ok = await uploadNewContent(
                     fileURL: prevURL,
                     filePathKey: pair.previousPath,
                     startOffset: startOffset,
                     platform: pair.platform,
                     parser: pair.parser
                 )
+                if !ok { succeeded = false }
 
                 // Regardless of whether the upload succeeded, keep prevState stable.
                 // Only advance on success is handled in uploadNewContent.
@@ -106,22 +113,26 @@ actor CloudLogUploader {
         }
 
         // Upload current tail.
-        _ = await uploadNewContent(
+        let okCurrent = await uploadNewContent(
             fileURL: currentURL,
             filePathKey: pair.currentPath,
             startOffset: loadState(for: pair.currentPath).offset,
             platform: pair.platform,
             parser: pair.parser
         )
+        if !okCurrent { succeeded = false }
 
         // Upload previous tail as well (best-effort for late rotation or missed uploads).
-        _ = await uploadNewContent(
+        let okPrev = await uploadNewContent(
             fileURL: prevURL,
             filePathKey: pair.previousPath,
             startOffset: loadState(for: pair.previousPath).offset,
             platform: pair.platform,
             parser: pair.parser
         )
+        if !okPrev { succeeded = false }
+
+        return succeeded
     }
 
     private func uploadNewContent(
@@ -151,27 +162,36 @@ actor CloudLogUploader {
             if let parsed {
                 if let c = parsed.category { attrs["category"] = c }
                 if let l = parsed.level { attrs["level"] = l }
-                attrs["raw"] = line
                 return CloudLogEvent(message: parsed.message, dt: parsed.dt, attributes: attrs)
             } else {
-                attrs["raw"] = line
                 return CloudLogEvent(message: line, dt: nil, attributes: attrs)
             }
         }
 
-        switch await provider.upload(events: events) {
-        case .success:
-            var state = loadState(for: filePathKey)
-            state.offset = nextOffset
-            if state.creationDateEpoch == nil {
-                state.creationDateEpoch = fileCreationEpoch(fileURL)
+        // Upload in batches to avoid oversized payloads.
+        let batchSize = 250
+        var start = 0
+        while start < events.count {
+            let end = min(start + batchSize, events.count)
+            let batch = Array(events[start..<end])
+
+            switch await provider.upload(events: batch) {
+            case .success:
+                start = end
+            case .failure:
+                // Critical: do NOT advance offsets.
+                return false
             }
-            saveState(state, for: filePathKey)
-            return true
-        case .failure:
-            // Critical: do NOT advance offsets.
-            return false
         }
+
+        // Only advance the file offset after the final batch succeeds.
+        var state = loadState(for: filePathKey)
+        state.offset = nextOffset
+        if state.creationDateEpoch == nil {
+            state.creationDateEpoch = fileCreationEpoch(fileURL)
+        }
+        saveState(state, for: filePathKey)
+        return true
     }
 
     /// Reads from startOffset to EOF and returns only complete lines (ending with '\n').

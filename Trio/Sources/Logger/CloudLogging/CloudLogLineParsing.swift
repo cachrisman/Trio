@@ -41,17 +41,31 @@ enum CloudLogLineParser {
             return CloudParsedLogLine(dt: dt, category: category, level: nil, message: trimmed)
         }
 
-        // Extract the actual level token
+        // Extract the actual level token and normalize
         let levelToken = String(trimmed[levelMatch])
             .replacingOccurrences(of: " - ", with: "")
             .replacingOccurrences(of: ":", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        let normalizedLevel: String?
+        switch levelToken {
+        case "DEV": normalizedLevel = "debug"
+        case "INFO": normalizedLevel = "info"
+        case "WARN": normalizedLevel = "warn"
+        case "ERR": normalizedLevel = "error"
+        default: normalizedLevel = nil
+        }
+
         // Message = everything after "<LEVEL>: "
         let messageStart = trimmed.index(levelMatch.upperBound, offsetBy: 0)
         let parsedMessage = String(trimmed[messageStart...]).trimmingCharacters(in: .newlines)
 
-        return CloudParsedLogLine(dt: dt, category: category, level: levelToken, message: parsedMessage.isEmpty ? trimmed : parsedMessage)
+        return CloudParsedLogLine(
+            dt: dt,
+            category: category,
+            level: normalizedLevel,
+            message: parsedMessage.isEmpty ? trimmed : parsedMessage
+        )
     }
 
     // Watch format:
@@ -68,19 +82,10 @@ enum CloudLogLineParser {
             dt = normalizeTimestamp(raw)
         }
 
-        // Category = filename from [File.swift:line] (without .swift)
+        // Category = filename from "[File.swift:line]"
+        // Regex: ^\[[^\]]+\]\s+\[([^\]:]+)\.swift:\d+\]
         var category: String?
-        if let fileRange = trimmed.range(of: #"\]\s+\[([^\]]+)\]"#, options: [.regularExpression]) {
-            let bracketed = String(trimmed[fileRange])
-            // bracketed is like "] [WatchLogger.swift:169]"
-            if let inner = bracketed.range(of: #"\[([^\]]+)\]"#, options: .regularExpression) {
-                let inside = String(bracketed[inner]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-                let filePart = inside.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init)
-                if let filePart {
-                    category = filePart.replacingOccurrences(of: ".swift", with: "")
-                }
-            }
-        }
+        category = extractWatchCategory(from: trimmed)
 
         // Message = everything after the arrow
         if let arrowRange = trimmed.range(of: "→") {
@@ -108,6 +113,17 @@ enum CloudLogLineParser {
         let mm = tzStr.suffix(2) // 00
         let normalized = raw.replacingCharacters(in: tzRange, with: "\(hh):\(mm)")
         return normalized
+    }
+
+    private static func extractWatchCategory(from line: String) -> String? {
+        let pattern = #"^\[[^\]]+\]\s+\[([^\]:]+)\.swift:\d+\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsLine = line as NSString
+        let range = NSRange(location: 0, length: nsLine.length)
+        guard let match = regex.firstMatch(in: line, range: range), match.numberOfRanges >= 2 else { return nil }
+        let capture = match.range(at: 1)
+        guard capture.location != NSNotFound else { return nil }
+        return nsLine.substring(with: capture)
     }
 }
 
