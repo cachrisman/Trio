@@ -322,7 +322,7 @@ index 0000000000000000000000000000000000000000..acee295f8836b831b821be9289223353
 +
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..c65d119a2941947d11139fe6e28f00ce6c151a86
+index 0000000000000000000000000000000000000000..b637a5f6899da4def24029cfbcbb394439798e4a
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 @@ -0,0 +1,128 @@
@@ -414,7 +414,7 @@ index 0000000000000000000000000000000000000000..c65d119a2941947d11139fe6e28f00ce
 +
 +    private func start() {
 +        // Foreground + background triggers
-+        let center = NotificationCenter.default
++        let center = Foundation.NotificationCenter.default
 +
 +        observers.append(
 +            center.addObserver(
@@ -446,7 +446,7 @@ index 0000000000000000000000000000000000000000..c65d119a2941947d11139fe6e28f00ce
 +        timer?.invalidate()
 +        timer = nil
 +
-+        let center = NotificationCenter.default
++        let center = Foundation.NotificationCenter.default
 +        for o in observers {
 +            center.removeObserver(o)
 +        }
