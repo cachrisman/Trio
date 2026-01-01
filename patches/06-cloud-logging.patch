@@ -306,10 +306,10 @@ index 0000000000000000000000000000000000000000..0bc6904cfefb811ab325eec7932e1ba8
 +
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..dc8bc74d0edd339871dd34b6d123623e9e2dbd2f
+index 0000000000000000000000000000000000000000..e2bc2221a0087db8e61fbc4dddb327a1ba8260a0
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,129 @@
 +import Foundation
 +
 +enum CloudLogPlatform: String {
@@ -353,17 +353,31 @@ index 0000000000000000000000000000000000000000..dc8bc74d0edd339871dd34b6d123623e
 +            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: trimmed)
 +        }
 +
-+        // Extract the actual level token
++        // Extract the actual level token and normalize
 +        let levelToken = String(trimmed[levelMatch])
 +            .replacingOccurrences(of: " - ", with: "")
 +            .replacingOccurrences(of: ":", with: "")
 +            .trimmingCharacters(in: .whitespacesAndNewlines)
 +
++        let normalizedLevel: String?
++        switch levelToken {
++        case "DEV": normalizedLevel = "debug"
++        case "INFO": normalizedLevel = "info"
++        case "WARN": normalizedLevel = "warn"
++        case "ERR": normalizedLevel = "error"
++        default: normalizedLevel = nil
++        }
++
 +        // Message = everything after "<LEVEL>: "
 +        let messageStart = trimmed.index(levelMatch.upperBound, offsetBy: 0)
 +        let parsedMessage = String(trimmed[messageStart...]).trimmingCharacters(in: .newlines)
 +
-+        return CloudParsedLogLine(dt: dt, category: category, level: levelToken, message: parsedMessage.isEmpty ? trimmed : parsedMessage)
++        return CloudParsedLogLine(
++            dt: dt,
++            category: category,
++            level: normalizedLevel,
++            message: parsedMessage.isEmpty ? trimmed : parsedMessage
++        )
 +    }
 +
 +    // Watch format:
@@ -380,19 +394,10 @@ index 0000000000000000000000000000000000000000..dc8bc74d0edd339871dd34b6d123623e
 +            dt = normalizeTimestamp(raw)
 +        }
 +
-+        // Category = filename from [File.swift:line] (without .swift)
++        // Category = filename from "[File.swift:line]"
++        // Regex: ^\[[^\]]+\]\s+\[([^\]:]+)\.swift:\d+\]
 +        var category: String?
-+        if let fileRange = trimmed.range(of: #"\]\s+\[([^\]]+)\]"#, options: [.regularExpression]) {
-+            let bracketed = String(trimmed[fileRange])
-+            // bracketed is like "] [WatchLogger.swift:169]"
-+            if let inner = bracketed.range(of: #"\[([^\]]+)\]"#, options: .regularExpression) {
-+                let inside = String(bracketed[inner]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-+                let filePart = inside.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init)
-+                if let filePart {
-+                    category = filePart.replacingOccurrences(of: ".swift", with: "")
-+                }
-+            }
-+        }
++        category = extractWatchCategory(from: trimmed)
 +
 +        // Message = everything after the arrow
 +        if let arrowRange = trimmed.range(of: "→") {
@@ -420,6 +425,17 @@ index 0000000000000000000000000000000000000000..dc8bc74d0edd339871dd34b6d123623e
 +        let mm = tzStr.suffix(2) // 00
 +        let normalized = raw.replacingCharacters(in: tzRange, with: "\(hh):\(mm)")
 +        return normalized
++    }
++
++    private static func extractWatchCategory(from line: String) -> String? {
++        let pattern = #"^\[[^\]]+\]\s+\[([^\]:]+)\.swift:\d+\]"#
++        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
++        let nsLine = line as NSString
++        let range = NSRange(location: 0, length: nsLine.length)
++        guard let match = regex.firstMatch(in: line, range: range), match.numberOfRanges >= 2 else { return nil }
++        let capture = match.range(at: 1)
++        guard capture.location != NSNotFound else { return nil }
++        return nsLine.substring(with: capture)
 +    }
 +}
 +
@@ -472,10 +488,10 @@ index 0000000000000000000000000000000000000000..acee295f8836b831b821be9289223353
 +
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..f9de3efe2ec5de99f2e6cb7dcbebcfc6e284ef7d
+index 0000000000000000000000000000000000000000..558a871c2d9b3c34d440c31a7b3232735ba8e98f
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,105 @@
 +import Foundation
 +import UIKit
 +
@@ -490,14 +506,17 @@ index 0000000000000000000000000000000000000000..f9de3efe2ec5de99f2e6cb7dcbebcfc6
 +    private let uploader: CloudLogUploader
 +    private var timer: Timer?
 +    private var observers: [NSObjectProtocol] = []
++    private let tokenProvider: () -> String?
 +
 +    init() {
-+        let provider = BetterStackLogtailProvider(tokenProvider: {
++        tokenProvider = {
 +            // Priority: UserDefaults (future UI) → Info.plist → Process environment (dev builds).
 +            if let t = UserDefaults.standard.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
 +            if let t = Bundle.main.object(forInfoDictionaryKey: "BetterStackSourceToken") as? String, !t.isEmpty { return t }
 +            return ProcessInfo.processInfo.environment["BETTERSTACK_SOURCE_TOKEN"]
-+        })
++        }
++
++        let provider = BetterStackLogtailProvider(tokenProvider: tokenProvider)
 +
 +        let pairs: [CloudLogUploader.RotatingPair] = [
 +            .init(
@@ -524,19 +543,19 @@ index 0000000000000000000000000000000000000000..f9de3efe2ec5de99f2e6cb7dcbebcfc6
 +    }
 +
 +    func uploadNow() {
++        // Only run when configured (no privacy gating in this repo).
++        guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            return
++        }
++
 +        Task {
-+            await uploader.uploadNow()
++            _ = await uploader.uploadNow()
 +        }
 +    }
 +
 +    // MARK: - Scheduling
 +
 +    private func start() {
-+        // Don’t upload if the user disabled diagnostics sharing (best-effort).
-+        if PropertyPersistentFlags.shared.diagnosticsSharingEnabled == false {
-+            return
-+        }
-+
 +        // Foreground + background triggers
 +        let center = NotificationCenter.default
 +
@@ -580,10 +599,10 @@ index 0000000000000000000000000000000000000000..f9de3efe2ec5de99f2e6cb7dcbebcfc6
 +
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..8469086bdb8b90e2c35115a45d65f295213137f6
+index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c1a81516f
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,305 @@
 +import Foundation
 +
 +/// iPhone-only log tailer/uploader.
@@ -610,6 +629,8 @@ index 0000000000000000000000000000000000000000..8469086bdb8b90e2c35115a45d65f295
 +    private let stateKey = "cloudLogUploader.tailState.v1"
 +
 +    private var isUploading = false
++    private var lastSuccessfulUploadAt: Date?
++    private let successCooldown: TimeInterval = 30
 +
 +    init(
 +        provider: CloudLogProvider,
@@ -621,25 +642,38 @@ index 0000000000000000000000000000000000000000..8469086bdb8b90e2c35115a45d65f295
 +        self.userDefaults = userDefaults
 +    }
 +
-+    func uploadNow() async {
++    /// Returns true if this run completed without provider failures.
++    @discardableResult
++    func uploadNow() async -> Bool {
++        if let last = lastSuccessfulUploadAt, Date().timeIntervalSince(last) < successCooldown {
++            return true
++        }
++
 +        // Coalesce to avoid overlapping uploads on lifecycle + timer.
-+        guard !isUploading else { return }
++        guard !isUploading else { return true }
 +        isUploading = true
 +        defer { isUploading = false }
 +
++        var allSucceeded = true
 +        for pair in pairs {
-+            await uploadRotatingPair(pair)
++            let ok = await uploadRotatingPair(pair)
++            if !ok { allSucceeded = false }
 +        }
++        if allSucceeded {
++            lastSuccessfulUploadAt = Date()
++        }
++        return allSucceeded
 +    }
 +
 +    // MARK: - Rotation + tail logic
 +
-+    private func uploadRotatingPair(_ pair: RotatingPair) async {
++    private func uploadRotatingPair(_ pair: RotatingPair) async -> Bool {
 +        let currentURL = URL(fileURLWithPath: pair.currentPath)
 +        let prevURL = URL(fileURLWithPath: pair.previousPath)
 +
 +        var currentState = loadState(for: pair.currentPath)
 +        var prevState = loadState(for: pair.previousPath)
++        var succeeded = true
 +
 +        // Reset offsets if file shrank (rotation or truncation).
 +        if let currentSize = fileSize(currentURL), currentSize < currentState.offset {
@@ -667,13 +701,14 @@ index 0000000000000000000000000000000000000000..8469086bdb8b90e2c35115a45d65f295
 +            // Best-effort: upload missed tail from previous file using the old offset.
 +            if let prevSize = fileSize(prevURL), prevSize > 0 {
 +                let startOffset = min(oldCurrentOffset, prevSize)
-+                _ = await uploadNewContent(
++                let ok = await uploadNewContent(
 +                    fileURL: prevURL,
 +                    filePathKey: pair.previousPath,
 +                    startOffset: startOffset,
 +                    platform: pair.platform,
 +                    parser: pair.parser
 +                )
++                if !ok { succeeded = false }
 +
 +                // Regardless of whether the upload succeeded, keep prevState stable.
 +                // Only advance on success is handled in uploadNewContent.
@@ -692,22 +727,26 @@ index 0000000000000000000000000000000000000000..8469086bdb8b90e2c35115a45d65f295
 +        }
 +
 +        // Upload current tail.
-+        _ = await uploadNewContent(
++        let okCurrent = await uploadNewContent(
 +            fileURL: currentURL,
 +            filePathKey: pair.currentPath,
 +            startOffset: loadState(for: pair.currentPath).offset,
 +            platform: pair.platform,
 +            parser: pair.parser
 +        )
++        if !okCurrent { succeeded = false }
 +
 +        // Upload previous tail as well (best-effort for late rotation or missed uploads).
-+        _ = await uploadNewContent(
++        let okPrev = await uploadNewContent(
 +            fileURL: prevURL,
 +            filePathKey: pair.previousPath,
 +            startOffset: loadState(for: pair.previousPath).offset,
 +            platform: pair.platform,
 +            parser: pair.parser
 +        )
++        if !okPrev { succeeded = false }
++
++        return succeeded
 +    }
 +
 +    private func uploadNewContent(
@@ -737,27 +776,36 @@ index 0000000000000000000000000000000000000000..8469086bdb8b90e2c35115a45d65f295
 +            if let parsed {
 +                if let c = parsed.category { attrs["category"] = c }
 +                if let l = parsed.level { attrs["level"] = l }
-+                attrs["raw"] = line
 +                return CloudLogEvent(message: parsed.message, dt: parsed.dt, attributes: attrs)
 +            } else {
-+                attrs["raw"] = line
 +                return CloudLogEvent(message: line, dt: nil, attributes: attrs)
 +            }
 +        }
 +
-+        switch await provider.upload(events: events) {
-+        case .success:
-+            var state = loadState(for: filePathKey)
-+            state.offset = nextOffset
-+            if state.creationDateEpoch == nil {
-+                state.creationDateEpoch = fileCreationEpoch(fileURL)
++        // Upload in batches to avoid oversized payloads.
++        let batchSize = 250
++        var start = 0
++        while start < events.count {
++            let end = min(start + batchSize, events.count)
++            let batch = Array(events[start..<end])
++
++            switch await provider.upload(events: batch) {
++            case .success:
++                start = end
++            case .failure:
++                // Critical: do NOT advance offsets.
++                return false
 +            }
-+            saveState(state, for: filePathKey)
-+            return true
-+        case .failure:
-+            // Critical: do NOT advance offsets.
-+            return false
 +        }
++
++        // Only advance the file offset after the final batch succeeds.
++        var state = loadState(for: filePathKey)
++        state.offset = nextOffset
++        if state.creationDateEpoch == nil {
++            state.creationDateEpoch = fileCreationEpoch(fileURL)
++        }
++        saveState(state, for: filePathKey)
++        return true
 +    }
 +
 +    /// Reads from startOffset to EOF and returns only complete lines (ending with '\n').
@@ -862,10 +910,10 @@ index 0000000000000000000000000000000000000000..8469086bdb8b90e2c35115a45d65f295
 +
 diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..813156f04765e451e55b62744ca1e08e9848d1ca
+index 0000000000000000000000000000000000000000..eac4776341b349e579c1e154030b0474994ea68c
 --- /dev/null
 +++ b/docs/cloud-logging.md
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,137 @@
 +# Cloud logging (Better Stack / Logtail)
 +
 +## Goals / constraints
@@ -939,7 +987,11 @@ index 0000000000000000000000000000000000000000..813156f04765e451e55b62744ca1e08e
 +
 +- **dt**: first token, normalized timezone
 +- **category**: extracted from `[Category]` immediately after timestamp
-+- **level**: extracted via delimiter-aware match: `\s-\s(DEV|INFO|WARN|ERR):\s`
++- **level**: extracted via delimiter-aware match: `\s-\s(DEV|INFO|WARN|ERR):\s` and normalized:
++  - `DEV` → `debug`
++  - `INFO` → `info`
++  - `WARN` → `warn`
++  - `ERR` → `error`
 +- **message**: everything after `<LEVEL>: `
 +
 +### watch parsing
@@ -959,6 +1011,7 @@ index 0000000000000000000000000000000000000000..813156f04765e451e55b62744ca1e08e
 +Uploads tail each file using a **byte offset** stored on-device.
 +
 +- On each run, only newly appended **complete lines** (ending in `\n`) are uploaded.
++- Uploads are **batched** (default: 250 events per request). Offsets only advance after the final batch succeeds.
 +- If the file **shrinks** (truncation / rotation), its offset is reset to `0`.
 +- For daily rotation where `*_log.txt` is moved to `*_log_prev.txt`, the uploader best-effort uploads any missed tail from `*_log_prev.txt` before continuing with the new day’s `*_log.txt`.
 +
@@ -988,7 +1041,7 @@ index 0000000000000000000000000000000000000000..813156f04765e451e55b62744ca1e08e
 +
 +- Filter by `attributes.platform`, `attributes.category`, `attributes.level`, `attributes.env`, `attributes.appVersion`, `attributes.build`.
 +- Export by time range + filters for a focused dataset (e.g., around a crash or loop failure).
-+- Include `attributes.raw` when you need to reconstruct the original log line format.
++- This implementation does **not** upload a duplicate `raw` field; the uploaded `message` is either the parsed message or the original full line if parsing fails.
 +
 +## Future: on-device log viewer (Idea #1)
 +
