@@ -71,7 +71,11 @@ If normalization fails, `dt` is omitted.
 
 - **dt**: first token, normalized timezone
 - **category**: extracted from `[Category]` immediately after timestamp
-- **level**: extracted via delimiter-aware match: `\s-\s(DEV|INFO|WARN|ERR):\s`
+- **level**: extracted via delimiter-aware match: `\s-\s(DEV|INFO|WARN|ERR):\s` and normalized:
+  - `DEV` → `debug`
+  - `INFO` → `info`
+  - `WARN` → `warn`
+  - `ERR` → `error`
 - **message**: everything after `<LEVEL>: `
 
 ### watch parsing
@@ -91,6 +95,7 @@ If normalization fails, `dt` is omitted.
 Uploads tail each file using a **byte offset** stored on-device.
 
 - On each run, only newly appended **complete lines** (ending in `\n`) are uploaded.
+- Uploads are **batched** (default: 250 events per request). Offsets only advance after the final batch succeeds.
 - If the file **shrinks** (truncation / rotation), its offset is reset to `0`.
 - For daily rotation where `*_log.txt` is moved to `*_log_prev.txt`, the uploader best-effort uploads any missed tail from `*_log_prev.txt` before continuing with the new day’s `*_log.txt`.
 
@@ -120,7 +125,7 @@ Recommended practice:
 
 - Filter by `attributes.platform`, `attributes.category`, `attributes.level`, `attributes.env`, `attributes.appVersion`, `attributes.build`.
 - Export by time range + filters for a focused dataset (e.g., around a crash or loop failure).
-- Include `attributes.raw` when you need to reconstruct the original log line format.
+- This implementation does **not** upload a duplicate `raw` field; the uploaded `message` is either the parsed message or the original full line if parsing fails.
 
 ## Future: on-device log viewer (Idea #1)
 

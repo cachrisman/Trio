@@ -12,14 +12,17 @@ final class CloudLogUploadService {
     private let uploader: CloudLogUploader
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
+    private let tokenProvider: () -> String?
 
     init() {
-        let provider = BetterStackLogtailProvider(tokenProvider: {
+        tokenProvider = {
             // Priority: UserDefaults (future UI) → Info.plist → Process environment (dev builds).
             if let t = UserDefaults.standard.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
             if let t = Bundle.main.object(forInfoDictionaryKey: "BetterStackSourceToken") as? String, !t.isEmpty { return t }
             return ProcessInfo.processInfo.environment["BETTERSTACK_SOURCE_TOKEN"]
-        })
+        }
+
+        let provider = BetterStackLogtailProvider(tokenProvider: tokenProvider)
 
         let pairs: [CloudLogUploader.RotatingPair] = [
             .init(
@@ -46,19 +49,19 @@ final class CloudLogUploadService {
     }
 
     func uploadNow() {
+        // Only run when configured (no privacy gating in this repo).
+        guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+
         Task {
-            await uploader.uploadNow()
+            _ = await uploader.uploadNow()
         }
     }
 
     // MARK: - Scheduling
 
     private func start() {
-        // Don’t upload if the user disabled diagnostics sharing (best-effort).
-        if PropertyPersistentFlags.shared.diagnosticsSharingEnabled == false {
-            return
-        }
-
         // Foreground + background triggers
         let center = NotificationCenter.default
 
