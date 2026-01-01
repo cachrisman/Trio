@@ -67,6 +67,11 @@ private struct CloudLoggingConfiguration {
 }
 
 private final class CloudLogProvider {
+    enum UploadError: Error {
+        case invalidResponse
+        case badStatus(Int)
+    }
+
     private let configuration: CloudLoggingConfiguration
     private let session: URLSession
     private let encoder: JSONEncoder
@@ -110,14 +115,18 @@ private final class CloudLogProvider {
             request.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
             request.httpBody = try encoder.encode(payload)
 
-            _ = try await session.data(for: request)
+            let (_, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw UploadError.invalidResponse
+            }
+            guard httpResponse.statusCode == 202 else {
+                throw UploadError.badStatus(httpResponse.statusCode)
+            }
         }
     }
 }
 
 final class CloudLogUploader: Injectable {
-    @Injected var watchManager: WatchManager!
-
     private let configuration: CloudLoggingConfiguration?
     private let provider: CloudLogProvider?
     private let queue = DispatchQueue(label: "CloudLogUploader.queue")
@@ -126,6 +135,7 @@ final class CloudLogUploader: Injectable {
     private let defaults = UserDefaults.standard
     private let fileManager = FileManager.default
     private let isoFormatter: ISO8601DateFormatter
+    private let logDateFormatter: DateFormatter
 
     private var retryDelay: TimeInterval = 5
     private var nextAllowedUpload: Date = .distantPast
@@ -133,7 +143,14 @@ final class CloudLogUploader: Injectable {
     init(resolver: Resolver) {
         configuration = CloudLoggingConfiguration.load()
         provider = configuration.map { CloudLogProvider(configuration: $0) }
+
         isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        logDateFormatter = DateFormatter()
+        logDateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        logDateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+
         injectServices(resolver)
     }
 
@@ -151,10 +168,6 @@ final class CloudLogUploader: Injectable {
             guard let self else { return }
             Task { await self.processUpload(reason: "manual") }
         }
-    }
-
-    func requestWatchLogSnapshot() {
-        watchManager.requestWatchLogSnapshot()
     }
 
     deinit {
@@ -321,23 +334,29 @@ private extension CloudLogUploader {
         }
 
         var level: String?
-        if remaining.hasPrefix("DEV:") {
-            level = "debug"
-        } else if remaining.hasPrefix("INFO:") {
-            level = "info"
-        } else if remaining.hasPrefix("WARN:") {
-            level = "warning"
-        } else if remaining.hasPrefix("ERR:") {
-            level = "error"
+        var message = remaining
+
+        if platform == .ios {
+            if let levelResult = extractIOSLevelAndMessage(from: remaining) {
+                level = levelResult.level
+                message = levelResult.message
+            }
+        } else {
+            if let levelResult = extractWatchMessage(from: remaining) {
+                category = levelResult.category ?? category
+                message = levelResult.message
+            }
         }
 
-        if timestampString == nil {
-            timestampString = isoFormatter.string(from: Date())
+        let normalizedTimestamp = timestampString.flatMap(normalizeTimestamp(_:))
+
+        if message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            message = line
         }
 
         return ParsedLogLine(
-            message: remaining,
-            timestamp: timestampString,
+            message: message,
+            timestamp: normalizedTimestamp,
             level: level,
             category: category,
             platform: platform
@@ -352,6 +371,67 @@ private extension CloudLogUploader {
     func resetBackoff() {
         retryDelay = 5
         nextAllowedUpload = .distantPast
+    }
+
+    func extractIOSLevelAndMessage(from text: String) -> (level: String, message: String)? {
+        let pattern = #" - (DEV|INFO|WARN|ERR):"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex ..< text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range) else { return nil }
+
+        guard let levelRange = Range(match.range(at: 1), in: text) else { return nil }
+        let levelToken = String(text[levelRange])
+        let mappedLevel: String
+        switch levelToken {
+        case "DEV":
+            mappedLevel = "debug"
+        case "INFO":
+            mappedLevel = "info"
+        case "WARN":
+            mappedLevel = "warning"
+        case "ERR":
+            mappedLevel = "error"
+        default:
+            mappedLevel = levelToken.lowercased()
+        }
+
+        let messageStartIndex = text.index(text.startIndex, offsetBy: match.range.location + match.range.length)
+        let message = text[messageStartIndex...].trimmingCharacters(in: .whitespaces)
+
+        return (mappedLevel, message)
+    }
+
+    func extractWatchMessage(from text: String) -> (category: String?, message: String)? {
+        var remaining = text
+        var category: String?
+
+        if remaining.hasPrefix("["), let end = remaining.firstIndex(of: "]") {
+            remaining = String(remaining[remaining.index(after: end)...]).trimmingCharacters(in: .whitespaces)
+        }
+
+        if remaining.hasPrefix("["), let end = remaining.firstIndex(of: "]") {
+            let fileSegment = String(remaining[remaining.index(after: remaining.startIndex)..<end])
+            if let colonIndex = fileSegment.firstIndex(of: ":") {
+                let filename = String(fileSegment[..<colonIndex])
+                category = filename.replacingOccurrences(of: ".swift", with: "")
+            }
+            remaining = String(remaining[remaining.index(after: end)...]).trimmingCharacters(in: .whitespaces)
+        }
+
+        let arrow = "→"
+        if let arrowRange = remaining.range(of: arrow) {
+            let message = remaining[arrowRange.upperBound...].trimmingCharacters(in: .whitespaces)
+            return (category, message)
+        }
+
+        return (category, remaining)
+    }
+
+    func normalizeTimestamp(_ timestamp: String) -> String? {
+        let cleaned = timestamp.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        guard let date = logDateFormatter.date(from: cleaned) else { return nil }
+        return isoFormatter.string(from: date)
     }
 }
 

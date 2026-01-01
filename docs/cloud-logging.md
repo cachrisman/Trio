@@ -11,9 +11,10 @@ This document captures the current on-device logging setup and how to relay logs
   - `log_prev.txt` (previous day after rotation)
 - **Rotation:** At the first log write after midnight, `log.txt` is moved to `log_prev.txt` and a new `log.txt` is created with a `creationDate` at start-of-day.
 - **Flush behavior:** Each log write appends immediately (no buffering).
-- **Format example:**
-  - `2024-05-06T12:34:56+0000 [Service] Logger.swift - info() - 42 - INFO: Loop iteration complete`
-  - Fields: ISO-8601 timestamp, category in brackets, source file, function, line, then message. Messages include a level prefix (`DEV:`, `INFO:`, `WARN:`, `ERR:`) but the prefix is part of the message body.
+- **Format examples:**
+  - `2025-12-31T22:02:48+0100 [WatchManager] AppleWatchManager.swift - sendDataToWatch(_:) - 536 - DEV: 📤 Transferred new WatchState snapshot via userInfo`
+  - `2025-12-31T22:05:40+0100 [Nightscout] FetchTreatmentsManager.swift - subscribe() - 29 - DEV: FetchTreatmentsManager heartbeat`
+  - Fields: timestamp (`yyyy-MM-dd'T'HH:mm:ssZ` with offsets like `+0100`), category in brackets, file, function, line, then `LEVEL:` followed by the message.
 
 ### Watch logs as stored on the phone
 - **Directory:** `~/Documents/logs/`
@@ -23,18 +24,16 @@ This document captures the current on-device logging setup and how to relay logs
 - **Rotation:** Same midnight move pattern as iPhone logs.
 - **How they arrive:** The watch bundles logs into strings and sends them via `WCSession`. The phone simply appends the received text to `watch_log.txt`; no transformation is performed.
 - **Format example (watch-originated lines):**
-  - `[2024-05-06T12:35:01+0000] [WatchInterface.swift:22] syncState() → ⌚️ Requesting WatchState update from iPhone`
-  - Fields: timestamp in brackets, file:line, function, arrow (`→`), and the message. No explicit level/category prefix; emojis are common.
+  - `[2025-12-31T00:01:27+0100] [WatchLogger.swift:169] flushToPhone() → ⌚️ Logs queued for background delivery to phone`
+  - `[2025-12-31T00:02:40+0100] [WatchState.swift:658] handleBackgroundTasks(_:) → Handling background tasks: 1`
+  - Fields: timestamp in brackets, file:line (used as category), function, arrow (`→`), and the message. No explicit level prefix.
 
 ## Parsing hints
-- **Levels:** Derived from the message prefix used by the logger:
-  - `DEV:` → debug
-  - `INFO:` → info
-  - `WARN:` → warning
-  - `ERR:` → error
-- **Category:** The bracketed value immediately after the timestamp in iPhone logs (e.g., `[Service]`). Watch logs have no explicit category; treat as `watch` or derive from platform.
+- **iPhone level:** Extract the `LEVEL:` token appearing after delimiters, using the exact strings `DEV`, `INFO`, `WARN`, `ERR` (mapped to debug/info/warning/error). Do **not** check prefix-only.
+- **iPhone category:** The bracketed value immediately after the timestamp (e.g., `[WatchManager]`).
+- **Watch category:** Derived from the `File.swift` token in `[File.swift:line]` (extension stripped).
+- **Timestamps:** Parsed as `yyyy-MM-dd'T'HH:mm:ssZ` and normalized to RFC3339 by inserting the colon in the offset (e.g., `+0100` → `+01:00`). If normalization fails, omit `dt` and let the provider assign ingest time.
 - **Correlation IDs:** Not present in current formats.
-- **Timestamps:** ISO-8601 with timezone offset (`yyyy-MM-dd'T'HH:mm:ssZ`) for both platforms.
 
 ## Provider choice
 - **Primary:** Better Stack (Logtail)
@@ -79,4 +78,4 @@ This document captures the current on-device logging setup and how to relay logs
 - New log lines appear in Logtail within a few seconds of upload when connectivity is available.
 - Only appended content is uploaded; offsets prevent re-sending unless a rotation shrink is detected (in which case the day’s files may re-upload).
 - Watch log lines are tagged with `platform=watchos` and can be filtered separately.
-- Uploads are attempted on app foreground/background transitions and every five minutes while running; `uploadNow()` can be called manually for immediate flushing. A `requestWatchLogSnapshot()` helper triggers a watch log flush using the existing transfer path.
+- Uploads are attempted on app foreground/background transitions and every five minutes while running; `uploadNow()` can be called manually for immediate flushing.

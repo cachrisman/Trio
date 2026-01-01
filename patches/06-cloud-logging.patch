@@ -1,614 +1,934 @@
-diff --git a/Config.xcconfig b/Config.xcconfig
-index 844f72a947f48ae7fdf21f93dd65da90d964ff35..a6fd8c0c230ba81d55526323050fb4e4a161de50 100644
---- a/Config.xcconfig
-+++ b/Config.xcconfig
-@@ -3,6 +3,11 @@ APP_DISPLAY_NAME = Trio
- APP_ICON = trioBlack
- APP_URL_SCHEME = Trio
- 
-+CLOUD_LOGGING_ENABLED = NO
-+CLOUD_LOGGING_ENDPOINT =
-+CLOUD_LOGGING_TOKEN =
-+CLOUD_LOGGING_ENV = dev
-+
- // DEVELOPER_TEAM will be set to your Apple Developer ID - typically using ConfigOverride.xcconfig
- DEVELOPER_TEAM = ##TEAM_ID##
- 
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 2b174301c021dea5ad763997372f91a85512ea51..c32cc8c483faf410b8727a7cdeadf5562b72d0bd 100644
+index c32cc8c483faf410b8727a7cdeadf5562b72d0bd..2b174301c021dea5ad763997372f91a85512ea51 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
-@@ -180,6 +180,11 @@ import WatchConnectivity
+@@ -180,11 +180,6 @@ import WatchConnectivity
              await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
          }
  
-+        if message[WatchMessageKeys.requestWatchLogs] as? Bool == true {
-+            Task { await WatchLogger.shared.flushPersistedLogs() }
-+            return
-+        }
-+
+-        if message[WatchMessageKeys.requestWatchLogs] as? Bool == true {
+-            Task { await WatchLogger.shared.flushPersistedLogs() }
+-            return
+-        }
+-
          // If the message has a nested "watchState" dictionary with date as TimeInterval
          if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
             let timestamp = watchStateDict[WatchMessageKeys.date] as? TimeInterval
-@@ -246,6 +251,11 @@ import WatchConnectivity
+@@ -251,11 +246,6 @@ import WatchConnectivity
      }
  
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
-+        if userInfo[WatchMessageKeys.requestWatchLogs] as? Bool == true {
-+            Task { await WatchLogger.shared.flushPersistedLogs() }
-+            return
-+        }
-+
+-        if userInfo[WatchMessageKeys.requestWatchLogs] as? Bool == true {
+-            Task { await WatchLogger.shared.flushPersistedLogs() }
+-            return
+-        }
+-
          guard let snapshot = WatchStateSnapshot(from: userInfo) else {
              Task {
                  await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)
-diff --git a/Trio/Resources/Info.plist b/Trio/Resources/Info.plist
-index 6ceab61b7b9be258360007b46bba76fb427246c4..f98626eb02969191549bd06967c5ba4fde2ca56f 100644
---- a/Trio/Resources/Info.plist
-+++ b/Trio/Resources/Info.plist
-@@ -2,14 +2,22 @@
- <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
- <plist version="1.0">
- <dict>
--	<key>AppGroupID</key>
--	<string>$(APP_GROUP_ID)</string>
--	<key>AppDevVersion</key>
--	<string>$(APP_DEV_VERSION)</string>
--	<key>BGTaskSchedulerPermittedIdentifiers</key>
--	<array>
--		<string>$(PRODUCT_BUNDLE_IDENTIFIER).background-task.critical-event-log</string>
--	</array>
-+        <key>AppGroupID</key>
-+        <string>$(APP_GROUP_ID)</string>
-+        <key>AppDevVersion</key>
-+        <string>$(APP_DEV_VERSION)</string>
-+        <key>CloudLoggingEnabled</key>
-+        <string>$(CLOUD_LOGGING_ENABLED)</string>
-+        <key>CloudLoggingEndpoint</key>
-+        <string>$(CLOUD_LOGGING_ENDPOINT)</string>
-+        <key>CloudLoggingEnv</key>
-+        <string>$(CLOUD_LOGGING_ENV)</string>
-+        <key>CloudLoggingToken</key>
-+        <string>$(CLOUD_LOGGING_TOKEN)</string>
-+        <key>BGTaskSchedulerPermittedIdentifiers</key>
-+        <array>
-+                <string>$(PRODUCT_BUNDLE_IDENTIFIER).background-task.critical-event-log</string>
-+        </array>
- 	<key>CBBundleDisplayName</key>
- 	<string>$(APP_DISPLAY_NAME)</string>
- 	<key>CFBundleDevelopmentRegion</key>
-diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
-index 1d148c93d49f80154179904b96f08cae4310b010..5e5056b25c425e4741fd7fdeff4e62f22221e97e 100644
---- a/Trio/Sources/Application/TrioApp.swift
-+++ b/Trio/Sources/Application/TrioApp.swift
-@@ -85,6 +85,11 @@ extension Notification.Name {
-             _ = resolver.resolve(LiveActivityManager.self)!
-         }
-         _ = resolver.resolve(IOBService.self)!
-+        #if os(iOS)
-+            if let uploader = resolver.resolve(CloudLogUploader.self) {
-+                uploader.start()
-+            }
-+        #endif
-     }
+diff --git a/Trio/Sources/Logger/Cloud/CloudLogUploader.swift b/Trio/Sources/Logger/Cloud/CloudLogUploader.swift
+index 45db55ed4f560cfeb3a0b5ac10fbba1c5a53720f..3d0e9aaf78f8c61b20dbcae6892123f9c98555c8 100644
+--- a/Trio/Sources/Logger/Cloud/CloudLogUploader.swift
++++ b/Trio/Sources/Logger/Cloud/CloudLogUploader.swift
+@@ -67,6 +67,11 @@ private struct CloudLoggingConfiguration {
+ }
  
-     init() {
-diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
-index fea855ed8afefac1ff2d8b32d198feacbcc16e3c..1e70881bfc21e177d9f8df380b7bb8fa1acd1495 100644
---- a/Trio/Sources/Assemblies/ServiceAssembly.swift
-+++ b/Trio/Sources/Assemblies/ServiceAssembly.swift
-@@ -29,5 +29,8 @@ final class ServiceAssembly: Assembly {
-             }
+ private final class CloudLogProvider {
++    enum UploadError: Error {
++        case invalidResponse
++        case badStatus(Int)
++    }
++
+     private let configuration: CloudLoggingConfiguration
+     private let session: URLSession
+     private let encoder: JSONEncoder
+@@ -110,14 +115,18 @@ private final class CloudLogProvider {
+             request.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
+             request.httpBody = try encoder.encode(payload)
+ 
+-            _ = try await session.data(for: request)
++            let (_, response) = try await session.data(for: request)
++            guard let httpResponse = response as? HTTPURLResponse else {
++                throw UploadError.invalidResponse
++            }
++            guard httpResponse.statusCode == 202 else {
++                throw UploadError.badStatus(httpResponse.statusCode)
++            }
          }
-         container.register(IOBService.self) { r in BaseIOBService(resolver: r) }
-+        #if os(iOS)
-+            container.register(CloudLogUploader.self) { r in CloudLogUploader(resolver: r) }
-+        #endif
      }
  }
-diff --git a/Trio/Sources/Logger/Cloud/CloudLogUploader.swift b/Trio/Sources/Logger/Cloud/CloudLogUploader.swift
-new file mode 100644
-index 0000000000000000000000000000000000000000..45db55ed4f560cfeb3a0b5ac10fbba1c5a53720f
---- /dev/null
-+++ b/Trio/Sources/Logger/Cloud/CloudLogUploader.swift
-@@ -0,0 +1,358 @@
-+#if os(iOS)
-+import Foundation
-+import Swinject
-+import UIKit
+ 
+ final class CloudLogUploader: Injectable {
+-    @Injected var watchManager: WatchManager!
+-
+     private let configuration: CloudLoggingConfiguration?
+     private let provider: CloudLogProvider?
+     private let queue = DispatchQueue(label: "CloudLogUploader.queue")
+@@ -126,6 +135,7 @@ final class CloudLogUploader: Injectable {
+     private let defaults = UserDefaults.standard
+     private let fileManager = FileManager.default
+     private let isoFormatter: ISO8601DateFormatter
++    private let logDateFormatter: DateFormatter
+ 
+     private var retryDelay: TimeInterval = 5
+     private var nextAllowedUpload: Date = .distantPast
+@@ -133,7 +143,14 @@ final class CloudLogUploader: Injectable {
+     init(resolver: Resolver) {
+         configuration = CloudLoggingConfiguration.load()
+         provider = configuration.map { CloudLogProvider(configuration: $0) }
 +
-+private enum CloudLogPlatform: String {
-+    case ios
-+    case watchos
-+}
+         isoFormatter = ISO8601DateFormatter()
++        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 +
-+private struct CloudLogFileDescriptor {
-+    let path: String
-+    let platform: CloudLogPlatform
-+}
++        logDateFormatter = DateFormatter()
++        logDateFormatter.locale = Locale(identifier: "en_US_POSIX")
++        logDateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
 +
-+private struct ParsedLogLine {
-+    let message: String
-+    let timestamp: String?
-+    let level: String?
-+    let category: String?
-+    let platform: CloudLogPlatform
-+}
-+
-+private struct CloudLogPayload: Encodable {
-+    let dt: String?
-+    let level: String?
-+    let message: String
-+    let platform: String
-+    let category: String?
-+    let env: String?
-+    let appVersion: String?
-+    let build: String?
-+    let correlationId: String?
-+}
-+
-+private struct CloudLoggingConfiguration {
-+    let isEnabled: Bool
-+    let endpoint: URL
-+    let token: String
-+    let environment: String
-+
-+    static func load() -> CloudLoggingConfiguration? {
-+        guard let info = Bundle.main.infoDictionary else { return nil }
-+
-+        let enabledString = info["CloudLoggingEnabled"] as? String ?? "NO"
-+        let isEnabled = enabledString.uppercased() == "YES"
-+
-+        guard isEnabled,
-+              let endpointString = info["CloudLoggingEndpoint"] as? String,
-+              let endpoint = URL(string: endpointString),
-+              let token = info["CloudLoggingToken"] as? String,
-+              !token.isEmpty
-+        else {
-+            return nil
-+        }
-+
-+        let environmentString = info["CloudLoggingEnv"] as? String
-+        let environment = (environmentString?.isEmpty == false) ? (environmentString ?? "dev") : "dev"
-+
-+        return CloudLoggingConfiguration(
-+            isEnabled: isEnabled,
-+            endpoint: endpoint,
-+            token: token,
-+            environment: environment
-+        )
-+    }
-+}
-+
-+private final class CloudLogProvider {
-+    private let configuration: CloudLoggingConfiguration
-+    private let session: URLSession
-+    private let encoder: JSONEncoder
-+
-+    init(configuration: CloudLoggingConfiguration) {
-+        self.configuration = configuration
-+        session = URLSession(configuration: .ephemeral)
-+        encoder = JSONEncoder()
-+    }
-+
-+    func upload(events: [ParsedLogLine], appVersion: String?, build: String?) async throws {
-+        guard !events.isEmpty else { return }
-+
-+        var batches: [[ParsedLogLine]] = []
-+        let chunkSize = 50
-+        var index = 0
-+        while index < events.count {
-+            let end = min(events.count, index + chunkSize)
-+            batches.append(Array(events[index ..< end]))
-+            index = end
-+        }
-+
-+        for batch in batches {
-+            let payload = batch.map { line in
-+                CloudLogPayload(
-+                    dt: line.timestamp,
-+                    level: line.level,
-+                    message: line.message,
-+                    platform: line.platform.rawValue,
-+                    category: line.category,
-+                    env: configuration.environment,
-+                    appVersion: appVersion,
-+                    build: build,
-+                    correlationId: nil
-+                )
-+            }
-+
-+            var request = URLRequest(url: configuration.endpoint)
-+            request.httpMethod = "POST"
-+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-+            request.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
-+            request.httpBody = try encoder.encode(payload)
-+
-+            _ = try await session.data(for: request)
-+        }
-+    }
-+}
-+
-+final class CloudLogUploader: Injectable {
-+    @Injected var watchManager: WatchManager!
-+
-+    private let configuration: CloudLoggingConfiguration?
-+    private let provider: CloudLogProvider?
-+    private let queue = DispatchQueue(label: "CloudLogUploader.queue")
-+    private var timer: DispatchSourceTimer?
-+    private let offsetsKey = "CloudLogUploader.offsets.v1"
-+    private let defaults = UserDefaults.standard
-+    private let fileManager = FileManager.default
-+    private let isoFormatter: ISO8601DateFormatter
-+
-+    private var retryDelay: TimeInterval = 5
-+    private var nextAllowedUpload: Date = .distantPast
-+
-+    init(resolver: Resolver) {
-+        configuration = CloudLoggingConfiguration.load()
-+        provider = configuration.map { CloudLogProvider(configuration: $0) }
-+        isoFormatter = ISO8601DateFormatter()
-+        injectServices(resolver)
-+    }
-+
-+    func start() {
-+        guard configuration?.isEnabled == true else { return }
-+
-+        registerNotifications()
-+        scheduleTimer()
-+        uploadNow()
-+    }
-+
-+    func uploadNow() {
-+        guard configuration?.isEnabled == true else { return }
-+        queue.async { [weak self] in
-+            guard let self else { return }
-+            Task { await self.processUpload(reason: "manual") }
-+        }
-+    }
-+
-+    func requestWatchLogSnapshot() {
-+        watchManager.requestWatchLogSnapshot()
-+    }
-+
-+    deinit {
-+        NotificationCenter.default.removeObserver(self)
-+        timer?.cancel()
-+    }
-+}
-+
-+private extension CloudLogUploader {
-+    func registerNotifications() {
-+        NotificationCenter.default.addObserver(
-+            self,
-+            selector: #selector(handleForeground),
-+            name: UIApplication.willEnterForegroundNotification,
-+            object: nil
-+        )
-+
-+        NotificationCenter.default.addObserver(
-+            self,
-+            selector: #selector(handleBackground),
-+            name: UIApplication.didEnterBackgroundNotification,
-+            object: nil
-+        )
-+    }
-+
-+    func scheduleTimer() {
-+        timer?.cancel()
-+        let timer = DispatchSource.makeTimerSource(queue: queue)
-+        timer.schedule(deadline: .now() + 300, repeating: 300)
-+        timer.setEventHandler { [weak self] in
-+            guard let self else { return }
-+            Task { await self.processUpload(reason: "timer") }
-+        }
-+        timer.resume()
-+        self.timer = timer
-+    }
-+
-+    @objc func handleForeground() {
-+        queue.async { [weak self] in
-+            guard let self else { return }
-+            Task { await self.processUpload(reason: "foreground") }
-+        }
-+    }
-+
-+    @objc func handleBackground() {
-+        queue.async { [weak self] in
-+            guard let self else { return }
-+            Task { await self.processUpload(reason: "background") }
-+        }
-+    }
-+
-+    func processUpload(reason _: String) async {
-+        guard Date() >= nextAllowedUpload else { return }
-+        guard let provider else { return }
-+
-+        var offsets = loadOffsets()
-+        var newOffsets = offsets
-+        var events: [ParsedLogLine] = []
-+
-+        for descriptor in logFiles where fileManager.fileExists(atPath: descriptor.path) {
-+            let offset = offsets[descriptor.path] ?? 0
-+            let readResult = readLines(from: descriptor.path, startingAt: offset)
-+            guard let result = readResult, !result.lines.isEmpty else {
-+                continue
-+            }
-+
-+            let parsed = result.lines.compactMap { parse(line: $0, platform: descriptor.platform) }
-+            events.append(contentsOf: parsed)
-+            newOffsets[descriptor.path] = result.nextOffset
-+        }
-+
-+        guard !events.isEmpty else { return }
-+
-+        do {
-+            try await provider.upload(
-+                events: events,
-+                appVersion: Bundle.main.appDevVersion,
-+                build: Bundle.main.buildVersionNumber
-+            )
-+            saveOffsets(newOffsets)
-+            resetBackoff()
-+        } catch {
-+            debug(.storage, "❌ Cloud log upload failed: \(error)")
-+            applyBackoff()
-+        }
-+    }
-+
-+    var logFiles: [CloudLogFileDescriptor] {
-+        [
-+            CloudLogFileDescriptor(path: SimpleLogReporter.logFile, platform: .ios),
-+            CloudLogFileDescriptor(path: SimpleLogReporter.logFilePrev, platform: .ios),
-+            CloudLogFileDescriptor(path: SimpleLogReporter.watchLogFile, platform: .watchos),
-+            CloudLogFileDescriptor(path: SimpleLogReporter.watchLogFilePrev, platform: .watchos)
-+        ]
-+    }
-+
-+    func loadOffsets() -> [String: Int] {
-+        defaults.dictionary(forKey: offsetsKey) as? [String: Int] ?? [:]
-+    }
-+
-+    func saveOffsets(_ offsets: [String: Int]) {
-+        defaults.setValue(offsets, forKey: offsetsKey)
-+    }
-+
-+    func readLines(from path: String, startingAt offset: Int) -> (lines: [String], nextOffset: Int)? {
-+        guard let attributes = try? fileManager.attributesOfItem(atPath: path),
-+              let fileSize = attributes[.size] as? NSNumber
-+        else { return nil }
-+
-+        let currentSize = fileSize.intValue
-+        var startOffset = offset
-+        if currentSize < offset {
-+            startOffset = 0
-+        }
-+
-+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
-+        defer { try? handle.close() }
-+
-+        do {
-+            if #available(iOS 13.0, *) {
-+                try handle.seek(toOffset: UInt64(startOffset))
-+                let data = try handle.readToEnd() ?? Data()
-+                let content = String(data: data, encoding: .utf8) ?? ""
-+                let lines = content.split(whereSeparator: \.isNewline).map { String($0) }
-+                return (lines, currentSize)
-+            } else {
-+                handle.seek(toFileOffset: UInt64(startOffset))
-+                let data = handle.readDataToEndOfFile()
-+                let content = String(data: data, encoding: .utf8) ?? ""
-+                let lines = content.split(whereSeparator: \.isNewline).map { String($0) }
-+                return (lines, currentSize)
-+            }
-+        } catch {
-+            debug(.storage, "❌ Failed reading log file at offset: \(error)")
-+            return nil
-+        }
-+    }
-+
-+    func parse(line: String, platform: CloudLogPlatform) -> ParsedLogLine? {
-+        var remaining = line.trimmingCharacters(in: .whitespacesAndNewlines)
-+        if remaining.isEmpty { return nil }
-+
-+        var timestampString: String?
-+        var category: String?
+         injectServices(resolver)
+     }
+ 
+@@ -153,10 +170,6 @@ final class CloudLogUploader: Injectable {
+         }
+     }
+ 
+-    func requestWatchLogSnapshot() {
+-        watchManager.requestWatchLogSnapshot()
+-    }
+-
+     deinit {
+         NotificationCenter.default.removeObserver(self)
+         timer?.cancel()
+@@ -321,23 +334,29 @@ private extension CloudLogUploader {
+         }
+ 
+         var level: String?
+-        if remaining.hasPrefix("DEV:") {
+-            level = "debug"
+-        } else if remaining.hasPrefix("INFO:") {
+-            level = "info"
+-        } else if remaining.hasPrefix("WARN:") {
+-            level = "warning"
+-        } else if remaining.hasPrefix("ERR:") {
+-            level = "error"
++        var message = remaining
 +
 +        if platform == .ios {
-+            if let firstSpace = remaining.firstIndex(of: " ") {
-+                let tsCandidate = String(remaining[..<firstSpace])
-+                timestampString = tsCandidate
-+                remaining = String(remaining[remaining.index(after: firstSpace)...]).trimmingCharacters(in: .whitespaces)
-+            }
-+
-+            if remaining.hasPrefix("["), let end = remaining.firstIndex(of: "]") {
-+                let categoryRange = remaining.index(after: remaining.startIndex)..<end
-+                category = String(remaining[categoryRange])
-+                remaining = String(remaining[remaining.index(after: end)...]).trimmingCharacters(in: .whitespaces)
++            if let levelResult = extractIOSLevelAndMessage(from: remaining) {
++                level = levelResult.level
++                message = levelResult.message
 +            }
 +        } else {
-+            if remaining.hasPrefix("["), let end = remaining.firstIndex(of: "]") {
-+                let tsRange = remaining.index(after: remaining.startIndex)..<end
-+                timestampString = String(remaining[tsRange])
-+                remaining = String(remaining[remaining.index(after: end)...]).trimmingCharacters(in: .whitespaces)
++            if let levelResult = extractWatchMessage(from: remaining) {
++                category = levelResult.category ?? category
++                message = levelResult.message
 +            }
+         }
+ 
+-        if timestampString == nil {
+-            timestampString = isoFormatter.string(from: Date())
++        let normalizedTimestamp = timestampString.flatMap(normalizeTimestamp(_:))
++
++        if message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
++            message = line
+         }
+ 
+         return ParsedLogLine(
+-            message: remaining,
+-            timestamp: timestampString,
++            message: message,
++            timestamp: normalizedTimestamp,
+             level: level,
+             category: category,
+             platform: platform
+@@ -353,6 +372,67 @@ private extension CloudLogUploader {
+         retryDelay = 5
+         nextAllowedUpload = .distantPast
+     }
++
++    func extractIOSLevelAndMessage(from text: String) -> (level: String, message: String)? {
++        let pattern = #" - (DEV|INFO|WARN|ERR):"#
++        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
++        let range = NSRange(text.startIndex ..< text.endIndex, in: text)
++        guard let match = regex.firstMatch(in: text, options: [], range: range) else { return nil }
++
++        guard let levelRange = Range(match.range(at: 1), in: text) else { return nil }
++        let levelToken = String(text[levelRange])
++        let mappedLevel: String
++        switch levelToken {
++        case "DEV":
++            mappedLevel = "debug"
++        case "INFO":
++            mappedLevel = "info"
++        case "WARN":
++            mappedLevel = "warning"
++        case "ERR":
++            mappedLevel = "error"
++        default:
++            mappedLevel = levelToken.lowercased()
 +        }
 +
-+        var level: String?
-+        if remaining.hasPrefix("DEV:") {
-+            level = "debug"
-+        } else if remaining.hasPrefix("INFO:") {
-+            level = "info"
-+        } else if remaining.hasPrefix("WARN:") {
-+            level = "warning"
-+        } else if remaining.hasPrefix("ERR:") {
-+            level = "error"
++        let messageStartIndex = text.index(text.startIndex, offsetBy: match.range.location + match.range.length)
++        let message = text[messageStartIndex...].trimmingCharacters(in: .whitespaces)
++
++        return (mappedLevel, message)
++    }
++
++    func extractWatchMessage(from text: String) -> (category: String?, message: String)? {
++        var remaining = text
++        var category: String?
++
++        if remaining.hasPrefix("["), let end = remaining.firstIndex(of: "]") {
++            remaining = String(remaining[remaining.index(after: end)...]).trimmingCharacters(in: .whitespaces)
 +        }
 +
-+        if timestampString == nil {
-+            timestampString = isoFormatter.string(from: Date())
++        if remaining.hasPrefix("["), let end = remaining.firstIndex(of: "]") {
++            let fileSegment = String(remaining[remaining.index(after: remaining.startIndex)..<end])
++            if let colonIndex = fileSegment.firstIndex(of: ":") {
++                let filename = String(fileSegment[..<colonIndex])
++                category = filename.replacingOccurrences(of: ".swift", with: "")
++            }
++            remaining = String(remaining[remaining.index(after: end)...]).trimmingCharacters(in: .whitespaces)
 +        }
 +
-+        return ParsedLogLine(
-+            message: remaining,
-+            timestamp: timestampString,
-+            level: level,
-+            category: category,
-+            platform: platform
-+        )
++        let arrow = "→"
++        if let arrowRange = remaining.range(of: arrow) {
++            let message = remaining[arrowRange.upperBound...].trimmingCharacters(in: .whitespaces)
++            return (category, message)
++        }
++
++        return (category, remaining)
 +    }
 +
-+    func applyBackoff() {
-+        nextAllowedUpload = Date().addingTimeInterval(retryDelay)
-+        retryDelay = min(retryDelay * 2, 300)
++    func normalizeTimestamp(_ timestamp: String) -> String? {
++        let cleaned = timestamp.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !cleaned.isEmpty else { return nil }
++        guard let date = logDateFormatter.date(from: cleaned) else { return nil }
++        return isoFormatter.string(from: date)
 +    }
-+
-+    func resetBackoff() {
-+        retryDelay = 5
-+        nextAllowedUpload = .distantPast
-+    }
-+}
-+
-+#endif
+ }
+ 
+ #endif
 diff --git a/Trio/Sources/Models/WatchMessageKeys.swift b/Trio/Sources/Models/WatchMessageKeys.swift
-index b7b754bf0965661c27e9639e17fcb6492fc370cc..266672bcb09c2f2818c2aeaacc47e0868626c165 100644
+index 266672bcb09c2f2818c2aeaacc47e0868626c165..b7b754bf0965661c27e9639e17fcb6492fc370cc 100644
 --- a/Trio/Sources/Models/WatchMessageKeys.swift
 +++ b/Trio/Sources/Models/WatchMessageKeys.swift
-@@ -4,6 +4,7 @@ enum WatchMessageKeys {
+@@ -4,7 +4,6 @@ enum WatchMessageKeys {
      static let units = "units"
      static let requestWatchUpdate = "requestWatchUpdate"
      static let watchState = "watchState"
-+    static let requestWatchLogs = "requestWatchLogs"
+-    static let requestWatchLogs = "requestWatchLogs"
      static let acknowledged = "acknowledged"
      static let ackCode = "ackCode"
      static let message = "message"
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 3b8d9e47f451c1905376e4b800f7059c741a4f88..0b168bf174656eeca2e27a70465c4b64217c0909 100644
+index 0b168bf174656eeca2e27a70465c4b64217c0909..3b8d9e47f451c1905376e4b800f7059c741a4f88 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-@@ -8,6 +8,7 @@ import WatchConnectivity
+@@ -8,7 +8,6 @@ import WatchConnectivity
  /// Protocol defining the base functionality for Watch communication
  protocol WatchManager {
      func setupWatchState() async -> WatchState
-+    func requestWatchLogSnapshot()
+-    func requestWatchLogSnapshot()
  }
  
  /// Main implementation of the Watch communication manager
-@@ -94,6 +95,29 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -95,29 +94,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          registerHandlers()
      }
  
-+    func requestWatchLogSnapshot() {
-+        guard let session = session else {
-+            debug(.watchManager, "⌚️ Cannot request watch logs: session unavailable")
-+            return
-+        }
-+
-+        let payload: [String: Any] = [WatchMessageKeys.requestWatchLogs: true]
-+
-+        if session.activationState != .activated {
-+            debug(.watchManager, "⌚️ Activating session before requesting watch logs")
-+            session.activate()
-+            return
-+        }
-+
-+        if session.isReachable {
-+            session.sendMessage(payload, replyHandler: nil) { error in
-+                debug(.watchManager, "❌ Error requesting watch log snapshot: \(error)")
-+            }
-+        } else {
-+            _ = session.transferUserInfo(payload)
-+        }
-+    }
-+
+-    func requestWatchLogSnapshot() {
+-        guard let session = session else {
+-            debug(.watchManager, "⌚️ Cannot request watch logs: session unavailable")
+-            return
+-        }
+-
+-        let payload: [String: Any] = [WatchMessageKeys.requestWatchLogs: true]
+-
+-        if session.activationState != .activated {
+-            debug(.watchManager, "⌚️ Activating session before requesting watch logs")
+-            session.activate()
+-            return
+-        }
+-
+-        if session.isReachable {
+-            session.sendMessage(payload, replyHandler: nil) { error in
+-                debug(.watchManager, "❌ Error requesting watch log snapshot: \(error)")
+-            }
+-        } else {
+-            _ = session.transferUserInfo(payload)
+-        }
+-    }
+-
      private func registerHandlers() {
          coreDataPublisher?.filteredByEntityName("OrefDetermination").sink { [weak self] _ in
              guard let self = self else { return }
 diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
-new file mode 100644
-index 0000000000000000000000000000000000000000..274d9ecb1bbb8485b1d8e81b5b7823e557775e2a
---- /dev/null
+index 274d9ecb1bbb8485b1d8e81b5b7823e557775e2a..d373af45338c3aab5a2698f5b0f3dc4df160ff06 100644
+--- a/docs/cloud-logging.md
 +++ b/docs/cloud-logging.md
-@@ -0,0 +1,82 @@
-+# Cloud Logging for Trio
-+
-+This document captures the current on-device logging setup and how to relay logs to a cloud provider without changing the existing file-based pipeline.
-+
-+## Current log files (source of truth)
-+
-+### iPhone
-+- **Directory:** `~/Documents/logs/`
-+- **Files:**
-+  - `log.txt` (current day)
-+  - `log_prev.txt` (previous day after rotation)
-+- **Rotation:** At the first log write after midnight, `log.txt` is moved to `log_prev.txt` and a new `log.txt` is created with a `creationDate` at start-of-day.
-+- **Flush behavior:** Each log write appends immediately (no buffering).
-+- **Format example:**
-+  - `2024-05-06T12:34:56+0000 [Service] Logger.swift - info() - 42 - INFO: Loop iteration complete`
-+  - Fields: ISO-8601 timestamp, category in brackets, source file, function, line, then message. Messages include a level prefix (`DEV:`, `INFO:`, `WARN:`, `ERR:`) but the prefix is part of the message body.
-+
-+### Watch logs as stored on the phone
-+- **Directory:** `~/Documents/logs/`
-+- **Files:**
-+  - `watch_log.txt` (current day)
-+  - `watch_log_prev.txt` (previous day after rotation)
-+- **Rotation:** Same midnight move pattern as iPhone logs.
-+- **How they arrive:** The watch bundles logs into strings and sends them via `WCSession`. The phone simply appends the received text to `watch_log.txt`; no transformation is performed.
-+- **Format example (watch-originated lines):**
-+  - `[2024-05-06T12:35:01+0000] [WatchInterface.swift:22] syncState() → ⌚️ Requesting WatchState update from iPhone`
-+  - Fields: timestamp in brackets, file:line, function, arrow (`→`), and the message. No explicit level/category prefix; emojis are common.
-+
-+## Parsing hints
-+- **Levels:** Derived from the message prefix used by the logger:
-+  - `DEV:` → debug
-+  - `INFO:` → info
-+  - `WARN:` → warning
-+  - `ERR:` → error
-+- **Category:** The bracketed value immediately after the timestamp in iPhone logs (e.g., `[Service]`). Watch logs have no explicit category; treat as `watch` or derive from platform.
-+- **Correlation IDs:** Not present in current formats.
-+- **Timestamps:** ISO-8601 with timezone offset (`yyyy-MM-dd'T'HH:mm:ssZ`) for both platforms.
-+
-+## Provider choice
-+- **Primary:** Better Stack (Logtail)
-+  - Generous free tier (~50k logs/month, 3-day retention on free plan at time of writing) and simple HTTPS ingestion.
-+  - Full-text search with structured attributes; supports export via API.
-+  - HTTP ingestion endpoint: `https://in.logs.betterstack.com` with `Authorization: Bearer <source-token>`.
-+- **Fallback:** Axiom (cloud.axiom.co)
-+  - Free tier (limited events/day, 7-day retention); accepts HTTPS writes with a dataset token.
-+  - Good search/filter and CSV/NDJSON export.
-+
-+## Configuration (iPhone)
-+1. Create a Logtail source (primary) and grab the **Source token**. For Axiom, create a dataset and note the ingest token and dataset name.
-+2. Add the following to `ConfigOverride.xcconfig` (or your preferred xcconfig) before building:
-+   ```
-+   CLOUD_LOGGING_ENABLED = YES
-+   CLOUD_LOGGING_ENDPOINT = https://in.logs.betterstack.com
-+   CLOUD_LOGGING_TOKEN = <logtail-source-token>
-+   CLOUD_LOGGING_ENV = dev // or prod
-+   ```
-+   - For Axiom, set `CLOUD_LOGGING_ENDPOINT = https://api.axiom.co/v1/datasets/<dataset>/ingest` and `CLOUD_LOGGING_TOKEN = <axiom-token>`.
-+3. Build/install the app. The uploader reads the values from `Info.plist` at runtime; if disabled or missing, cloud uploads are skipped.
-+
-+## What gets uploaded
-+- The uploader tails `log.txt`, `log_prev.txt`, `watch_log.txt`, and `watch_log_prev.txt` from the phone’s Documents/logs directory using a per-file byte offset checkpoint.
-+- Each line is sent as the message body. Parsed attributes include:
-+  - `platform` (ios/watchos)
-+  - `level` (derived from `DEV`/`INFO`/`WARN`/`ERR` prefixes when present)
-+  - `category` (iPhone lines only)
-+  - `env`, `appVersion`, and `build`
-+- Offsets are stored locally; if a file shrinks (rotation), the offset resets to `0` and the file is re-read from the beginning.
-+
-+## Querying and export
-+- **Logtail:**
-+  - Search by `platform:"watchos"` or `category:"Service"`.
-+  - Filter by `level:error` for ERR lines.
-+  - Export via the Better Stack API or UI as NDJSON/CSV for offline/AI analysis.
-+- **Axiom fallback:**
-+  - Use the query builder or Axiom Query Language (AQL), e.g., `['platform' == "ios" and 'level' == "warning"]`.
-+  - Export via the dataset export tab or `axiom export` CLI.
-+
-+## Manual checks (expected behavior)
-+- New log lines appear in Logtail within a few seconds of upload when connectivity is available.
-+- Only appended content is uploaded; offsets prevent re-sending unless a rotation shrink is detected (in which case the day’s files may re-upload).
-+- Watch log lines are tagged with `platform=watchos` and can be filtered separately.
-+- Uploads are attempted on app foreground/background transitions and every five minutes while running; `uploadNow()` can be called manually for immediate flushing. A `requestWatchLogSnapshot()` helper triggers a watch log flush using the existing transfer path.
+@@ -11,9 +11,10 @@ This document captures the current on-device logging setup and how to relay logs
+   - `log_prev.txt` (previous day after rotation)
+ - **Rotation:** At the first log write after midnight, `log.txt` is moved to `log_prev.txt` and a new `log.txt` is created with a `creationDate` at start-of-day.
+ - **Flush behavior:** Each log write appends immediately (no buffering).
+-- **Format example:**
+-  - `2024-05-06T12:34:56+0000 [Service] Logger.swift - info() - 42 - INFO: Loop iteration complete`
+-  - Fields: ISO-8601 timestamp, category in brackets, source file, function, line, then message. Messages include a level prefix (`DEV:`, `INFO:`, `WARN:`, `ERR:`) but the prefix is part of the message body.
++- **Format examples:**
++  - `2025-12-31T22:02:48+0100 [WatchManager] AppleWatchManager.swift - sendDataToWatch(_:) - 536 - DEV: 📤 Transferred new WatchState snapshot via userInfo`
++  - `2025-12-31T22:05:40+0100 [Nightscout] FetchTreatmentsManager.swift - subscribe() - 29 - DEV: FetchTreatmentsManager heartbeat`
++  - Fields: timestamp (`yyyy-MM-dd'T'HH:mm:ssZ` with offsets like `+0100`), category in brackets, file, function, line, then `LEVEL:` followed by the message.
+ 
+ ### Watch logs as stored on the phone
+ - **Directory:** `~/Documents/logs/`
+@@ -23,18 +24,16 @@ This document captures the current on-device logging setup and how to relay logs
+ - **Rotation:** Same midnight move pattern as iPhone logs.
+ - **How they arrive:** The watch bundles logs into strings and sends them via `WCSession`. The phone simply appends the received text to `watch_log.txt`; no transformation is performed.
+ - **Format example (watch-originated lines):**
+-  - `[2024-05-06T12:35:01+0000] [WatchInterface.swift:22] syncState() → ⌚️ Requesting WatchState update from iPhone`
+-  - Fields: timestamp in brackets, file:line, function, arrow (`→`), and the message. No explicit level/category prefix; emojis are common.
++  - `[2025-12-31T00:01:27+0100] [WatchLogger.swift:169] flushToPhone() → ⌚️ Logs queued for background delivery to phone`
++  - `[2025-12-31T00:02:40+0100] [WatchState.swift:658] handleBackgroundTasks(_:) → Handling background tasks: 1`
++  - Fields: timestamp in brackets, file:line (used as category), function, arrow (`→`), and the message. No explicit level prefix.
+ 
+ ## Parsing hints
+-- **Levels:** Derived from the message prefix used by the logger:
+-  - `DEV:` → debug
+-  - `INFO:` → info
+-  - `WARN:` → warning
+-  - `ERR:` → error
+-- **Category:** The bracketed value immediately after the timestamp in iPhone logs (e.g., `[Service]`). Watch logs have no explicit category; treat as `watch` or derive from platform.
++- **iPhone level:** Extract the `LEVEL:` token appearing after delimiters, using the exact strings `DEV`, `INFO`, `WARN`, `ERR` (mapped to debug/info/warning/error). Do **not** check prefix-only.
++- **iPhone category:** The bracketed value immediately after the timestamp (e.g., `[WatchManager]`).
++- **Watch category:** Derived from the `File.swift` token in `[File.swift:line]` (extension stripped).
++- **Timestamps:** Parsed as `yyyy-MM-dd'T'HH:mm:ssZ` and normalized to RFC3339 by inserting the colon in the offset (e.g., `+0100` → `+01:00`). If normalization fails, omit `dt` and let the provider assign ingest time.
+ - **Correlation IDs:** Not present in current formats.
+-- **Timestamps:** ISO-8601 with timezone offset (`yyyy-MM-dd'T'HH:mm:ssZ`) for both platforms.
+ 
+ ## Provider choice
+ - **Primary:** Better Stack (Logtail)
+@@ -79,4 +78,4 @@ This document captures the current on-device logging setup and how to relay logs
+ - New log lines appear in Logtail within a few seconds of upload when connectivity is available.
+ - Only appended content is uploaded; offsets prevent re-sending unless a rotation shrink is detected (in which case the day’s files may re-upload).
+ - Watch log lines are tagged with `platform=watchos` and can be filtered separately.
+-- Uploads are attempted on app foreground/background transitions and every five minutes while running; `uploadNow()` can be called manually for immediate flushing. A `requestWatchLogSnapshot()` helper triggers a watch log flush using the existing transfer path.
++- Uploads are attempted on app foreground/background transitions and every five minutes while running; `uploadNow()` can be called manually for immediate flushing.
+diff --git a/patches/06-cloud-logging.patch b/patches/06-cloud-logging.patch
+deleted file mode 100644
+index d51e559dc4fc79beaa1f7b550fdd0193dc36cb10..0000000000000000000000000000000000000000
+--- a/patches/06-cloud-logging.patch
++++ /dev/null
+@@ -1,614 +0,0 @@
+-diff --git a/Config.xcconfig b/Config.xcconfig
+-index 844f72a947f48ae7fdf21f93dd65da90d964ff35..a6fd8c0c230ba81d55526323050fb4e4a161de50 100644
+---- a/Config.xcconfig
+-+++ b/Config.xcconfig
+-@@ -3,6 +3,11 @@ APP_DISPLAY_NAME = Trio
+- APP_ICON = trioBlack
+- APP_URL_SCHEME = Trio
+- 
+-+CLOUD_LOGGING_ENABLED = NO
+-+CLOUD_LOGGING_ENDPOINT =
+-+CLOUD_LOGGING_TOKEN =
+-+CLOUD_LOGGING_ENV = dev
+-+
+- // DEVELOPER_TEAM will be set to your Apple Developer ID - typically using ConfigOverride.xcconfig
+- DEVELOPER_TEAM = ##TEAM_ID##
+- 
+-diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
+-index 2b174301c021dea5ad763997372f91a85512ea51..c32cc8c483faf410b8727a7cdeadf5562b72d0bd 100644
+---- a/Trio Watch App Extension/WatchState.swift	
+-+++ b/Trio Watch App Extension/WatchState.swift	
+-@@ -180,6 +180,11 @@ import WatchConnectivity
+-             await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
+-         }
+- 
+-+        if message[WatchMessageKeys.requestWatchLogs] as? Bool == true {
+-+            Task { await WatchLogger.shared.flushPersistedLogs() }
+-+            return
+-+        }
+-+
+-         // If the message has a nested "watchState" dictionary with date as TimeInterval
+-         if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
+-            let timestamp = watchStateDict[WatchMessageKeys.date] as? TimeInterval
+-@@ -246,6 +251,11 @@ import WatchConnectivity
+-     }
+- 
+-     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+-+        if userInfo[WatchMessageKeys.requestWatchLogs] as? Bool == true {
+-+            Task { await WatchLogger.shared.flushPersistedLogs() }
+-+            return
+-+        }
+-+
+-         guard let snapshot = WatchStateSnapshot(from: userInfo) else {
+-             Task {
+-                 await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)
+-diff --git a/Trio/Resources/Info.plist b/Trio/Resources/Info.plist
+-index 6ceab61b7b9be258360007b46bba76fb427246c4..f98626eb02969191549bd06967c5ba4fde2ca56f 100644
+---- a/Trio/Resources/Info.plist
+-+++ b/Trio/Resources/Info.plist
+-@@ -2,14 +2,22 @@
+- <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+- <plist version="1.0">
+- <dict>
+--	<key>AppGroupID</key>
+--	<string>$(APP_GROUP_ID)</string>
+--	<key>AppDevVersion</key>
+--	<string>$(APP_DEV_VERSION)</string>
+--	<key>BGTaskSchedulerPermittedIdentifiers</key>
+--	<array>
+--		<string>$(PRODUCT_BUNDLE_IDENTIFIER).background-task.critical-event-log</string>
+--	</array>
+-+        <key>AppGroupID</key>
+-+        <string>$(APP_GROUP_ID)</string>
+-+        <key>AppDevVersion</key>
+-+        <string>$(APP_DEV_VERSION)</string>
+-+        <key>CloudLoggingEnabled</key>
+-+        <string>$(CLOUD_LOGGING_ENABLED)</string>
+-+        <key>CloudLoggingEndpoint</key>
+-+        <string>$(CLOUD_LOGGING_ENDPOINT)</string>
+-+        <key>CloudLoggingEnv</key>
+-+        <string>$(CLOUD_LOGGING_ENV)</string>
+-+        <key>CloudLoggingToken</key>
+-+        <string>$(CLOUD_LOGGING_TOKEN)</string>
+-+        <key>BGTaskSchedulerPermittedIdentifiers</key>
+-+        <array>
+-+                <string>$(PRODUCT_BUNDLE_IDENTIFIER).background-task.critical-event-log</string>
+-+        </array>
+- 	<key>CBBundleDisplayName</key>
+- 	<string>$(APP_DISPLAY_NAME)</string>
+- 	<key>CFBundleDevelopmentRegion</key>
+-diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
+-index 1d148c93d49f80154179904b96f08cae4310b010..5e5056b25c425e4741fd7fdeff4e62f22221e97e 100644
+---- a/Trio/Sources/Application/TrioApp.swift
+-+++ b/Trio/Sources/Application/TrioApp.swift
+-@@ -85,6 +85,11 @@ extension Notification.Name {
+-             _ = resolver.resolve(LiveActivityManager.self)!
+-         }
+-         _ = resolver.resolve(IOBService.self)!
+-+        #if os(iOS)
+-+            if let uploader = resolver.resolve(CloudLogUploader.self) {
+-+                uploader.start()
+-+            }
+-+        #endif
+-     }
+- 
+-     init() {
+-diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
+-index fea855ed8afefac1ff2d8b32d198feacbcc16e3c..1e70881bfc21e177d9f8df380b7bb8fa1acd1495 100644
+---- a/Trio/Sources/Assemblies/ServiceAssembly.swift
+-+++ b/Trio/Sources/Assemblies/ServiceAssembly.swift
+-@@ -29,5 +29,8 @@ final class ServiceAssembly: Assembly {
+-             }
+-         }
+-         container.register(IOBService.self) { r in BaseIOBService(resolver: r) }
+-+        #if os(iOS)
+-+            container.register(CloudLogUploader.self) { r in CloudLogUploader(resolver: r) }
+-+        #endif
+-     }
+- }
+-diff --git a/Trio/Sources/Logger/Cloud/CloudLogUploader.swift b/Trio/Sources/Logger/Cloud/CloudLogUploader.swift
+-new file mode 100644
+-index 0000000000000000000000000000000000000000..45db55ed4f560cfeb3a0b5ac10fbba1c5a53720f
+---- /dev/null
+-+++ b/Trio/Sources/Logger/Cloud/CloudLogUploader.swift
+-@@ -0,0 +1,358 @@
+-+#if os(iOS)
+-+import Foundation
+-+import Swinject
+-+import UIKit
+-+
+-+private enum CloudLogPlatform: String {
+-+    case ios
+-+    case watchos
+-+}
+-+
+-+private struct CloudLogFileDescriptor {
+-+    let path: String
+-+    let platform: CloudLogPlatform
+-+}
+-+
+-+private struct ParsedLogLine {
+-+    let message: String
+-+    let timestamp: String?
+-+    let level: String?
+-+    let category: String?
+-+    let platform: CloudLogPlatform
+-+}
+-+
+-+private struct CloudLogPayload: Encodable {
+-+    let dt: String?
+-+    let level: String?
+-+    let message: String
+-+    let platform: String
+-+    let category: String?
+-+    let env: String?
+-+    let appVersion: String?
+-+    let build: String?
+-+    let correlationId: String?
+-+}
+-+
+-+private struct CloudLoggingConfiguration {
+-+    let isEnabled: Bool
+-+    let endpoint: URL
+-+    let token: String
+-+    let environment: String
+-+
+-+    static func load() -> CloudLoggingConfiguration? {
+-+        guard let info = Bundle.main.infoDictionary else { return nil }
+-+
+-+        let enabledString = info["CloudLoggingEnabled"] as? String ?? "NO"
+-+        let isEnabled = enabledString.uppercased() == "YES"
+-+
+-+        guard isEnabled,
+-+              let endpointString = info["CloudLoggingEndpoint"] as? String,
+-+              let endpoint = URL(string: endpointString),
+-+              let token = info["CloudLoggingToken"] as? String,
+-+              !token.isEmpty
+-+        else {
+-+            return nil
+-+        }
+-+
+-+        let environmentString = info["CloudLoggingEnv"] as? String
+-+        let environment = (environmentString?.isEmpty == false) ? (environmentString ?? "dev") : "dev"
+-+
+-+        return CloudLoggingConfiguration(
+-+            isEnabled: isEnabled,
+-+            endpoint: endpoint,
+-+            token: token,
+-+            environment: environment
+-+        )
+-+    }
+-+}
+-+
+-+private final class CloudLogProvider {
+-+    private let configuration: CloudLoggingConfiguration
+-+    private let session: URLSession
+-+    private let encoder: JSONEncoder
+-+
+-+    init(configuration: CloudLoggingConfiguration) {
+-+        self.configuration = configuration
+-+        session = URLSession(configuration: .ephemeral)
+-+        encoder = JSONEncoder()
+-+    }
+-+
+-+    func upload(events: [ParsedLogLine], appVersion: String?, build: String?) async throws {
+-+        guard !events.isEmpty else { return }
+-+
+-+        var batches: [[ParsedLogLine]] = []
+-+        let chunkSize = 50
+-+        var index = 0
+-+        while index < events.count {
+-+            let end = min(events.count, index + chunkSize)
+-+            batches.append(Array(events[index ..< end]))
+-+            index = end
+-+        }
+-+
+-+        for batch in batches {
+-+            let payload = batch.map { line in
+-+                CloudLogPayload(
+-+                    dt: line.timestamp,
+-+                    level: line.level,
+-+                    message: line.message,
+-+                    platform: line.platform.rawValue,
+-+                    category: line.category,
+-+                    env: configuration.environment,
+-+                    appVersion: appVersion,
+-+                    build: build,
+-+                    correlationId: nil
+-+                )
+-+            }
+-+
+-+            var request = URLRequest(url: configuration.endpoint)
+-+            request.httpMethod = "POST"
+-+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+-+            request.setValue("Bearer \(configuration.token)", forHTTPHeaderField: "Authorization")
+-+            request.httpBody = try encoder.encode(payload)
+-+
+-+            _ = try await session.data(for: request)
+-+        }
+-+    }
+-+}
+-+
+-+final class CloudLogUploader: Injectable {
+-+    @Injected var watchManager: WatchManager!
+-+
+-+    private let configuration: CloudLoggingConfiguration?
+-+    private let provider: CloudLogProvider?
+-+    private let queue = DispatchQueue(label: "CloudLogUploader.queue")
+-+    private var timer: DispatchSourceTimer?
+-+    private let offsetsKey = "CloudLogUploader.offsets.v1"
+-+    private let defaults = UserDefaults.standard
+-+    private let fileManager = FileManager.default
+-+    private let isoFormatter: ISO8601DateFormatter
+-+
+-+    private var retryDelay: TimeInterval = 5
+-+    private var nextAllowedUpload: Date = .distantPast
+-+
+-+    init(resolver: Resolver) {
+-+        configuration = CloudLoggingConfiguration.load()
+-+        provider = configuration.map { CloudLogProvider(configuration: $0) }
+-+        isoFormatter = ISO8601DateFormatter()
+-+        injectServices(resolver)
+-+    }
+-+
+-+    func start() {
+-+        guard configuration?.isEnabled == true else { return }
+-+
+-+        registerNotifications()
+-+        scheduleTimer()
+-+        uploadNow()
+-+    }
+-+
+-+    func uploadNow() {
+-+        guard configuration?.isEnabled == true else { return }
+-+        queue.async { [weak self] in
+-+            guard let self else { return }
+-+            Task { await self.processUpload(reason: "manual") }
+-+        }
+-+    }
+-+
+-+    func requestWatchLogSnapshot() {
+-+        watchManager.requestWatchLogSnapshot()
+-+    }
+-+
+-+    deinit {
+-+        NotificationCenter.default.removeObserver(self)
+-+        timer?.cancel()
+-+    }
+-+}
+-+
+-+private extension CloudLogUploader {
+-+    func registerNotifications() {
+-+        NotificationCenter.default.addObserver(
+-+            self,
+-+            selector: #selector(handleForeground),
+-+            name: UIApplication.willEnterForegroundNotification,
+-+            object: nil
+-+        )
+-+
+-+        NotificationCenter.default.addObserver(
+-+            self,
+-+            selector: #selector(handleBackground),
+-+            name: UIApplication.didEnterBackgroundNotification,
+-+            object: nil
+-+        )
+-+    }
+-+
+-+    func scheduleTimer() {
+-+        timer?.cancel()
+-+        let timer = DispatchSource.makeTimerSource(queue: queue)
+-+        timer.schedule(deadline: .now() + 300, repeating: 300)
+-+        timer.setEventHandler { [weak self] in
+-+            guard let self else { return }
+-+            Task { await self.processUpload(reason: "timer") }
+-+        }
+-+        timer.resume()
+-+        self.timer = timer
+-+    }
+-+
+-+    @objc func handleForeground() {
+-+        queue.async { [weak self] in
+-+            guard let self else { return }
+-+            Task { await self.processUpload(reason: "foreground") }
+-+        }
+-+    }
+-+
+-+    @objc func handleBackground() {
+-+        queue.async { [weak self] in
+-+            guard let self else { return }
+-+            Task { await self.processUpload(reason: "background") }
+-+        }
+-+    }
+-+
+-+    func processUpload(reason _: String) async {
+-+        guard Date() >= nextAllowedUpload else { return }
+-+        guard let provider else { return }
+-+
+-+        var offsets = loadOffsets()
+-+        var newOffsets = offsets
+-+        var events: [ParsedLogLine] = []
+-+
+-+        for descriptor in logFiles where fileManager.fileExists(atPath: descriptor.path) {
+-+            let offset = offsets[descriptor.path] ?? 0
+-+            let readResult = readLines(from: descriptor.path, startingAt: offset)
+-+            guard let result = readResult, !result.lines.isEmpty else {
+-+                continue
+-+            }
+-+
+-+            let parsed = result.lines.compactMap { parse(line: $0, platform: descriptor.platform) }
+-+            events.append(contentsOf: parsed)
+-+            newOffsets[descriptor.path] = result.nextOffset
+-+        }
+-+
+-+        guard !events.isEmpty else { return }
+-+
+-+        do {
+-+            try await provider.upload(
+-+                events: events,
+-+                appVersion: Bundle.main.appDevVersion,
+-+                build: Bundle.main.buildVersionNumber
+-+            )
+-+            saveOffsets(newOffsets)
+-+            resetBackoff()
+-+        } catch {
+-+            debug(.storage, "❌ Cloud log upload failed: \(error)")
+-+            applyBackoff()
+-+        }
+-+    }
+-+
+-+    var logFiles: [CloudLogFileDescriptor] {
+-+        [
+-+            CloudLogFileDescriptor(path: SimpleLogReporter.logFile, platform: .ios),
+-+            CloudLogFileDescriptor(path: SimpleLogReporter.logFilePrev, platform: .ios),
+-+            CloudLogFileDescriptor(path: SimpleLogReporter.watchLogFile, platform: .watchos),
+-+            CloudLogFileDescriptor(path: SimpleLogReporter.watchLogFilePrev, platform: .watchos)
+-+        ]
+-+    }
+-+
+-+    func loadOffsets() -> [String: Int] {
+-+        defaults.dictionary(forKey: offsetsKey) as? [String: Int] ?? [:]
+-+    }
+-+
+-+    func saveOffsets(_ offsets: [String: Int]) {
+-+        defaults.setValue(offsets, forKey: offsetsKey)
+-+    }
+-+
+-+    func readLines(from path: String, startingAt offset: Int) -> (lines: [String], nextOffset: Int)? {
+-+        guard let attributes = try? fileManager.attributesOfItem(atPath: path),
+-+              let fileSize = attributes[.size] as? NSNumber
+-+        else { return nil }
+-+
+-+        let currentSize = fileSize.intValue
+-+        var startOffset = offset
+-+        if currentSize < offset {
+-+            startOffset = 0
+-+        }
+-+
+-+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+-+        defer { try? handle.close() }
+-+
+-+        do {
+-+            if #available(iOS 13.0, *) {
+-+                try handle.seek(toOffset: UInt64(startOffset))
+-+                let data = try handle.readToEnd() ?? Data()
+-+                let content = String(data: data, encoding: .utf8) ?? ""
+-+                let lines = content.split(whereSeparator: \.isNewline).map { String($0) }
+-+                return (lines, currentSize)
+-+            } else {
+-+                handle.seek(toFileOffset: UInt64(startOffset))
+-+                let data = handle.readDataToEndOfFile()
+-+                let content = String(data: data, encoding: .utf8) ?? ""
+-+                let lines = content.split(whereSeparator: \.isNewline).map { String($0) }
+-+                return (lines, currentSize)
+-+            }
+-+        } catch {
+-+            debug(.storage, "❌ Failed reading log file at offset: \(error)")
+-+            return nil
+-+        }
+-+    }
+-+
+-+    func parse(line: String, platform: CloudLogPlatform) -> ParsedLogLine? {
+-+        var remaining = line.trimmingCharacters(in: .whitespacesAndNewlines)
+-+        if remaining.isEmpty { return nil }
+-+
+-+        var timestampString: String?
+-+        var category: String?
+-+
+-+        if platform == .ios {
+-+            if let firstSpace = remaining.firstIndex(of: " ") {
+-+                let tsCandidate = String(remaining[..<firstSpace])
+-+                timestampString = tsCandidate
+-+                remaining = String(remaining[remaining.index(after: firstSpace)...]).trimmingCharacters(in: .whitespaces)
+-+            }
+-+
+-+            if remaining.hasPrefix("["), let end = remaining.firstIndex(of: "]") {
+-+                let categoryRange = remaining.index(after: remaining.startIndex)..<end
+-+                category = String(remaining[categoryRange])
+-+                remaining = String(remaining[remaining.index(after: end)...]).trimmingCharacters(in: .whitespaces)
+-+            }
+-+        } else {
+-+            if remaining.hasPrefix("["), let end = remaining.firstIndex(of: "]") {
+-+                let tsRange = remaining.index(after: remaining.startIndex)..<end
+-+                timestampString = String(remaining[tsRange])
+-+                remaining = String(remaining[remaining.index(after: end)...]).trimmingCharacters(in: .whitespaces)
+-+            }
+-+        }
+-+
+-+        var level: String?
+-+        if remaining.hasPrefix("DEV:") {
+-+            level = "debug"
+-+        } else if remaining.hasPrefix("INFO:") {
+-+            level = "info"
+-+        } else if remaining.hasPrefix("WARN:") {
+-+            level = "warning"
+-+        } else if remaining.hasPrefix("ERR:") {
+-+            level = "error"
+-+        }
+-+
+-+        if timestampString == nil {
+-+            timestampString = isoFormatter.string(from: Date())
+-+        }
+-+
+-+        return ParsedLogLine(
+-+            message: remaining,
+-+            timestamp: timestampString,
+-+            level: level,
+-+            category: category,
+-+            platform: platform
+-+        )
+-+    }
+-+
+-+    func applyBackoff() {
+-+        nextAllowedUpload = Date().addingTimeInterval(retryDelay)
+-+        retryDelay = min(retryDelay * 2, 300)
+-+    }
+-+
+-+    func resetBackoff() {
+-+        retryDelay = 5
+-+        nextAllowedUpload = .distantPast
+-+    }
+-+}
+-+
+-+#endif
+-diff --git a/Trio/Sources/Models/WatchMessageKeys.swift b/Trio/Sources/Models/WatchMessageKeys.swift
+-index b7b754bf0965661c27e9639e17fcb6492fc370cc..266672bcb09c2f2818c2aeaacc47e0868626c165 100644
+---- a/Trio/Sources/Models/WatchMessageKeys.swift
+-+++ b/Trio/Sources/Models/WatchMessageKeys.swift
+-@@ -4,6 +4,7 @@ enum WatchMessageKeys {
+-     static let units = "units"
+-     static let requestWatchUpdate = "requestWatchUpdate"
+-     static let watchState = "watchState"
+-+    static let requestWatchLogs = "requestWatchLogs"
+-     static let acknowledged = "acknowledged"
+-     static let ackCode = "ackCode"
+-     static let message = "message"
+-diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+-index 3b8d9e47f451c1905376e4b800f7059c741a4f88..0b168bf174656eeca2e27a70465c4b64217c0909 100644
+---- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+-+++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+-@@ -8,6 +8,7 @@ import WatchConnectivity
+- /// Protocol defining the base functionality for Watch communication
+- protocol WatchManager {
+-     func setupWatchState() async -> WatchState
+-+    func requestWatchLogSnapshot()
+- }
+- 
+- /// Main implementation of the Watch communication manager
+-@@ -94,6 +95,29 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+-         registerHandlers()
+-     }
+- 
+-+    func requestWatchLogSnapshot() {
+-+        guard let session = session else {
+-+            debug(.watchManager, "⌚️ Cannot request watch logs: session unavailable")
+-+            return
+-+        }
+-+
+-+        let payload: [String: Any] = [WatchMessageKeys.requestWatchLogs: true]
+-+
+-+        if session.activationState != .activated {
+-+            debug(.watchManager, "⌚️ Activating session before requesting watch logs")
+-+            session.activate()
+-+            return
+-+        }
+-+
+-+        if session.isReachable {
+-+            session.sendMessage(payload, replyHandler: nil) { error in
+-+                debug(.watchManager, "❌ Error requesting watch log snapshot: \(error)")
+-+            }
+-+        } else {
+-+            _ = session.transferUserInfo(payload)
+-+        }
+-+    }
+-+
+-     private func registerHandlers() {
+-         coreDataPublisher?.filteredByEntityName("OrefDetermination").sink { [weak self] _ in
+-             guard let self = self else { return }
+-diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
+-new file mode 100644
+-index 0000000000000000000000000000000000000000..274d9ecb1bbb8485b1d8e81b5b7823e557775e2a
+---- /dev/null
+-+++ b/docs/cloud-logging.md
+-@@ -0,0 +1,82 @@
+-+# Cloud Logging for Trio
+-+
+-+This document captures the current on-device logging setup and how to relay logs to a cloud provider without changing the existing file-based pipeline.
+-+
+-+## Current log files (source of truth)
+-+
+-+### iPhone
+-+- **Directory:** `~/Documents/logs/`
+-+- **Files:**
+-+  - `log.txt` (current day)
+-+  - `log_prev.txt` (previous day after rotation)
+-+- **Rotation:** At the first log write after midnight, `log.txt` is moved to `log_prev.txt` and a new `log.txt` is created with a `creationDate` at start-of-day.
+-+- **Flush behavior:** Each log write appends immediately (no buffering).
+-+- **Format example:**
+-+  - `2024-05-06T12:34:56+0000 [Service] Logger.swift - info() - 42 - INFO: Loop iteration complete`
+-+  - Fields: ISO-8601 timestamp, category in brackets, source file, function, line, then message. Messages include a level prefix (`DEV:`, `INFO:`, `WARN:`, `ERR:`) but the prefix is part of the message body.
+-+
+-+### Watch logs as stored on the phone
+-+- **Directory:** `~/Documents/logs/`
+-+- **Files:**
+-+  - `watch_log.txt` (current day)
+-+  - `watch_log_prev.txt` (previous day after rotation)
+-+- **Rotation:** Same midnight move pattern as iPhone logs.
+-+- **How they arrive:** The watch bundles logs into strings and sends them via `WCSession`. The phone simply appends the received text to `watch_log.txt`; no transformation is performed.
+-+- **Format example (watch-originated lines):**
+-+  - `[2024-05-06T12:35:01+0000] [WatchInterface.swift:22] syncState() → ⌚️ Requesting WatchState update from iPhone`
+-+  - Fields: timestamp in brackets, file:line, function, arrow (`→`), and the message. No explicit level/category prefix; emojis are common.
+-+
+-+## Parsing hints
+-+- **Levels:** Derived from the message prefix used by the logger:
+-+  - `DEV:` → debug
+-+  - `INFO:` → info
+-+  - `WARN:` → warning
+-+  - `ERR:` → error
+-+- **Category:** The bracketed value immediately after the timestamp in iPhone logs (e.g., `[Service]`). Watch logs have no explicit category; treat as `watch` or derive from platform.
+-+- **Correlation IDs:** Not present in current formats.
+-+- **Timestamps:** ISO-8601 with timezone offset (`yyyy-MM-dd'T'HH:mm:ssZ`) for both platforms.
+-+
+-+## Provider choice
+-+- **Primary:** Better Stack (Logtail)
+-+  - Generous free tier (~50k logs/month, 3-day retention on free plan at time of writing) and simple HTTPS ingestion.
+-+  - Full-text search with structured attributes; supports export via API.
+-+  - HTTP ingestion endpoint: `https://in.logs.betterstack.com` with `Authorization: Bearer <source-token>`.
+-+- **Fallback:** Axiom (cloud.axiom.co)
+-+  - Free tier (limited events/day, 7-day retention); accepts HTTPS writes with a dataset token.
+-+  - Good search/filter and CSV/NDJSON export.
+-+
+-+## Configuration (iPhone)
+-+1. Create a Logtail source (primary) and grab the **Source token**. For Axiom, create a dataset and note the ingest token and dataset name.
+-+2. Add the following to `ConfigOverride.xcconfig` (or your preferred xcconfig) before building:
+-+   ```
+-+   CLOUD_LOGGING_ENABLED = YES
+-+   CLOUD_LOGGING_ENDPOINT = https://in.logs.betterstack.com
+-+   CLOUD_LOGGING_TOKEN = <logtail-source-token>
+-+   CLOUD_LOGGING_ENV = dev // or prod
+-+   ```
+-+   - For Axiom, set `CLOUD_LOGGING_ENDPOINT = https://api.axiom.co/v1/datasets/<dataset>/ingest` and `CLOUD_LOGGING_TOKEN = <axiom-token>`.
+-+3. Build/install the app. The uploader reads the values from `Info.plist` at runtime; if disabled or missing, cloud uploads are skipped.
+-+
+-+## What gets uploaded
+-+- The uploader tails `log.txt`, `log_prev.txt`, `watch_log.txt`, and `watch_log_prev.txt` from the phone’s Documents/logs directory using a per-file byte offset checkpoint.
+-+- Each line is sent as the message body. Parsed attributes include:
+-+  - `platform` (ios/watchos)
+-+  - `level` (derived from `DEV`/`INFO`/`WARN`/`ERR` prefixes when present)
+-+  - `category` (iPhone lines only)
+-+  - `env`, `appVersion`, and `build`
+-+- Offsets are stored locally; if a file shrinks (rotation), the offset resets to `0` and the file is re-read from the beginning.
+-+
+-+## Querying and export
+-+- **Logtail:**
+-+  - Search by `platform:"watchos"` or `category:"Service"`.
+-+  - Filter by `level:error` for ERR lines.
+-+  - Export via the Better Stack API or UI as NDJSON/CSV for offline/AI analysis.
+-+- **Axiom fallback:**
+-+  - Use the query builder or Axiom Query Language (AQL), e.g., `['platform' == "ios" and 'level' == "warning"]`.
+-+  - Export via the dataset export tab or `axiom export` CLI.
+-+
+-+## Manual checks (expected behavior)
+-+- New log lines appear in Logtail within a few seconds of upload when connectivity is available.
+-+- Only appended content is uploaded; offsets prevent re-sending unless a rotation shrink is detected (in which case the day’s files may re-upload).
+-+- Watch log lines are tagged with `platform=watchos` and can be filtered separately.
+-+- Uploads are attempted on app foreground/background transitions and every five minutes while running; `uploadNow()` can be called manually for immediate flushing. A `requestWatchLogSnapshot()` helper triggers a watch log flush using the existing transfer path.

@@ -180,11 +180,6 @@ import WatchConnectivity
             await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
         }
 
-        if message[WatchMessageKeys.requestWatchLogs] as? Bool == true {
-            Task { await WatchLogger.shared.flushPersistedLogs() }
-            return
-        }
-
         // If the message has a nested "watchState" dictionary with date as TimeInterval
         if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
            let timestamp = watchStateDict[WatchMessageKeys.date] as? TimeInterval
@@ -251,11 +246,6 @@ import WatchConnectivity
     }
 
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
-        if userInfo[WatchMessageKeys.requestWatchLogs] as? Bool == true {
-            Task { await WatchLogger.shared.flushPersistedLogs() }
-            return
-        }
-
         guard let snapshot = WatchStateSnapshot(from: userInfo) else {
             Task {
                 await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)
