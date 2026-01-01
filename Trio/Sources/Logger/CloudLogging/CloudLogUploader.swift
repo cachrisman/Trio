@@ -15,7 +15,6 @@ actor CloudLogUploader {
 
     private struct TailState: Codable {
         var offset: UInt64
-        var creationDateEpoch: TimeInterval?
     }
 
     private let provider: CloudLogProvider
@@ -73,59 +72,18 @@ actor CloudLogUploader {
         // Reset offsets if file shrank (rotation or truncation).
         if let currentSize = fileSize(currentURL), currentSize < currentState.offset {
             currentState.offset = 0
+            saveState(currentState, for: pair.currentPath)
         }
         if let prevSize = fileSize(prevURL), prevSize < prevState.offset {
             prevState.offset = 0
-        }
-
-        // Detect rotation: if current creationDate changed, the previous file likely holds the prior content.
-        let currentCreationEpoch = fileCreationEpoch(currentURL)
-        if let storedEpoch = currentState.creationDateEpoch,
-           let currentCreationEpoch,
-           storedEpoch != currentCreationEpoch
-        {
-            // Map the old current offset onto the previous file so we don't re-upload already-uploaded bytes.
-            // (Rotation moves current -> previous, and creates a new current file.)
-            let oldCurrentOffset = currentState.offset
-            if let prevSize = fileSize(prevURL), prevSize > 0 {
-                prevState.offset = max(prevState.offset, min(oldCurrentOffset, prevSize))
-                prevState.creationDateEpoch = fileCreationEpoch(prevURL)
-                saveState(prevState, for: pair.previousPath)
-            }
-
-            // Best-effort: upload missed tail from previous file using the old offset.
-            if let prevSize = fileSize(prevURL), prevSize > 0 {
-                let startOffset = min(oldCurrentOffset, prevSize)
-                let ok = await uploadNewContent(
-                    fileURL: prevURL,
-                    filePathKey: pair.previousPath,
-                    startOffset: startOffset,
-                    platform: pair.platform,
-                    parser: pair.parser
-                )
-                if !ok { succeeded = false }
-
-                // Regardless of whether the upload succeeded, keep prevState stable.
-                // Only advance on success is handled in uploadNewContent.
-            }
-
-            // Reset current state for the new day (new file).
-            currentState.offset = 0
-            currentState.creationDateEpoch = currentCreationEpoch
-            saveState(currentState, for: pair.currentPath)
-        } else {
-            // Persist current creation date if we don't have it yet.
-            if currentState.creationDateEpoch == nil {
-                currentState.creationDateEpoch = currentCreationEpoch
-                saveState(currentState, for: pair.currentPath)
-            }
+            saveState(prevState, for: pair.previousPath)
         }
 
         // Upload current tail.
         let okCurrent = await uploadNewContent(
             fileURL: currentURL,
             filePathKey: pair.currentPath,
-            startOffset: loadState(for: pair.currentPath).offset,
+            startOffset: currentState.offset,
             platform: pair.platform,
             parser: pair.parser
         )
@@ -135,7 +93,7 @@ actor CloudLogUploader {
         let okPrev = await uploadNewContent(
             fileURL: prevURL,
             filePathKey: pair.previousPath,
-            startOffset: loadState(for: pair.previousPath).offset,
+            startOffset: prevState.offset,
             platform: pair.platform,
             parser: pair.parser
         )
@@ -158,7 +116,7 @@ actor CloudLogUploader {
             return true
         }
         guard !lines.isEmpty else {
-            saveState(TailState(offset: nextOffset, creationDateEpoch: fileCreationEpoch(fileURL)), for: filePathKey)
+            saveState(TailState(offset: nextOffset), for: filePathKey)
             return true
         }
 
@@ -171,22 +129,21 @@ actor CloudLogUploader {
             if let parsed {
                 if let c = parsed.category { attrs["category"] = c }
                 if let l = parsed.level { attrs["level"] = l }
-                return CloudLogEvent(message: parsed.message, dt: parsed.dt, attributes: attrs)
+                let msg = truncateMessage(parsed.message)
+                return CloudLogEvent(message: msg, dt: parsed.dt, attributes: attrs)
             } else {
-                return CloudLogEvent(message: line, dt: nil, attributes: attrs)
+                let msg = truncateMessage(line)
+                return CloudLogEvent(message: msg, dt: nil, attributes: attrs)
             }
         }
 
-        // Upload in batches to avoid oversized payloads.
-        let batchSize = 250
-        var start = 0
-        while start < events.count {
-            let end = min(start + batchSize, events.count)
-            let batch = Array(events[start..<end])
-
+        // Upload in batches with both count and byte-budget caps.
+        // This helps avoid 413 errors regardless of log verbosity.
+        let batches = buildBatches(events: events)
+        for batch in batches {
             switch await provider.upload(events: batch) {
             case .success:
-                start = end
+                continue
             case .failure:
                 // Critical: do NOT advance offsets.
                 return false
@@ -196,9 +153,6 @@ actor CloudLogUploader {
         // Only advance the file offset after the final batch succeeds.
         var state = loadState(for: filePathKey)
         state.offset = nextOffset
-        if state.creationDateEpoch == nil {
-            state.creationDateEpoch = fileCreationEpoch(fileURL)
-        }
         saveState(state, for: filePathKey)
         return true
     }
@@ -268,7 +222,7 @@ actor CloudLogUploader {
               let dict = try? JSONDecoder().decode([String: TailState].self, from: data),
               let state = dict[path]
         else {
-            return TailState(offset: 0, creationDateEpoch: nil)
+            return TailState(offset: 0)
         }
         return state
     }
@@ -295,11 +249,65 @@ actor CloudLogUploader {
         return size.uint64Value
     }
 
-    private func fileCreationEpoch(_ url: URL) -> TimeInterval? {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let date = attrs[.creationDate] as? Date
-        else { return nil }
-        return date.timeIntervalSince1970
+    // MARK: - Request sizing helpers
+
+    private let maxMessageBytes = 256 * 1024
+    private let maxRequestBytes = 8 * 1024 * 1024
+    private let maxEventsPerRequest = 250
+
+    private func truncateMessage(_ message: String) -> String {
+        guard message.utf8.count > maxMessageBytes else { return message }
+        let data = message.data(using: .utf8) ?? Data()
+        let truncated = data.prefix(maxMessageBytes)
+        return String(decoding: truncated, as: UTF8.self)
+    }
+
+    private func buildBatches(events: [CloudLogEvent]) -> [[CloudLogEvent]] {
+        guard !events.isEmpty else { return [] }
+
+        var result: [[CloudLogEvent]] = []
+        var current: [CloudLogEvent] = []
+
+        let encoder = JSONEncoder()
+
+        func encodedSize(of batch: [CloudLogEvent]) -> Int {
+            (try? encoder.encode(batch).count) ?? Int.max
+        }
+
+        for event in events {
+            if current.isEmpty {
+                current = [event]
+                // A single event should always fit due to message truncation, but be defensive.
+                if encodedSize(of: current) > maxRequestBytes {
+                    result.append(current)
+                    current.removeAll(keepingCapacity: true)
+                }
+                continue
+            }
+
+            if current.count >= maxEventsPerRequest {
+                result.append(current)
+                current = [event]
+                continue
+            }
+
+            var candidate = current
+            candidate.append(event)
+
+            if encodedSize(of: candidate) > maxRequestBytes {
+                // Flush current and start a new batch with this event.
+                result.append(current)
+                current = [event]
+            } else {
+                current = candidate
+            }
+        }
+
+        if !current.isEmpty {
+            result.append(current)
+        }
+
+        return result
     }
 }
 

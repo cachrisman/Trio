@@ -20,7 +20,7 @@
   - `Authorization: Bearer <SOURCE_TOKEN>`
   - `Content-Type: application/json`
 - **Success criteria**:
-  - **Any HTTP 2xx** is treated as success.
+  - **HTTP 202 only** is treated as success.
   - Any other status does **not** advance offsets (uploads are safe to retry).
 
 ## Log files (authoritative on-device sources)
@@ -95,9 +95,12 @@ If normalization fails, `dt` is omitted.
 Uploads tail each file using a **byte offset** stored on-device.
 
 - On each run, only newly appended **complete lines** (ending in `\n`) are uploaded.
-- Uploads are **batched** (default: 250 events per request). Offsets only advance after the final batch succeeds.
+- Uploads are **batched** with both:
+  - a **count cap** (default: 250 events per request), and
+  - a **byte-budget cap** (conservative ~8 MiB uncompressed JSON per request, estimated via encoder size).
+  Offsets only advance after the final batch succeeds.
 - If the file **shrinks** (truncation / rotation), its offset is reset to `0`.
-- For daily rotation where `*_log.txt` is moved to `*_log_prev.txt`, the uploader best-effort uploads any missed tail from `*_log_prev.txt` before continuing with the new day’s `*_log.txt`.
+- Rotation handling is intentionally simple: it only uses the **byte-offset tail model** and resets offsets when the file shrinks.
 
 ## Triggers
 
