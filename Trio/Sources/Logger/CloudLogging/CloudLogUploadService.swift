@@ -13,16 +13,36 @@ final class CloudLogUploadService {
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
     private let tokenProvider: () -> String?
+    private let ingestionURLProvider: () -> URL?
 
     init() {
         tokenProvider = {
-            // Priority: UserDefaults (future UI) → Info.plist → Process environment (dev builds).
+            // Priority: AppGroup settings/BetterStack.json → UserDefaults (future UI) → Info.plist → Process environment (dev builds).
+            if let settings = BetterStackSettingsStore.load(),
+               let t = settings.BetterStackSourceToken,
+               !t.isEmpty
+            {
+                return t
+            }
             if let t = UserDefaults.standard.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
             if let t = Bundle.main.object(forInfoDictionaryKey: "BetterStackSourceToken") as? String, !t.isEmpty { return t }
             return ProcessInfo.processInfo.environment["BETTERSTACK_SOURCE_TOKEN"]
         }
 
-        let provider = BetterStackLogtailProvider(tokenProvider: tokenProvider)
+        ingestionURLProvider = {
+            if let settings = BetterStackSettingsStore.load(),
+               let raw = settings.BetterStackIngestionUrl,
+               let url = URL(string: raw)
+            {
+                return url
+            }
+            return URL(string: "https://in.logs.betterstack.com/")
+        }
+
+        let provider = BetterStackLogtailProvider(
+            tokenProvider: tokenProvider,
+            ingestionURLProvider: ingestionURLProvider
+        )
 
         let pairs: [CloudLogUploader.RotatingPair] = [
             .init(
@@ -51,6 +71,9 @@ final class CloudLogUploadService {
     func uploadNow() {
         // Only run when configured (no privacy gating in this repo).
         guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        guard ingestionURLProvider() != nil else {
             return
         }
 

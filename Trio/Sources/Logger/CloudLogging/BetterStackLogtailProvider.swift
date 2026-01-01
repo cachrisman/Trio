@@ -2,17 +2,20 @@ import Foundation
 
 /// Better Stack / Logtail provider.
 ///
-/// Endpoint: POST https://in.logs.betterstack.com/
+/// Endpoint: POST <ingestion URL>
 /// Success: HTTP 202 only
 final class BetterStackLogtailProvider: CloudLogProvider {
     private let tokenProvider: () -> String?
+    private let ingestionURLProvider: () -> URL?
     private let session: URLSession
 
     init(
         tokenProvider: @escaping () -> String?,
+        ingestionURLProvider: @escaping () -> URL? = { URL(string: "https://in.logs.betterstack.com/") },
         session: URLSession = .shared
     ) {
         self.tokenProvider = tokenProvider
+        self.ingestionURLProvider = ingestionURLProvider
         self.session = session
     }
 
@@ -23,7 +26,7 @@ final class BetterStackLogtailProvider: CloudLogProvider {
             return .failure(.notConfigured)
         }
 
-        guard let url = URL(string: "https://in.logs.betterstack.com/") else {
+        guard let url = ingestionURLProvider() else {
             return .failure(.invalidURL)
         }
 

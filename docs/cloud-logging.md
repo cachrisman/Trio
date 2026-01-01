@@ -114,13 +114,26 @@ Uploads are triggered from the iPhone app only:
 
 ## Setup (token)
 
-You must provide a Better Stack **source token**.
+Trio reads Better Stack settings from a JSON file in the **Trio app group container**:
+
+- Path: `settings/BetterStack.json`
+- Example:
+
+```json
+{
+  "BetterStackSourceToken": "TzZdDRFCDTCXhYTZVLWHhNsk",
+  "BetterStackIngestionUrl": "https://s1658969.eu-nbg-2.betterstackdata.com/"
+}
+```
+
+This file is **generated on-device** and should **not** be committed.
 
 Currently supported injection points (in priority order):
 
-1. `UserDefaults` key: `cloudLogging.betterStackSourceToken` (intended for a future in-app UI)
-2. `Info.plist` key: `BetterStackSourceToken` (build-time injection recommended; do not commit secrets)
-3. Process environment variable: `BETTERSTACK_SOURCE_TOKEN` (useful for local/dev builds)
+1. App group file: `settings/BetterStack.json`
+2. `UserDefaults` key: `cloudLogging.betterStackSourceToken` (fallback)
+3. `Info.plist` key: `BetterStackSourceToken` (fallback; do not commit secrets)
+4. Process environment variable: `BETTERSTACK_SOURCE_TOKEN` (dev-only fallback)
 
 ## Querying + export for AI analysis
 
