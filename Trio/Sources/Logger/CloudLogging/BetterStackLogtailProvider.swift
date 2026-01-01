@@ -3,7 +3,7 @@ import Foundation
 /// Better Stack / Logtail provider.
 ///
 /// Endpoint: POST https://in.logs.betterstack.com/
-/// Success: HTTP 202 only
+/// Success: any HTTP 2xx
 final class BetterStackLogtailProvider: CloudLogProvider {
     private let tokenProvider: () -> String?
     private let session: URLSession
@@ -44,8 +44,8 @@ final class BetterStackLogtailProvider: CloudLogProvider {
                 return .failure(.invalidResponse)
             }
 
-            // Critical: treat HTTP 202 only as success.
-            guard http.statusCode == 202 else {
+            // Treat any 2xx as success.
+            guard 200 <= http.statusCode, http.statusCode < 300 else {
                 let preview = String(data: data.prefix(512), encoding: .utf8)
                 return .failure(.unexpectedStatus(code: http.statusCode, bodyPreview: preview))
             }

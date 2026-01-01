@@ -20,7 +20,7 @@
   - `Authorization: Bearer <SOURCE_TOKEN>`
   - `Content-Type: application/json`
 - **Success criteria**:
-  - **HTTP 202 only** is treated as success.
+  - **Any HTTP 2xx** is treated as success.
   - Any other status does **not** advance offsets (uploads are safe to retry).
 
 ## Log files (authoritative on-device sources)
