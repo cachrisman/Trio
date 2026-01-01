@@ -24,7 +24,7 @@ index fea855ed8afefac1ff2d8b32d198feacbcc16e3c..94a505ebad4f7039b5b7857f716d8e5a
                  LiveActivityManager(resolver: r)
 diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..0bc6904cfefb811ab325eec7932e1ba8ba561aa9
+index 0000000000000000000000000000000000000000..4eb464c297bf96ee821b9691bf2598bd3976aa6f
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
 @@ -0,0 +1,59 @@
@@ -33,7 +33,7 @@ index 0000000000000000000000000000000000000000..0bc6904cfefb811ab325eec7932e1ba8
 +/// Better Stack / Logtail provider.
 +///
 +/// Endpoint: POST https://in.logs.betterstack.com/
-+/// Success: HTTP 202 only
++/// Success: any HTTP 2xx
 +final class BetterStackLogtailProvider: CloudLogProvider {
 +    private let tokenProvider: () -> String?
 +    private let session: URLSession
@@ -74,8 +74,8 @@ index 0000000000000000000000000000000000000000..0bc6904cfefb811ab325eec7932e1ba8
 +                return .failure(.invalidResponse)
 +            }
 +
-+            // Critical: treat HTTP 202 only as success.
-+            guard http.statusCode == 202 else {
++            // Treat any 2xx as success.
++            guard 200 <= http.statusCode, http.statusCode < 300 else {
 +                let preview = String(data: data.prefix(512), encoding: .utf8)
 +                return .failure(.unexpectedStatus(code: http.statusCode, bodyPreview: preview))
 +            }
@@ -693,7 +693,7 @@ index 0000000000000000000000000000000000000000..d3418f3d686692748e28f4e6181e9a7c
 +
 diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..eac4776341b349e579c1e154030b0474994ea68c
+index 0000000000000000000000000000000000000000..6c4258e994a164d43fdb0be3c61e085fe27fcf3e
 --- /dev/null
 +++ b/docs/cloud-logging.md
 @@ -0,0 +1,137 @@
@@ -719,7 +719,7 @@ index 0000000000000000000000000000000000000000..eac4776341b349e579c1e154030b0474
 +  - `Authorization: Bearer <SOURCE_TOKEN>`
 +  - `Content-Type: application/json`
 +- **Success criteria**:
-+  - **HTTP 202 only** is treated as success.
++  - **Any HTTP 2xx** is treated as success.
 +  - Any other status does **not** advance offsets (uploads are safe to retry).
 +
 +## Log files (authoritative on-device sources)
