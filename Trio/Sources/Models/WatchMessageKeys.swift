@@ -4,6 +4,7 @@ enum WatchMessageKeys {
     static let units = "units"
     static let requestWatchUpdate = "requestWatchUpdate"
     static let watchState = "watchState"
+    static let requestWatchLogs = "requestWatchLogs"
     static let acknowledged = "acknowledged"
     static let ackCode = "ackCode"
     static let message = "message"

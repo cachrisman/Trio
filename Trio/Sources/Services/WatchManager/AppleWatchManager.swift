@@ -8,6 +8,7 @@ import WatchConnectivity
 /// Protocol defining the base functionality for Watch communication
 protocol WatchManager {
     func setupWatchState() async -> WatchState
+    func requestWatchLogSnapshot()
 }
 
 /// Main implementation of the Watch communication manager
@@ -92,6 +93,29 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             .store(in: &subscriptions)
 
         registerHandlers()
+    }
+
+    func requestWatchLogSnapshot() {
+        guard let session = session else {
+            debug(.watchManager, "⌚️ Cannot request watch logs: session unavailable")
+            return
+        }
+
+        let payload: [String: Any] = [WatchMessageKeys.requestWatchLogs: true]
+
+        if session.activationState != .activated {
+            debug(.watchManager, "⌚️ Activating session before requesting watch logs")
+            session.activate()
+            return
+        }
+
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil) { error in
+                debug(.watchManager, "❌ Error requesting watch log snapshot: \(error)")
+            }
+        } else {
+            _ = session.transferUserInfo(payload)
+        }
     }
 
     private func registerHandlers() {
