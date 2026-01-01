@@ -258,8 +258,7 @@ actor CloudLogUploader {
     private func truncateMessage(_ message: String) -> String {
         guard message.utf8.count > maxMessageBytes else { return message }
         let data = message.data(using: .utf8) ?? Data()
-        let truncated = data.prefix(maxMessageBytes)
-        return String(decoding: truncated, as: UTF8.self)
+        return truncateUTF8(data: data, maxBytes: maxMessageBytes)
     }
 
     private func buildBatches(events: [CloudLogEvent]) -> [[CloudLogEvent]] {
@@ -267,39 +266,33 @@ actor CloudLogUploader {
 
         var result: [[CloudLogEvent]] = []
         var current: [CloudLogEvent] = []
-
+        var currentBytes = 2 // "[]"
         let encoder = JSONEncoder()
 
-        func encodedSize(of batch: [CloudLogEvent]) -> Int {
-            (try? encoder.encode(batch).count) ?? Int.max
-        }
-
         for event in events {
-            if current.isEmpty {
+            let eventBytes = (try? encoder.encode(event).count) ?? Int.max
+            let additionalBytes = current.isEmpty ? eventBytes : (1 + eventBytes) // comma for non-first
+
+            let wouldExceedCount = current.count >= maxEventsPerRequest
+            let wouldExceedBytes = (currentBytes + additionalBytes) > maxRequestBytes
+
+            if wouldExceedCount || wouldExceedBytes {
+                if !current.isEmpty {
+                    result.append(current)
+                }
                 current = [event]
-                // A single event should always fit due to message truncation, but be defensive.
-                if encodedSize(of: current) > maxRequestBytes {
+                currentBytes = 2 + eventBytes
+
+                // If a single event still exceeds the request budget (should be rare due to truncation),
+                // upload it alone to avoid an infinite loop.
+                if currentBytes > maxRequestBytes {
                     result.append(current)
                     current.removeAll(keepingCapacity: true)
+                    currentBytes = 2
                 }
-                continue
-            }
-
-            if current.count >= maxEventsPerRequest {
-                result.append(current)
-                current = [event]
-                continue
-            }
-
-            var candidate = current
-            candidate.append(event)
-
-            if encodedSize(of: candidate) > maxRequestBytes {
-                // Flush current and start a new batch with this event.
-                result.append(current)
-                current = [event]
             } else {
-                current = candidate
+                current.append(event)
+                currentBytes += additionalBytes
             }
         }
 
@@ -308,6 +301,27 @@ actor CloudLogUploader {
         }
 
         return result
+    }
+
+    /// Truncate UTF-8 data without emitting replacement characters.
+    private func truncateUTF8(data: Data, maxBytes: Int) -> String {
+        guard data.count > maxBytes else {
+            return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        }
+
+        var truncated = data.prefix(maxBytes)
+
+        // If we're mid-codepoint, drop trailing bytes until valid UTF-8.
+        // Worst-case UTF-8 sequence length is 4, so this loop should be short,
+        // but we keep it safe for malformed input.
+        while !truncated.isEmpty {
+            if let s = String(data: truncated, encoding: .utf8) {
+                return s
+            }
+            truncated = truncated.dropLast(1)
+        }
+
+        return ""
     }
 }
 
