@@ -384,10 +384,10 @@ index 0000000000000000000000000000000000000000..acee295f8836b831b821be9289223353
 +
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..b637a5f6899da4def24029cfbcbb394439798e4a
+index 0000000000000000000000000000000000000000..b92e5638a1b33e0fe5f5536033bd2e6c920c1797
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,162 @@
 +import Foundation
 +import UIKit
 +
@@ -397,7 +397,13 @@ index 0000000000000000000000000000000000000000..b637a5f6899da4def24029cfbcbb3944
 +/// - Lifecycle triggers: foreground/background
 +/// - Periodic trigger: every 5 minutes while app is running
 +final class CloudLogUploadService {
-+    static let userDefaultsTokenKey = "cloudLogging.betterStackSourceToken"
++    // Settings UI (first-choice config)
++    static let userDefaultsEnabledKey = "cloudLogging.enabled"
++    static let userDefaultsTokenKey = "cloudLogging.token"
++    static let userDefaultsIngestionURLKey = "cloudLogging.ingestionUrl"
++
++    // Legacy key (kept for backwards compatibility)
++    static let legacyUserDefaultsTokenKey = "cloudLogging.betterStackSourceToken"
 +
 +    private let uploader: CloudLogUploader
 +    private var timer: Timer?
@@ -407,19 +413,47 @@ index 0000000000000000000000000000000000000000..b637a5f6899da4def24029cfbcbb3944
 +
 +    init() {
 +        tokenProvider = {
-+            // Priority: AppGroup settings/BetterStack.json → UserDefaults (future UI) → Info.plist → Process environment (dev builds).
++            let ud = UserDefaults.standard
++
++            // If the user explicitly disabled cloud logging, do not fall back to file/env.
++            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == false {
++                return nil
++            }
++
++            // Priority: Settings UI (UserDefaults) → app group settings/BetterStack.json → Info.plist → env.
++            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == true {
++                if let t = ud.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
++                if let t = ud.string(forKey: Self.legacyUserDefaultsTokenKey), !t.isEmpty { return t }
++                // If enabled but no token set in UI, allow file-based config.
++            } else {
++                // No explicit enable flag; still allow legacy token key.
++                if let t = ud.string(forKey: Self.legacyUserDefaultsTokenKey), !t.isEmpty { return t }
++            }
++
 +            if let settings = BetterStackSettingsStore.load(),
 +               let t = settings.BetterStackSourceToken,
 +               !t.isEmpty
 +            {
 +                return t
 +            }
-+            if let t = UserDefaults.standard.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
++
 +            if let t = Bundle.main.object(forInfoDictionaryKey: "BetterStackSourceToken") as? String, !t.isEmpty { return t }
 +            return ProcessInfo.processInfo.environment["BETTERSTACK_SOURCE_TOKEN"]
 +        }
 +
 +        ingestionURLProvider = {
++            let ud = UserDefaults.standard
++
++            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == false {
++                return nil
++            }
++
++            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == true {
++                if let raw = ud.string(forKey: Self.userDefaultsIngestionURLKey), !raw.isEmpty {
++                    return URL(string: raw)
++                }
++            }
++
 +            if let settings = BetterStackSettingsStore.load(),
 +               let raw = settings.BetterStackIngestionUrl,
 +               let url = URL(string: raw)
@@ -876,6 +910,217 @@ index 0000000000000000000000000000000000000000..9d81a367a3f3e3996c53c3817a247e4a
 +    }
 +}
 +
+diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
+index 5310b2fe3c93adb74cf37a7d6523a91f7495eef8..fd8100929dea30156d1bf82fd8388e66ab1302bd 100644
+--- a/Trio/Sources/Modules/Settings/SettingItems.swift
++++ b/Trio/Sources/Modules/Settings/SettingItems.swift
+@@ -325,6 +325,17 @@ enum SettingItems {
+             ],
+             path: ["Services", "Nightscout", "Fetch and Remote Control"]
+         ),
++        SettingItem(
++            title: "Cloud Logging",
++            view: .cloudLogging,
++            searchContents: [
++                "Enable Cloud Logging",
++                "Source token",
++                "Ingestion URL",
++                "Test Connection"
++            ],
++            path: ["Services", "Cloud Logging"]
++        ),
+         SettingItem(title: "Tidepool", view: .serviceSettings, path: ["Services"]),
+         SettingItem(title: "Apple Health", view: .healthkit, path: ["Services"])
+     ]
+diff --git a/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift b/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..f4341ff463814258457441c961e820f7a471e5ac
+--- /dev/null
++++ b/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
+@@ -0,0 +1,150 @@
++import SwiftUI
++
++struct CloudLoggingSettingsView: View {
++    @State private var enabled: Bool = false
++    @State private var token: String = ""
++    @State private var ingestionURL: String = ""
++
++    @State private var showResult = false
++    @State private var resultTitle = ""
++    @State private var resultMessage = ""
++
++    private var effectiveToken: String? {
++        let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
++        return t.isEmpty ? nil : t
++    }
++
++    private var effectiveURL: URL? {
++        let raw = ingestionURL.trimmingCharacters(in: .whitespacesAndNewlines)
++        if raw.isEmpty {
++            return URL(string: "https://in.logs.betterstack.com/")
++        }
++        return URL(string: raw)
++    }
++
++    var body: some View {
++        Form {
++            Section {
++                Toggle("Enable Cloud Logging", isOn: $enabled)
++                    .onChange(of: enabled) { _, newValue in
++                        UserDefaults.standard.set(newValue, forKey: CloudLogUploadService.userDefaultsEnabledKey)
++                    }
++            }
++
++            Section("Better Stack") {
++                SecureField("Source token", text: $token)
++                    .textInputAutocapitalization(.never)
++                    .autocorrectionDisabled(true)
++                    .disabled(!enabled)
++                    .onChange(of: token) { _, newValue in
++                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
++                        if trimmed.isEmpty {
++                            UserDefaults.standard.removeObject(forKey: CloudLogUploadService.userDefaultsTokenKey)
++                        } else {
++                            UserDefaults.standard.set(trimmed, forKey: CloudLogUploadService.userDefaultsTokenKey)
++                        }
++                    }
++
++                TextField("Ingestion URL", text: $ingestionURL)
++                    .textInputAutocapitalization(.never)
++                    .autocorrectionDisabled(true)
++                    .keyboardType(.URL)
++                    .disabled(!enabled)
++                    .onChange(of: ingestionURL) { _, newValue in
++                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
++                        if trimmed.isEmpty {
++                            UserDefaults.standard.removeObject(forKey: CloudLogUploadService.userDefaultsIngestionURLKey)
++                        } else {
++                            UserDefaults.standard.set(trimmed, forKey: CloudLogUploadService.userDefaultsIngestionURLKey)
++                        }
++                    }
++
++                Button("Test Connection") {
++                    Task { await testConnection() }
++                }
++                .disabled(!enabled || effectiveToken == nil || effectiveURL == nil)
++
++                Button(role: .destructive) {
++                    token = ""
++                    ingestionURL = ""
++                    UserDefaults.standard.removeObject(forKey: CloudLogUploadService.userDefaultsTokenKey)
++                    UserDefaults.standard.removeObject(forKey: CloudLogUploadService.userDefaultsIngestionURLKey)
++                } label: {
++                    Text("Remove Token & URL")
++                }
++                .disabled(!enabled)
++            }
++
++            Section {
++                Text("These settings override on-device settings files (e.g. settings/BetterStack.json) when enabled.")
++                    .font(.footnote)
++                    .foregroundColor(.secondary)
++            }
++        }
++        .navigationTitle("Cloud Logging")
++        .navigationBarTitleDisplayMode(.inline)
++        .onAppear(perform: loadFromDefaults)
++        .alert(resultTitle, isPresented: $showResult) {
++            Button("OK", role: .cancel) {}
++        } message: {
++            Text(resultMessage)
++        }
++    }
++
++    private func loadFromDefaults() {
++        let ud = UserDefaults.standard
++
++        // Respect explicit enabled flag if present; otherwise default to false.
++        if let enabledObj = ud.object(forKey: CloudLogUploadService.userDefaultsEnabledKey) as? Bool {
++            enabled = enabledObj
++        } else {
++            enabled = false
++        }
++
++        token = ud.string(forKey: CloudLogUploadService.userDefaultsTokenKey) ?? ""
++        ingestionURL = ud.string(forKey: CloudLogUploadService.userDefaultsIngestionURLKey) ?? ""
++    }
++
++    private func testConnection() async {
++        guard let token = effectiveToken else {
++            presentResult(title: "Missing token", message: "Enter a Better Stack source token first.")
++            return
++        }
++        guard let url = effectiveURL else {
++            presentResult(title: "Invalid URL", message: "Enter a valid ingestion URL.")
++            return
++        }
++
++        let provider = BetterStackLogtailProvider(
++            tokenProvider: { token },
++            ingestionURLProvider: { url }
++        )
++
++        let events = [
++            CloudLogEvent(
++                message: "Trio cloud logging test event",
++                dt: nil,
++                attributes: [
++                    "platform": "ios",
++                    "category": "CloudLogging",
++                    "level": "info"
++                ]
++            )
++        ]
++
++        switch await provider.upload(events: events) {
++        case .success:
++            presentResult(title: "Success", message: "Test event ingested successfully.")
++        case let .failure(error):
++            presentResult(title: "Failed", message: error.description)
++        }
++    }
++
++    @MainActor
++    private func presentResult(title: String, message: String) {
++        resultTitle = title
++        resultMessage = message
++        showResult = true
++    }
++}
++
+diff --git a/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift b/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
+index 4c595ff8e2f6115b53b7077c41abe75c38d3c8bc..2bbd74fb13cd12df0e4c714480ee23d40aa817c8 100644
+--- a/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
++++ b/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
+@@ -24,6 +24,7 @@ struct ServicesView: BaseView {
+                 content: {
+                     Text("Nightscout").navigationLink(to: .nighscoutConfig, from: self)
+                     Text("Tidepool").navigationLink(to: .tidepoolConfig, from: self)
++                    Text("Cloud Logging").navigationLink(to: .cloudLogging, from: self)
+                     if HKHealthStore.isHealthDataAvailable() {
+                         Text("Apple Health").navigationLink(to: .healthkit, from: self)
+                     }
+diff --git a/Trio/Sources/Router/Screen.swift b/Trio/Sources/Router/Screen.swift
+index b7e1bc07b8f9588515f473ffd7b0a84585b0e464..93cee61da5ec6d00b33a2f837e6b470bf43491ae 100644
+--- a/Trio/Sources/Router/Screen.swift
++++ b/Trio/Sources/Router/Screen.swift
+@@ -42,6 +42,7 @@ enum Screen: Identifiable, Hashable {
+     case calendarEventSettings
+     case contactImage
+     case serviceSettings
++    case cloudLogging
+     case remoteControlConfig
+     case autosensSettings
+     case smbSettings
+@@ -150,6 +151,8 @@ extension Screen {
+             ContactImage.RootView(resolver: resolver)
+         case .serviceSettings:
+             ServicesView(resolver: resolver, state: Settings.StateModel())
++        case .cloudLogging:
++            CloudLoggingSettingsView()
+         case .autosensSettings:
+             AutosensSettings.RootView(resolver: resolver)
+         case .smbSettings:
 diff --git a/TrioTests/CloudLogEntryAggregatorTests.swift b/TrioTests/CloudLogEntryAggregatorTests.swift
 new file mode 100644
 index 0000000000000000000000000000000000000000..44ac7318483a8c29348c8b54875588ae666ca01e
