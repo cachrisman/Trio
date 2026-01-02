@@ -7,7 +7,13 @@ import UIKit
 /// - Lifecycle triggers: foreground/background
 /// - Periodic trigger: every 5 minutes while app is running
 final class CloudLogUploadService {
-    static let userDefaultsTokenKey = "cloudLogging.betterStackSourceToken"
+    // Settings UI (first-choice config)
+    static let userDefaultsEnabledKey = "cloudLogging.enabled"
+    static let userDefaultsTokenKey = "cloudLogging.token"
+    static let userDefaultsIngestionURLKey = "cloudLogging.ingestionUrl"
+
+    // Legacy key (kept for backwards compatibility)
+    static let legacyUserDefaultsTokenKey = "cloudLogging.betterStackSourceToken"
 
     private let uploader: CloudLogUploader
     private var timer: Timer?
@@ -17,19 +23,47 @@ final class CloudLogUploadService {
 
     init() {
         tokenProvider = {
-            // Priority: AppGroup settings/BetterStack.json → UserDefaults (future UI) → Info.plist → Process environment (dev builds).
+            let ud = UserDefaults.standard
+
+            // If the user explicitly disabled cloud logging, do not fall back to file/env.
+            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == false {
+                return nil
+            }
+
+            // Priority: Settings UI (UserDefaults) → app group settings/BetterStack.json → Info.plist → env.
+            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == true {
+                if let t = ud.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
+                if let t = ud.string(forKey: Self.legacyUserDefaultsTokenKey), !t.isEmpty { return t }
+                // If enabled but no token set in UI, allow file-based config.
+            } else {
+                // No explicit enable flag; still allow legacy token key.
+                if let t = ud.string(forKey: Self.legacyUserDefaultsTokenKey), !t.isEmpty { return t }
+            }
+
             if let settings = BetterStackSettingsStore.load(),
                let t = settings.BetterStackSourceToken,
                !t.isEmpty
             {
                 return t
             }
-            if let t = UserDefaults.standard.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
+
             if let t = Bundle.main.object(forInfoDictionaryKey: "BetterStackSourceToken") as? String, !t.isEmpty { return t }
             return ProcessInfo.processInfo.environment["BETTERSTACK_SOURCE_TOKEN"]
         }
 
         ingestionURLProvider = {
+            let ud = UserDefaults.standard
+
+            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == false {
+                return nil
+            }
+
+            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == true {
+                if let raw = ud.string(forKey: Self.userDefaultsIngestionURLKey), !raw.isEmpty {
+                    return URL(string: raw)
+                }
+            }
+
             if let settings = BetterStackSettingsStore.load(),
                let raw = settings.BetterStackIngestionUrl,
                let url = URL(string: raw)
