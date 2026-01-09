@@ -1,0 +1,1864 @@
+diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
+index 46134bc21ae322180170ae33712d0e469379c9df..d1a044640a80b8e83109c2ad0cf913d6da81c100 100644
+--- a/Trio/Sources/Application/AppDelegate.swift
++++ b/Trio/Sources/Application/AppDelegate.swift
+@@ -20,9 +20,36 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+         Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(crashReportingEnabled)
+         Crashlytics.crashlytics().setCustomValue(Bundle.main.appDevVersion ?? "unknown", forKey: "app_dev_version")
+ 
++        // Check for unexpected termination from previous launch
++        AppTerminationTracker.shared.checkForUnexpectedTermination()
++
+         return true
+     }
+ 
++    func applicationDidBecomeActive(_ application: UIApplication) {
++        AppTerminationTracker.shared.markAppBecameActive()
++    }
++
++    func applicationWillResignActive(_ application: UIApplication) {
++        AppTerminationTracker.shared.markAppWillResignActive()
++    }
++
++    func applicationDidEnterBackground(_ application: UIApplication) {
++        AppTerminationTracker.shared.markAppEnteredBackground()
++    }
++
++    func applicationWillEnterForeground(_ application: UIApplication) {
++        AppTerminationTracker.shared.markAppWillEnterForeground()
++    }
++
++    func applicationWillTerminate(_ application: UIApplication) {
++        AppTerminationTracker.shared.markAppWillTerminate()
++    }
++
++    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
++        AppTerminationTracker.shared.markMemoryWarning()
++    }
++
+     func application(
+         _: UIApplication,
+         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
+index 1d148c93d49f80154179904b96f08cae4310b010..3535583c3cbf7b5fe9f39dd6b9ae04f19f8283ad 100644
+--- a/Trio/Sources/Application/TrioApp.swift
++++ b/Trio/Sources/Application/TrioApp.swift
+@@ -81,6 +81,7 @@ extension Notification.Name {
+         _ = resolver.resolve(BluetoothStateManager.self)!
+         _ = resolver.resolve(PluginManager.self)!
+         _ = resolver.resolve(AlertPermissionsChecker.self)!
++        _ = resolver.resolve(CloudLogUploadService.self)!
+         if #available(iOS 16.2, *) {
+             _ = resolver.resolve(LiveActivityManager.self)!
+         }
+diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
+index fea855ed8afefac1ff2d8b32d198feacbcc16e3c..94a505ebad4f7039b5b7857f716d8e5a40f42a3a 100644
+--- a/Trio/Sources/Assemblies/ServiceAssembly.swift
++++ b/Trio/Sources/Assemblies/ServiceAssembly.swift
+@@ -23,6 +23,7 @@ final class ServiceAssembly: Assembly {
+         container.register(GarminManager.self) { r in BaseGarminManager(resolver: r) }
+         container.register(ContactImageManager.self) { r in BaseContactImageManager(resolver: r) }
+         container.register(AlertPermissionsChecker.self) { r in AlertPermissionsChecker(resolver: r) }
++        container.register(CloudLogUploadService.self) { _ in CloudLogUploadService() }
+         if #available(iOS 16.2, *) {
+             container.register(LiveActivityManager.self) { r in
+                 LiveActivityManager(resolver: r)
+diff --git a/Trio/Sources/Helpers/AppTerminationTracker.swift b/Trio/Sources/Helpers/AppTerminationTracker.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b798a89d81e
+--- /dev/null
++++ b/Trio/Sources/Helpers/AppTerminationTracker.swift
+@@ -0,0 +1,306 @@
++import Foundation
++import FirebaseCrashlytics
++import UIKit
++import Darwin
++
++/// Tracks app lifecycle events to detect and report unexpected terminations.
++///
++/// This class monitors app state transitions to identify when the app is terminated
++/// unexpectedly (e.g., by iOS due to memory pressure, watchdog timeout, etc.)
++/// and logs diagnostic information to Crashlytics.
++final class AppTerminationTracker {
++    static let shared = AppTerminationTracker()
++    
++    private let userDefaults = UserDefaults.standard
++    private let lastStateKey = "AppTerminationTracker.lastState"
++    private let lastStateTimestampKey = "AppTerminationTracker.lastStateTimestamp"
++    private let appLaunchTimestampKey = "AppTerminationTracker.appLaunchTimestamp"
++    private let memoryWarningCountKey = "AppTerminationTracker.memoryWarningCount"
++    private let memoryWarningTimestampKey = "AppTerminationTracker.memoryWarningTimestamp"
++    
++    private enum AppState: String {
++        case launched = "launched"
++        case active = "active"
++        case inactive = "inactive"
++        case background = "background"
++        case terminated = "terminated"
++    }
++    
++    private enum TerminationReason: String {
++        case normal = "normal" // applicationWillTerminate was called
++        case unexpected = "unexpected" // App was killed without calling applicationWillTerminate
++        case memoryPressure = "memory_pressure" // App was killed due to memory pressure
++        case watchdog = "watchdog" // App was killed due to watchdog timeout
++        case unknown = "unknown"
++    }
++    
++    private init() {
++        // Private initializer for singleton
++    }
++    
++    // MARK: - Public Methods
++    
++    /// Called when app finishes launching
++    func markAppLaunched(launchOptions: [UIApplication.LaunchOptionsKey: Any]?) {
++        let timestamp = Date()
++        userDefaults.set(timestamp.timeIntervalSince1970, forKey: appLaunchTimestampKey)
++        userDefaults.set(AppState.launched.rawValue, forKey: lastStateKey)
++        userDefaults.set(timestamp.timeIntervalSince1970, forKey: lastStateTimestampKey)
++        
++        // Log launch options for diagnostics
++        if let launchOptions = launchOptions, !launchOptions.isEmpty {
++            let optionsDescription = launchOptions.map { "\($0.key.rawValue)" }.joined(separator: ", ")
++            Crashlytics.crashlytics().log("App launched with options: \(optionsDescription)")
++        }
++        
++        let message = "App launched at \(timestamp)"
++        debug(.default, message)
++        info(.default, message, type: .info)
++    }
++    
++    /// Called when app becomes active
++    func markAppBecameActive() {
++        updateState(.active)
++        let message = "App became active"
++        debug(.default, message)
++    }
++    
++    /// Called when app will resign active
++    func markAppWillResignActive() {
++        updateState(.inactive)
++        let message = "App will resign active"
++        debug(.default, message)
++    }
++    
++    /// Called when app enters background
++    func markAppEnteredBackground() {
++        updateState(.background)
++        // Save critical state before going to background
++        saveDiagnosticState()
++        let message = "App entered background"
++        debug(.default, message)
++    }
++    
++    /// Called when app will enter foreground
++    func markAppWillEnterForeground() {
++        updateState(.active)
++        let message = "App will enter foreground"
++        debug(.default, message)
++    }
++    
++    /// Called when app will terminate normally
++    func markAppWillTerminate(reason: TerminationReason) {
++        updateState(.terminated)
++        userDefaults.set(reason.rawValue, forKey: "AppTerminationTracker.lastTerminationReason")
++        let message = "App will terminate (reason: \(reason.rawValue))"
++        debug(.default, message)
++        info(.default, message, type: .info)
++    }
++    
++    /// Called when iOS sends a memory warning
++    func handleMemoryWarning() {
++        let count = userDefaults.integer(forKey: memoryWarningCountKey) + 1
++        userDefaults.set(count, forKey: memoryWarningCountKey)
++        userDefaults.set(Date().timeIntervalSince1970, forKey: memoryWarningTimestampKey)
++        
++        // Log system memory info if available
++        var memoryInfoString = ""
++        if let memoryInfo = getMemoryInfo() {
++            memoryInfoString = " | Memory: \(memoryInfo.map { "\($0.key)=\($0.value)MB" }.joined(separator: ", "))"
++            
++            // Log to Crashlytics
++            Crashlytics.crashlytics().log("Memory info: \(memoryInfo)")
++            for (key, value) in memoryInfo {
++                Crashlytics.crashlytics().setCustomValue(value, forKey: "memory_\(key)")
++            }
++        }
++        
++        // Log to Crashlytics
++        Crashlytics.crashlytics().log("⚠️ Memory warning received (count: \(count))")
++        Crashlytics.crashlytics().setCustomValue(count, forKey: "memory_warning_count")
++        
++        // Log to file and Better Stack with warning level
++        let message = "⚠️ Memory warning received (count: \(count))\(memoryInfoString)"
++        debug(.default, message)
++        warning(.default, message, description: "iOS sent memory pressure warning. This may indicate the app is using too much memory and could be terminated.")
++    }
++    
++    /// Checks for unexpected termination from previous session
++    func checkForUnexpectedTermination() {
++        guard let lastStateString = userDefaults.string(forKey: lastStateKey),
++              let lastState = AppState(rawValue: lastStateString),
++              let lastTimestamp = userDefaults.object(forKey: lastStateTimestampKey) as? TimeInterval else {
++            // First launch or no previous state
++            return
++        }
++        
++        let lastStateDate = Date(timeIntervalSince1970: lastTimestamp)
++        let timeSinceLastState = Date().timeIntervalSince(lastStateDate)
++        
++        // If app was active/inactive/background and didn't terminate normally, it was likely killed
++        if lastState != .terminated {
++            let reason = determineTerminationReason(lastState: lastState, timeSinceLastState: timeSinceLastState)
++            reportUnexpectedTermination(
++                lastState: lastState,
++                timeSinceLastState: timeSinceLastState,
++                reason: reason
++            )
++        } else {
++            // App terminated normally, clear memory warning count
++            userDefaults.removeObject(forKey: memoryWarningCountKey)
++            userDefaults.removeObject(forKey: memoryWarningTimestampKey)
++        }
++    }
++    
++    // MARK: - Private Methods
++    
++    private func updateState(_ newState: AppState) {
++        userDefaults.set(newState.rawValue, forKey: lastStateKey)
++        userDefaults.set(Date().timeIntervalSince1970, forKey: lastStateTimestampKey)
++    }
++    
++    private func saveDiagnosticState() {
++        // Save current diagnostic state that might be useful if app is killed
++        let memoryInfo = getMemoryInfo() ?? [:]
++        userDefaults.set(memoryInfo, forKey: "AppTerminationTracker.lastMemoryInfo")
++        
++        // Save scene phase info if available
++        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
++            let isActive = windowScene.activationState == .foregroundActive
++            userDefaults.set(isActive, forKey: "AppTerminationTracker.wasActiveBeforeBackground")
++        }
++    }
++    
++    private func determineTerminationReason(lastState: AppState, timeSinceLastState: TimeInterval) -> TerminationReason {
++        // Check if we had recent memory warnings
++        if let memoryWarningTimestamp = userDefaults.object(forKey: memoryWarningTimestampKey) as? TimeInterval {
++            let timeSinceWarning = Date().timeIntervalSince1970 - memoryWarningTimestamp
++            if timeSinceWarning < 60 { // Memory warning within last minute
++                return .memoryPressure
++            }
++        }
++        
++        // If app was active and killed quickly, might be watchdog
++        if lastState == .active && timeSinceLastState < 10 {
++            return .watchdog
++        }
++        
++        // If app was in background and killed, likely memory pressure
++        if lastState == .background {
++            return .memoryPressure
++        }
++        
++        return .unexpected
++    }
++    
++    private func reportUnexpectedTermination(
++        lastState: AppState,
++        timeSinceLastState: TimeInterval,
++        reason: TerminationReason
++    ) {
++        // Build detailed message
++        var details: [String] = [
++            "Last state: \(lastState.rawValue)",
++            "Time since last state: \(Int(timeSinceLastState))s",
++            "Reason: \(reason.rawValue)"
++        ]
++        
++        // Add memory info if available
++        var memoryInfoString = ""
++        if let memoryInfo = userDefaults.dictionary(forKey: "AppTerminationTracker.lastMemoryInfo") as? [String: Any] {
++            let memoryDetails = memoryInfo.compactMap { key, value -> String? in
++                if let numValue = value as? NSNumber {
++                    return "\(key)=\(numValue.intValue)MB"
++                }
++                return nil
++            }
++            if !memoryDetails.isEmpty {
++                memoryInfoString = " | Last memory: \(memoryDetails.joined(separator: ", "))"
++                details.append("Last memory: \(memoryDetails.joined(separator: ", "))")
++            }
++        }
++        
++        // Add memory warning count
++        let memoryWarningCount = userDefaults.integer(forKey: memoryWarningCountKey)
++        if memoryWarningCount > 0 {
++            details.append("Memory warnings before termination: \(memoryWarningCount)")
++        }
++        
++        let fullMessage = "🔴 App was unexpectedly terminated. \(details.joined(separator: ", "))"
++        let shortMessage = "App was unexpectedly terminated. Last state: \(lastState.rawValue), Time since: \(Int(timeSinceLastState))s, Reason: \(reason.rawValue)\(memoryInfoString)"
++        
++        // Log to file and Better Stack with error level
++        debug(.default, fullMessage)
++        warning(
++            .default,
++            shortMessage,
++            description: "The app was terminated unexpectedly by iOS. This may indicate memory pressure, watchdog timeout, or other system-level issues.",
++            error: NSError(
++                domain: "AppTerminationTracker",
++                code: 1,
++                userInfo: [
++                    NSLocalizedDescriptionKey: shortMessage,
++                    "termination_reason": reason.rawValue,
++                    "last_state": lastState.rawValue,
++                    "time_since_last_state": timeSinceLastState
++                ]
++            )
++        )
++        
++        // Log to Crashlytics
++        Crashlytics.crashlytics().log("🔴 Unexpected termination detected: \(fullMessage)")
++        Crashlytics.crashlytics().setCustomValue(reason.rawValue, forKey: "termination_reason")
++        Crashlytics.crashlytics().setCustomValue(lastState.rawValue, forKey: "last_app_state")
++        Crashlytics.crashlytics().setCustomValue(Int(timeSinceLastState), forKey: "time_since_last_state_seconds")
++        
++        // Add memory info to Crashlytics
++        if let memoryInfo = userDefaults.dictionary(forKey: "AppTerminationTracker.lastMemoryInfo") as? [String: Any] {
++            for (key, value) in memoryInfo {
++                if let numValue = value as? NSNumber {
++                    Crashlytics.crashlytics().setCustomValue(numValue.intValue, forKey: "last_memory_\(key)")
++                }
++            }
++        }
++        
++        // Add memory warning count to Crashlytics
++        if memoryWarningCount > 0 {
++            Crashlytics.crashlytics().setCustomValue(memoryWarningCount, forKey: "memory_warning_count_before_termination")
++        }
++        
++        // Create a non-fatal error to represent the termination
++        let terminationError = NSError(
++            domain: "AppTerminationTracker",
++            code: 1,
++            userInfo: [
++                NSLocalizedDescriptionKey: shortMessage,
++                "termination_reason": reason.rawValue,
++                "last_state": lastState.rawValue,
++                "time_since_last_state": timeSinceLastState
++            ]
++        )
++        Crashlytics.crashlytics().record(error: terminationError)
++    }
++    
++    private func getMemoryInfo() -> [String: Int]? {
++        var info = mach_task_basic_info()
++        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
++        
++        let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
++            $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
++                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
++            }
++        }
++        
++        guard kerr == KERN_SUCCESS else {
++            return nil
++        }
++        
++        let usedMemoryMB = Int(info.resident_size / 1024 / 1024)
++        let virtualMemoryMB = Int(info.virtual_size / 1024 / 1024)
++        
++        return [
++            "used_mb": usedMemoryMB,
++            "virtual_mb": virtualMemoryMB
++        ]
++    }
++}
+diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..191d0e454e4ccb0ccfedcba77be9c3e8a3063ca2
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
+@@ -0,0 +1,72 @@
++import Foundation
++
++/// Better Stack / Logtail provider.
++///
++/// Endpoint: POST <ingestion URL>
++/// Success: HTTP 202 only
++final class BetterStackLogtailProvider: CloudLogProvider {
++    private let tokenProvider: () -> String?
++    private let ingestionURLProvider: () -> URL?
++    private let session: URLSession
++
++    init(
++        tokenProvider: @escaping () -> String?,
++        ingestionURLProvider: @escaping () -> URL? = { URL(string: "https://in.logs.betterstack.com/") },
++        session: URLSession = .shared
++    ) {
++        self.tokenProvider = tokenProvider
++        self.ingestionURLProvider = ingestionURLProvider
++        self.session = session
++    }
++
++    func upload(events: [CloudLogEvent]) async -> Result<Void, CloudLogUploadError> {
++        guard !events.isEmpty else { return .success(()) }
++
++        guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            debug(.service, "Cloud logging: not configured (no token)")
++            return .failure(.notConfigured)
++        }
++
++        guard let url = ingestionURLProvider() else {
++            debug(.service, "Cloud logging: invalid URL")
++            return .failure(.invalidURL)
++        }
++
++        var request = URLRequest(url: url)
++        request.httpMethod = "POST"
++        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
++        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
++
++        do {
++            request.httpBody = try JSONEncoder().encode(events)
++        } catch {
++            debug(.service, "Cloud logging: encoding failed: \(error)")
++            return .failure(.encoding(error))
++        }
++
++        do {
++            let (data, response) = try await session.data(for: request)
++            guard let http = response as? HTTPURLResponse else {
++                return .failure(.invalidResponse)
++            }
++
++            // Better Stack ingestion success is HTTP 202.
++            guard http.statusCode == 202 else {
++                let preview = String(data: data.prefix(4096), encoding: .utf8)
++
++                debug(
++                    .service,
++                    "Cloud logging upload failed: status=\(http.statusCode) events=\(events.count) bodyPreview=\(preview ?? "<non-utf8>")"
++                )
++
++                return .failure(.unexpectedStatus(code: http.statusCode, bodyPreview: preview))
++            }
++
++            return .success(())
++        } catch {
++            debug(.service, "Cloud logging: transport error: \(error)")
++            return .failure(.transport(error))
++        }
++    }
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift b/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..08340686e67cbf955d382159b83a7d2c64758b1b
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
+@@ -0,0 +1,36 @@
++import Foundation
++
++struct BetterStackSettings: Decodable {
++    let BetterStackSourceToken: String?
++    let BetterStackIngestionUrl: String?
++}
++
++enum BetterStackSettingsStore {
++    static let relativePath = "settings/BetterStack.json"
++
++    /// Loads Better Stack settings from the app group container (preferred) and falls back to app documents.
++    static func load() -> BetterStackSettings? {
++        // Prefer the configured AppGroupID (Info.plist key "AppGroupID") if present.
++        if let suite = Bundle.main.appGroupSuiteName, !suite.isEmpty {
++            if let settings = load(from: .sharedContainer(appGroupName: suite)) {
++                return settings
++            }
++        }
++
++        // Fallback: some builds use a short app group name like "Trio".
++        if let settings = load(from: .sharedContainer(appGroupName: "Trio")) {
++            return settings
++        }
++
++        // Fallback to local documents directory (useful for simulator/dev environments).
++        return load(from: .documents)
++    }
++
++    private static func load(from directory: Disk.Directory) -> BetterStackSettings? {
++        guard let data = try? Disk.retrieve(relativePath, from: directory, as: Data.self) else {
++            return nil
++        }
++        return try? JSONDecoder().decode(BetterStackSettings.self, from: data)
++    }
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..cdc5280388e04fc2a045f73d3b03b77e8608685d
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
+@@ -0,0 +1,42 @@
++import Foundation
++
++enum CloudLogEntryAggregator {
++    /// Aggregates physical log lines into logical log entries using a start-of-entry regex.
++    ///
++    /// - Important: `lines` must be physical lines (already split on `\n`) and must not contain trailing `\n`.
++    static func aggregate(lines: [String], startPattern: NSRegularExpression) -> [String] {
++        guard !lines.isEmpty else { return [] }
++
++        var entries: [String] = []
++        var current: [String] = []
++
++        func isStart(_ line: String) -> Bool {
++            let ns = line as NSString
++            let range = NSRange(location: 0, length: ns.length)
++            return startPattern.firstMatch(in: line, range: range) != nil
++        }
++
++        for line in lines {
++            if isStart(line) {
++                if !current.isEmpty {
++                    entries.append(current.joined(separator: "\n"))
++                }
++                current = [line]
++            } else {
++                if current.isEmpty {
++                    // If we start mid-entry (e.g., offset in the middle), treat it as a single entry.
++                    current = [line]
++                } else {
++                    current.append(line)
++                }
++            }
++        }
++
++        if !current.isEmpty {
++            entries.append(current.joined(separator: "\n"))
++        }
++
++        return entries
++    }
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..99fed1b737ffe5e72ff144478aab96d3341b62b7
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
+@@ -0,0 +1,255 @@
++import Foundation
++
++enum CloudLogPlatform: String {
++    case ios
++    case watchos
++}
++
++struct CloudParsedLogLine {
++    let dt: String?
++    let category: String?
++    let level: String?
++    let message: String
++    let file: String?
++    let method: String?
++    let lineNumber: String?
++}
++
++enum CloudLogLineParser {
++    // iPhone format:
++    // <TIMESTAMP> [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>: <message>
++    static func parseIOS(_ entry: String) -> CloudParsedLogLine? {
++        let trimmedEntry = entry.trimmingCharacters(in: .newlines)
++        guard !trimmedEntry.isEmpty else { return nil }
++
++        let lines = trimmedEntry.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
++        let header = lines.first ?? trimmedEntry
++        let continuation = lines.dropFirst().joined(separator: "\n")
++
++        // Timestamp = first token
++        let tokens = header.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
++        let rawTs = tokens.first.map(String.init)
++        let dt = rawTs.flatMap(normalizeTimestamp)
++
++        // Category = first [...] after timestamp
++        var category: String?
++        if let range = header.range(of: #"^\S+\s+\[([^\]]+)\]"#, options: [.regularExpression]) {
++            // Extract using a second regex capture to keep code simple.
++            if let match = header[range].range(of: #"\[([^\]]+)\]"#, options: .regularExpression) {
++                let bracketed = String(header[match])
++                category = bracketed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
++            }
++        }
++
++        // Extract file, method, and line number
++        // Format: [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>:
++        // Example: [Nightscout] NightscoutManager.swift - uploadNonCoreDataTreatments(_:) - 999 - DEV:
++        var file: String?
++        var method: String?
++        var lineNumber: String?
++        
++        // Pattern: \] (.+\.swift) - (.+?) - (\d+) - (DEV|INFO|WARN|ERR):
++        // Method name can contain special chars like (_:), so we match everything between the delimiters
++        let fileMethodLineRegex = #"\]\s+([^\s]+\.swift)\s+-\s+(.+?)\s+-\s+(\d+)\s+-\s+(DEV|INFO|WARN|ERR):"#
++        if let regex = try? NSRegularExpression(pattern: fileMethodLineRegex) {
++            let nsHeader = header as NSString
++            let range = NSRange(location: 0, length: nsHeader.length)
++            if let regexMatch = regex.firstMatch(in: header, range: range), regexMatch.numberOfRanges >= 5 {
++                // Group 1: file, Group 2: method, Group 3: line number
++                let fileRange = regexMatch.range(at: 1)
++                let methodRange = regexMatch.range(at: 2)
++                let lineRange = regexMatch.range(at: 3)
++                
++                if fileRange.location != NSNotFound {
++                    file = nsHeader.substring(with: fileRange)
++                }
++                if methodRange.location != NSNotFound {
++                    method = nsHeader.substring(with: methodRange)
++                }
++                if lineRange.location != NSNotFound {
++                    lineNumber = nsHeader.substring(with: lineRange)
++                }
++            }
++        }
++
++        // Level = delimiter-aware: " - (DEV|INFO|WARN|ERR):"
++        let levelRegex = #"\s-\s(DEV|INFO|WARN|ERR):\s"#
++        guard let levelMatch = header.range(of: levelRegex, options: .regularExpression) else {
++            // If we can't confidently parse, still return the original line as message.
++            let msg = continuation.isEmpty ? header : "\(header)\n\(continuation)"
++            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg, file: file, method: method, lineNumber: lineNumber)
++        }
++
++        // Extract the actual level token and normalize
++        let levelToken = String(header[levelMatch])
++            .replacingOccurrences(of: " - ", with: "")
++            .replacingOccurrences(of: ":", with: "")
++            .trimmingCharacters(in: .whitespacesAndNewlines)
++
++        let normalizedLevel: String?
++        switch levelToken {
++        case "DEV": normalizedLevel = "debug"
++        case "INFO": normalizedLevel = "info"
++        case "WARN": normalizedLevel = "warn"
++        case "ERR": normalizedLevel = "error"
++        default: normalizedLevel = nil
++        }
++
++        // Message = everything after "<LEVEL>: "
++        let messageStart = header.index(levelMatch.upperBound, offsetBy: 0)
++        let parsedFirstLineMessage = String(header[messageStart...]).trimmingCharacters(in: .newlines)
++        let firstLineMessage = parsedFirstLineMessage.isEmpty ? header : parsedFirstLineMessage
++        let fullMessage = continuation.isEmpty ? firstLineMessage : "\(firstLineMessage)\n\(continuation)"
++
++        // Apply message-based level detection to upgrade levels when appropriate
++        let finalLevel = detectLevelFromMessage(fullMessage, originalLevel: normalizedLevel)
++
++        return CloudParsedLogLine(
++            dt: dt,
++            category: category,
++            level: finalLevel,
++            message: fullMessage,
++            file: file,
++            method: method,
++            lineNumber: lineNumber
++        )
++    }
++
++    // Watch format:
++    // [<TIMESTAMP>] [<File.swift>:<line>] <function>() → <message>
++    static func parseWatch(_ entry: String) -> CloudParsedLogLine? {
++        let trimmedEntry = entry.trimmingCharacters(in: .newlines)
++        guard !trimmedEntry.isEmpty else { return nil }
++
++        let lines = trimmedEntry.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
++        let header = lines.first ?? trimmedEntry
++        let continuation = lines.dropFirst().joined(separator: "\n")
++
++        // Timestamp = first [...] token
++        var dt: String?
++        if let tsRange = header.range(of: #"^\[([^\]]+)\]"#, options: [.regularExpression]) {
++            let bracketed = String(header[tsRange])
++            let raw = bracketed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
++            dt = normalizeTimestamp(raw)
++        }
++
++        // Category = filename from "[File.swift:line]" (without .swift extension)
++        var category: String?
++        category = extractWatchCategory(from: header)
++
++        // Extract file, line number, and function name
++        // Format: [TIMESTAMP] [File.swift:line] function() → message
++        // Pattern: \[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]\s+(.+?)\s*\(\)\s*→
++        var file: String?
++        var lineNumber: String?
++        var method: String?
++        
++        let fileLineMethodRegex = #"\[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]\s+(.+?)\s*\(\)\s*→"#
++        if let regex = try? NSRegularExpression(pattern: fileLineMethodRegex) {
++            let nsHeader = header as NSString
++            let range = NSRange(location: 0, length: nsHeader.length)
++            if let regexMatch = regex.firstMatch(in: header, range: range), regexMatch.numberOfRanges >= 4 {
++                // Group 1: file (with .swift), Group 2: line number, Group 3: function name
++                let fileRange = regexMatch.range(at: 1)
++                let lineRange = regexMatch.range(at: 2)
++                let methodRange = regexMatch.range(at: 3)
++                
++                if fileRange.location != NSNotFound {
++                    file = nsHeader.substring(with: fileRange)
++                }
++                if lineRange.location != NSNotFound {
++                    lineNumber = nsHeader.substring(with: lineRange)
++                }
++                if methodRange.location != NSNotFound {
++                    method = nsHeader.substring(with: methodRange).trimmingCharacters(in: .whitespacesAndNewlines)
++                }
++            }
++        }
++
++        // Message = everything after the arrow
++        let fullMessage: String
++        if let arrowRange = header.range(of: "→") {
++            let msg = header[arrowRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
++            let firstLineMessage = msg.isEmpty ? header : String(msg)
++            fullMessage = continuation.isEmpty ? firstLineMessage : "\(firstLineMessage)\n\(continuation)"
++        } else {
++            fullMessage = continuation.isEmpty ? header : "\(header)\n\(continuation)"
++        }
++
++        // Apply message-based level detection to upgrade levels when appropriate
++        let finalLevel = detectLevelFromMessage(fullMessage, originalLevel: nil)
++
++        return CloudParsedLogLine(dt: dt, category: category, level: finalLevel, message: fullMessage, file: file, method: method, lineNumber: lineNumber)
++    }
++
++    /// Normalizes "yyyy-MM-dd'T'HH:mm:ssZ" like "...+0100" into "...+01:00" if possible.
++    /// Returns nil if normalization is not possible.
++    static func normalizeTimestamp(_ raw: String) -> String? {
++        // Only normalize if it ends with "+HHMM" or "-HHMM"
++        let tzRegex = #"([+-]\d{2})(\d{2})$"#
++        guard let tzRange = raw.range(of: tzRegex, options: .regularExpression) else {
++            return nil
++        }
++
++        let tz = raw[tzRange]
++        let tzStr = String(tz)
++        guard tzStr.count == 5 else { return nil }
++
++        let hh = tzStr.prefix(3) // +01
++        let mm = tzStr.suffix(2) // 00
++        let normalized = raw.replacingCharacters(in: tzRange, with: "\(hh):\(mm)")
++        return normalized
++    }
++
++    private static func extractWatchCategory(from line: String) -> String? {
++        let pattern = #"^\[[^\]]+\]\s+\[([^\]:]+)\.swift:\d+\]"#
++        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
++        let nsLine = line as NSString
++        let range = NSRange(location: 0, length: nsLine.length)
++        guard let match = regex.firstMatch(in: line, range: range), match.numberOfRanges >= 2 else { return nil }
++        let capture = match.range(at: 1)
++        guard capture.location != NSNotFound else { return nil }
++        return nsLine.substring(with: capture)
++    }
++
++    /// Detects log level from message content, upgrading the level when error/warning patterns are detected.
++    /// This helps classify logs that were incorrectly logged with `debug()` but contain error/warning indicators.
++    ///
++    /// - Parameters:
++    ///   - message: The log message to analyze
++    ///   - originalLevel: The level parsed from the log prefix (e.g., "debug", "info", "warn", "error")
++    /// - Returns: The detected level, or the original level if no patterns match
++    private static func detectLevelFromMessage(_ message: String, originalLevel: String?) -> String? {
++        let lowercased = message.lowercased()
++
++        // Error patterns (critical failures) - check first
++        if lowercased.contains("failed to retrieve file") ||
++           lowercased.contains("error domain=diskerrordomain") ||
++           lowercased.contains("could not find an existing file") ||
++           lowercased.contains("unable to") && (lowercased.contains("file") || lowercased.contains("disk")) {
++            return "error"
++        }
++
++        // Warning patterns (issues needing attention, not critical)
++        if message.contains("❌ Error sending watch state") ||
++           lowercased.contains("error domain=wcerrordomain") ||
++           lowercased.contains("warning:") {
++            return "warn"
++        }
++
++        // Info patterns (informational, expected conditions)
++        if lowercased.contains("error domain=cberrordomain") ||
++           lowercased.contains("pod disconnected") ||
++           lowercased.contains("sensor disconnected") ||
++           lowercased.contains("skipping") ||
++           lowercased.contains("device message:") ||
++           lowercased.contains("device manager for") ||
++           lowercased.contains("not reachable") ||
++           lowercased.contains("failed to send") {
++            return "info"
++        }
++
++        // If no pattern matches, return the original level
++        return originalLevel
++    }
++}
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..caa752418e8fad6297a4a7febc5b8da2dffc3e1b
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
+@@ -0,0 +1,100 @@
++import Foundation
++
++protocol CloudLogProvider {
++    /// Uploads a batch of events.
++    ///
++    /// - Important: Must only treat HTTP 202 as success.
++    func upload(events: [CloudLogEvent]) async -> Result<Void, CloudLogUploadError>
++}
++
++enum CloudLogUploadError: Error, CustomStringConvertible {
++    case notConfigured
++    case invalidURL
++    case transport(Error)
++    case invalidResponse
++    case unexpectedStatus(code: Int, bodyPreview: String?)
++    case encoding(Error)
++
++    var description: String {
++        switch self {
++        case .notConfigured:
++            return "Cloud logging not configured"
++        case .invalidURL:
++            return "Invalid cloud logging URL"
++        case let .transport(error):
++            return "Transport error: \(error)"
++        case .invalidResponse:
++            return "Invalid HTTP response"
++        case let .unexpectedStatus(code, bodyPreview):
++            return "Unexpected HTTP status: \(code) body: \(bodyPreview ?? "<nil>")"
++        case let .encoding(error):
++            return "Encoding error: \(error)"
++        }
++    }
++}
++
++struct CloudLogEvent: Encodable {
++    let message: String
++    let dt: String?
++    let attributes: [String: String]?
++    let raw: String?
++    
++    // Custom encoding to flatten attributes to top-level fields
++    enum CodingKeys: String, CodingKey {
++        case message
++        case dt
++        case platform
++        case build
++        case category
++        case appVersion
++        case env
++        case level
++        case file
++        case method
++        case lineNumber
++        case raw
++    }
++    
++    func encode(to encoder: Encoder) throws {
++        var container = encoder.container(keyedBy: CodingKeys.self)
++        try container.encode(message, forKey: .message)
++        if let dt = dt {
++            try container.encode(dt, forKey: .dt)
++        }
++        if let raw = raw {
++            try container.encode(raw, forKey: .raw)
++        }
++        
++        // Flatten attributes to top-level fields
++        if let attrs = attributes {
++            if let platform = attrs["platform"] {
++                try container.encode(platform, forKey: .platform)
++            }
++            if let build = attrs["build"] {
++                try container.encode(build, forKey: .build)
++            }
++            if let category = attrs["category"] {
++                try container.encode(category, forKey: .category)
++            }
++            if let appVersion = attrs["appVersion"] {
++                try container.encode(appVersion, forKey: .appVersion)
++            }
++            if let env = attrs["env"] {
++                try container.encode(env, forKey: .env)
++            }
++            if let level = attrs["level"] {
++                try container.encode(level, forKey: .level)
++            }
++            if let file = attrs["file"] {
++                try container.encode(file, forKey: .file)
++            }
++            if let method = attrs["method"] {
++                try container.encode(method, forKey: .method)
++            }
++            if let lineNumber = attrs["lineNumber"] {
++                try container.encode(lineNumber, forKey: .lineNumber)
++            }
++        }
++    }
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..b92e5638a1b33e0fe5f5536033bd2e6c920c1797
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
+@@ -0,0 +1,162 @@
++import Foundation
++import UIKit
++
++/// App lifecycle + periodic trigger wrapper.
++///
++/// - Manual trigger: `uploadNow()`
++/// - Lifecycle triggers: foreground/background
++/// - Periodic trigger: every 5 minutes while app is running
++final class CloudLogUploadService {
++    // Settings UI (first-choice config)
++    static let userDefaultsEnabledKey = "cloudLogging.enabled"
++    static let userDefaultsTokenKey = "cloudLogging.token"
++    static let userDefaultsIngestionURLKey = "cloudLogging.ingestionUrl"
++
++    // Legacy key (kept for backwards compatibility)
++    static let legacyUserDefaultsTokenKey = "cloudLogging.betterStackSourceToken"
++
++    private let uploader: CloudLogUploader
++    private var timer: Timer?
++    private var observers: [NSObjectProtocol] = []
++    private let tokenProvider: () -> String?
++    private let ingestionURLProvider: () -> URL?
++
++    init() {
++        tokenProvider = {
++            let ud = UserDefaults.standard
++
++            // If the user explicitly disabled cloud logging, do not fall back to file/env.
++            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == false {
++                return nil
++            }
++
++            // Priority: Settings UI (UserDefaults) → app group settings/BetterStack.json → Info.plist → env.
++            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == true {
++                if let t = ud.string(forKey: Self.userDefaultsTokenKey), !t.isEmpty { return t }
++                if let t = ud.string(forKey: Self.legacyUserDefaultsTokenKey), !t.isEmpty { return t }
++                // If enabled but no token set in UI, allow file-based config.
++            } else {
++                // No explicit enable flag; still allow legacy token key.
++                if let t = ud.string(forKey: Self.legacyUserDefaultsTokenKey), !t.isEmpty { return t }
++            }
++
++            if let settings = BetterStackSettingsStore.load(),
++               let t = settings.BetterStackSourceToken,
++               !t.isEmpty
++            {
++                return t
++            }
++
++            if let t = Bundle.main.object(forInfoDictionaryKey: "BetterStackSourceToken") as? String, !t.isEmpty { return t }
++            return ProcessInfo.processInfo.environment["BETTERSTACK_SOURCE_TOKEN"]
++        }
++
++        ingestionURLProvider = {
++            let ud = UserDefaults.standard
++
++            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == false {
++                return nil
++            }
++
++            if let enabled = ud.object(forKey: Self.userDefaultsEnabledKey) as? Bool, enabled == true {
++                if let raw = ud.string(forKey: Self.userDefaultsIngestionURLKey), !raw.isEmpty {
++                    return URL(string: raw)
++                }
++            }
++
++            if let settings = BetterStackSettingsStore.load(),
++               let raw = settings.BetterStackIngestionUrl,
++               let url = URL(string: raw)
++            {
++                return url
++            }
++            return URL(string: "https://in.logs.betterstack.com/")
++        }
++
++        let provider = BetterStackLogtailProvider(
++            tokenProvider: tokenProvider,
++            ingestionURLProvider: ingestionURLProvider
++        )
++
++        let pairs: [CloudLogUploader.RotatingPair] = [
++            .init(
++                currentPath: SimpleLogReporter.logFile,
++                previousPath: SimpleLogReporter.logFilePrev,
++                platform: .ios,
++                parser: CloudLogLineParser.parseIOS
++            ),
++            .init(
++                currentPath: SimpleLogReporter.watchLogFile,
++                previousPath: SimpleLogReporter.watchLogFilePrev,
++                platform: .watchos,
++                parser: CloudLogLineParser.parseWatch
++            )
++        ]
++
++        uploader = CloudLogUploader(provider: provider, pairs: pairs)
++
++        start()
++    }
++
++    deinit {
++        stop()
++    }
++
++    func uploadNow() {
++        // Only run when configured (no privacy gating in this repo).
++        guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            return
++        }
++        guard ingestionURLProvider() != nil else {
++            return
++        }
++
++        Task {
++            _ = await uploader.uploadNow()
++        }
++    }
++
++    // MARK: - Scheduling
++
++    private func start() {
++        // Foreground + background triggers
++        let center = Foundation.NotificationCenter.default
++
++        observers.append(
++            center.addObserver(
++                forName: UIApplication.willEnterForegroundNotification,
++                object: nil,
++                queue: .main
++            ) { [weak self] _ in
++                self?.uploadNow()
++            }
++        )
++
++        observers.append(
++            center.addObserver(
++                forName: UIApplication.didEnterBackgroundNotification,
++                object: nil,
++                queue: .main
++            ) { [weak self] _ in
++                self?.uploadNow()
++            }
++        )
++
++        // Periodic trigger (while running)
++        timer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
++            self?.uploadNow()
++        }
++    }
++
++    private func stop() {
++        timer?.invalidate()
++        timer = nil
++
++        let center = Foundation.NotificationCenter.default
++        for o in observers {
++            center.removeObserver(o)
++        }
++        observers.removeAll()
++    }
++}
++
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd6c966e71c02d62dd4927fbf77ac4a129228ec7
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
+@@ -0,0 +1,358 @@
++import Foundation
++
++/// iPhone-only log tailer/uploader.
++///
++/// - Keeps file-based logs as the source of truth.
++/// - Tails files using byte offsets (no buffering).
++/// - Handles daily rotation where `*_log.txt` is moved to `*_log_prev.txt`.
++actor CloudLogUploader {
++    struct RotatingPair {
++        let currentPath: String
++        let previousPath: String
++        let platform: CloudLogPlatform
++        let parser: (String) -> CloudParsedLogLine?
++    }
++
++    private struct TailState: Codable {
++        var offset: UInt64
++    }
++
++    private let provider: CloudLogProvider
++    private let pairs: [RotatingPair]
++    private let userDefaults: UserDefaults
++    private let stateKey = "cloudLogUploader.tailState.v1"
++
++    private var isUploading = false
++    private var lastSuccessfulUploadAt: Date?
++    private let successCooldown: TimeInterval = 30
++
++    init(
++        provider: CloudLogProvider,
++        pairs: [RotatingPair],
++        userDefaults: UserDefaults = .standard
++    ) {
++        self.provider = provider
++        self.pairs = pairs
++        self.userDefaults = userDefaults
++    }
++
++    /// Returns true if this run completed without provider failures.
++    @discardableResult
++    func uploadNow() async -> Bool {
++        if let last = lastSuccessfulUploadAt, Date().timeIntervalSince(last) < successCooldown {
++            return true
++        }
++
++        // Coalesce to avoid overlapping uploads on lifecycle + timer.
++        guard !isUploading else { return true }
++        isUploading = true
++        defer { isUploading = false }
++
++        var allSucceeded = true
++        for pair in pairs {
++            let ok = await uploadRotatingPair(pair)
++            if !ok { allSucceeded = false }
++        }
++        if allSucceeded {
++            lastSuccessfulUploadAt = Date()
++        }
++        return allSucceeded
++    }
++
++    // MARK: - Rotation + tail logic
++
++    private func uploadRotatingPair(_ pair: RotatingPair) async -> Bool {
++        let currentURL = URL(fileURLWithPath: pair.currentPath)
++        let prevURL = URL(fileURLWithPath: pair.previousPath)
++
++        var currentState = loadState(for: pair.currentPath)
++        var prevState = loadState(for: pair.previousPath)
++        var succeeded = true
++
++        // Reset offsets if file shrank (rotation or truncation).
++        if let currentSize = fileSize(currentURL), currentSize < currentState.offset {
++            currentState.offset = 0
++            saveState(currentState, for: pair.currentPath)
++        }
++        if let prevSize = fileSize(prevURL), prevSize < prevState.offset {
++            prevState.offset = 0
++            saveState(prevState, for: pair.previousPath)
++        }
++
++        // Upload current tail.
++        let okCurrent = await uploadNewContent(
++            fileURL: currentURL,
++            filePathKey: pair.currentPath,
++            startOffset: currentState.offset,
++            platform: pair.platform,
++            parser: pair.parser
++        )
++        if !okCurrent { succeeded = false }
++
++        // Upload previous tail as well (best-effort for late rotation or missed uploads).
++        let okPrev = await uploadNewContent(
++            fileURL: prevURL,
++            filePathKey: pair.previousPath,
++            startOffset: prevState.offset,
++            platform: pair.platform,
++            parser: pair.parser
++        )
++        if !okPrev { succeeded = false }
++
++        return succeeded
++    }
++
++    private func uploadNewContent(
++        fileURL: URL,
++        filePathKey: String,
++        startOffset: UInt64,
++        platform: CloudLogPlatform,
++        parser: (String) -> CloudParsedLogLine?
++    ) async -> Bool {
++        guard FileManager.default.fileExists(atPath: fileURL.path) else { return true }
++        guard let size = fileSize(fileURL), size > startOffset else { return true }
++
++        guard let (lines, nextOffset) = readCompleteLines(fileURL: fileURL, startOffset: startOffset) else {
++            return true
++        }
++        guard !lines.isEmpty else {
++            saveState(TailState(offset: nextOffset), for: filePathKey)
++            return true
++        }
++
++        let entries = aggregateEntries(physicalLines: lines, platform: platform)
++        guard !entries.isEmpty else {
++            saveState(TailState(offset: nextOffset), for: filePathKey)
++            return true
++        }
++
++        let commonAttributes = buildCommonAttributes(platform: platform)
++
++        // Build events (best-effort parsing; always upload the line).
++        let events: [CloudLogEvent] = entries.compactMap { entry in
++            let parsed = parser(entry)
++            var attrs = commonAttributes
++            if let parsed {
++                if let c = parsed.category { attrs["category"] = c }
++                if let l = parsed.level { attrs["level"] = l }
++                if let f = parsed.file { attrs["file"] = f }
++                if let m = parsed.method { attrs["method"] = m }
++                if let ln = parsed.lineNumber { attrs["lineNumber"] = ln }
++                let msg = truncateMessage(parsed.message)
++                return CloudLogEvent(message: msg, dt: parsed.dt, attributes: attrs, raw: entry)
++            } else {
++                let msg = truncateMessage(entry)
++                return CloudLogEvent(message: msg, dt: nil, attributes: attrs, raw: entry)
++            }
++        }
++
++        // Upload in batches with both count and byte-budget caps.
++        // This helps avoid 413 errors regardless of log verbosity.
++        let batches = buildBatches(events: events)
++        for batch in batches {
++            switch await provider.upload(events: batch) {
++            case .success:
++                continue
++            case .failure:
++                // Critical: do NOT advance offsets.
++                debug(.service, "CloudLogUploader: upload failed for \(filePathKey), offset not advanced")
++                return false
++            }
++        }
++
++        // Only advance the file offset after the final batch succeeds.
++        var state = loadState(for: filePathKey)
++        state.offset = nextOffset
++        saveState(state, for: filePathKey)
++        return true
++    }
++
++    /// Reads from startOffset to EOF and returns only complete lines (ending with '\n').
++    /// The returned `nextOffset` is the byte offset right after the last complete newline.
++    private func readCompleteLines(fileURL: URL, startOffset: UInt64) -> ([String], UInt64)? {
++        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
++        defer { try? handle.close() }
++
++        do {
++            try handle.seek(toOffset: startOffset)
++            let data = try handle.readToEnd() ?? Data()
++            guard !data.isEmpty else { return ([], startOffset) }
++
++            // Only advance to the last newline to avoid uploading a partial final line.
++            guard let lastNewlineIdx = data.lastIndex(of: 0x0A) else {
++                return ([], startOffset)
++            }
++
++            let completeData = data.prefix(upTo: data.index(after: lastNewlineIdx))
++            let text = String(decoding: completeData, as: UTF8.self)
++
++            var lines = text
++                .split(separator: "\n", omittingEmptySubsequences: false)
++                .map(String.init)
++            // Because `text` ends with '\n', split(...) includes a final empty element; drop it.
++            if lines.last == "" {
++                lines.removeLast()
++            }
++
++            let nextOffset = startOffset + UInt64(completeData.count)
++            return (lines, nextOffset)
++        } catch {
++            return nil
++        }
++    }
++
++    private func aggregateEntries(physicalLines: [String], platform: CloudLogPlatform) -> [String] {
++        let pattern: String
++        switch platform {
++        case .ios:
++            pattern = #"^\d{4}-\d{2}-\d{2}T"#
++        case .watchos:
++            pattern = #"^\[\d{4}-\d{2}-\d{2}T"#
++        }
++
++        guard let regex = try? NSRegularExpression(pattern: pattern) else {
++            // Fallback to line-by-line if regex compilation fails (shouldn't happen).
++            return physicalLines
++        }
++
++        return CloudLogEntryAggregator.aggregate(lines: physicalLines, startPattern: regex)
++    }
++
++    // MARK: - Attributes
++
++    private func buildCommonAttributes(platform: CloudLogPlatform) -> [String: String] {
++        var attrs: [String: String] = [:]
++        attrs["platform"] = platform.rawValue
++
++        let env: String
++        if BuildDetails.shared.isTestFlightBuild() {
++            env = "testflight"
++        } else {
++            #if DEBUG
++                env = "debug"
++            #else
++                env = "release"
++            #endif
++        }
++        attrs["env"] = env
++
++        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
++            attrs["appVersion"] = version
++        }
++        if let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
++            attrs["build"] = build
++        }
++
++        return attrs
++    }
++
++    // MARK: - State store
++
++    private func loadState(for path: String) -> TailState {
++        guard let data = userDefaults.data(forKey: stateKey),
++              let dict = try? JSONDecoder().decode([String: TailState].self, from: data),
++              let state = dict[path]
++        else {
++            return TailState(offset: 0)
++        }
++        return state
++    }
++
++    private func saveState(_ state: TailState, for path: String) {
++        var dict: [String: TailState] = [:]
++        if let data = userDefaults.data(forKey: stateKey),
++           let decoded = try? JSONDecoder().decode([String: TailState].self, from: data)
++        {
++            dict = decoded
++        }
++        dict[path] = state
++        if let encoded = try? JSONEncoder().encode(dict) {
++            userDefaults.set(encoded, forKey: stateKey)
++        }
++    }
++
++    // MARK: - File helpers
++
++    private func fileSize(_ url: URL) -> UInt64? {
++        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
++              let size = attrs[.size] as? NSNumber
++        else { return nil }
++        return size.uint64Value
++    }
++
++    // MARK: - Request sizing helpers
++
++    private let maxMessageBytes = 256 * 1024
++    private let maxRequestBytes = 8 * 1024 * 1024
++    private let maxEventsPerRequest = 250
++
++    private func truncateMessage(_ message: String) -> String {
++        guard message.utf8.count > maxMessageBytes else { return message }
++        let data = message.data(using: .utf8) ?? Data()
++        return truncateUTF8(data: data, maxBytes: maxMessageBytes)
++    }
++
++    private func buildBatches(events: [CloudLogEvent]) -> [[CloudLogEvent]] {
++        guard !events.isEmpty else { return [] }
++
++        var result: [[CloudLogEvent]] = []
++        var current: [CloudLogEvent] = []
++        var currentBytes = 2 // "[]"
++        let encoder = JSONEncoder()
++
++        for event in events {
++            let eventBytes = (try? encoder.encode(event).count) ?? Int.max
++            let additionalBytes = current.isEmpty ? eventBytes : (1 + eventBytes) // comma for non-first
++
++            let wouldExceedCount = current.count >= maxEventsPerRequest
++            let wouldExceedBytes = (currentBytes + additionalBytes) > maxRequestBytes
++
++            if wouldExceedCount || wouldExceedBytes {
++                if !current.isEmpty {
++                    result.append(current)
++                }
++                current = [event]
++                currentBytes = 2 + eventBytes
++
++                // If a single event still exceeds the request budget (should be rare due to truncation),
++                // upload it alone to avoid an infinite loop.
++                if currentBytes > maxRequestBytes {
++                    result.append(current)
++                    current.removeAll(keepingCapacity: true)
++                    currentBytes = 2
++                }
++            } else {
++                current.append(event)
++                currentBytes += additionalBytes
++            }
++        }
++
++        if !current.isEmpty {
++            result.append(current)
++        }
++
++        return result
++    }
++
++    /// Truncate UTF-8 data without emitting replacement characters.
++    private func truncateUTF8(data: Data, maxBytes: Int) -> String {
++        guard data.count > maxBytes else {
++            return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
++        }
++
++        var truncated = data.prefix(maxBytes)
++
++        // If we're mid-codepoint, drop trailing bytes until valid UTF-8.
++        // Worst-case UTF-8 sequence length is 4, so this loop should be short,
++        // but we keep it safe for malformed input.
++        while !truncated.isEmpty {
++            if let s = String(data: truncated, encoding: .utf8) {
++                return s
++            }
++            truncated = truncated.dropLast(1)
++        }
++
++        return ""
++    }
++}
++
+diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
+index 5310b2fe3c93adb74cf37a7d6523a91f7495eef8..fd8100929dea30156d1bf82fd8388e66ab1302bd 100644
+--- a/Trio/Sources/Modules/Settings/SettingItems.swift
++++ b/Trio/Sources/Modules/Settings/SettingItems.swift
+@@ -325,6 +325,17 @@ enum SettingItems {
+             ],
+             path: ["Services", "Nightscout", "Fetch and Remote Control"]
+         ),
++        SettingItem(
++            title: "Cloud Logging",
++            view: .cloudLogging,
++            searchContents: [
++                "Enable Cloud Logging",
++                "Source token",
++                "Ingestion URL",
++                "Test Connection"
++            ],
++            path: ["Services", "Cloud Logging"]
++        ),
+         SettingItem(title: "Tidepool", view: .serviceSettings, path: ["Services"]),
+         SettingItem(title: "Apple Health", view: .healthkit, path: ["Services"])
+     ]
+diff --git a/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift b/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..4477990385263a4d170cf41b06ede30f5d8590fa
+--- /dev/null
++++ b/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
+@@ -0,0 +1,151 @@
++import SwiftUI
++
++struct CloudLoggingSettingsView: View {
++    @State private var enabled: Bool = false
++    @State private var token: String = ""
++    @State private var ingestionURL: String = ""
++
++    @State private var showResult = false
++    @State private var resultTitle = ""
++    @State private var resultMessage = ""
++
++    private var effectiveToken: String? {
++        let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
++        return t.isEmpty ? nil : t
++    }
++
++    private var effectiveURL: URL? {
++        let raw = ingestionURL.trimmingCharacters(in: .whitespacesAndNewlines)
++        if raw.isEmpty {
++            return URL(string: "https://in.logs.betterstack.com/")
++        }
++        return URL(string: raw)
++    }
++
++    var body: some View {
++        Form {
++            Section {
++                Toggle("Enable Cloud Logging", isOn: $enabled)
++                    .onChange(of: enabled) { _, newValue in
++                        UserDefaults.standard.set(newValue, forKey: CloudLogUploadService.userDefaultsEnabledKey)
++                    }
++            }
++
++            Section("Better Stack") {
++                SecureField("Source token", text: $token)
++                    .textInputAutocapitalization(.never)
++                    .autocorrectionDisabled(true)
++                    .disabled(!enabled)
++                    .onChange(of: token) { _, newValue in
++                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
++                        if trimmed.isEmpty {
++                            UserDefaults.standard.removeObject(forKey: CloudLogUploadService.userDefaultsTokenKey)
++                        } else {
++                            UserDefaults.standard.set(trimmed, forKey: CloudLogUploadService.userDefaultsTokenKey)
++                        }
++                    }
++
++                TextField("Ingestion URL", text: $ingestionURL)
++                    .textInputAutocapitalization(.never)
++                    .autocorrectionDisabled(true)
++                    .keyboardType(.URL)
++                    .disabled(!enabled)
++                    .onChange(of: ingestionURL) { _, newValue in
++                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
++                        if trimmed.isEmpty {
++                            UserDefaults.standard.removeObject(forKey: CloudLogUploadService.userDefaultsIngestionURLKey)
++                        } else {
++                            UserDefaults.standard.set(trimmed, forKey: CloudLogUploadService.userDefaultsIngestionURLKey)
++                        }
++                    }
++
++                Button("Test Connection") {
++                    Task { await testConnection() }
++                }
++                .disabled(!enabled || effectiveToken == nil || effectiveURL == nil)
++
++                Button(role: .destructive) {
++                    token = ""
++                    ingestionURL = ""
++                    UserDefaults.standard.removeObject(forKey: CloudLogUploadService.userDefaultsTokenKey)
++                    UserDefaults.standard.removeObject(forKey: CloudLogUploadService.userDefaultsIngestionURLKey)
++                } label: {
++                    Text("Remove Token & URL")
++                }
++                .disabled(!enabled)
++            }
++
++            Section {
++                Text("These settings override on-device settings files (e.g. settings/BetterStack.json) when enabled.")
++                    .font(.footnote)
++                    .foregroundColor(.secondary)
++            }
++        }
++        .navigationTitle("Cloud Logging")
++        .navigationBarTitleDisplayMode(.inline)
++        .onAppear(perform: loadFromDefaults)
++        .alert(resultTitle, isPresented: $showResult) {
++            Button("OK", role: .cancel) {}
++        } message: {
++            Text(resultMessage)
++        }
++    }
++
++    private func loadFromDefaults() {
++        let ud = UserDefaults.standard
++
++        // Respect explicit enabled flag if present; otherwise default to false.
++        if let enabledObj = ud.object(forKey: CloudLogUploadService.userDefaultsEnabledKey) as? Bool {
++            enabled = enabledObj
++        } else {
++            enabled = false
++        }
++
++        token = ud.string(forKey: CloudLogUploadService.userDefaultsTokenKey) ?? ""
++        ingestionURL = ud.string(forKey: CloudLogUploadService.userDefaultsIngestionURLKey) ?? ""
++    }
++
++    private func testConnection() async {
++        guard let token = effectiveToken else {
++            presentResult(title: "Missing token", message: "Enter a Better Stack source token first.")
++            return
++        }
++        guard let url = effectiveURL else {
++            presentResult(title: "Invalid URL", message: "Enter a valid ingestion URL.")
++            return
++        }
++
++        let provider = BetterStackLogtailProvider(
++            tokenProvider: { token },
++            ingestionURLProvider: { url }
++        )
++
++        let events = [
++            CloudLogEvent(
++                message: "Trio cloud logging test event",
++                dt: nil,
++                attributes: [
++                    "platform": "ios",
++                    "category": "CloudLogging",
++                    "level": "info"
++                ],
++                raw: "Trio cloud logging test event"
++            )
++        ]
++
++        switch await provider.upload(events: events) {
++        case .success:
++            presentResult(title: "Success", message: "Test event ingested successfully.")
++        case let .failure(error):
++            presentResult(title: "Failed", message: error.description)
++        }
++    }
++
++    @MainActor
++    private func presentResult(title: String, message: String) {
++        resultTitle = title
++        resultMessage = message
++        showResult = true
++    }
++}
++
+diff --git a/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift b/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
+index 4c595ff8e2f6115b53b7077c41abe75c38d3c8bc..2bbd74fb13cd12df0e4c714480ee23d40aa817c8 100644
+--- a/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
++++ b/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
+@@ -24,6 +24,7 @@ struct ServicesView: BaseView {
+                 content: {
+                     Text("Nightscout").navigationLink(to: .nighscoutConfig, from: self)
+                     Text("Tidepool").navigationLink(to: .tidepoolConfig, from: self)
++                    Text("Cloud Logging").navigationLink(to: .cloudLogging, from: self)
+                     if HKHealthStore.isHealthDataAvailable() {
+                         Text("Apple Health").navigationLink(to: .healthkit, from: self)
+                     }
+diff --git a/Trio/Sources/Router/Screen.swift b/Trio/Sources/Router/Screen.swift
+index b7e1bc07b8f9588515f473ffd7b0a84585b0e464..93cee61da5ec6d00b33a2f837e6b470bf43491ae 100644
+--- a/Trio/Sources/Router/Screen.swift
++++ b/Trio/Sources/Router/Screen.swift
+@@ -42,6 +42,7 @@ enum Screen: Identifiable, Hashable {
+     case calendarEventSettings
+     case contactImage
+     case serviceSettings
++    case cloudLogging
+     case remoteControlConfig
+     case autosensSettings
+     case smbSettings
+@@ -150,6 +151,8 @@ extension Screen {
+             ContactImage.RootView(resolver: resolver)
+         case .serviceSettings:
+             ServicesView(resolver: resolver, state: Settings.StateModel())
++        case .cloudLogging:
++            CloudLoggingSettingsView()
+         case .autosensSettings:
+             AutosensSettings.RootView(resolver: resolver)
+         case .smbSettings:
+diff --git a/TrioTests/CloudLogEntryAggregatorTests.swift b/TrioTests/CloudLogEntryAggregatorTests.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..44ac7318483a8c29348c8b54875588ae666ca01e
+--- /dev/null
++++ b/TrioTests/CloudLogEntryAggregatorTests.swift
+@@ -0,0 +1,43 @@
++import Foundation
++import Testing
++
++@testable import Trio
++
++@Suite("Cloud Log Entry Aggregation Tests") struct CloudLogEntryAggregatorTests {
++    @Test("iOS multi-line entry aggregation groups by timestamp start") func testIOSAggregation() throws {
++        let start = try NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}T"#)
++
++        let lines: [String] = [
++            "2026-01-01T08:32:30+0100 [DeviceManager] Foo.swift - bar() - 1 - INFO: Starting request",
++            "{",
++            "  \"a\": 1,",
++            "  \"b\": 2",
++            "}",
++            "2026-01-01T08:32:31+0100 [DeviceManager] Foo.swift - bar() - 2 - INFO: Done"
++        ]
++
++        let entries = CloudLogEntryAggregator.aggregate(lines: lines, startPattern: start)
++        #expect(entries.count == 2)
++        #expect(entries[0].contains("\n{\n  \"a\": 1,"))
++        #expect(entries[0].hasPrefix("2026-01-01T08:32:30+0100"))
++        #expect(entries[1].hasPrefix("2026-01-01T08:32:31+0100"))
++    }
++
++    @Test("watch multi-line entry aggregation groups by bracketed timestamp start") func testWatchAggregation() throws {
++        let start = try NSRegularExpression(pattern: #"^\[\d{4}-\d{2}-\d{2}T"#)
++
++        let lines: [String] = [
++            "[2026-01-01T08:35:51+0100] [WatchLogger.swift:169] flushToPhone() → ⌚️ Something happened",
++            "stacktrace line 1",
++            "stacktrace line 2",
++            "[2026-01-01T08:35:52+0100] [WatchState.swift:1] tick() → Next entry"
++        ]
++
++        let entries = CloudLogEntryAggregator.aggregate(lines: lines, startPattern: start)
++        #expect(entries.count == 2)
++        #expect(entries[0].contains("stacktrace line 1\nstacktrace line 2"))
++        #expect(entries[0].hasPrefix("[2026-01-01T08:35:51+0100]"))
++        #expect(entries[1].hasPrefix("[2026-01-01T08:35:52+0100]"))
++    }
++}
++
+diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..7dcfc9025ea8885b83ba2b0440c42f501d271a71
+--- /dev/null
++++ b/docs/cloud-logging.md
+@@ -0,0 +1,153 @@
++# Cloud logging (Better Stack / Logtail)
++
++## Goals / constraints
++
++- **File-based logs remain the source of truth** (no changes to how logs are written).
++- **Watch → iPhone log transfer is reused** (watch logs are uploaded from the phone only).
++- **Cloud upload tails files using byte offsets** (no extra buffering system).
++- **Provider is swappable** (Better Stack is implemented; Axiom is a fallback design target).
++
++## Provider
++
++- **Primary**: Better Stack / Logtail
++- **Fallback**: Axiom (not implemented yet, but the code is structured around a `CloudLogProvider` protocol)
++
++### Better Stack endpoint
++
++- **URL**: `https://in.logs.betterstack.com/`
++- **Method**: `POST`
++- **Headers**:
++  - `Authorization: Bearer <SOURCE_TOKEN>`
++  - `Content-Type: application/json`
++- **Success criteria**:
++  - **HTTP 202 only** is treated as success.
++  - Any other status does **not** advance offsets (uploads are safe to retry).
++
++## Log files (authoritative on-device sources)
++
++### iPhone logs
++
++Written by existing file logging (`SimpleLogReporter`):
++
++- Current: `Documents/logs/log.txt`
++- Previous (daily rotation): `Documents/logs/log_prev.txt`
++
++Format:
++
++`<TIMESTAMP> [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>: <message>`
++
++Example:
++
++`2025-12-31T22:02:48+0100 [WatchManager] AppleWatchManager.swift - sendDataToWatch(_:) - 536 - DEV: 📤 Transferred new WatchState snapshot via userInfo`
++
++### Watch logs (on iPhone)
++
++The watch sends logs via WatchConnectivity; the iPhone already persists them (no changes required):
++
++- Current: `Documents/logs/watch_log.txt`
++- Previous (daily rotation): `Documents/logs/watch_log_prev.txt`
++
++Format:
++
++`[<TIMESTAMP>] [<File.swift>:<line>] <function>() → <message>`
++
++Example:
++
++`[2025-12-31T00:01:27+0100] [WatchLogger.swift:169] flushToPhone() → ⌚️ Logs queued for background delivery to phone`
++
++## Upload-time parsing (best-effort, non-destructive)
++
++Parsing is done **only at upload time** and is **tolerant of failures**: if parsing fails, the original line is still uploaded.
++
++### Timestamp normalization
++
++Both iPhone and watch timestamps use `+0100` style timezones. When possible, they are normalized to `+01:00`:
++
++- `2025-12-31T22:02:48+0100` → `2025-12-31T22:02:48+01:00`
++
++If normalization fails, `dt` is omitted.
++
++### iPhone parsing
++
++- **dt**: first token, normalized timezone
++- **category**: extracted from `[Category]` immediately after timestamp
++- **level**: extracted via delimiter-aware match: `\s-\s(DEV|INFO|WARN|ERR):\s` and normalized:
++  - `DEV` → `debug`
++  - `INFO` → `info`
++  - `WARN` → `warn`
++  - `ERR` → `error`
++- **message**: everything after `<LEVEL>: `
++
++### watch parsing
++
++- **dt**: extracted from first `[ ... ]`, normalized timezone
++- **category**: derived from filename in `[File.swift:line]` (without `.swift`)
++- **level**: not inferred
++- **message**: everything after `→`
++
++### Platform tagging
++
++- iPhone files → `platform = ios`
++- watch files → `platform = watchos`
++
++## Offsets + rotation
++
++Uploads tail each file using a **byte offset** stored on-device.
++
++- On each run, only newly appended **complete lines** (ending in `\n`) are uploaded.
++- Uploads are **batched** with both:
++  - a **count cap** (default: 250 events per request), and
++  - a **byte-budget cap** (conservative ~8 MiB uncompressed JSON per request, estimated via encoder size).
++  Offsets only advance after the final batch succeeds.
++- If the file **shrinks** (truncation / rotation), its offset is reset to `0`.
++- Rotation handling is intentionally simple: it only uses the **byte-offset tail model** and resets offsets when the file shrinks.
++
++## Triggers
++
++Uploads are triggered from the iPhone app only:
++
++- **Manual**: `CloudLogUploadService.uploadNow()`
++- **Lifecycle**:
++  - app foreground
++  - app background
++- **Periodic**: every 5 minutes while the app is running
++
++## Setup (token)
++
++Trio reads Better Stack settings from a JSON file in the **Trio app group container**:
++
++- Path: `settings/BetterStack.json`
++- Example:
++
++```json
++{
++  "BetterStackSourceToken": "TzZdDRFCDTCXhYTZVLWHhNsk",
++  "BetterStackIngestionUrl": "https://s1658969.eu-nbg-2.betterstackdata.com/"
++}
++```
++
++This file is **generated on-device** and should **not** be committed.
++
++Currently supported injection points (in priority order):
++
++1. App group file: `settings/BetterStack.json`
++2. `UserDefaults` key: `cloudLogging.betterStackSourceToken` (fallback)
++3. `Info.plist` key: `BetterStackSourceToken` (fallback; do not commit secrets)
++4. Process environment variable: `BETTERSTACK_SOURCE_TOKEN` (dev-only fallback)
++
++## Querying + export for AI analysis
++
++Recommended practice:
++
++- Filter by `attributes.platform`, `attributes.category`, `attributes.level`, `attributes.env`, `attributes.appVersion`, `attributes.build`.
++- Export by time range + filters for a focused dataset (e.g., around a crash or loop failure).
++- This implementation does **not** upload a duplicate `raw` field; the uploaded `message` is either the parsed message or the original full line if parsing fails.
++
++## Future: on-device log viewer (Idea #1)
++
++This design supports an on-device log viewer without rework because:
++
++- The authoritative log files remain on disk (`Documents/logs/...`).
++- Cloud upload logic reads using byte offsets without changing log writes.
++- A future viewer can read the same files and optionally reuse the same parsing helpers.
++
