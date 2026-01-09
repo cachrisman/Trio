@@ -147,7 +147,7 @@ platform :ios do
   desc "Build Trio"
   lane :build_trio do
     setup_ci if ENV['CI']
-    BUNDLE_ID = ENV["BUNDLE_ID"]
+    bundle_id = ENV["BUNDLE_ID"]
     workspace_root = GITHUB_WORKSPACE || Dir.pwd
 
     # Sync project files (sources, resources, package dependencies)
@@ -173,7 +173,7 @@ platform :ios do
     api_key = get_app_store_connect_api_key
 
     previous_build_number = latest_testflight_build_number(
-      app_identifier: "#{BUNDLE_ID}",
+      app_identifier: "#{bundle_id}",
       api_key: api_key,
     )
 
@@ -188,10 +188,10 @@ platform :ios do
       type: "appstore",
       git_basic_authorization: Base64.strict_encode64("#{GITHUB_REPOSITORY_OWNER}:#{GH_PAT}"),
       app_identifier: [
-        "#{BUNDLE_ID}",
-        "#{BUNDLE_ID}.watchkitapp",
-        "#{BUNDLE_ID}.watchkitapp.TrioWatchComplication",
-        "#{BUNDLE_ID}.LiveActivity"
+        "#{bundle_id}",
+        "#{bundle_id}.watchkitapp",
+        "#{bundle_id}.watchkitapp.TrioWatchComplication",
+        "#{bundle_id}.LiveActivity"
 
       ]
     )
@@ -202,28 +202,28 @@ platform :ios do
 
     update_code_signing_settings(
       path: "#{GITHUB_WORKSPACE}/Trio.xcodeproj",
-      profile_name: mapping["#{BUNDLE_ID}"],
+      profile_name: mapping["#{bundle_id}"],
       code_sign_identity: "iPhone Distribution",
       targets: ["Trio"]
     )
 
     update_code_signing_settings(
       path: "#{GITHUB_WORKSPACE}/Trio.xcodeproj",
-      profile_name: mapping["#{BUNDLE_ID}.watchkitapp"],
+      profile_name: mapping["#{bundle_id}.watchkitapp"],
       code_sign_identity: "iPhone Distribution",
       targets: ["Trio Watch App"]
     )
 
     update_code_signing_settings(
       path: "#{GITHUB_WORKSPACE}/Trio.xcodeproj",
-      profile_name: mapping["#{BUNDLE_ID}.watchkitapp.TrioWatchComplication"],
+      profile_name: mapping["#{bundle_id}.watchkitapp.TrioWatchComplication"],
       code_sign_identity: "iPhone Distribution",
       targets: ["Trio Watch Complication Extension"]
     )
 
     update_code_signing_settings(
       path: "#{GITHUB_WORKSPACE}/Trio.xcodeproj",
-      profile_name: mapping["#{BUNDLE_ID}.LiveActivity"],
+      profile_name: mapping["#{bundle_id}.LiveActivity"],
       code_sign_identity: "iPhone Distribution",
       targets: ["LiveActivityExtension"]
     )
@@ -330,7 +330,7 @@ platform :ios do
   lane :identifiers do
     setup_ci if ENV['CI']
     ENV["MATCH_READONLY"] = false.to_s
-    BUNDLE_ID = ENV["BUNDLE_ID"]
+    bundle_id = ENV["BUNDLE_ID"]
     
     get_app_store_connect_api_key
 
@@ -346,23 +346,23 @@ platform :ios do
       end
     end
 
-    configure_bundle_id("Trio", "#{BUNDLE_ID}", [
+    configure_bundle_id("Trio", "#{bundle_id}", [
       Spaceship::ConnectAPI::BundleIdCapability::Type::APP_GROUPS,
       Spaceship::ConnectAPI::BundleIdCapability::Type::HEALTHKIT,
       Spaceship::ConnectAPI::BundleIdCapability::Type::NFC_TAG_READING,
       Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS
     ])
 
-    configure_bundle_id("Trio Watch Complication", "#{BUNDLE_ID}.watchkitapp.TrioWatchComplication", [
+    configure_bundle_id("Trio Watch Complication", "#{bundle_id}.watchkitapp.TrioWatchComplication", [
       Spaceship::ConnectAPI::BundleIdCapability::Type::APP_GROUPS
     ])
     
-    configure_bundle_id("Trio Watch App", "#{BUNDLE_ID}.watchkitapp", [
+    configure_bundle_id("Trio Watch App", "#{bundle_id}.watchkitapp", [
       Spaceship::ConnectAPI::BundleIdCapability::Type::APP_GROUPS,
       Spaceship::ConnectAPI::BundleIdCapability::Type::HEALTHKIT
     ])
 
-    configure_bundle_id("Trio LiveActivity", "#{BUNDLE_ID}.LiveActivity", [])
+    configure_bundle_id("Trio LiveActivity", "#{bundle_id}.LiveActivity", [])
     
   end
 
@@ -370,7 +370,7 @@ platform :ios do
   lane :certs do
     setup_ci if ENV['CI']
     ENV["MATCH_READONLY"] = false.to_s
-    BUNDLE_ID = ENV["BUNDLE_ID"]
+    bundle_id = ENV["BUNDLE_ID"]
     
     get_app_store_connect_api_key
     
@@ -380,10 +380,10 @@ platform :ios do
       verbose: true,
       git_basic_authorization: Base64.strict_encode64("#{GITHUB_REPOSITORY_OWNER}:#{GH_PAT}"),
       app_identifier: [
-        "#{BUNDLE_ID}",
-        "#{BUNDLE_ID}.watchkitapp",
-        "#{BUNDLE_ID}.watchkitapp.TrioWatchComplication",
-        "#{BUNDLE_ID}.LiveActivity"
+        "#{bundle_id}",
+        "#{bundle_id}.watchkitapp",
+        "#{bundle_id}.watchkitapp.TrioWatchComplication",
+        "#{bundle_id}.LiveActivity"
       ]
     )
   end
@@ -392,11 +392,11 @@ platform :ios do
   lane :validate_secrets do
     setup_ci if ENV['CI']
     ENV["MATCH_READONLY"] = true.to_s
-    BUNDLE_ID = ENV["BUNDLE_ID"]
+    bundle_id = ENV["BUNDLE_ID"]
 
     get_app_store_connect_api_key
 
-    Spaceship::ConnectAPI::BundleId.find(BUNDLE_ID)
+    Spaceship::ConnectAPI::BundleId.find(bundle_id)
 
     match(
       type: "appstore",
