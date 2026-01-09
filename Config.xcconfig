@@ -3,6 +3,11 @@ APP_DISPLAY_NAME = Trio
 APP_ICON = trioBlack
 APP_URL_SCHEME = Trio
 
+CLOUD_LOGGING_ENABLED = NO
+CLOUD_LOGGING_ENDPOINT =
+CLOUD_LOGGING_TOKEN =
+CLOUD_LOGGING_ENV = dev
+
 // DEVELOPER_TEAM will be set to your Apple Developer ID - typically using ConfigOverride.xcconfig
 DEVELOPER_TEAM = ##TEAM_ID##
 

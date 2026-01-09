@@ -85,6 +85,11 @@ extension Notification.Name {
             _ = resolver.resolve(LiveActivityManager.self)!
         }
         _ = resolver.resolve(IOBService.self)!
+        #if os(iOS)
+            if let uploader = resolver.resolve(CloudLogUploader.self) {
+                uploader.start()
+            }
+        #endif
     }
 
     init() {

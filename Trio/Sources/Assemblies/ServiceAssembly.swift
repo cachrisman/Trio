@@ -29,5 +29,8 @@ final class ServiceAssembly: Assembly {
             }
         }
         container.register(IOBService.self) { r in BaseIOBService(resolver: r) }
+        #if os(iOS)
+            container.register(CloudLogUploader.self) { r in CloudLogUploader(resolver: r) }
+        #endif
     }
 }
