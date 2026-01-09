@@ -1,0 +1,101 @@
+diff --git a/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift b/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift
+index 593c5ccb9a44e21936d05da8af586796a63dac71..23b425ce97f309bfa0e7df5134886f7261308dac 100644
+--- a/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift
++++ b/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift
+@@ -32,7 +32,7 @@ extension MainChartView {
+             .onChange(of: state.maxBasal) {
+                 calculateBasals()
+             }
+-            .frame(minHeight: geo.size.height * 0.05)
++            .frame(height: basalChartHeight)
+             .frame(width: fullWidth(viewWidth: screenSize.width))
+             .chartXScale(domain: state.startMarker ... state.endMarker)
+             .chartXAxis { basalChartXAxis }
+diff --git a/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift b/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift
+index ab152a39a5c916684a7bcd2e2c50a0f3174f6899..ca51456db400ce83bb0b5609c3ac3add220bf8d2 100644
+--- a/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift
++++ b/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift
+@@ -44,7 +44,7 @@ extension MainChartView {
+             "IOB": Color.darkerBlue
+         ])
+         .chartLegend(.hidden)
+-        .frame(minHeight: geo.size.height * 0.12)
++        .frame(height: cobChartHeight)
+         .frame(width: fullWidth(viewWidth: screenSize.width))
+         .chartXScale(domain: state.startMarker ... state.endMarker)
+         .chartXSelection(value: $selection)
+diff --git a/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift b/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift
+index 8380f5aff227c6a8b71c7c8a841fa7ffcea7f21e..dc3ee41427274388c9800fc8b98725279b2f35b5 100644
+--- a/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift
++++ b/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift
+@@ -38,9 +38,7 @@ extension MainChartView {
+             }
+         }
+         .id("DummyMainChart")
+-        .frame(
+-            minHeight: geo.size.height * (0.28 - safeAreaSize)
+-        )
++        .frame(height: mainChartHeight)
+         .frame(width: screenSize.width - 10)
+         .chartXAxis { mainChartXAxis }
+         .chartXScale(domain: state.startMarker ... state.endMarker)
+@@ -56,7 +54,7 @@ extension MainChartView {
+     var dummyBasalChart: some View {
+         Chart {}
+             .id("DummyBasalChart")
+-            .frame(minHeight: geo.size.height * 0.05)
++            .frame(height: basalChartHeight)
+             .frame(width: screenSize.width - 10)
+             .chartXAxis { basalChartXAxis }
+             .chartXAxis(.hidden)
+@@ -67,7 +65,7 @@ extension MainChartView {
+     var dummyCobChart: some View {
+         Chart {}
+             .id("DummyCobChart")
+-            .frame(minHeight: geo.size.height * 0.12)
++            .frame(height: cobChartHeight)
+             .frame(width: screenSize.width - 10)
+             .chartXScale(domain: state.startMarker ... state.endMarker)
+             .chartXAxis { basalChartXAxis }
+diff --git a/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift b/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift
+index a4fa90784823a1168f723232e09b29d01a61e5a2..ad07e3fd38f6ea6494437c04c7f78779bfd31e6f 100644
+--- a/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift
++++ b/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift
+@@ -33,6 +33,26 @@ struct MainChartView: View {
+     @Environment(\.colorScheme) var colorScheme
+     @Environment(\.calendar) var calendar
+ 
++    // NOTE:
++    // Historically these charts used `minHeight` to allow them to stretch if the
++    // surrounding layout provided extra vertical space. The flexible sizing also
++    // meant that a spacer recalculation or an unexpected safe-area change could
++    // cause the charts to over-expand. We now use fixed heights to keep the
++    // overlaid chart stack aligned. If future layouts need flexibility again,
++    // prefer a bounded range (`minHeight` + `maxHeight`) instead of a single
++    // unconstrained `minHeight`.
++    private var mainChartHeight: CGFloat {
++        max(geo.size.height * (0.28 - safeAreaSize), 0)
++    }
++
++    private var basalChartHeight: CGFloat {
++        max(geo.size.height * 0.05, 0)
++    }
++
++    private var cobChartHeight: CGFloat {
++        max(geo.size.height * 0.12, 0)
++    }
++
+     var upperLimit: Decimal {
+         units == .mgdL ? 400 : 22.2
+     }
+@@ -186,9 +206,7 @@ extension MainChartView {
+                 }
+             }
+             .id("MainChart")
+-            .frame(
+-                minHeight: geo.size.height * (0.28 - safeAreaSize)
+-            )
++            .frame(height: mainChartHeight)
+             .frame(width: fullWidth(viewWidth: screenSize.width))
+             .chartXScale(domain: state.startMarker ... state.endMarker)
+             .chartXAxis { mainChartXAxis }
