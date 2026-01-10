@@ -1,0 +1,33 @@
+From b209627da123eae3d9f30b0a41d1ec1e33024d4d Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sat, 10 Jan 2026 23:28:56 +0100
+Subject: [PATCH] Update G7SensorKit (show reading timestamp with seconds)
+
+---
+ .gitmodules | 2 +-
+ G7SensorKit | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/.gitmodules b/.gitmodules
+index ca2bf7849..83cc6918b 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -20,7 +20,7 @@
+ 	branch = trio
+ [submodule "G7SensorKit"]
+ 	path = G7SensorKit
+-	url = https://github.com/loopandlearn/G7SensorKit.git
++	url = https://github.com/cachrisman/G7SensorKit.git
+ 	branch = trio
+ [submodule "OmniKit"]
+ 	path = OmniKit
+diff --git a/G7SensorKit b/G7SensorKit
+index ee064ddcc..a083f6d7f 160000
+--- a/G7SensorKit
++++ b/G7SensorKit
+@@ -1 +1 @@
+-Subproject commit ee064ddcc1c13e0050ee56d0eec38a6bdc0d3c76
++Subproject commit a083f6d7f9392894f92fc0ce02f6596a38c7434d
+-- 
+2.50.1 (Apple Git-155)
+
