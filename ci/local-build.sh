@@ -698,38 +698,56 @@ echo "[build] Running 'Customize Trio' step (patches)..."
 
 if [[ "$SKIP_PATCHES" = "1" ]]; then
   echo "[build] Skipping patch application."
-elif [[ -d "$PATCHES_DIR" && -n "$(ls -A "$PATCHES_DIR"/*.patch 2>/dev/null || true)" ]]; then
-  echo "[build] Found patches to apply. Listing patches:"
-  ls -l "$PATCHES_DIR"/*.patch
+elif [[ -d "$PATCHES_DIR" ]]; then
+  # Configure git identity for git am operations
+  git config user.name "Trio Build Bot" || true
+  git config user.email "build-bot@users.noreply.github.com" || true
 
-  # Check and apply patches one at a time (patches may depend on previous patches)
-  for patch in "$PATCHES_DIR"/*.patch; do
-    echo "[build] Attempting to apply patch: $patch"
-    if git apply --reverse --check "$patch" --whitespace=fix >/dev/null 2>&1; then
-      echo "[build] ⚠️ Patch already applied; skipping: $patch"
-      continue
-    fi
-    # Check patch before applying
-    if git apply --check "$patch" --whitespace=fix >/dev/null 2>&1; then
-      echo "[build] ✓ Patch check passed for: $patch"
-    else
-      echo "[build] ❌ Patch check failed for: $patch"
-      git apply --check "$patch" --whitespace=fix 2>&1 | sed 's/^/    /' || true
-      echo "[build] Aborting due to non-applicable patch."
-      exit 1
-    fi
-    # Apply the patch immediately after checking
-    echo "[build] Applying patch: $patch"
-    if git apply "$patch" --whitespace=fix >/dev/null 2>&1; then
-      echo "[build] ✅ Successfully applied patch: $patch"
-    else
-      echo "[build] ❌ Failed to apply patch: $patch"
-      git apply "$patch" --verbose --whitespace=fix 2>&1 | sed 's/^/    /' || true
-      exit 1
-    fi
-  done
+  # Collect patches deterministically (bash 3.2 compatible)
+  # During migration: prefer .am.patch when both exist for same prefix
+  PATCH_LIST_FILE=$(mktemp)
+  (cd "$PATCHES_DIR" 2>/dev/null && ls -1 *.am.patch *.patch 2>/dev/null | sort) \
+  | awk '
+      function pref(name){ return (name ~ /\.am\.patch$/) ? 0 : 1 }
+      /^[0-9][0-9]-/ {
+        p=substr($0, 1, 2)
+        if (!(p in chosen)) { chosen[p]=$0; pr[p]=pref($0) }
+        else if (pref($0) < pr[p]) { chosen[p]=$0; pr[p]=pref($0) }
+      }
+      END { for (p in chosen) print p "\t" chosen[p] }
+    ' \
+  | sort \
+  | awk -v dir="$PATCHES_DIR" '{ print dir "/" $2 }' > "$PATCH_LIST_FILE"
+
+  if [[ -s "$PATCH_LIST_FILE" ]]; then
+    echo "[build] Found patches to apply. Listing patches:"
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      ls -l "$p" 2>/dev/null || true
+    done < "$PATCH_LIST_FILE"
+
+    # Apply patches one at a time (patches may depend on previous patches)
+    # Worktree is always fresh, so no skip logic needed
+    while IFS= read -r patch; do
+      [[ -n "$patch" ]] || continue
+      echo "[build] Applying patch: $patch"
+      if git am --3way --keep-cr --whitespace=nowarn "$patch" >/dev/null 2>&1; then
+        echo "[build] ✅ Successfully applied patch: $patch"
+      else
+        echo "[build] ❌ Failed to apply patch: $patch"
+        git am --abort >/dev/null 2>&1 || true
+        git am --3way --keep-cr --whitespace=nowarn "$patch" 2>&1 | sed 's/^/    /' || true
+        rm -f "$PATCH_LIST_FILE"
+        exit 1
+      fi
+    done < "$PATCH_LIST_FILE"
+    rm -f "$PATCH_LIST_FILE"
+  else
+    echo "[build] No patches found in ./patches directory"
+    rm -f "$PATCH_LIST_FILE"
+  fi
 else
-  echo "[build] No patches found in ./patches directory"
+  echo "[build] No patches directory found"
 fi
 
 ########################################

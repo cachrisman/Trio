@@ -891,54 +891,118 @@ else
     TRACKED_FILES=("${DIFF_FILES[@]}")
 fi
 
-# Generate patch
-echo ""
-print_info "Generating patch file..."
-print_info "Patch direction: ${diff_desc}"
-echo ""
-
-# Generate patch for selected files using the appropriate diff command
-TEMP_PATCH=$(mktemp)
-PATCH_STDERR=$(mktemp)
-if [ "${#TRACKED_FILES[@]}" -gt 0 ]; then
-    if ! "${diff_patch_cmd[@]}" -- "${TRACKED_FILES[@]}" > "$TEMP_PATCH" 2>"$PATCH_STDERR"; then
-        print_error "Failed to generate patch:"
-        cat "$PATCH_STDERR" >&2
-        rm -f "$TEMP_PATCH" "$PATCH_STDERR"
-        exit 1
-    fi
-else
-    : > "$TEMP_PATCH"
-fi
-rm -f "$PATCH_STDERR"
-
-if [ "$include_worktree" = "true" ] && [ "$WORK_BRANCH" = "$SOURCE_BRANCH" ] && [ "${#UNTRACKED_SELECTED[@]}" -gt 0 ]; then
-    for path in "${UNTRACKED_SELECTED[@]}"; do
-        if ! git diff --no-index --binary --full-index -- /dev/null "$path" >> "$TEMP_PATCH"; then
-            diff_exit=$?
-            if [ "$diff_exit" -gt 1 ]; then
-                print_error "Failed to add untracked file to patch: $path"
-                rm -f "$TEMP_PATCH"
-                exit 1
-            fi
-        fi
-    done
-fi
-
-if [ ! -s "$TEMP_PATCH" ]; then
-    print_error "Generated patch is empty"
-    rm -f "$TEMP_PATCH"
+# Check that we have files to patch
+if [ "${#TRACKED_FILES[@]}" -eq 0 ] && [ "${#UNTRACKED_SELECTED[@]}" -eq 0 ]; then
+    print_error "No files selected for patch generation"
     exit 1
 fi
 
-# Ensure patches directory exists
+# Determine description early (needed for commit message)
+# Ensure patches directory exists first
 REPO_ROOT=$(git rev-parse --show-toplevel)
 PATCHES_DIR="${REPO_ROOT}/patches"
 if [ ! -d "$PATCHES_DIR" ]; then
     mkdir -p "$PATCHES_DIR" || die "Cannot create patches directory: $PATCHES_DIR"
 fi
 
-# Determine patch filename
+# Determine description for commit message and filename
+if [ -n "$FLAG_DESCRIPTION" ]; then
+    PATCH_DESC=$(sanitize_for_filename "$FLAG_DESCRIPTION")
+elif [ "$FLAG_NON_INTERACTIVE" = true ]; then
+    # Use source branch name as description in non-interactive mode
+    PATCH_DESC=$(sanitize_for_filename "$SOURCE_BRANCH")
+else
+    # Interactive: prompt for description
+    NEXT_PREFIX=$(get_next_patch_prefix "$PATCHES_DIR")
+    echo ""
+    print_info "Enter a short description for the patch filename."
+    print_info "This will be used as: ${NEXT_PREFIX}-<description>.am.patch"
+    safe_source=$(sanitize_for_filename "$SOURCE_BRANCH")
+    print_info "Default: ${safe_source}"
+    read -p "Description (Enter = default): " user_desc
+    if [ -n "$user_desc" ]; then
+        PATCH_DESC=$(sanitize_for_filename "$user_desc")
+    else
+        PATCH_DESC="$safe_source"
+    fi
+fi
+
+# Generate mailbox patch using temporary worktree
+echo ""
+print_info "Generating mailbox patch file..."
+print_info "Patch direction: ${diff_desc}"
+echo ""
+
+# Create temporary worktree for patch generation
+TEMP_WORKTREE=$(mktemp -d)
+cleanup_worktree() {
+  if [ -n "$TEMP_WORKTREE" ] && [ -d "$TEMP_WORKTREE" ]; then
+    cd "$REPO_ROOT" 2>/dev/null || true
+    git worktree remove --force "$TEMP_WORKTREE" 2>/dev/null || true
+    rm -rf "$TEMP_WORKTREE" 2>/dev/null || true
+  fi
+}
+trap cleanup_worktree EXIT
+
+# Create worktree from target branch
+if ! git worktree add --detach "$TEMP_WORKTREE" "$TARGET_BRANCH" >/dev/null 2>&1; then
+  print_error "Failed to create temporary worktree"
+  exit 1
+fi
+
+cd "$TEMP_WORKTREE" || {
+  print_error "Failed to cd to temporary worktree"
+  exit 1
+}
+
+# Apply tracked file changes
+if [ "${#TRACKED_FILES[@]}" -gt 0 ]; then
+  if ! "${diff_patch_cmd[@]}" -- "${TRACKED_FILES[@]}" | git apply --whitespace=fix; then
+    print_error "Failed to apply diff in temporary worktree"
+    exit 1
+  fi
+fi
+
+# Handle untracked files (copy them to worktree)
+for path in "${UNTRACKED_SELECTED[@]}"; do
+  mkdir -p "$(dirname "$path")"
+  cp "$REPO_ROOT/$path" "$path"
+done
+
+# Stage only the explicit selected files (not global -A)
+# Use -A with explicit pathspec so deletions are included but nothing else is staged
+if [ "${#TRACKED_FILES[@]}" -gt 0 ] || [ "${#UNTRACKED_SELECTED[@]}" -gt 0 ]; then
+  git add -A -- "${TRACKED_FILES[@]}" "${UNTRACKED_SELECTED[@]}"
+fi
+
+# Commit the changes
+if ! git commit -m "feat: ${PATCH_DESC}"; then
+  print_error "Failed to create commit in temporary worktree"
+  exit 1
+fi
+
+# Generate mailbox patch to temp file
+TEMP_PATCH=$(mktemp)
+if ! git format-patch -1 --stdout HEAD > "$TEMP_PATCH"; then
+  print_error "Failed to generate mailbox patch"
+  exit 1
+fi
+
+# Return to repo root
+cd "$REPO_ROOT" || exit 1
+
+# Cleanup worktree
+cleanup_worktree
+trap - EXIT
+
+# Move temp patch to final location (critical: must write to $PATCH_PATH)
+if [ ! -s "$TEMP_PATCH" ]; then
+  print_error "Generated patch is empty"
+  rm -f "$TEMP_PATCH"
+  exit 1
+fi
+
+# Determine patch filename (PATCH_DESC already set above)
 if [ -n "$FLAG_OUTPUT_PATH" ]; then
     # Use explicit output path
     PATCH_PATH="$FLAG_OUTPUT_PATH"
@@ -946,28 +1010,8 @@ else
     # Generate filename with XY- prefix
     NEXT_PREFIX=$(get_next_patch_prefix "$PATCHES_DIR")
     
-    # Determine description for filename
-    if [ -n "$FLAG_DESCRIPTION" ]; then
-        PATCH_DESC=$(sanitize_for_filename "$FLAG_DESCRIPTION")
-    elif [ "$FLAG_NON_INTERACTIVE" = true ]; then
-        # Use source branch name as description in non-interactive mode
-        PATCH_DESC=$(sanitize_for_filename "$SOURCE_BRANCH")
-    else
-        # Interactive: prompt for description
-        echo ""
-        print_info "Enter a short description for the patch filename."
-        print_info "This will be used as: ${NEXT_PREFIX}-<description>.patch"
-        safe_source=$(sanitize_for_filename "$SOURCE_BRANCH")
-        print_info "Default: ${safe_source}"
-        read -p "Description (Enter = default): " user_desc
-        if [ -n "$user_desc" ]; then
-            PATCH_DESC=$(sanitize_for_filename "$user_desc")
-        else
-            PATCH_DESC="$safe_source"
-        fi
-    fi
-    
-    DEFAULT_PATCH_NAME="${PATCHES_DIR}/${NEXT_PREFIX}-${PATCH_DESC}.patch"
+    # During migration: use .am.patch; after cutover: use .patch (both mailbox format)
+    DEFAULT_PATCH_NAME="${PATCHES_DIR}/${NEXT_PREFIX}-${PATCH_DESC}.am.patch"
     
     if [ "$FLAG_NON_INTERACTIVE" = true ]; then
         PATCH_PATH="$DEFAULT_PATCH_NAME"
@@ -996,15 +1040,15 @@ if [ -f "$PATCH_PATH" ]; then
         read -p "Overwrite? (y/N): " OVERWRITE
         if [[ ! "$OVERWRITE" =~ ^[yY]$ ]]; then
             print_info "Aborted"
-            rm -f "$TEMP_PATCH"
+            # TEMP_PATCH may not exist if we're here from interactive prompt
+            [ -f "$TEMP_PATCH" ] && rm -f "$TEMP_PATCH"
             exit 0
         fi
     fi
 fi
 
-# Copy temp patch to final location
-cp "$TEMP_PATCH" "$PATCH_PATH"
-rm -f "$TEMP_PATCH"
+# Move temp patch to final location (critical fix)
+mv "$TEMP_PATCH" "$PATCH_PATH"
 
 print_success "Patch file created: ${PATCH_PATH}"
 
@@ -1023,14 +1067,14 @@ else
     print_success "Patch file is not empty"
 fi
 
-# Check 2: Check if patch has valid format (starts with diff or ---)
-if ! head -1 "$PATCH_PATH" | grep -qE "^(diff |---|\+\+\+)"; then
-    print_warning "Patch file may not have valid format (doesn't start with 'diff', '---', or '+++')"
+# Check 2: Check if patch has valid format (mailbox format starts with "From")
+if ! head -1 "$PATCH_PATH" | grep -qE "^From "; then
+    print_warning "Patch file may not have valid mailbox format (doesn't start with 'From')"
 else
-    print_success "Patch file has valid format"
+    print_success "Patch file has valid mailbox format"
 fi
 
-# Check 3: Try to apply the patch with --check (dry run)
+# Check 3: Try to apply the patch with git am (in disposable worktree)
 # The patch is generated from SOURCE_BRANCH that can be applied to TARGET_BRANCH
 # so it should be tested on TARGET_BRANCH (where it will be applied)
 print_info "Testing patch application (dry run) on target branch '${TARGET_BRANCH}'..."
@@ -1051,19 +1095,23 @@ if git help worktree >/dev/null 2>&1; then
     
     if git worktree add -q --detach "$wt_dir" "$TARGET_BRANCH" >/dev/null 2>&1; then
         stat_ran=true
-        # Use a temp file to capture result from subshell
         apply_result=$(mktemp)
         apply_error=$(mktemp)
         (
             cd "$wt_dir"
-            print_info "Patch summary (git apply --stat) on target branch '${TARGET_BRANCH}':"
-            git apply --stat "$PATCH_ABS_PATH" || true
-            if git apply --check --whitespace=warn "$PATCH_ABS_PATH" >/dev/null 2>&1 && \
-               git apply --check --index --whitespace=warn "$PATCH_ABS_PATH" >/dev/null 2>&1; then
+            # Configure git identity for git am
+            git config user.name "Trio Patch Bot" || true
+            git config user.email "patch-bot@users.noreply.github.com" || true
+            print_info "Patch summary (git am --stat) on target branch '${TARGET_BRANCH}':"
+            git am --stat "$PATCH_ABS_PATH" 2>&1 || true
+            if git am --3way --keep-cr --whitespace=nowarn "$PATCH_ABS_PATH" >/dev/null 2>&1; then
                 echo "SUCCESS" > "$apply_result"
+                # Reset to clean state before removing worktree (no abort needed on success)
+                git reset --hard "$TARGET_BRANCH" >/dev/null 2>&1 || true
             else
                 echo "FAILED" > "$apply_result"
-                git apply --check --whitespace=warn "$PATCH_ABS_PATH" 2>&1 | head -10 > "$apply_error" || true
+                git am --abort >/dev/null 2>&1 || true
+                git am --3way --keep-cr --whitespace=nowarn "$PATCH_ABS_PATH" 2>&1 | head -10 > "$apply_error" || true
             fi
         )
         
@@ -1073,8 +1121,7 @@ if git help worktree >/dev/null 2>&1; then
             [ -s "$apply_error" ] && cat "$apply_error"
         else
             print_success "Patch can be applied successfully (tested on ${TARGET_BRANCH})"
-            print_success "  - git apply --check (target branch)"
-            print_success "  - git apply --check --index (target branch)"
+            print_success "  - git am (target branch)"
         fi
         rm -f "$apply_result" "$apply_error"
         
@@ -1087,24 +1134,13 @@ if git help worktree >/dev/null 2>&1; then
     fi
 else
     stat_ran=true
-    print_warning "git worktree not available; validating against current working tree instead"
-    print_info "Patch summary (git apply --stat):"
-    git apply --stat "$PATCH_PATH" || true
-    if git apply --check --whitespace=warn "$PATCH_PATH" >/dev/null 2>&1 && \
-       git apply --check --index --whitespace=warn "$PATCH_PATH" >/dev/null 2>&1; then
-        print_success "Checks passed (current working tree)"
-    else
-        print_error "Patch validation failed"
-        VALIDATION_PASSED=false
-        APPLY_ERROR=$(git apply --check --whitespace=warn "$PATCH_PATH" 2>&1 || true)
-        echo "$APPLY_ERROR" | head -10
-    fi
+    print_warning "git worktree not available; skipping mailbox patch validation"
 fi
 
 if [ "$stat_ran" = false ]; then
     echo ""
-    print_info "Patch summary (git apply --stat):"
-    git apply --stat "$PATCH_PATH" || true
+    print_info "Patch summary (git am --stat):"
+    git am --stat "$PATCH_PATH" 2>&1 || true
 fi
 
 # Final summary

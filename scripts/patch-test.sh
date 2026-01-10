@@ -76,6 +76,38 @@ should_skip_patch() {
   return 1
 }
 
+# Detect patch format: mailbox (git am) or legacy (git apply)
+# Line 1 check: mailbox starts with "From <sha>", legacy starts with "diff --git"
+detect_patch_format() {
+  local patch_file="$1"
+  local first
+  first="$(head -1 "$patch_file" 2>/dev/null || true)"
+  case "$first" in
+    From\ *) echo "mailbox" ;;
+    diff\ --git*) echo "legacy" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+# Collect and deduplicate patches by numeric prefix (bash 3.2 compatible)
+# During migration: prefer .am.patch when both exist for same prefix
+# Ordering: numeric prefix determines order; ties broken lexicographically
+collect_patches() {
+  local patches_dir="$1"
+  (cd "$patches_dir" 2>/dev/null && ls -1 *.am.patch *.patch 2>/dev/null | sort) \
+  | awk '
+      function pref(name){ return (name ~ /\.am\.patch$/) ? 0 : 1 }
+      /^[0-9][0-9]-/ {
+        p=substr($0, 1, 2)
+        if (!(p in chosen)) { chosen[p]=$0; pr[p]=pref($0) }
+        else if (pref($0) < pr[p]) { chosen[p]=$0; pr[p]=pref($0) }
+      }
+      END { for (p in chosen) print p "\t" chosen[p] }
+    ' \
+  | sort \
+  | awk -v dir="$patches_dir" '{ print dir "/" $2 }'
+}
+
 # Save original directory BEFORE any cd operations
 ORIGINAL_DIR=$(pwd)
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
@@ -132,8 +164,19 @@ fi
 
 # Copy patches - clean the worktree patches dir first to avoid duplicates
 mkdir -p "$TEST_WORKTREE/patches"
-find "$TEST_WORKTREE/patches" -name "*.patch" -delete 2>/dev/null || true
-cp "$REPO_ROOT"/patches/*.patch "$TEST_WORKTREE/patches/" 2>/dev/null || true
+# Fix: use proper glob expansion instead of find -o
+rm -f "$TEST_WORKTREE/patches"/*.patch "$TEST_WORKTREE/patches"/*.am.patch 2>/dev/null || true
+
+# Collect patches (deduplicated, deterministic order)
+PATCH_LIST_FILE=$(mktemp)
+collect_patches "$REPO_ROOT/patches" > "$PATCH_LIST_FILE"
+
+# Copy collected patches to worktree
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  cp "$p" "$TEST_WORKTREE/patches/$(basename "$p")"
+done < "$PATCH_LIST_FILE"
+rm -f "$PATCH_LIST_FILE"
 
 # Test in worktree
 cd "$TEST_WORKTREE" || {
@@ -162,26 +205,36 @@ if ! git checkout -b tmp/test-apply-patches; then
   exit 1
 fi
 
+# Configure git identity for mailbox patches (git am requires this)
+git config user.name "Trio Patch Bot" || true
+git config user.email "patch-bot@users.noreply.github.com" || true
+
 # Show which patches will be tested
 echo ""
 echo "Patches to test:"
 found_patch=false
-for p in patches/*.patch; do
+PATCH_LIST_FILE=$(mktemp)
+collect_patches "$TEST_WORKTREE/patches" > "$PATCH_LIST_FILE"
+while IFS= read -r p; do
   [ -f "$p" ] || continue
   found_patch=true
   patch_name=$(basename "$p")
   if should_skip_patch "$patch_name"; then
     echo "  - $patch_name (skipped)"
   else
-    echo "  - $patch_name"
+    format=$(detect_patch_format "$p")
+    echo "  - $patch_name [$format]"
   fi
-done
+done < "$PATCH_LIST_FILE"
+rm -f "$PATCH_LIST_FILE"
 if [ "$found_patch" = false ]; then
   echo "  (no patches found)"
 fi
 echo ""
 
-for p in patches/*.patch; do
+PATCH_LIST_FILE=$(mktemp)
+collect_patches "$TEST_WORKTREE/patches" > "$PATCH_LIST_FILE"
+while IFS= read -r p; do
   [ -f "$p" ] || continue
   patch_name=$(basename "$p")
   if should_skip_patch "$patch_name"; then
@@ -189,27 +242,54 @@ for p in patches/*.patch; do
     echo "Skipping: $patch_name"
     continue
   fi
+  
   echo ""
   echo "=========================================="
   echo "Testing: $patch_name"
   echo "=========================================="
   
-  if git apply --check "$p" 2>&1; then
-    if git apply "$p" 2>&1; then
-      echo "✅ Applied: $patch_name"
+  format=$(detect_patch_format "$p")
+  
+  if [ "$format" = "mailbox" ]; then
+    # Mailbox patch: use git am (no --check, apply directly and abort on failure)
+    if git am --3way --keep-cr --whitespace=nowarn "$p" 2>&1; then
+      echo "✅ Applied: $patch_name (mailbox)"
     else
-      echo "❌ FAILED to apply: $patch_name"
+      echo "❌ FAILED to apply: $patch_name (mailbox)"
+      git am --abort 2>/dev/null || true
       failed=true
       failed_patch="$p"
+      rm -f "$PATCH_LIST_FILE"
+      break
+    fi
+  elif [ "$format" = "legacy" ]; then
+    # Legacy patch: use git apply (existing logic)
+    if git apply --check "$p" 2>&1; then
+      if git apply "$p" 2>&1; then
+        echo "✅ Applied: $patch_name (legacy)"
+      else
+        echo "❌ FAILED to apply: $patch_name (legacy)"
+        failed=true
+        failed_patch="$p"
+        rm -f "$PATCH_LIST_FILE"
+        break
+      fi
+    else
+      echo "❌ FAILED check: $patch_name (legacy)"
+      failed=true
+      failed_patch="$p"
+      rm -f "$PATCH_LIST_FILE"
       break
     fi
   else
-    echo "❌ FAILED check: $patch_name"
+    echo "❌ Unknown patch format: $patch_name"
     failed=true
     failed_patch="$p"
+    rm -f "$PATCH_LIST_FILE"
     break
   fi
-done
+done < "$PATCH_LIST_FILE"
+rm -f "$PATCH_LIST_FILE"
 
 # Report results
 echo ""

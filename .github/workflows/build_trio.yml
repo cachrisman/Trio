@@ -186,12 +186,49 @@ jobs:
 
       # Customize Trio: Use patches or download and apply patches from GitHub
       - name: Customize Trio
+        shell: bash
         run: |
+          # Configure git identity for git am operations
+          git config user.name "Trio CI Bot"
+          git config user.email "ci-bot@users.noreply.github.com"
 
           # Trio workspace patches
           # -applies any patches located in the Trio/patches/ directory
-          if $(ls ./patches/* &> /dev/null); then
-          git apply ./patches/* --allow-empty -v --whitespace=fix
+          # Collect patches deterministically (bash 3.2 compatible)
+          # During migration: prefer .am.patch when both exist for same prefix
+          PATCH_LIST_FILE=$(mktemp)
+          (cd ./patches 2>/dev/null && ls -1 *.am.patch *.patch 2>/dev/null | sort) \
+          | awk '
+              function pref(name){ return (name ~ /\.am\.patch$/) ? 0 : 1 }
+              /^[0-9][0-9]-/ {
+                p=substr($0, 1, 2)
+                if (!(p in chosen)) { chosen[p]=$0; pr[p]=pref($0) }
+                else if (pref($0) < pr[p]) { chosen[p]=$0; pr[p]=pref($0) }
+              }
+              END { for (p in chosen) print p "\t" chosen[p] }
+            ' \
+          | sort \
+          | awk -v dir="./patches" '{ print dir "/" $2 }' > "$PATCH_LIST_FILE"
+
+          if [[ -s "$PATCH_LIST_FILE" ]]; then
+            echo "Found patches to apply. Applying patches in order:"
+            while IFS= read -r patch; do
+              [[ -n "$patch" ]] || continue
+              echo "Applying: $patch"
+              if git am --3way --keep-cr --whitespace=nowarn "$patch" >/dev/null 2>&1; then
+                echo "✅ Successfully applied: $patch"
+              else
+                echo "❌ Failed to apply: $patch"
+                git am --abort >/dev/null 2>&1 || true
+                git am --3way --keep-cr --whitespace=nowarn "$patch" 2>&1 || true
+                rm -f "$PATCH_LIST_FILE"
+                exit 1
+              fi
+            done < "$PATCH_LIST_FILE"
+            rm -f "$PATCH_LIST_FILE"
+          else
+            echo "No patches found in ./patches directory"
+            rm -f "$PATCH_LIST_FILE"
           fi
 
           # Download and apply Trio patches from GitHub:
