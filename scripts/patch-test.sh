@@ -1,89 +1,222 @@
 #!/bin/bash
 # Removed set -e - we handle errors manually
 
+print_usage() {
+  cat <<'EOF'
+Usage: scripts/patch-test.sh [options]
+
+Options:
+  --no-submodules                 Skip submodule initialization.
+  --include-submodules <list>     Comma-separated submodules to init; excludes others.
+  --skip-patch <id|filename>      Skip a patch by number (e.g. 02) or full filename.
+  -h, --help                      Show this help.
+EOF
+}
+
+no_submodules=false
+include_submodules=()
+skip_patches=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-submodules)
+      no_submodules=true
+      ;;
+    --include-submodules)
+      shift
+      if [ -z "${1-}" ]; then
+        echo "Missing value for --include-submodules"
+        print_usage
+        exit 1
+      fi
+      IFS=',' read -r -a include_submodules <<< "$1"
+      ;;
+    --skip-patch)
+      shift
+      if [ -z "${1-}" ]; then
+        echo "Missing value for --skip-patch"
+        print_usage
+        exit 1
+      fi
+      skip_patches+=("$1")
+      ;;
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1"
+      print_usage
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+if [ "$no_submodules" = true ] && [ ${#include_submodules[@]} -gt 0 ]; then
+  echo "Cannot combine --no-submodules with --include-submodules"
+  exit 1
+fi
+
+should_skip_patch() {
+  local filename="$1"
+  local base="${filename##*/}"
+  local base_no_ext="${base%.patch}"
+  local entry
+
+  for entry in "${skip_patches[@]}"; do
+    if [ "$entry" = "$base" ] || [ "$entry" = "$base_no_ext" ]; then
+      return 0
+    fi
+    if [[ "$entry" =~ ^[0-9][0-9]$ ]] && [[ "$base" == "$entry"-* ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 # Save original directory BEFORE any cd operations
 ORIGINAL_DIR=$(pwd)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+TEST_WORKTREE=""
+failed=false
+failed_patch=""
+
+cleanup() {
+  cd "$REPO_ROOT" 2>/dev/null || cd "$ORIGINAL_DIR" 2>/dev/null || cd ~
+
+  if [ -n "$TEST_WORKTREE" ] && [ -d "$TEST_WORKTREE" ]; then
+    git worktree remove --force "$TEST_WORKTREE" 2>/dev/null || true
+    rm -rf "$TEST_WORKTREE" 2>/dev/null || true
+  fi
+
+  git branch -D tmp/patch-test 2>/dev/null || true
+  git branch -D tmp/test-apply-patches 2>/dev/null || true
+  git worktree prune 2>/dev/null || true
+
+  cd "$ORIGINAL_DIR" 2>/dev/null || cd ~
+}
+
+trap cleanup EXIT INT TERM
+
+if [ -z "$REPO_ROOT" ]; then
+  echo "Failed to determine repo root"
+  exit 1
+fi
+
+cd "$REPO_ROOT" || {
+  echo "Failed to cd to repo root"
+  exit 1
+}
 
 # Create worktree
 TEST_WORKTREE=$(mktemp -d /tmp/trio-patch-test-XXXXXX)
 echo "Creating test worktree at: $TEST_WORKTREE"
 
 # Clean up any existing branch/worktree from previous runs
-git worktree remove tmp/patch-test 2>/dev/null || true
+existing_worktree_path=$(git worktree list --porcelain 2>/dev/null | awk '
+  $1 == "worktree" {path = $2}
+  $1 == "branch" && $2 == "refs/heads/tmp/patch-test" {print path}
+')
+if [ -n "$existing_worktree_path" ]; then
+  git worktree remove --force "$existing_worktree_path" 2>/dev/null || true
+fi
 git branch -D tmp/patch-test 2>/dev/null || true
 git branch -D tmp/test-apply-patches 2>/dev/null || true
 
-git worktree add -b tmp/patch-test "$TEST_WORKTREE" dev
+if ! git worktree add -b tmp/patch-test "$TEST_WORKTREE" dev; then
+  echo "Failed to create worktree"
+  exit 1
+fi
 
 # Copy patches - clean the worktree patches dir first to avoid duplicates
 mkdir -p "$TEST_WORKTREE/patches"
 find "$TEST_WORKTREE/patches" -name "*.patch" -delete 2>/dev/null || true
-cp patches/*.patch "$TEST_WORKTREE/patches/" 2>/dev/null || true
+cp "$REPO_ROOT"/patches/*.patch "$TEST_WORKTREE/patches/" 2>/dev/null || true
 
 # Test in worktree
 cd "$TEST_WORKTREE" || {
   echo "Failed to cd to worktree"
-  cd "$ORIGINAL_DIR"
-  git worktree remove "$TEST_WORKTREE" 2>/dev/null || true
-  rm -rf "$TEST_WORKTREE" 2>/dev/null || true
   exit 1
 }
 
-git submodule update --init --recursive
+if [ "$no_submodules" = true ]; then
+  echo "Skipping submodule init (--no-submodules)"
+elif [ ${#include_submodules[@]} -gt 0 ]; then
+  if ! git submodule update --init --recursive -- "${include_submodules[@]}"; then
+    echo "Submodule update failed (include list)"
+    exit 1
+  fi
+else
+  if ! git submodule update --init --recursive; then
+    echo "Submodule update failed"
+    exit 1
+  fi
+fi
 
 # Clean up test branch if it exists in the worktree
 git branch -D tmp/test-apply-patches 2>/dev/null || true
-git checkout -b tmp/test-apply-patches
+if ! git checkout -b tmp/test-apply-patches; then
+  echo "Failed to create test branch"
+  exit 1
+fi
 
 # Show which patches will be tested
 echo ""
 echo "Patches to test:"
-ls -1 patches/*.patch 2>/dev/null | while read p; do echo "  - $(basename "$p")"; done || echo "  (no patches found)"
+found_patch=false
+for p in patches/*.patch; do
+  [ -f "$p" ] || continue
+  found_patch=true
+  patch_name=$(basename "$p")
+  if should_skip_patch "$patch_name"; then
+    echo "  - $patch_name (skipped)"
+  else
+    echo "  - $patch_name"
+  fi
+done
+if [ "$found_patch" = false ]; then
+  echo "  (no patches found)"
+fi
 echo ""
-
-failed=false
-failed_patch=""
 
 for p in patches/*.patch; do
   [ -f "$p" ] || continue
+  patch_name=$(basename "$p")
+  if should_skip_patch "$patch_name"; then
+    echo ""
+    echo "Skipping: $patch_name"
+    continue
+  fi
   echo ""
   echo "=========================================="
-  echo "Testing: $(basename "$p")"
+  echo "Testing: $patch_name"
   echo "=========================================="
   
   if git apply --check "$p" 2>&1; then
     if git apply "$p" 2>&1; then
-      echo "✅ Applied: $(basename "$p")"
+      echo "✅ Applied: $patch_name"
     else
-      echo "❌ FAILED to apply: $(basename "$p")"
+      echo "❌ FAILED to apply: $patch_name"
       failed=true
       failed_patch="$p"
       break
     fi
   else
-    echo "❌ FAILED check: $(basename "$p")"
+    echo "❌ FAILED check: $patch_name"
     failed=true
     failed_patch="$p"
     break
   fi
 done
 
-# Cleanup - return to original directory
-cd "$ORIGINAL_DIR" || cd ~
-
-# Try to remove worktree and branch, but don't fail if they don't exist
-git worktree remove "$TEST_WORKTREE" 2>/dev/null || true
-git branch -D tmp/patch-test 2>/dev/null || true
-git branch -D tmp/test-apply-patches 2>/dev/null || true
-rm -rf "$TEST_WORKTREE" 2>/dev/null || true
-
-# Prune any stale worktree references
-git worktree prune 2>/dev/null || true
-
 # Report results
 echo ""
 if [ "$failed" = true ]; then
   echo "❌ Patch validation failed at: $(basename "$failed_patch")"
+  exit 1
 else
   echo "✅ All patches applied successfully"
+  exit 0
 fi
