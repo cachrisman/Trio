@@ -1,3 +1,4 @@
+import FirebaseCrashlytics
 import SwiftUI
 import Swinject
 
@@ -6,6 +7,7 @@ extension AppDiagnostics {
         let resolver: Resolver
 
         @State var state = StateModel()
+        @State private var showCrashConfirmation = false
 
         @Environment(\.colorScheme) var colorScheme
         @Environment(AppState.self) var appState
@@ -46,6 +48,47 @@ extension AppDiagnostics {
                         }
                     }
                 ).listRowBackground(Color.chart)
+
+                Section(
+                    header: Text("Developer Tools"),
+                    footer: Text(
+                        "Use Test Crash to verify Crashlytics is receiving crash reports correctly."
+                    )
+                ) {
+                    Button(role: .destructive) {
+                        showCrashConfirmation = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.red)
+                            Text("Test Crash")
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .confirmationDialog(
+                        "Force a Test Crash?",
+                        isPresented: $showCrashConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Crash Now", role: .destructive) {
+                            // Log a breadcrumb to confirm Crashlytics is connected
+                            Crashlytics.crashlytics().log("Test crash initiated from App Diagnostics")
+                            // Force a crash - this will crash the app
+                            fatalError("Test crash triggered from App Diagnostics")
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text(
+                            """
+                            This will immediately crash the app to verify Crashlytics \
+                            is working. Relaunch the app after the crash.
+                            """
+                        )
+                    }
+                }.listRowBackground(Color.chart)
 
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
