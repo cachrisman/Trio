@@ -81,14 +81,14 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +/// and logs diagnostic information to Crashlytics.
 +final class AppTerminationTracker {
 +    static let shared = AppTerminationTracker()
-+    
++
 +    private let userDefaults = UserDefaults.standard
 +    private let lastStateKey = "AppTerminationTracker.lastState"
 +    private let lastStateTimestampKey = "AppTerminationTracker.lastStateTimestamp"
 +    private let appLaunchTimestampKey = "AppTerminationTracker.appLaunchTimestamp"
 +    private let memoryWarningCountKey = "AppTerminationTracker.memoryWarningCount"
 +    private let memoryWarningTimestampKey = "AppTerminationTracker.memoryWarningTimestamp"
-+    
++
 +    private enum AppState: String {
 +        case launched = "launched"
 +        case active = "active"
@@ -96,7 +96,7 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +        case background = "background"
 +        case terminated = "terminated"
 +    }
-+    
++
 +    private enum TerminationReason: String {
 +        case normal = "normal" // applicationWillTerminate was called
 +        case unexpected = "unexpected" // App was killed without calling applicationWillTerminate
@@ -104,45 +104,45 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +        case watchdog = "watchdog" // App was killed due to watchdog timeout
 +        case unknown = "unknown"
 +    }
-+    
++
 +    private init() {
 +        // Private initializer for singleton
 +    }
-+    
++
 +    // MARK: - Public Methods
-+    
++
 +    /// Called when app finishes launching
 +    func markAppLaunched(launchOptions: [UIApplication.LaunchOptionsKey: Any]?) {
 +        let timestamp = Date()
 +        userDefaults.set(timestamp.timeIntervalSince1970, forKey: appLaunchTimestampKey)
 +        userDefaults.set(AppState.launched.rawValue, forKey: lastStateKey)
 +        userDefaults.set(timestamp.timeIntervalSince1970, forKey: lastStateTimestampKey)
-+        
++
 +        // Log launch options for diagnostics
 +        if let launchOptions = launchOptions, !launchOptions.isEmpty {
 +            let optionsDescription = launchOptions.map { "\($0.key.rawValue)" }.joined(separator: ", ")
 +            Crashlytics.crashlytics().log("App launched with options: \(optionsDescription)")
 +        }
-+        
++
 +        let message = "App launched at \(timestamp)"
 +        debug(.default, message)
 +        info(.default, message, type: .info)
 +    }
-+    
++
 +    /// Called when app becomes active
 +    func markAppBecameActive() {
 +        updateState(.active)
 +        let message = "App became active"
 +        debug(.default, message)
 +    }
-+    
++
 +    /// Called when app will resign active
 +    func markAppWillResignActive() {
 +        updateState(.inactive)
 +        let message = "App will resign active"
 +        debug(.default, message)
 +    }
-+    
++
 +    /// Called when app enters background
 +    func markAppEnteredBackground() {
 +        updateState(.background)
@@ -151,14 +151,14 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +        let message = "App entered background"
 +        debug(.default, message)
 +    }
-+    
++
 +    /// Called when app will enter foreground
 +    func markAppWillEnterForeground() {
 +        updateState(.active)
 +        let message = "App will enter foreground"
 +        debug(.default, message)
 +    }
-+    
++
 +    /// Called when app will terminate normally
 +    func markAppWillTerminate(reason: TerminationReason) {
 +        updateState(.terminated)
@@ -167,35 +167,35 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +        debug(.default, message)
 +        info(.default, message, type: .info)
 +    }
-+    
++
 +    /// Called when iOS sends a memory warning
 +    func handleMemoryWarning() {
 +        let count = userDefaults.integer(forKey: memoryWarningCountKey) + 1
 +        userDefaults.set(count, forKey: memoryWarningCountKey)
 +        userDefaults.set(Date().timeIntervalSince1970, forKey: memoryWarningTimestampKey)
-+        
++
 +        // Log system memory info if available
 +        var memoryInfoString = ""
 +        if let memoryInfo = getMemoryInfo() {
 +            memoryInfoString = " | Memory: \(memoryInfo.map { "\($0.key)=\($0.value)MB" }.joined(separator: ", "))"
-+            
++
 +            // Log to Crashlytics
 +            Crashlytics.crashlytics().log("Memory info: \(memoryInfo)")
 +            for (key, value) in memoryInfo {
 +                Crashlytics.crashlytics().setCustomValue(value, forKey: "memory_\(key)")
 +            }
 +        }
-+        
++
 +        // Log to Crashlytics
 +        Crashlytics.crashlytics().log("⚠️ Memory warning received (count: \(count))")
 +        Crashlytics.crashlytics().setCustomValue(count, forKey: "memory_warning_count")
-+        
++
 +        // Log to file and Better Stack with warning level
 +        let message = "⚠️ Memory warning received (count: \(count))\(memoryInfoString)"
 +        debug(.default, message)
 +        warning(.default, message, description: "iOS sent memory pressure warning. This may indicate the app is using too much memory and could be terminated.")
 +    }
-+    
++
 +    /// Checks for unexpected termination from previous session
 +    func checkForUnexpectedTermination() {
 +        guard let lastStateString = userDefaults.string(forKey: lastStateKey),
@@ -204,10 +204,10 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +            // First launch or no previous state
 +            return
 +        }
-+        
++
 +        let lastStateDate = Date(timeIntervalSince1970: lastTimestamp)
 +        let timeSinceLastState = Date().timeIntervalSince(lastStateDate)
-+        
++
 +        // If app was active/inactive/background and didn't terminate normally, it was likely killed
 +        if lastState != .terminated {
 +            let reason = determineTerminationReason(lastState: lastState, timeSinceLastState: timeSinceLastState)
@@ -222,26 +222,26 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +            userDefaults.removeObject(forKey: memoryWarningTimestampKey)
 +        }
 +    }
-+    
++
 +    // MARK: - Private Methods
-+    
++
 +    private func updateState(_ newState: AppState) {
 +        userDefaults.set(newState.rawValue, forKey: lastStateKey)
 +        userDefaults.set(Date().timeIntervalSince1970, forKey: lastStateTimestampKey)
 +    }
-+    
++
 +    private func saveDiagnosticState() {
 +        // Save current diagnostic state that might be useful if app is killed
 +        let memoryInfo = getMemoryInfo() ?? [:]
 +        userDefaults.set(memoryInfo, forKey: "AppTerminationTracker.lastMemoryInfo")
-+        
++
 +        // Save scene phase info if available
 +        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
 +            let isActive = windowScene.activationState == .foregroundActive
 +            userDefaults.set(isActive, forKey: "AppTerminationTracker.wasActiveBeforeBackground")
 +        }
 +    }
-+    
++
 +    private func determineTerminationReason(lastState: AppState, timeSinceLastState: TimeInterval) -> TerminationReason {
 +        // Check if we had recent memory warnings
 +        if let memoryWarningTimestamp = userDefaults.object(forKey: memoryWarningTimestampKey) as? TimeInterval {
@@ -250,20 +250,20 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +                return .memoryPressure
 +            }
 +        }
-+        
++
 +        // If app was active and killed quickly, might be watchdog
 +        if lastState == .active && timeSinceLastState < 10 {
 +            return .watchdog
 +        }
-+        
++
 +        // If app was in background and killed, likely memory pressure
 +        if lastState == .background {
 +            return .memoryPressure
 +        }
-+        
++
 +        return .unexpected
 +    }
-+    
++
 +    private func reportUnexpectedTermination(
 +        lastState: AppState,
 +        timeSinceLastState: TimeInterval,
@@ -275,7 +275,7 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +            "Time since last state: \(Int(timeSinceLastState))s",
 +            "Reason: \(reason.rawValue)"
 +        ]
-+        
++
 +        // Add memory info if available
 +        var memoryInfoString = ""
 +        if let memoryInfo = userDefaults.dictionary(forKey: "AppTerminationTracker.lastMemoryInfo") as? [String: Any] {
@@ -290,16 +290,16 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +                details.append("Last memory: \(memoryDetails.joined(separator: ", "))")
 +            }
 +        }
-+        
++
 +        // Add memory warning count
 +        let memoryWarningCount = userDefaults.integer(forKey: memoryWarningCountKey)
 +        if memoryWarningCount > 0 {
 +            details.append("Memory warnings before termination: \(memoryWarningCount)")
 +        }
-+        
++
 +        let fullMessage = "🔴 App was unexpectedly terminated. \(details.joined(separator: ", "))"
 +        let shortMessage = "App was unexpectedly terminated. Last state: \(lastState.rawValue), Time since: \(Int(timeSinceLastState))s, Reason: \(reason.rawValue)\(memoryInfoString)"
-+        
++
 +        // Log to file and Better Stack with error level
 +        debug(.default, fullMessage)
 +        warning(
@@ -317,13 +317,13 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +                ]
 +            )
 +        )
-+        
++
 +        // Log to Crashlytics
 +        Crashlytics.crashlytics().log("🔴 Unexpected termination detected: \(fullMessage)")
 +        Crashlytics.crashlytics().setCustomValue(reason.rawValue, forKey: "termination_reason")
 +        Crashlytics.crashlytics().setCustomValue(lastState.rawValue, forKey: "last_app_state")
 +        Crashlytics.crashlytics().setCustomValue(Int(timeSinceLastState), forKey: "time_since_last_state_seconds")
-+        
++
 +        // Add memory info to Crashlytics
 +        if let memoryInfo = userDefaults.dictionary(forKey: "AppTerminationTracker.lastMemoryInfo") as? [String: Any] {
 +            for (key, value) in memoryInfo {
@@ -332,12 +332,12 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +                }
 +            }
 +        }
-+        
++
 +        // Add memory warning count to Crashlytics
 +        if memoryWarningCount > 0 {
 +            Crashlytics.crashlytics().setCustomValue(memoryWarningCount, forKey: "memory_warning_count_before_termination")
 +        }
-+        
++
 +        // Create a non-fatal error to represent the termination
 +        let terminationError = NSError(
 +            domain: "AppTerminationTracker",
@@ -351,24 +351,24 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +        )
 +        Crashlytics.crashlytics().record(error: terminationError)
 +    }
-+    
++
 +    private func getMemoryInfo() -> [String: Int]? {
 +        var info = mach_task_basic_info()
 +        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
-+        
++
 +        let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
 +            $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
 +                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
 +            }
 +        }
-+        
++
 +        guard kerr == KERN_SUCCESS else {
 +            return nil
 +        }
-+        
++
 +        let usedMemoryMB = Int(info.resident_size / 1024 / 1024)
 +        let virtualMemoryMB = Int(info.virtual_size / 1024 / 1024)
-+        
++
 +        return [
 +            "used_mb": usedMemoryMB,
 +            "virtual_mb": virtualMemoryMB
@@ -380,7 +380,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..191d0e454e4ccb0ccfedcba77be9c3e8a3063ca2
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,71 @@
 +import Foundation
 +
 +/// Better Stack / Logtail provider.
@@ -452,13 +452,12 @@ index 0000000000000000000000000000000000000000..191d0e454e4ccb0ccfedcba77be9c3e8
 +        }
 +    }
 +}
-+
 diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift b/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
 new file mode 100644
 index 0000000000000000000000000000000000000000..08340686e67cbf955d382159b83a7d2c64758b1b
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,35 @@
 +import Foundation
 +
 +struct BetterStackSettings: Decodable {
@@ -494,13 +493,12 @@ index 0000000000000000000000000000000000000000..08340686e67cbf955d382159b83a7d2c
 +        return try? JSONDecoder().decode(BetterStackSettings.self, from: data)
 +    }
 +}
-+
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
 new file mode 100644
 index 0000000000000000000000000000000000000000..cdc5280388e04fc2a045f73d3b03b77e8608685d
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,41 @@
 +import Foundation
 +
 +enum CloudLogEntryAggregator {
@@ -542,7 +540,6 @@ index 0000000000000000000000000000000000000000..cdc5280388e04fc2a045f73d3b03b77e
 +        return entries
 +    }
 +}
-+
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
 new file mode 100644
 index 0000000000000000000000000000000000000000..99fed1b737ffe5e72ff144478aab96d3341b62b7
@@ -598,7 +595,7 @@ index 0000000000000000000000000000000000000000..99fed1b737ffe5e72ff144478aab96d3
 +        var file: String?
 +        var method: String?
 +        var lineNumber: String?
-+        
++
 +        // Pattern: \] (.+\.swift) - (.+?) - (\d+) - (DEV|INFO|WARN|ERR):
 +        // Method name can contain special chars like (_:), so we match everything between the delimiters
 +        let fileMethodLineRegex = #"\]\s+([^\s]+\.swift)\s+-\s+(.+?)\s+-\s+(\d+)\s+-\s+(DEV|INFO|WARN|ERR):"#
@@ -610,7 +607,7 @@ index 0000000000000000000000000000000000000000..99fed1b737ffe5e72ff144478aab96d3
 +                let fileRange = regexMatch.range(at: 1)
 +                let methodRange = regexMatch.range(at: 2)
 +                let lineRange = regexMatch.range(at: 3)
-+                
++
 +                if fileRange.location != NSNotFound {
 +                    file = nsHeader.substring(with: fileRange)
 +                }
@@ -694,7 +691,7 @@ index 0000000000000000000000000000000000000000..99fed1b737ffe5e72ff144478aab96d3
 +        var file: String?
 +        var lineNumber: String?
 +        var method: String?
-+        
++
 +        let fileLineMethodRegex = #"\[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]\s+(.+?)\s*\(\)\s*→"#
 +        if let regex = try? NSRegularExpression(pattern: fileLineMethodRegex) {
 +            let nsHeader = header as NSString
@@ -704,7 +701,7 @@ index 0000000000000000000000000000000000000000..99fed1b737ffe5e72ff144478aab96d3
 +                let fileRange = regexMatch.range(at: 1)
 +                let lineRange = regexMatch.range(at: 2)
 +                let methodRange = regexMatch.range(at: 3)
-+                
++
 +                if fileRange.location != NSNotFound {
 +                    file = nsHeader.substring(with: fileRange)
 +                }
@@ -809,7 +806,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..caa752418e8fad6297a4a7febc5b8da2dffc3e1b
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,99 @@
 +import Foundation
 +
 +protocol CloudLogProvider {
@@ -850,7 +847,7 @@ index 0000000000000000000000000000000000000000..caa752418e8fad6297a4a7febc5b8da2
 +    let dt: String?
 +    let attributes: [String: String]?
 +    let raw: String?
-+    
++
 +    // Custom encoding to flatten attributes to top-level fields
 +    enum CodingKeys: String, CodingKey {
 +        case message
@@ -866,7 +863,7 @@ index 0000000000000000000000000000000000000000..caa752418e8fad6297a4a7febc5b8da2
 +        case lineNumber
 +        case raw
 +    }
-+    
++
 +    func encode(to encoder: Encoder) throws {
 +        var container = encoder.container(keyedBy: CodingKeys.self)
 +        try container.encode(message, forKey: .message)
@@ -876,7 +873,7 @@ index 0000000000000000000000000000000000000000..caa752418e8fad6297a4a7febc5b8da2
 +        if let raw = raw {
 +            try container.encode(raw, forKey: .raw)
 +        }
-+        
++
 +        // Flatten attributes to top-level fields
 +        if let attrs = attributes {
 +            if let platform = attrs["platform"] {
@@ -909,13 +906,12 @@ index 0000000000000000000000000000000000000000..caa752418e8fad6297a4a7febc5b8da2
 +        }
 +    }
 +}
-+
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 new file mode 100644
 index 0000000000000000000000000000000000000000..b92e5638a1b33e0fe5f5536033bd2e6c920c1797
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,161 @@
 +import Foundation
 +import UIKit
 +
@@ -1077,13 +1073,12 @@ index 0000000000000000000000000000000000000000..b92e5638a1b33e0fe5f5536033bd2e6c
 +        observers.removeAll()
 +    }
 +}
-+
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
 index 0000000000000000000000000000000000000000..bd6c966e71c02d62dd4927fbf77ac4a129228ec7
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,357 @@
 +import Foundation
 +
 +/// iPhone-only log tailer/uploader.
@@ -1441,7 +1436,6 @@ index 0000000000000000000000000000000000000000..bd6c966e71c02d62dd4927fbf77ac4a1
 +        return ""
 +    }
 +}
-+
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
 index 5310b2fe3c93adb74cf37a7d6523a91f7495eef8..fd8100929dea30156d1bf82fd8388e66ab1302bd 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
@@ -1469,7 +1463,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..4477990385263a4d170cf41b06ede30f5d8590fa
 --- /dev/null
 +++ b/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,150 @@
 +import SwiftUI
 +
 +struct CloudLoggingSettingsView: View {
@@ -1620,7 +1614,6 @@ index 0000000000000000000000000000000000000000..4477990385263a4d170cf41b06ede30f
 +        showResult = true
 +    }
 +}
-+
 diff --git a/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift b/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
 index 4c595ff8e2f6115b53b7077c41abe75c38d3c8bc..2bbd74fb13cd12df0e4c714480ee23d40aa817c8 100644
 --- a/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
@@ -1659,7 +1652,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..44ac7318483a8c29348c8b54875588ae666ca01e
 --- /dev/null
 +++ b/TrioTests/CloudLogEntryAggregatorTests.swift
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,42 @@
 +import Foundation
 +import Testing
 +
@@ -1702,13 +1695,12 @@ index 0000000000000000000000000000000000000000..44ac7318483a8c29348c8b54875588ae
 +        #expect(entries[1].hasPrefix("[2026-01-01T08:35:52+0100]"))
 +    }
 +}
-+
 diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
 new file mode 100644
 index 0000000000000000000000000000000000000000..7dcfc9025ea8885b83ba2b0440c42f501d271a71
 --- /dev/null
 +++ b/docs/cloud-logging.md
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,152 @@
 +# Cloud logging (Better Stack / Logtail)
 +
 +## Goals / constraints
@@ -1861,4 +1853,3 @@ index 0000000000000000000000000000000000000000..7dcfc9025ea8885b83ba2b0440c42f50
 +- The authoritative log files remain on disk (`Documents/logs/...`).
 +- Cloud upload logic reads using byte offsets without changing log writes.
 +- A future viewer can read the same files and optionally reuse the same parsing helpers.
-+
