@@ -20,7 +20,7 @@
 	branch = trio
 [submodule "G7SensorKit"]
 	path = G7SensorKit
-	url = https://github.com/loopandlearn/G7SensorKit.git
+	url = https://github.com/cachrisman/G7SensorKit.git
 	branch = trio
 [submodule "OmniKit"]
 	path = OmniKit
