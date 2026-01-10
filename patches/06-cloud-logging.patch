@@ -1,5 +1,40 @@
+From e1b4f6a8eeb137ad24d1c45eb12c319330514f80 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sat, 10 Jan 2026 21:54:11 +0100
+Subject: [PATCH] feat: cloud logging
+
+Converted from legacy patch format.
+---
+ Trio/Sources/Application/AppDelegate.swift    |  27 ++
+ Trio/Sources/Application/TrioApp.swift        |   1 +
+ Trio/Sources/Assemblies/ServiceAssembly.swift |   1 +
+ .../Helpers/AppTerminationTracker.swift       | 306 +++++++++++++++
+ .../BetterStackLogtailProvider.swift          |  71 ++++
+ .../CloudLogging/BetterStackSettings.swift    |  35 ++
+ .../CloudLogEntryAggregator.swift             |  41 ++
+ .../CloudLogging/CloudLogLineParsing.swift    | 255 +++++++++++++
+ .../CloudLogging/CloudLogProvider.swift       |  99 +++++
+ .../CloudLogging/CloudLogUploadService.swift  | 161 ++++++++
+ .../CloudLogging/CloudLogUploader.swift       | 357 ++++++++++++++++++
+ .../Modules/Settings/SettingItems.swift       |  11 +
+ .../View/CloudLoggingSettingsView.swift       | 150 ++++++++
+ .../Settings/View/Subviews/ServicesView.swift |   1 +
+ Trio/Sources/Router/Screen.swift              |   3 +
+ TrioTests/CloudLogEntryAggregatorTests.swift  |  42 +++
+ 16 files changed, 1561 insertions(+)
+ create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
+ create mode 100644 Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
+ create mode 100644 TrioTests/CloudLogEntryAggregatorTests.swift
+
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
-index 46134bc21ae322180170ae33712d0e469379c9df..d1a044640a80b8e83109c2ad0cf913d6da81c100 100644
+index 46134bc21..d1a044640 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
 +++ b/Trio/Sources/Application/AppDelegate.swift
 @@ -20,9 +20,36 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
@@ -40,7 +75,7 @@ index 46134bc21ae322180170ae33712d0e469379c9df..d1a044640a80b8e83109c2ad0cf913d6
          _: UIApplication,
          didReceiveRemoteNotification userInfo: [AnyHashable: Any],
 diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
-index 1d148c93d49f80154179904b96f08cae4310b010..3535583c3cbf7b5fe9f39dd6b9ae04f19f8283ad 100644
+index 1d148c93d..3535583c3 100644
 --- a/Trio/Sources/Application/TrioApp.swift
 +++ b/Trio/Sources/Application/TrioApp.swift
 @@ -81,6 +81,7 @@ extension Notification.Name {
@@ -52,7 +87,7 @@ index 1d148c93d49f80154179904b96f08cae4310b010..3535583c3cbf7b5fe9f39dd6b9ae04f1
              _ = resolver.resolve(LiveActivityManager.self)!
          }
 diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
-index fea855ed8afefac1ff2d8b32d198feacbcc16e3c..94a505ebad4f7039b5b7857f716d8e5a40f42a3a 100644
+index fea855ed8..94a505eba 100644
 --- a/Trio/Sources/Assemblies/ServiceAssembly.swift
 +++ b/Trio/Sources/Assemblies/ServiceAssembly.swift
 @@ -23,6 +23,7 @@ final class ServiceAssembly: Assembly {
@@ -65,7 +100,7 @@ index fea855ed8afefac1ff2d8b32d198feacbcc16e3c..94a505ebad4f7039b5b7857f716d8e5a
                  LiveActivityManager(resolver: r)
 diff --git a/Trio/Sources/Helpers/AppTerminationTracker.swift b/Trio/Sources/Helpers/AppTerminationTracker.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b798a89d81e
+index 000000000..3b67c776d
 --- /dev/null
 +++ b/Trio/Sources/Helpers/AppTerminationTracker.swift
 @@ -0,0 +1,306 @@
@@ -377,7 +412,7 @@ index 0000000000000000000000000000000000000000..8110dc281ddc9e158ac10e399b6d8b79
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..191d0e454e4ccb0ccfedcba77be9c3e8a3063ca2
+index 000000000..2bdf9e1eb
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
 @@ -0,0 +1,71 @@
@@ -454,7 +489,7 @@ index 0000000000000000000000000000000000000000..191d0e454e4ccb0ccfedcba77be9c3e8
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift b/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..08340686e67cbf955d382159b83a7d2c64758b1b
+index 000000000..38a4d43bd
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
 @@ -0,0 +1,35 @@
@@ -495,7 +530,7 @@ index 0000000000000000000000000000000000000000..08340686e67cbf955d382159b83a7d2c
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..cdc5280388e04fc2a045f73d3b03b77e8608685d
+index 000000000..b9d2818fd
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
 @@ -0,0 +1,41 @@
@@ -542,7 +577,7 @@ index 0000000000000000000000000000000000000000..cdc5280388e04fc2a045f73d3b03b77e
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..99fed1b737ffe5e72ff144478aab96d3341b62b7
+index 000000000..c6c320e5e
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
 @@ -0,0 +1,255 @@
@@ -803,7 +838,7 @@ index 0000000000000000000000000000000000000000..99fed1b737ffe5e72ff144478aab96d3
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..caa752418e8fad6297a4a7febc5b8da2dffc3e1b
+index 000000000..557e8941a
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
 @@ -0,0 +1,99 @@
@@ -908,7 +943,7 @@ index 0000000000000000000000000000000000000000..caa752418e8fad6297a4a7febc5b8da2
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..b92e5638a1b33e0fe5f5536033bd2e6c920c1797
+index 000000000..893143be2
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 @@ -0,0 +1,161 @@
@@ -1075,7 +1110,7 @@ index 0000000000000000000000000000000000000000..b92e5638a1b33e0fe5f5536033bd2e6c
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..bd6c966e71c02d62dd4927fbf77ac4a129228ec7
+index 000000000..a1b480187
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 @@ -0,0 +1,357 @@
@@ -1437,7 +1472,7 @@ index 0000000000000000000000000000000000000000..bd6c966e71c02d62dd4927fbf77ac4a1
 +    }
 +}
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
-index 5310b2fe3c93adb74cf37a7d6523a91f7495eef8..fd8100929dea30156d1bf82fd8388e66ab1302bd 100644
+index 5310b2fe3..fd8100929 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
 +++ b/Trio/Sources/Modules/Settings/SettingItems.swift
 @@ -325,6 +325,17 @@ enum SettingItems {
@@ -1460,7 +1495,7 @@ index 5310b2fe3c93adb74cf37a7d6523a91f7495eef8..fd8100929dea30156d1bf82fd8388e66
      ]
 diff --git a/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift b/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..4477990385263a4d170cf41b06ede30f5d8590fa
+index 000000000..cd48dfb23
 --- /dev/null
 +++ b/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
 @@ -0,0 +1,150 @@
@@ -1615,7 +1650,7 @@ index 0000000000000000000000000000000000000000..4477990385263a4d170cf41b06ede30f
 +    }
 +}
 diff --git a/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift b/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
-index 4c595ff8e2f6115b53b7077c41abe75c38d3c8bc..2bbd74fb13cd12df0e4c714480ee23d40aa817c8 100644
+index 4c595ff8e..2bbd74fb1 100644
 --- a/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
 +++ b/Trio/Sources/Modules/Settings/View/Subviews/ServicesView.swift
 @@ -24,6 +24,7 @@ struct ServicesView: BaseView {
@@ -1627,7 +1662,7 @@ index 4c595ff8e2f6115b53b7077c41abe75c38d3c8bc..2bbd74fb13cd12df0e4c714480ee23d4
                          Text("Apple Health").navigationLink(to: .healthkit, from: self)
                      }
 diff --git a/Trio/Sources/Router/Screen.swift b/Trio/Sources/Router/Screen.swift
-index b7e1bc07b8f9588515f473ffd7b0a84585b0e464..93cee61da5ec6d00b33a2f837e6b470bf43491ae 100644
+index b7e1bc07b..93cee61da 100644
 --- a/Trio/Sources/Router/Screen.swift
 +++ b/Trio/Sources/Router/Screen.swift
 @@ -42,6 +42,7 @@ enum Screen: Identifiable, Hashable {
@@ -1649,7 +1684,7 @@ index b7e1bc07b8f9588515f473ffd7b0a84585b0e464..93cee61da5ec6d00b33a2f837e6b470b
          case .smbSettings:
 diff --git a/TrioTests/CloudLogEntryAggregatorTests.swift b/TrioTests/CloudLogEntryAggregatorTests.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..44ac7318483a8c29348c8b54875588ae666ca01e
+index 000000000..7c166f17c
 --- /dev/null
 +++ b/TrioTests/CloudLogEntryAggregatorTests.swift
 @@ -0,0 +1,42 @@
@@ -1695,161 +1730,6 @@ index 0000000000000000000000000000000000000000..44ac7318483a8c29348c8b54875588ae
 +        #expect(entries[1].hasPrefix("[2026-01-01T08:35:52+0100]"))
 +    }
 +}
-diff --git a/docs/cloud-logging.md b/docs/cloud-logging.md
-new file mode 100644
-index 0000000000000000000000000000000000000000..7dcfc9025ea8885b83ba2b0440c42f501d271a71
---- /dev/null
-+++ b/docs/cloud-logging.md
-@@ -0,0 +1,152 @@
-+# Cloud logging (Better Stack / Logtail)
-+
-+## Goals / constraints
-+
-+- **File-based logs remain the source of truth** (no changes to how logs are written).
-+- **Watch → iPhone log transfer is reused** (watch logs are uploaded from the phone only).
-+- **Cloud upload tails files using byte offsets** (no extra buffering system).
-+- **Provider is swappable** (Better Stack is implemented; Axiom is a fallback design target).
-+
-+## Provider
-+
-+- **Primary**: Better Stack / Logtail
-+- **Fallback**: Axiom (not implemented yet, but the code is structured around a `CloudLogProvider` protocol)
-+
-+### Better Stack endpoint
-+
-+- **URL**: `https://in.logs.betterstack.com/`
-+- **Method**: `POST`
-+- **Headers**:
-+  - `Authorization: Bearer <SOURCE_TOKEN>`
-+  - `Content-Type: application/json`
-+- **Success criteria**:
-+  - **HTTP 202 only** is treated as success.
-+  - Any other status does **not** advance offsets (uploads are safe to retry).
-+
-+## Log files (authoritative on-device sources)
-+
-+### iPhone logs
-+
-+Written by existing file logging (`SimpleLogReporter`):
-+
-+- Current: `Documents/logs/log.txt`
-+- Previous (daily rotation): `Documents/logs/log_prev.txt`
-+
-+Format:
-+
-+`<TIMESTAMP> [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>: <message>`
-+
-+Example:
-+
-+`2025-12-31T22:02:48+0100 [WatchManager] AppleWatchManager.swift - sendDataToWatch(_:) - 536 - DEV: 📤 Transferred new WatchState snapshot via userInfo`
-+
-+### Watch logs (on iPhone)
-+
-+The watch sends logs via WatchConnectivity; the iPhone already persists them (no changes required):
-+
-+- Current: `Documents/logs/watch_log.txt`
-+- Previous (daily rotation): `Documents/logs/watch_log_prev.txt`
-+
-+Format:
-+
-+`[<TIMESTAMP>] [<File.swift>:<line>] <function>() → <message>`
-+
-+Example:
-+
-+`[2025-12-31T00:01:27+0100] [WatchLogger.swift:169] flushToPhone() → ⌚️ Logs queued for background delivery to phone`
-+
-+## Upload-time parsing (best-effort, non-destructive)
-+
-+Parsing is done **only at upload time** and is **tolerant of failures**: if parsing fails, the original line is still uploaded.
-+
-+### Timestamp normalization
-+
-+Both iPhone and watch timestamps use `+0100` style timezones. When possible, they are normalized to `+01:00`:
-+
-+- `2025-12-31T22:02:48+0100` → `2025-12-31T22:02:48+01:00`
-+
-+If normalization fails, `dt` is omitted.
-+
-+### iPhone parsing
-+
-+- **dt**: first token, normalized timezone
-+- **category**: extracted from `[Category]` immediately after timestamp
-+- **level**: extracted via delimiter-aware match: `\s-\s(DEV|INFO|WARN|ERR):\s` and normalized:
-+  - `DEV` → `debug`
-+  - `INFO` → `info`
-+  - `WARN` → `warn`
-+  - `ERR` → `error`
-+- **message**: everything after `<LEVEL>: `
-+
-+### watch parsing
-+
-+- **dt**: extracted from first `[ ... ]`, normalized timezone
-+- **category**: derived from filename in `[File.swift:line]` (without `.swift`)
-+- **level**: not inferred
-+- **message**: everything after `→`
-+
-+### Platform tagging
-+
-+- iPhone files → `platform = ios`
-+- watch files → `platform = watchos`
-+
-+## Offsets + rotation
-+
-+Uploads tail each file using a **byte offset** stored on-device.
-+
-+- On each run, only newly appended **complete lines** (ending in `\n`) are uploaded.
-+- Uploads are **batched** with both:
-+  - a **count cap** (default: 250 events per request), and
-+  - a **byte-budget cap** (conservative ~8 MiB uncompressed JSON per request, estimated via encoder size).
-+  Offsets only advance after the final batch succeeds.
-+- If the file **shrinks** (truncation / rotation), its offset is reset to `0`.
-+- Rotation handling is intentionally simple: it only uses the **byte-offset tail model** and resets offsets when the file shrinks.
-+
-+## Triggers
-+
-+Uploads are triggered from the iPhone app only:
-+
-+- **Manual**: `CloudLogUploadService.uploadNow()`
-+- **Lifecycle**:
-+  - app foreground
-+  - app background
-+- **Periodic**: every 5 minutes while the app is running
-+
-+## Setup (token)
-+
-+Trio reads Better Stack settings from a JSON file in the **Trio app group container**:
-+
-+- Path: `settings/BetterStack.json`
-+- Example:
-+
-+```json
-+{
-+  "BetterStackSourceToken": "TzZdDRFCDTCXhYTZVLWHhNsk",
-+  "BetterStackIngestionUrl": "https://s1658969.eu-nbg-2.betterstackdata.com/"
-+}
-+```
-+
-+This file is **generated on-device** and should **not** be committed.
-+
-+Currently supported injection points (in priority order):
-+
-+1. App group file: `settings/BetterStack.json`
-+2. `UserDefaults` key: `cloudLogging.betterStackSourceToken` (fallback)
-+3. `Info.plist` key: `BetterStackSourceToken` (fallback; do not commit secrets)
-+4. Process environment variable: `BETTERSTACK_SOURCE_TOKEN` (dev-only fallback)
-+
-+## Querying + export for AI analysis
-+
-+Recommended practice:
-+
-+- Filter by `attributes.platform`, `attributes.category`, `attributes.level`, `attributes.env`, `attributes.appVersion`, `attributes.build`.
-+- Export by time range + filters for a focused dataset (e.g., around a crash or loop failure).
-+- This implementation does **not** upload a duplicate `raw` field; the uploaded `message` is either the parsed message or the original full line if parsing fails.
-+
-+## Future: on-device log viewer (Idea #1)
-+
-+This design supports an on-device log viewer without rework because:
-+
-+- The authoritative log files remain on disk (`Documents/logs/...`).
-+- Cloud upload logic reads using byte offsets without changing log writes.
-+- A future viewer can read the same files and optionally reuse the same parsing helpers.
+-- 
+2.50.1 (Apple Git-155)
+
