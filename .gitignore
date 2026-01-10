@@ -84,5 +84,4 @@ fastlane/new_certificate_needed.txt
 ConfigOverride.xcconfig
 .trio-env
 ci/
-docs/
 UserData/

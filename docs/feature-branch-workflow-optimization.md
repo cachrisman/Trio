@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — vNext (mailbox patch target)
+# Feature branch workflow optimization (fork + patch stack) — v2 (mailbox patch target)
 
 This repository is a personal fork of an upstream repository.
 
@@ -60,8 +60,8 @@ CI remains for the weekly upstream sync/build, not for ad-hoc shipping.
 
 ### File extension during transition
 - During implementation/cutover, new mailbox patches use: `NN-<desc>.am.patch`
-- After cutover is complete, the long-term convention is to rename them to: `NN-<desc>.patch`
-  - (i.e., `.am.patch` is temporary; `.patch` is the eventual steady state)
+- After cutover is complete, mailbox patches use the normal extension: `NN-<desc>.patch`
+  - `.am.patch` is temporary; long-term you will only use `.patch`.
 
 ### One feature → one commit → one patch
 The “publish” artifact for a feature is **one** mailbox patch that corresponds to **one** squashed commit on a `ready/<name>` branch.
@@ -132,50 +132,42 @@ git commit -m "feat(<scope>): <summary>
   --include-files "path/to/file1.swift,path/to/file2.swift"
 ```
 
-**Target workflow (mailbox patches):**
+**Mailbox workflow (steady state):**
 ```bash
 mkdir -p patches
-git format-patch -1 --stdout HEAD > patches/NN-<desc>.am.patch
+# Steady state (post-cutover): mailbox patch with .patch extension
+git format-patch -1 --stdout HEAD > patches/NN-<desc>.patch
+
+# During cutover only (temporary): use .am.patch while transitioning
+# git format-patch -1 --stdout HEAD > patches/NN-<desc>.am.patch
 ```
 
-### 3) Test patch application before committing
+### 3) Validate patch application before committing
 
-**Important:** Always test patches before committing them to `dev`. Use `git worktree` to test in a clean environment without affecting your working directory:
+Run the canonical patch-stack validation script:
 
 ```bash
-# Create a temporary worktree for testing (isolated from your main working directory)
-TEST_WORKTREE=$(mktemp -d /tmp/trio-patch-test-XXXXXX)
-git worktree add -b tmp/patch-test "$TEST_WORKTREE" dev
-
-# Copy your new/updated patch file to the test worktree
-cp patches/NN-<desc>.patch "$TEST_WORKTREE/patches/"
-# Note: Use .patch for current format, .am.patch for target mailbox format
-
-# Test patches in the clean worktree
-cd "$TEST_WORKTREE"
-git submodule update --init --recursive
-
-# Test that all patches apply cleanly (see "Validate the patch stack" below)
-# If testing fails, fix code and regenerate patch, then restart from step 3
-
-# Cleanup worktree when done
-cd -  # Return to original directory
-git worktree remove "$TEST_WORKTREE"
-rm -rf "$TEST_WORKTREE"
+scripts/patch-test.sh
 ```
 
-**Benefits of using worktree:**
-- Your main working directory (with untracked files like `docs/`) is never touched
-- No risk of accidentally deleting untracked files with `git clean`
-- Clean testing environment isolated from your work
-- Easy cleanup - just remove the worktree when done
+This script encapsulates the worktree-based clean-`dev` flow and applies patches using `git am`:
+- applies the full existing patch stack in order
+- applies the candidate/generated patch
+- fails fast on the first error
+- cleans up any temporary worktrees/state
+
+If validation fails:
+- do **not** hand-edit patch files
+- fix code in a feature branch
+- regenerate the patch (via `generate-patch.sh`)
+- re-run `scripts/patch-test.sh`
 
 ### 4) Commit the patch file to fork `dev` (only after successful testing)
 
 ```bash
 # After successful patch testing, commit the patch file
 git checkout dev
-git add patches/NN-<desc>.patch  # or .am.patch for mailbox format
+git add patches/NN-<desc>.patch
 git commit -m "patches: add NN-<desc>"
 git push origin dev
 ```
@@ -184,82 +176,25 @@ Patch files live on fork `dev` because CI checks out fork `dev` and reads `./pat
 
 ---
 
-## Validate the patch stack applies on a clean base (target behavior)
+## Validate the patch stack applies on a clean base (authoritative)
 
-**Recommended: Use `git worktree` for safe testing** (prevents accidental deletion of untracked files):
-
-```bash
-# Create a temporary worktree for testing (isolated from your main working directory)
-TEST_WORKTREE=$(mktemp -d /tmp/trio-patch-test-XXXXXX)
-git worktree add -b tmp/patch-test "$TEST_WORKTREE" dev
-
-# Copy patch files to test (including any new/updated ones)
-cp patches/*.patch "$TEST_WORKTREE/patches/" 2>/dev/null || true
-# Note: Use .patch for current format, .am.patch for target mailbox format
-
-# Test in the clean worktree
-cd "$TEST_WORKTREE"
-git submodule update --init --recursive
-
-# Create test branch
-git checkout -b tmp/test-apply-patches
-
-# Apply all patches in order
-failed=false
-failed_patch=""
-for p in patches/*.patch; do
-  [ -f "$p" ] || continue
-  echo "Testing: $p"
-  if git apply --check "$p" 2>&1; then
-    git apply "$p" || { failed=true; failed_patch="$p"; break; }
-    echo "✅ Applied: $p"
-  else
-    echo "❌ FAILED: $p"
-    failed=true
-    failed_patch="$p"
-    break
-  fi
-done
-
-# Cleanup worktree
-cd -  # Return to original directory
-git worktree remove "$TEST_WORKTREE"
-rm -rf "$TEST_WORKTREE"
-
-if [ "$failed" = true ]; then
-  echo "❌ Patch validation failed at: $failed_patch"
-  echo "Fix code and regenerate patch, then restart validation."
-  exit 1
-else
-  echo "✅ All patches applied successfully"
-fi
-```
-
-**Alternative: Test in your working directory** (if you don't have untracked files to preserve):
+Run the canonical patch-stack validation script:
 
 ```bash
-# Get clean dev state
-git checkout dev
-git reset --hard HEAD
-git clean -fd  # WARNING: This deletes untracked files!
-git submodule update --init --recursive
-
-# Copy patch files to test
-# (your patch files should already be in patches/)
-
-# Create test branch and apply patches (same as above)
-# ...
+scripts/patch-test.sh
 ```
 
-If any patch fails:
-- do **not** "fix it in the test branch"
+This script encapsulates the worktree-based clean-`dev` flow and applies patches using `git am`:
+- applies the full existing patch stack in order
+- applies the candidate/generated patch
+- fails fast on the first error
+- cleans up any temporary worktrees/state
+
+If validation fails:
+- do **not** hand-edit patch files
 - fix code in a feature branch
-- regenerate the patch
-- restart validation
-
-> **Note:** Currently using `git apply` with regular patch files. Target state uses `git am` with mailbox patches (`*.am.patch`). After cutover to mailbox patches, update the loop to use `git am` and `patches/*.am.patch`.
-
----
+- regenerate the patch (via `generate-patch.sh`)
+- re-run `scripts/patch-test.sh`
 
 ## Multiple features simultaneously
 
@@ -340,8 +275,14 @@ Deterministic inventory commands:
 
 ```bash
 git rev-parse HEAD
+
+# During cutover (temporary)
 ls -1 patches/*.am.patch
 shasum -a 256 patches/*.am.patch
+
+# After cutover (steady state)
+ls -1 patches/*.patch
+shasum -a 256 patches/*.patch
 ```
 
 Store in a `releases/` folder (committed) or as build artifacts. Pick one convention and keep it consistent.
@@ -355,3 +296,13 @@ git submodule sync --recursive
 git submodule update --init --recursive
 git submodule foreach --recursive 'git reset --hard && git clean -fd'
 ```
+
+---
+
+## Changelog
+
+### v2
+- Replaced manual clean-`dev` patch-apply instructions with `scripts/patch-test.sh` (authoritative).
+- Clarified patch extension policy: `.am.patch` is temporary during cutover; steady state uses `.patch` (mailbox patches applied with `git am`).
+- Kept `generate-patch.sh` as the canonical patch generator post-cutover (tooling to be updated to mailbox format).
+- Expanded release inventory commands to cover both cutover and steady-state patch extensions.
