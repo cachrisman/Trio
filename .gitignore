@@ -82,5 +82,4 @@ fastlane/FastlaneRunner
 ConfigOverride.xcconfig
 .trio-env
 ci/
-docs/
 UserData/
