@@ -916,7 +916,7 @@ else
     NEXT_PREFIX=$(get_next_patch_prefix "$PATCHES_DIR")
     echo ""
     print_info "Enter a short description for the patch filename."
-    print_info "This will be used as: ${NEXT_PREFIX}-<description>.am.patch"
+    print_info "This will be used as: ${NEXT_PREFIX}-<description>.patch"
     safe_source=$(sanitize_for_filename "$SOURCE_BRANCH")
     print_info "Default: ${safe_source}"
     read -p "Description (Enter = default): " user_desc
@@ -1010,8 +1010,8 @@ else
     # Generate filename with XY- prefix
     NEXT_PREFIX=$(get_next_patch_prefix "$PATCHES_DIR")
     
-    # During migration: use .am.patch; after cutover: use .patch (both mailbox format)
-    DEFAULT_PATCH_NAME="${PATCHES_DIR}/${NEXT_PREFIX}-${PATCH_DESC}.am.patch"
+    # Mailbox format patches use .patch extension
+    DEFAULT_PATCH_NAME="${PATCHES_DIR}/${NEXT_PREFIX}-${PATCH_DESC}.patch"
     
     if [ "$FLAG_NON_INTERACTIVE" = true ]; then
         PATCH_PATH="$DEFAULT_PATCH_NAME"

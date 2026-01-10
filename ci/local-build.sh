@@ -704,15 +704,12 @@ elif [[ -d "$PATCHES_DIR" ]]; then
   git config user.email "build-bot@users.noreply.github.com" || true
 
   # Collect patches deterministically (bash 3.2 compatible)
-  # During migration: prefer .am.patch when both exist for same prefix
   PATCH_LIST_FILE=$(mktemp)
-  (cd "$PATCHES_DIR" 2>/dev/null && ls -1 *.am.patch *.patch 2>/dev/null | sort) \
+  (cd "$PATCHES_DIR" 2>/dev/null && ls -1 *.patch 2>/dev/null | sort) \
   | awk '
-      function pref(name){ return (name ~ /\.am\.patch$/) ? 0 : 1 }
       /^[0-9][0-9]-/ {
         p=substr($0, 1, 2)
-        if (!(p in chosen)) { chosen[p]=$0; pr[p]=pref($0) }
-        else if (pref($0) < pr[p]) { chosen[p]=$0; pr[p]=pref($0) }
+        if (!(p in chosen)) { chosen[p]=$0 }
       }
       END { for (p in chosen) print p "\t" chosen[p] }
     ' \

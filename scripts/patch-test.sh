@@ -76,31 +76,15 @@ should_skip_patch() {
   return 1
 }
 
-# Detect patch format: mailbox (git am) or legacy (git apply)
-# Line 1 check: mailbox starts with "From <sha>", legacy starts with "diff --git"
-detect_patch_format() {
-  local patch_file="$1"
-  local first
-  first="$(head -1 "$patch_file" 2>/dev/null || true)"
-  case "$first" in
-    From\ *) echo "mailbox" ;;
-    diff\ --git*) echo "legacy" ;;
-    *) echo "unknown" ;;
-  esac
-}
-
-# Collect and deduplicate patches by numeric prefix (bash 3.2 compatible)
-# During migration: prefer .am.patch when both exist for same prefix
+# Collect patches by numeric prefix (bash 3.2 compatible)
 # Ordering: numeric prefix determines order; ties broken lexicographically
 collect_patches() {
   local patches_dir="$1"
-  (cd "$patches_dir" 2>/dev/null && ls -1 *.am.patch *.patch 2>/dev/null | sort) \
+  (cd "$patches_dir" 2>/dev/null && ls -1 *.patch 2>/dev/null | sort) \
   | awk '
-      function pref(name){ return (name ~ /\.am\.patch$/) ? 0 : 1 }
       /^[0-9][0-9]-/ {
         p=substr($0, 1, 2)
-        if (!(p in chosen)) { chosen[p]=$0; pr[p]=pref($0) }
-        else if (pref($0) < pr[p]) { chosen[p]=$0; pr[p]=pref($0) }
+        if (!(p in chosen)) { chosen[p]=$0 }
       }
       END { for (p in chosen) print p "\t" chosen[p] }
     ' \
@@ -165,7 +149,7 @@ fi
 # Copy patches - clean the worktree patches dir first to avoid duplicates
 mkdir -p "$TEST_WORKTREE/patches"
 # Fix: use proper glob expansion instead of find -o
-rm -f "$TEST_WORKTREE/patches"/*.patch "$TEST_WORKTREE/patches"/*.am.patch 2>/dev/null || true
+rm -f "$TEST_WORKTREE/patches"/*.patch 2>/dev/null || true
 
 # Collect patches (deduplicated, deterministic order)
 PATCH_LIST_FILE=$(mktemp)
@@ -205,7 +189,7 @@ if ! git checkout -b tmp/test-apply-patches; then
   exit 1
 fi
 
-# Configure git identity for mailbox patches (git am requires this)
+# Configure git identity for git am operations
 git config user.name "Trio Patch Bot" || true
 git config user.email "patch-bot@users.noreply.github.com" || true
 
@@ -222,8 +206,7 @@ while IFS= read -r p; do
   if should_skip_patch "$patch_name"; then
     echo "  - $patch_name (skipped)"
   else
-    format=$(detect_patch_format "$p")
-    echo "  - $patch_name [$format]"
+    echo "  - $patch_name"
   fi
 done < "$PATCH_LIST_FILE"
 rm -f "$PATCH_LIST_FILE"
@@ -248,41 +231,12 @@ while IFS= read -r p; do
   echo "Testing: $patch_name"
   echo "=========================================="
   
-  format=$(detect_patch_format "$p")
-  
-  if [ "$format" = "mailbox" ]; then
-    # Mailbox patch: use git am (no --check, apply directly and abort on failure)
-    if git am --3way --keep-cr --whitespace=nowarn "$p" 2>&1; then
-      echo "✅ Applied: $patch_name (mailbox)"
-    else
-      echo "❌ FAILED to apply: $patch_name (mailbox)"
-      git am --abort 2>/dev/null || true
-      failed=true
-      failed_patch="$p"
-      rm -f "$PATCH_LIST_FILE"
-      break
-    fi
-  elif [ "$format" = "legacy" ]; then
-    # Legacy patch: use git apply (existing logic)
-    if git apply --check "$p" 2>&1; then
-      if git apply "$p" 2>&1; then
-        echo "✅ Applied: $patch_name (legacy)"
-      else
-        echo "❌ FAILED to apply: $patch_name (legacy)"
-        failed=true
-        failed_patch="$p"
-        rm -f "$PATCH_LIST_FILE"
-        break
-      fi
-    else
-      echo "❌ FAILED check: $patch_name (legacy)"
-      failed=true
-      failed_patch="$p"
-      rm -f "$PATCH_LIST_FILE"
-      break
-    fi
+  # Apply mailbox patch using git am
+  if git am --3way --keep-cr --whitespace=nowarn "$p" 2>&1; then
+    echo "✅ Applied: $patch_name"
   else
-    echo "❌ Unknown patch format: $patch_name"
+    echo "❌ FAILED to apply: $patch_name"
+    git am --abort 2>/dev/null || true
     failed=true
     failed_patch="$p"
     rm -f "$PATCH_LIST_FILE"
