@@ -1,23 +1,23 @@
-From a27e7d293d5fcca48941478807aa5e93e31cf891 Mon Sep 17 00:00:00 2001
-From: Codex <codex@openai.com>
-Date: Sun, 11 Jan 2026 18:37:35 +0000
+From ea52559315d36f905c38391b34da1894c71db3c3 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sun, 11 Jan 2026 20:18:31 +0000
 Subject: [PATCH] feat: patch-metadata
 
 ---
- Trio/Sources/Helpers/BuildDetails.swift       | 12 +++++++
- .../View/Subviews/SubmodulesView.swift        | 31 +++++++++++++++++++
- scripts/capture-build-details.sh              | 29 ++++++++++++++++-
- 3 files changed, 71 insertions(+), 1 deletion(-)
+ Trio/Sources/Helpers/BuildDetails.swift       | 13 ++++++
+ .../View/Subviews/SubmodulesView.swift        | 43 +++++++++++++++++++
+ scripts/capture-build-details.sh              | 32 +++++++++++++-
+ 3 files changed, 87 insertions(+), 1 deletion(-)
 
 diff --git a/Trio/Sources/Helpers/BuildDetails.swift b/Trio/Sources/Helpers/BuildDetails.swift
-index 0ed3f632..352dc4a0 100644
+index 0ed3f632..3fe1f6f5 100644
 --- a/Trio/Sources/Helpers/BuildDetails.swift
 +++ b/Trio/Sources/Helpers/BuildDetails.swift
-@@ -50,6 +50,18 @@ class BuildDetails: Injectable {
+@@ -50,6 +50,19 @@ class BuildDetails: Injectable {
          return result
      }
  
-+    var patches: [(name: String, subject: String, fromSHA: String)] {
++    var patches: [(name: String, subject: String, fromSHA: String, date: String)] {
 +        guard let patches = dict["com-trio-patches"] as? [[String: Any]] else {
 +            return []
 +        }
@@ -25,7 +25,8 @@ index 0ed3f632..352dc4a0 100644
 +            let name = patch["name"] as? String ?? String(localized: "Unknown")
 +            let subject = patch["subject"] as? String ?? ""
 +            let fromSHA = patch["from_sha"] as? String ?? String(localized: "Unknown")
-+            return (name: name, subject: subject, fromSHA: fromSHA)
++            let date = patch["date"] as? String ?? String(localized: "Unknown")
++            return (name: name, subject: subject, fromSHA: fromSHA, date: date)
 +        }
 +    }
 +
@@ -33,24 +34,29 @@ index 0ed3f632..352dc4a0 100644
      func isTestFlightBuild() -> Bool {
          #if targetEnvironment(simulator)
 diff --git a/Trio/Sources/Modules/Settings/View/Subviews/SubmodulesView.swift b/Trio/Sources/Modules/Settings/View/Subviews/SubmodulesView.swift
-index 3584d247..373c72d1 100644
+index 3584d247..19bddc45 100644
 --- a/Trio/Sources/Modules/Settings/View/Subviews/SubmodulesView.swift
 +++ b/Trio/Sources/Modules/Settings/View/Subviews/SubmodulesView.swift
-@@ -13,6 +13,13 @@ struct SubmodulesView: View {
+@@ -13,6 +13,18 @@ struct SubmodulesView: View {
                      KeyValueRow(key: name, value: info.commitSHA)
                  }
              }
 +            if !buildDetails.patches.isEmpty {
 +                Section(header: Text("Patches")) {
 +                    ForEach(Array(buildDetails.patches.enumerated()), id: \.offset) { _, patch in
-+                        PatchRow(name: patch.name, subject: patch.subject, sha: patch.fromSHA)
++                        PatchRow(
++                            name: patch.name,
++                            subject: patch.subject,
++                            sha: patch.fromSHA,
++                            date: patch.date
++                        )
 +                    }
 +                }
 +            }
          }
          .listStyle(.insetGrouped)
          .navigationTitle("Submodules")
-@@ -35,3 +42,27 @@ struct KeyValueRow: View {
+@@ -35,3 +47,34 @@ struct KeyValueRow: View {
          }
      }
  }
@@ -59,6 +65,7 @@ index 3584d247..373c72d1 100644
 +    let name: String
 +    let subject: String
 +    let sha: String
++    let date: String
 +
 +    var body: some View {
 +        HStack {
@@ -72,17 +79,23 @@ index 3584d247..373c72d1 100644
 +                }
 +            }
 +            Spacer()
-+            Text(sha)
-+                .foregroundColor(.secondary)
-+                .multilineTextAlignment(.trailing)
++            VStack(alignment: .trailing, spacing: 2) {
++                Text(sha)
++                    .foregroundColor(.secondary)
++                if !date.isEmpty {
++                    Text(date)
++                        .font(.footnote)
++                        .foregroundColor(.secondary)
++                }
++            }
 +        }
 +    }
 +}
 diff --git a/scripts/capture-build-details.sh b/scripts/capture-build-details.sh
-index 89520d4e..609117f3 100755
+index 89520d4e..3c4e00a4 100755
 --- a/scripts/capture-build-details.sh
 +++ b/scripts/capture-build-details.sh
-@@ -62,4 +62,31 @@ echo "${submodules_info}" | while IFS="|" read -r submodule_name sub_branch sub_
+@@ -62,4 +62,34 @@ echo "${submodules_info}" | while IFS="|" read -r submodule_name sub_branch sub_
      /usr/libexec/PlistBuddy -c "Add :${submodules_key}:${submodule_name}:commit_sha string ${sub_sha}" "${info_plist_path}"
  done
  
@@ -103,14 +116,17 @@ index 89520d4e..609117f3 100755
 +    fi
 +    patch_name=$(basename "${patch_file}")
 +    patch_from_sha=$(awk 'NR==1 {print $2}' "${patch_file}")
++    patch_date=$(awk -F 'Date: ' '/^Date: / {print $2; exit}' "${patch_file}")
 +    patch_subject=$(awk -F 'Subject: ' '/^Subject: / {print $2; exit}' "${patch_file}")
 +    patch_name_escaped=$(printf '%s' "${patch_name}" | sed 's/"/\\"/g')
 +    patch_from_sha_escaped=$(printf '%s' "${patch_from_sha}" | sed 's/"/\\"/g')
++    patch_date_escaped=$(printf '%s' "${patch_date}" | sed 's/"/\\"/g')
 +    patch_subject_escaped=$(printf '%s' "${patch_subject}" | sed 's/"/\\"/g')
 +
 +    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index} dict" "${info_plist_path}"
 +    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:name string \"${patch_name_escaped}\"" "${info_plist_path}"
 +    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:from_sha string \"${patch_from_sha_escaped}\"" "${info_plist_path}"
++    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:date string \"${patch_date_escaped}\"" "${info_plist_path}"
 +    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:subject string \"${patch_subject_escaped}\"" "${info_plist_path}"
 +    patch_index=$((patch_index + 1))
 +done
