@@ -964,15 +964,23 @@ if [ "${#TRACKED_FILES[@]}" -gt 0 ]; then
 fi
 
 # Handle untracked files (copy them to worktree)
-for path in "${UNTRACKED_SELECTED[@]}"; do
-  mkdir -p "$(dirname "$path")"
-  cp "$REPO_ROOT/$path" "$path"
-done
+if [ "${#UNTRACKED_SELECTED[@]}" -gt 0 ]; then
+  for path in "${UNTRACKED_SELECTED[@]}"; do
+    mkdir -p "$(dirname "$path")"
+    cp "$REPO_ROOT/$path" "$path"
+  done
+fi
 
 # Stage only the explicit selected files (not global -A)
 # Use -A with explicit pathspec so deletions are included but nothing else is staged
 if [ "${#TRACKED_FILES[@]}" -gt 0 ] || [ "${#UNTRACKED_SELECTED[@]}" -gt 0 ]; then
-  git add -A -- "${TRACKED_FILES[@]}" "${UNTRACKED_SELECTED[@]}"
+  if [ "${#TRACKED_FILES[@]}" -gt 0 ] && [ "${#UNTRACKED_SELECTED[@]}" -gt 0 ]; then
+    git add -A -- "${TRACKED_FILES[@]}" "${UNTRACKED_SELECTED[@]}"
+  elif [ "${#TRACKED_FILES[@]}" -gt 0 ]; then
+    git add -A -- "${TRACKED_FILES[@]}"
+  elif [ "${#UNTRACKED_SELECTED[@]}" -gt 0 ]; then
+    git add -A -- "${UNTRACKED_SELECTED[@]}"
+  fi
 fi
 
 # Commit the changes
