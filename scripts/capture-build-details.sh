@@ -62,4 +62,34 @@ echo "${submodules_info}" | while IFS="|" read -r submodule_name sub_branch sub_
     /usr/libexec/PlistBuddy -c "Add :${submodules_key}:${submodule_name}:commit_sha string ${sub_sha}" "${info_plist_path}"
 done
 
+# --- Patch details ---
+patches_key="com-trio-patches"
+if /usr/libexec/PlistBuddy -c "Print :${patches_key}" "${info_plist_path}" 2>/dev/null; then
+    /usr/libexec/PlistBuddy -c "Delete :${patches_key}" "${info_plist_path}"
+fi
+/usr/libexec/PlistBuddy -c "Add :${patches_key} array" "${info_plist_path}"
+
+patch_files=$(find patches -maxdepth 1 -type f -name '*.patch' -print | sort)
+patch_index=0
+printf '%s\n' "${patch_files}" | while IFS= read -r patch_file; do
+    if [ -z "${patch_file}" ]; then
+        continue
+    fi
+    patch_name=$(basename "${patch_file}")
+    patch_from_sha=$(awk 'NR==1 {print $2}' "${patch_file}")
+    patch_date=$(awk -F 'Date: ' '/^Date: / {print $2; exit}' "${patch_file}")
+    patch_subject=$(awk -F 'Subject: ' '/^Subject: / {print $2; exit}' "${patch_file}")
+    patch_name_escaped=$(printf '%s' "${patch_name}" | sed 's/"/\\"/g')
+    patch_from_sha_escaped=$(printf '%s' "${patch_from_sha}" | sed 's/"/\\"/g')
+    patch_date_escaped=$(printf '%s' "${patch_date}" | sed 's/"/\\"/g')
+    patch_subject_escaped=$(printf '%s' "${patch_subject}" | sed 's/"/\\"/g')
+
+    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index} dict" "${info_plist_path}"
+    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:name string \"${patch_name_escaped}\"" "${info_plist_path}"
+    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:from_sha string \"${patch_from_sha_escaped}\"" "${info_plist_path}"
+    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:date string \"${patch_date_escaped}\"" "${info_plist_path}"
+    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:subject string \"${patch_subject_escaped}\"" "${info_plist_path}"
+    patch_index=$((patch_index + 1))
+done
+
 echo "BuildDetails.plist has been updated at: ${info_plist_path}"
