@@ -1,6 +1,6 @@
-From ea52559315d36f905c38391b34da1894c71db3c3 Mon Sep 17 00:00:00 2001
+From 01a99c750a56b1c521c394a3623b6f02d334d6e4 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 11 Jan 2026 20:18:31 +0000
+Date: Sun, 11 Jan 2026 20:24:25 +0000
 Subject: [PATCH] feat: patch-metadata
 
 ---
@@ -92,7 +92,7 @@ index 3584d247..19bddc45 100644
 +    }
 +}
 diff --git a/scripts/capture-build-details.sh b/scripts/capture-build-details.sh
-index 89520d4e..3c4e00a4 100755
+index 89520d4e..a72a359e 100755
 --- a/scripts/capture-build-details.sh
 +++ b/scripts/capture-build-details.sh
 @@ -62,4 +62,34 @@ echo "${submodules_info}" | while IFS="|" read -r submodule_name sub_branch sub_
@@ -108,7 +108,7 @@ index 89520d4e..3c4e00a4 100755
 +fi
 +/usr/libexec/PlistBuddy -c "Add :${patches_key} array" "${info_plist_path}"
 +
-+patch_files=$(find patches -maxdepth 1 -type f \( -name '*.patch' -o -name '*.am.patch' \) -print | sort)
++patch_files=$(find patches -maxdepth 1 -type f -name '*.patch' -print | sort)
 +patch_index=0
 +printf '%s\n' "${patch_files}" | while IFS= read -r patch_file; do
 +    if [ -z "${patch_file}" ]; then
