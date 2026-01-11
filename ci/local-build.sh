@@ -699,9 +699,10 @@ echo "[build] Running 'Customize Trio' step (patches)..."
 if [[ "$SKIP_PATCHES" = "1" ]]; then
   echo "[build] Skipping patch application."
 elif [[ -d "$PATCHES_DIR" ]]; then
-  # Configure git identity for git am operations
-  git config user.name "Trio Build Bot" || true
-  git config user.email "build-bot@users.noreply.github.com" || true
+  # Configure git identity for git am operations (local repo only)
+  git -C "$BUILD_DIR" config user.name "Trio Build Bot" || true
+  git -C "$BUILD_DIR" config user.email "build-bot@users.noreply.github.com" || true
+  git -C "$BUILD_DIR" config commit.gpgsign false || true
 
   # Collect patches deterministically (bash 3.2 compatible)
   PATCH_LIST_FILE=$(mktemp)
@@ -723,6 +724,8 @@ elif [[ -d "$PATCHES_DIR" ]]; then
       ls -l "$p" 2>/dev/null || true
     done < "$PATCH_LIST_FILE"
 
+    pre_patch_head="$(git -C "$BUILD_DIR" rev-parse HEAD 2>/dev/null || true)"
+
     # Apply patches one at a time (patches may depend on previous patches)
     # Worktree is always fresh, so no skip logic needed
     while IFS= read -r patch; do
@@ -739,6 +742,37 @@ elif [[ -d "$PATCHES_DIR" ]]; then
       fi
     done < "$PATCH_LIST_FILE"
     rm -f "$PATCH_LIST_FILE"
+
+    # After patches are applied, check if any submodule references were modified
+    # and update submodules if needed
+    if [[ -f "$BUILD_DIR/.gitmodules" ]]; then
+      # Check if .gitmodules or any submodule directory was modified in this patch set
+      SUBMODULE_MODIFIED=false
+      if [[ -n "$pre_patch_head" ]]; then
+        patch_changes="$(git -C "$BUILD_DIR" diff --name-only "$pre_patch_head" HEAD)"
+        if printf '%s\n' "$patch_changes" | grep -q "^\.gitmodules$"; then
+          SUBMODULE_MODIFIED=true
+        fi
+        # Check if any submodule commit reference was modified
+        if printf '%s\n' "$patch_changes" | grep -qE '^(G7SensorKit|CGMBLEKit|DanaKit|OmniKit|OmniBLE|MinimedKit|LibreTransmitter|TidepoolService|RileyLinkKit|LoopKit|dexcom-share-client-swift)$'; then
+          SUBMODULE_MODIFIED=true
+        fi
+      else
+        SUBMODULE_MODIFIED=true
+      fi
+
+      if [[ "$SUBMODULE_MODIFIED" == "true" ]]; then
+        echo "[build] Detected submodule changes in patches, updating submodules..."
+        # Sync submodule URLs from .gitmodules
+        git -C "$BUILD_DIR" submodule sync --recursive 2>&1 | sed 's/^/    /' || {
+          echo "[build] Warning: submodule sync failed"
+        }
+        # Update submodules to match the commit references in the index
+        git -C "$BUILD_DIR" submodule update --init --recursive 2>&1 | sed 's/^/    /' || {
+          echo "[build] Warning: submodule update after patches failed"
+        }
+      fi
+    fi
   else
     echo "[build] No patches found in ./patches directory"
     rm -f "$PATCH_LIST_FILE"
