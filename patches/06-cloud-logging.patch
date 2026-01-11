@@ -1,9 +1,8 @@
-From e1b4f6a8eeb137ad24d1c45eb12c319330514f80 Mon Sep 17 00:00:00 2001
+From 93c807381aad65466d2cb115ebe7e06fbb538dc4 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 10 Jan 2026 21:54:11 +0100
-Subject: [PATCH] feat: cloud logging
+Date: Sun, 11 Jan 2026 17:38:16 +0100
+Subject: [PATCH] feat: cloud-logging
 
-Converted from legacy patch format.
 ---
  Trio/Sources/Application/AppDelegate.swift    |  27 ++
  Trio/Sources/Application/TrioApp.swift        |   1 +
@@ -34,7 +33,7 @@ Converted from legacy patch format.
  create mode 100644 TrioTests/CloudLogEntryAggregatorTests.swift
 
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
-index 46134bc21..d1a044640 100644
+index 46134bc21..fd0bada70 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
 +++ b/Trio/Sources/Application/AppDelegate.swift
 @@ -20,9 +20,36 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
@@ -68,7 +67,7 @@ index 46134bc21..d1a044640 100644
 +    }
 +
 +    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
-+        AppTerminationTracker.shared.markMemoryWarning()
++        AppTerminationTracker.shared.handleMemoryWarning()
 +    }
 +
      func application(
@@ -100,7 +99,7 @@ index fea855ed8..94a505eba 100644
                  LiveActivityManager(resolver: r)
 diff --git a/Trio/Sources/Helpers/AppTerminationTracker.swift b/Trio/Sources/Helpers/AppTerminationTracker.swift
 new file mode 100644
-index 000000000..3b67c776d
+index 000000000..e8ea7b7c3
 --- /dev/null
 +++ b/Trio/Sources/Helpers/AppTerminationTracker.swift
 @@ -0,0 +1,306 @@
@@ -132,7 +131,7 @@ index 000000000..3b67c776d
 +        case terminated = "terminated"
 +    }
 +
-+    private enum TerminationReason: String {
++    enum TerminationReason: String {
 +        case normal = "normal" // applicationWillTerminate was called
 +        case unexpected = "unexpected" // App was killed without calling applicationWillTerminate
 +        case memoryPressure = "memory_pressure" // App was killed due to memory pressure
@@ -195,7 +194,7 @@ index 000000000..3b67c776d
 +    }
 +
 +    /// Called when app will terminate normally
-+    func markAppWillTerminate(reason: TerminationReason) {
++    func markAppWillTerminate(reason: TerminationReason = .normal) {
 +        updateState(.terminated)
 +        userDefaults.set(reason.rawValue, forKey: "AppTerminationTracker.lastTerminationReason")
 +        let message = "App will terminate (reason: \(reason.rawValue))"
@@ -1662,7 +1661,7 @@ index 4c595ff8e..2bbd74fb1 100644
                          Text("Apple Health").navigationLink(to: .healthkit, from: self)
                      }
 diff --git a/Trio/Sources/Router/Screen.swift b/Trio/Sources/Router/Screen.swift
-index b7e1bc07b..93cee61da 100644
+index 5bdb8605e..71ccf5995 100644
 --- a/Trio/Sources/Router/Screen.swift
 +++ b/Trio/Sources/Router/Screen.swift
 @@ -42,6 +42,7 @@ enum Screen: Identifiable, Hashable {
