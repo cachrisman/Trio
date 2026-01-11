@@ -50,6 +50,19 @@ class BuildDetails: Injectable {
         return result
     }
 
+    var patches: [(name: String, subject: String, fromSHA: String, date: String)] {
+        guard let patches = dict["com-trio-patches"] as? [[String: Any]] else {
+            return []
+        }
+        return patches.map { patch in
+            let name = patch["name"] as? String ?? String(localized: "Unknown")
+            let subject = patch["subject"] as? String ?? ""
+            let fromSHA = patch["from_sha"] as? String ?? String(localized: "Unknown")
+            let date = patch["date"] as? String ?? String(localized: "Unknown")
+            return (name: name, subject: subject, fromSHA: fromSHA, date: date)
+        }
+    }
+
     // Determine if the build is from TestFlight
     func isTestFlightBuild() -> Bool {
         #if targetEnvironment(simulator)
