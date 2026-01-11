@@ -1,5 +1,17 @@
+From 969760c700dd52c692983996fca78c8d44397ebd Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sun, 11 Jan 2026 01:18:28 +0100
+Subject: [PATCH] feat: chart-height-fix
+
+---
+ .../View/Chart/ChartElements/BasalChart.swift |  2 +-
+ .../Chart/ChartElements/CobIobChart.swift     |  2 +-
+ .../Chart/ChartElements/DummyCharts.swift     |  8 +++----
+ .../Home/View/Chart/MainChartView.swift       | 24 ++++++++++++++++---
+ 4 files changed, 26 insertions(+), 10 deletions(-)
+
 diff --git a/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift b/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift
-index 593c5ccb9a44e21936d05da8af586796a63dac71..23b425ce97f309bfa0e7df5134886f7261308dac 100644
+index 593c5ccb9..23b425ce9 100644
 --- a/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift
 +++ b/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift
 @@ -32,7 +32,7 @@ extension MainChartView {
@@ -12,7 +24,7 @@ index 593c5ccb9a44e21936d05da8af586796a63dac71..23b425ce97f309bfa0e7df5134886f72
              .chartXScale(domain: state.startMarker ... state.endMarker)
              .chartXAxis { basalChartXAxis }
 diff --git a/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift b/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift
-index ab152a39a5c916684a7bcd2e2c50a0f3174f6899..ca51456db400ce83bb0b5609c3ac3add220bf8d2 100644
+index ab152a39a..ca51456db 100644
 --- a/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift
 +++ b/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift
 @@ -44,7 +44,7 @@ extension MainChartView {
@@ -25,7 +37,7 @@ index ab152a39a5c916684a7bcd2e2c50a0f3174f6899..ca51456db400ce83bb0b5609c3ac3add
          .chartXScale(domain: state.startMarker ... state.endMarker)
          .chartXSelection(value: $selection)
 diff --git a/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift b/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift
-index 8380f5aff227c6a8b71c7c8a841fa7ffcea7f21e..dc3ee41427274388c9800fc8b98725279b2f35b5 100644
+index 8380f5aff..dc3ee4142 100644
 --- a/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift
 +++ b/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift
 @@ -38,9 +38,7 @@ extension MainChartView {
@@ -58,7 +70,7 @@ index 8380f5aff227c6a8b71c7c8a841fa7ffcea7f21e..dc3ee41427274388c9800fc8b9872527
              .chartXScale(domain: state.startMarker ... state.endMarker)
              .chartXAxis { basalChartXAxis }
 diff --git a/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift b/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift
-index a4fa90784823a1168f723232e09b29d01a61e5a2..ad07e3fd38f6ea6494437c04c7f78779bfd31e6f 100644
+index a4fa90784..bc072fd3e 100644
 --- a/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift
 +++ b/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift
 @@ -33,6 +33,26 @@ struct MainChartView: View {
@@ -73,15 +85,15 @@ index a4fa90784823a1168f723232e09b29d01a61e5a2..ad07e3fd38f6ea6494437c04c7f78779
 +    // overlaid chart stack aligned. If future layouts need flexibility again,
 +    // prefer a bounded range (`minHeight` + `maxHeight`) instead of a single
 +    // unconstrained `minHeight`.
-+    private var mainChartHeight: CGFloat {
++    var mainChartHeight: CGFloat {
 +        max(geo.size.height * (0.28 - safeAreaSize), 0)
 +    }
 +
-+    private var basalChartHeight: CGFloat {
++    var basalChartHeight: CGFloat {
 +        max(geo.size.height * 0.05, 0)
 +    }
 +
-+    private var cobChartHeight: CGFloat {
++    var cobChartHeight: CGFloat {
 +        max(geo.size.height * 0.12, 0)
 +    }
 +
@@ -99,3 +111,6 @@ index a4fa90784823a1168f723232e09b29d01a61e5a2..ad07e3fd38f6ea6494437c04c7f78779
              .frame(width: fullWidth(viewWidth: screenSize.width))
              .chartXScale(domain: state.startMarker ... state.endMarker)
              .chartXAxis { mainChartXAxis }
+-- 
+2.50.1 (Apple Git-155)
+
