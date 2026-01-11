@@ -20,7 +20,34 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
         Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(crashReportingEnabled)
         Crashlytics.crashlytics().setCustomValue(Bundle.main.appDevVersion ?? "unknown", forKey: "app_dev_version")
 
+        // Check for unexpected termination from previous launch
+        AppTerminationTracker.shared.checkForUnexpectedTermination()
+
         return true
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppBecameActive()
+    }
+
+    func applicationWillResignActive(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppWillResignActive()
+    }
+
+    func applicationDidEnterBackground(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppEnteredBackground()
+    }
+
+    func applicationWillEnterForeground(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppWillEnterForeground()
+    }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppWillTerminate()
+    }
+
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        AppTerminationTracker.shared.handleMemoryWarning()
     }
 
     func application(
