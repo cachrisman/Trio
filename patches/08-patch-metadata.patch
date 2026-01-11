@@ -1,0 +1,121 @@
+From a27e7d293d5fcca48941478807aa5e93e31cf891 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 11 Jan 2026 18:37:35 +0000
+Subject: [PATCH] feat: patch-metadata
+
+---
+ Trio/Sources/Helpers/BuildDetails.swift       | 12 +++++++
+ .../View/Subviews/SubmodulesView.swift        | 31 +++++++++++++++++++
+ scripts/capture-build-details.sh              | 29 ++++++++++++++++-
+ 3 files changed, 71 insertions(+), 1 deletion(-)
+
+diff --git a/Trio/Sources/Helpers/BuildDetails.swift b/Trio/Sources/Helpers/BuildDetails.swift
+index 0ed3f632..352dc4a0 100644
+--- a/Trio/Sources/Helpers/BuildDetails.swift
++++ b/Trio/Sources/Helpers/BuildDetails.swift
+@@ -50,6 +50,18 @@ class BuildDetails: Injectable {
+         return result
+     }
+ 
++    var patches: [(name: String, subject: String, fromSHA: String)] {
++        guard let patches = dict["com-trio-patches"] as? [[String: Any]] else {
++            return []
++        }
++        return patches.map { patch in
++            let name = patch["name"] as? String ?? String(localized: "Unknown")
++            let subject = patch["subject"] as? String ?? ""
++            let fromSHA = patch["from_sha"] as? String ?? String(localized: "Unknown")
++            return (name: name, subject: subject, fromSHA: fromSHA)
++        }
++    }
++
+     // Determine if the build is from TestFlight
+     func isTestFlightBuild() -> Bool {
+         #if targetEnvironment(simulator)
+diff --git a/Trio/Sources/Modules/Settings/View/Subviews/SubmodulesView.swift b/Trio/Sources/Modules/Settings/View/Subviews/SubmodulesView.swift
+index 3584d247..373c72d1 100644
+--- a/Trio/Sources/Modules/Settings/View/Subviews/SubmodulesView.swift
++++ b/Trio/Sources/Modules/Settings/View/Subviews/SubmodulesView.swift
+@@ -13,6 +13,13 @@ struct SubmodulesView: View {
+                     KeyValueRow(key: name, value: info.commitSHA)
+                 }
+             }
++            if !buildDetails.patches.isEmpty {
++                Section(header: Text("Patches")) {
++                    ForEach(Array(buildDetails.patches.enumerated()), id: \.offset) { _, patch in
++                        PatchRow(name: patch.name, subject: patch.subject, sha: patch.fromSHA)
++                    }
++                }
++            }
+         }
+         .listStyle(.insetGrouped)
+         .navigationTitle("Submodules")
+@@ -35,3 +42,27 @@ struct KeyValueRow: View {
+         }
+     }
+ }
++
++struct PatchRow: View {
++    let name: String
++    let subject: String
++    let sha: String
++
++    var body: some View {
++        HStack {
++            VStack(alignment: .leading, spacing: 2) {
++                Text(name)
++                    .foregroundColor(.primary)
++                if !subject.isEmpty {
++                    Text(subject)
++                        .font(.footnote)
++                        .foregroundColor(.secondary)
++                }
++            }
++            Spacer()
++            Text(sha)
++                .foregroundColor(.secondary)
++                .multilineTextAlignment(.trailing)
++        }
++    }
++}
+diff --git a/scripts/capture-build-details.sh b/scripts/capture-build-details.sh
+index 89520d4e..609117f3 100755
+--- a/scripts/capture-build-details.sh
++++ b/scripts/capture-build-details.sh
+@@ -62,4 +62,31 @@ echo "${submodules_info}" | while IFS="|" read -r submodule_name sub_branch sub_
+     /usr/libexec/PlistBuddy -c "Add :${submodules_key}:${submodule_name}:commit_sha string ${sub_sha}" "${info_plist_path}"
+ done
+ 
+-echo "BuildDetails.plist has been updated at: ${info_plist_path}"
+\ No newline at end of file
++# --- Patch details ---
++patches_key="com-trio-patches"
++if /usr/libexec/PlistBuddy -c "Print :${patches_key}" "${info_plist_path}" 2>/dev/null; then
++    /usr/libexec/PlistBuddy -c "Delete :${patches_key}" "${info_plist_path}"
++fi
++/usr/libexec/PlistBuddy -c "Add :${patches_key} array" "${info_plist_path}"
++
++patch_files=$(find patches -maxdepth 1 -type f \( -name '*.patch' -o -name '*.am.patch' \) -print | sort)
++patch_index=0
++printf '%s\n' "${patch_files}" | while IFS= read -r patch_file; do
++    if [ -z "${patch_file}" ]; then
++        continue
++    fi
++    patch_name=$(basename "${patch_file}")
++    patch_from_sha=$(awk 'NR==1 {print $2}' "${patch_file}")
++    patch_subject=$(awk -F 'Subject: ' '/^Subject: / {print $2; exit}' "${patch_file}")
++    patch_name_escaped=$(printf '%s' "${patch_name}" | sed 's/"/\\"/g')
++    patch_from_sha_escaped=$(printf '%s' "${patch_from_sha}" | sed 's/"/\\"/g')
++    patch_subject_escaped=$(printf '%s' "${patch_subject}" | sed 's/"/\\"/g')
++
++    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index} dict" "${info_plist_path}"
++    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:name string \"${patch_name_escaped}\"" "${info_plist_path}"
++    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:from_sha string \"${patch_from_sha_escaped}\"" "${info_plist_path}"
++    /usr/libexec/PlistBuddy -c "Add :${patches_key}:${patch_index}:subject string \"${patch_subject_escaped}\"" "${info_plist_path}"
++    patch_index=$((patch_index + 1))
++done
++
++echo "BuildDetails.plist has been updated at: ${info_plist_path}"
+-- 
+2.43.0
+
