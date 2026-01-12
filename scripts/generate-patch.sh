@@ -126,6 +126,8 @@
 
 set -euo pipefail
 
+ORIGINAL_ARGS=("$@")
+
 # Make arrays behave similarly in zsh
 if [ -n "${ZSH_VERSION-}" ]; then
     setopt KSH_ARRAYS
@@ -266,6 +268,15 @@ die() {
     exit 1
 }
 
+shell_quote_args() {
+  local out=""
+  local arg
+  for arg in "$@"; do
+    out+=" $(printf '%q' "$arg")"
+  done
+  printf '%s' "$out"
+}
+
 # Check for required commands
 need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
@@ -295,6 +306,27 @@ get_next_patch_prefix() {
     
     # Return next number, zero-padded to 2 digits
     printf '%02d' $((highest + 1))
+}
+
+assert_unique_patch_prefixes() {
+  local patches_dir="$1"
+  [ -d "$patches_dir" ] || return 0
+  local dupes
+  dupes=$(ls -1 "$patches_dir"/*.patch 2>/dev/null \
+    | sed -E 's#.*/([0-9]{2})-.*\\.patch$#\\1#' \
+    | awk 'NF{c[$1]++} END{for (k in c) if (c[k]>1) print k\":\"c[k]}' \
+    | sort || true)
+  if [ -n "$dupes" ]; then
+    print_error "Duplicate patch number(s) detected (multiple files share the same NN- prefix)."
+    echo "$dupes" | while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      nn=${line%%:*}
+      print_info "Files with prefix ${nn}-:"
+      ls -1 "$patches_dir/${nn}-"*.patch 2>/dev/null || true
+    done
+    print_info "Fix by renaming/removing duplicates so each NN prefix is unique."
+    exit 1
+  fi
 }
 
 # Function to sanitize a string for use in filename
@@ -392,6 +424,34 @@ need_cmd date
 # Check if we're in a git repository
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not in a git repository"
 git rev-parse --verify "HEAD^{commit}" >/dev/null 2>&1 || die "HEAD is not a commit"
+
+# Enforce dev worktree execution to avoid stale tooling
+REPO_ROOT=$(git rev-parse --show-toplevel)
+REPO_BASENAME=$(basename "$REPO_ROOT")
+if [ "$REPO_BASENAME" != "Trio-dev" ]; then
+  print_error "This script must be run from the dev worktree (recommended path: ../Trio-dev)."
+  print_info "Re-run from the dev worktree with the same arguments:"
+  echo ""
+  echo "  cd ../Trio-dev && ./scripts/generate-patch.sh$(shell_quote_args "${ORIGINAL_ARGS[@]}")"
+  echo ""
+  exit 1
+fi
+
+# Ensure dev baseline is current
+if ! git fetch origin dev >/dev/null 2>&1; then
+  print_error "Failed to fetch origin/dev (required to ensure dev baseline is current)."
+  print_info "Run: git fetch origin dev"
+  exit 1
+fi
+behind_count=$(git rev-list --count dev..origin/dev 2>/dev/null || echo 0)
+if [ "$behind_count" -gt 0 ]; then
+  print_error "Local dev is behind origin/dev by ${behind_count} commit(s)."
+  print_info "Update the dev worktree and retry:"
+  echo ""
+  echo "  git checkout dev && git pull --ff-only origin dev"
+  echo ""
+  exit 1
+fi
 
 # Get work branch (where script is running / HEAD)
 WORK_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
@@ -899,11 +959,11 @@ fi
 
 # Determine description early (needed for commit message)
 # Ensure patches directory exists first
-REPO_ROOT=$(git rev-parse --show-toplevel)
 PATCHES_DIR="${REPO_ROOT}/patches"
 if [ ! -d "$PATCHES_DIR" ]; then
     mkdir -p "$PATCHES_DIR" || die "Cannot create patches directory: $PATCHES_DIR"
 fi
+assert_unique_patch_prefixes "$PATCHES_DIR"
 
 # Determine description for commit message and filename
 if [ -n "$FLAG_DESCRIPTION" ]; then
@@ -1156,7 +1216,7 @@ echo ""
 if [ "$VALIDATION_PASSED" = true ]; then
     print_success "Patch validation passed!"
     print_info "Patch file: ${PATCH_PATH}"
-    print_info "To apply this patch, run: git apply ${PATCH_PATH}"
+    print_info "To apply this patch, run: git am ${PATCH_PATH}"
 else
     print_warning "Patch validation had issues. Review the patch file before applying."
     print_info "Patch file: ${PATCH_PATH}"
