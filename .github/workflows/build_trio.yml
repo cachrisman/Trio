@@ -289,6 +289,41 @@ jobs:
           FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
 
+      # Record release to GitHub
+      - name: Record release
+        run: |
+          # Ensure gh CLI is available
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "Installing GitHub CLI..."
+            brew install gh
+          fi
+          
+          # Export GH_TOKEN for gh CLI
+          export GH_TOKEN="$GH_PAT"
+          
+          # Find IPA path (Fastlane gym outputs to current directory as Trio.ipa,
+          # and copy_artifacts copies it to artifacts/Trio.ipa)
+          IPA_PATH=""
+          if [[ -f "Trio.ipa" ]]; then
+            IPA_PATH="Trio.ipa"
+          elif [[ -f "artifacts/Trio.ipa" ]]; then
+            IPA_PATH="artifacts/Trio.ipa"
+          else
+            # Try to find the most recent IPA
+            IPA_PATH="$(find . -name "Trio.ipa" -type f 2>/dev/null | head -n 1 || echo "")"
+          fi
+          
+          if [[ -z "$IPA_PATH" ]]; then
+            echo "WARNING: Could not find IPA for release recording"
+            exit 0
+          fi
+          
+          echo "Using IPA: $IPA_PATH"
+          IPA_PATH="$IPA_PATH" scripts/record-release.sh
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
       # Upload Build artifacts
       - name: Upload build log, IPA and Symbol artifacts
         if: always()

@@ -304,6 +304,20 @@ if [[ -z "${GITHUB_REPOSITORY_OWNER:-}" ]]; then
 fi
 
 ########################################
+# Auto-detect LOCAL_CI context
+########################################
+
+# Auto-detect LOCAL_CI=1 when appropriate (for release recording)
+# Heuristic: if CI=true or GITHUB_ACTIONS=true, do nothing (record-release will classify as cloudCI)
+# For local runs: if stdin is not a TTY OR TERM is empty OR TRIO_AGENT=1 => LOCAL_CI=1
+if [[ "${CI:-}" != "true" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+  if [[ ! -t 0 ]] || [[ -z "${TERM:-}" ]] || [[ "${TRIO_AGENT:-}" == "1" ]]; then
+    export LOCAL_CI=1
+    echo "[build] Auto-detected LOCAL_CI=1 (non-interactive or agent context)"
+  fi
+fi
+
+########################################
 # RELEASE-ONLY MODE (no build)
 ########################################
 
@@ -337,6 +351,24 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
   fi
 
   echo "[build] TestFlight upload finished successfully."
+
+  ########################################
+  # Record release (after successful TestFlight upload)
+  ########################################
+
+  echo ""
+  echo "[build] Recording release to GitHub..."
+
+  if [[ -f "$ROOT_DIR/Trio.ipa" ]]; then
+    if IPA_PATH="$ROOT_DIR/Trio.ipa" "$ROOT_DIR/scripts/record-release.sh"; then
+      echo "[build] Release recorded successfully."
+    else
+      echo "[build] WARNING: Release recording failed, but build/upload succeeded."
+    fi
+  else
+    echo "[build] WARNING: Could not find IPA for release recording."
+  fi
+
   exit 0
 fi
 
@@ -894,6 +926,43 @@ echo "[build] Ready to upload to TestFlight."
 if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step"; then
   release_exit_code=$?
   exit $release_exit_code
+fi
+
+echo "[build] TestFlight upload finished successfully."
+
+########################################
+# 9. Record release (after successful TestFlight upload)
+########################################
+
+echo ""
+echo "[build] Recording release to GitHub..."
+
+# Determine IPA path for record-release.sh
+ipa_path_for_release=""
+if [[ -f "$BUILD_DIR/Trio.ipa" ]]; then
+  ipa_path_for_release="$BUILD_DIR/Trio.ipa"
+elif [[ -f "$ROOT_DIR/Trio.ipa" ]]; then
+  ipa_path_for_release="$ROOT_DIR/Trio.ipa"
+elif [[ -n "${GYM_OUTPUT_DIR:-}" && -f "$GYM_OUTPUT_DIR/Trio.ipa" ]]; then
+  ipa_path_for_release="$GYM_OUTPUT_DIR/Trio.ipa"
+fi
+
+if [[ -n "$ipa_path_for_release" ]]; then
+  # Ensure we're in the build directory (where patches are applied)
+  cd "$BUILD_DIR"
+  
+  # Run record-release.sh (it will handle errors internally)
+  if IPA_PATH="$ipa_path_for_release" "$ROOT_DIR/scripts/record-release.sh"; then
+    echo "[build] Release recorded successfully."
+  else
+    echo "[build] WARNING: Release recording failed, but build/upload succeeded."
+    echo "[build] To retry release recording, run:"
+    echo "[build]   IPA_PATH=\"$ipa_path_for_release\" $ROOT_DIR/scripts/record-release.sh"
+  fi
+  
+  cd "$ROOT_DIR"
+else
+  echo "[build] WARNING: Could not find IPA for release recording."
 fi
 
 echo "[build] Local build + TestFlight upload finished successfully."
