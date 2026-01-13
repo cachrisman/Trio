@@ -112,6 +112,7 @@ orig_branch=""
 orig_commit=""
 cleanup_enabled=false
 cleanup_in_progress=false
+preserve_worktree=false
 staged_summary=""
 unstaged_summary=""
 untracked_summary=""
@@ -556,13 +557,17 @@ cleanup() {
 
   if [[ "$WORKTREE_CREATED" = true && -n "$WORKTREE_DIR" ]]; then
     normalized_worktree="$(normalize_path "$WORKTREE_DIR")"
-    echo "[cleanup] Removing worktree at $normalized_worktree"
-    cd "$ROOT_DIR" >/dev/null 2>&1 || true
-    if ! git worktree remove --force "$WORKTREE_DIR" >/dev/null 2>&1; then
-      echo "[cleanup] Warning: failed to remove worktree via git; deleting directory"
-      rm -rf "$WORKTREE_DIR"
+    if [[ "$preserve_worktree" = true ]]; then
+      echo "[cleanup] Preserving worktree at $normalized_worktree"
+    else
+      echo "[cleanup] Removing worktree at $normalized_worktree"
+      cd "$ROOT_DIR" >/dev/null 2>&1 || true
+      if ! git worktree remove --force "$WORKTREE_DIR" >/dev/null 2>&1; then
+        echo "[cleanup] Warning: failed to remove worktree via git; deleting directory"
+        rm -rf "$WORKTREE_DIR"
+      fi
+      git worktree prune >/dev/null 2>&1 || true
     fi
-    git worktree prune >/dev/null 2>&1 || true
   fi
 
   if [[ -n "$WORKTREE_PATCH_DIR" && -d "$WORKTREE_PATCH_DIR" ]]; then
@@ -956,8 +961,11 @@ if [[ -n "$ipa_path_for_release" ]]; then
     echo "[build] Release recorded successfully."
   else
     echo "[build] WARNING: Release recording failed, but build/upload succeeded."
-    echo "[build] To retry release recording, run:"
-    echo "[build]   IPA_PATH=\"$ipa_path_for_release\" $ROOT_DIR/scripts/record-release.sh"
+    preserve_worktree=true
+    if [[ -n "$WORKTREE_DIR" ]]; then
+      echo "[build] Preserving worktree for retry: $WORKTREE_DIR"
+    fi
+    echo "[build] See record-release output above for retry instructions."
   fi
   
   cd "$ROOT_DIR"

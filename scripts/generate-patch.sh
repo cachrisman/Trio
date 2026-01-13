@@ -314,7 +314,7 @@ assert_unique_patch_prefixes() {
   local dupes
   dupes=$(ls -1 "$patches_dir"/*.patch 2>/dev/null \
     | sed -E 's#.*/([0-9]{2})-.*\\.patch$#\\1#' \
-    | awk 'NF{c[$1]++} END{for (k in c) if (c[k]>1) print k\":\"c[k]}' \
+    | awk 'NF{c[$1]++} END{for (k in c) if (c[k]>1) print k":"c[k]}' \
     | sort || true)
   if [ -n "$dupes" ]; then
     print_error "Duplicate patch number(s) detected (multiple files share the same NN- prefix)."
@@ -1170,8 +1170,8 @@ if git help worktree >/dev/null 2>&1; then
             # Configure git identity for git am
             git config user.name "Trio Patch Bot" || true
             git config user.email "patch-bot@users.noreply.github.com" || true
-            print_info "Patch summary (git am --stat) on target branch '${TARGET_BRANCH}':"
-            git am --stat "$PATCH_ABS_PATH" 2>&1 || true
+            print_info "Patch summary (git apply --stat) on target branch '${TARGET_BRANCH}':"
+            git apply --stat "$PATCH_ABS_PATH" 2>&1 || true
             if git am --3way --keep-cr --whitespace=nowarn "$PATCH_ABS_PATH" >/dev/null 2>&1; then
                 echo "SUCCESS" > "$apply_result"
                 # Reset to clean state before removing worktree (no abort needed on success)

@@ -3,6 +3,13 @@ set -euo pipefail
 
 # record-release.sh
 # Creates/updates GitHub Release for shipped builds (after TestFlight upload)
+#
+# Version: 1.1.0
+#
+# Changelog:
+#   1.1.0 - Auto-push temp branch when fork SHA doesn't exist on GitHub
+#         - Stop swallowing GitHub API error details for better debugging
+#   1.0.0 - Initial release
 
 usage() {
   cat <<'USAGE'
@@ -20,6 +27,16 @@ Environment variables:
   IPA_PATH       - Path to built IPA (auto-detected if not set)
   GITHUB_REPOSITORY - Repository in owner/name format (auto-detected in CI)
 USAGE
+}
+
+print_retry_hint() {
+  local ipa_path="${1:-}"
+  echo "To retry after fixing:" >&2
+  if [[ -n "$ipa_path" ]]; then
+    echo "  GH_PAT=\"<token>\" IPA_PATH=\"$ipa_path\" scripts/record-release.sh" >&2
+  else
+    echo "  GH_PAT=\"<token>\" scripts/record-release.sh" >&2
+  fi
 }
 
 # Determine build context
@@ -82,52 +99,94 @@ extract_ipa_info() {
 
   if [[ ! -f "$ipa_path" ]]; then
     echo "ERROR: IPA not found at: $ipa_path" >&2
+    print_retry_hint "$ipa_path"
     exit 1
   fi
 
-  # Extract Info.plist from IPA
-  # IPA structure: Payload/Trio.app/Info.plist
-  # Quote the path to handle spaces
-  if ! unzip -q -o "$ipa_path" -d "$temp_dir" "Payload/*/Info.plist" 2>/dev/null; then
+  # Extract top-level app Info.plist from IPA (avoid embedded bundles/frameworks)
+  local plist_path_in_zip
+  if plist_path_in_zip="$(unzip -Z1 "$ipa_path" 2>/dev/null | awk '/^Payload\/[^\/]+\.app\/Info\.plist$/ {print; exit}')"; then
+    :
+  else
+    plist_path_in_zip=""
+  fi
+  if [[ -z "$plist_path_in_zip" ]]; then
+    echo "ERROR: Info.plist not found at top-level app path in IPA" >&2
+    print_retry_hint "$ipa_path"
+    exit 1
+  fi
+
+  if ! unzip -q -o "$ipa_path" -d "$temp_dir" "$plist_path_in_zip" 2>/dev/null; then
     echo "ERROR: Failed to extract Info.plist from IPA" >&2
+    print_retry_hint "$ipa_path"
     exit 1
   fi
 
   local info_plist
-  info_plist="$(find "$temp_dir" -name "Info.plist" -type f | head -n 1)"
-  if [[ -z "$info_plist" || ! -f "$info_plist" ]]; then
-    echo "ERROR: Info.plist not found in IPA" >&2
+  info_plist="$temp_dir/$plist_path_in_zip"
+  if [[ ! -f "$info_plist" ]]; then
+    echo "ERROR: Extracted Info.plist not found at expected path" >&2
+    print_retry_hint "$ipa_path"
     exit 1
   fi
 
   # Extract version and build using plutil (macOS) or defaults
   local version build
   if command -v plutil >/dev/null 2>&1; then
-    version="$(plutil -extract CFBundleShortVersionString raw "$info_plist" 2>/dev/null || echo "")"
-    build="$(plutil -extract CFBundleVersion raw "$info_plist" 2>/dev/null || echo "")"
+    if version="$(plutil -extract CFBundleShortVersionString raw "$info_plist" 2>/dev/null)"; then
+      :
+    else
+      version=""
+    fi
+    if build="$(plutil -extract CFBundleVersion raw "$info_plist" 2>/dev/null)"; then
+      :
+    else
+      build=""
+    fi
   elif command -v defaults >/dev/null 2>&1; then
-    version="$(defaults read "$temp_dir/Payload"/*/Info.plist CFBundleShortVersionString 2>/dev/null || echo "")"
-    build="$(defaults read "$temp_dir/Payload"/*/Info.plist CFBundleVersion 2>/dev/null || echo "")"
+    if version="$(defaults read "$info_plist" CFBundleShortVersionString 2>/dev/null)"; then
+      :
+    else
+      version=""
+    fi
+    if build="$(defaults read "$info_plist" CFBundleVersion 2>/dev/null)"; then
+      :
+    else
+      build=""
+    fi
   else
     # Fallback: use Python to read plist
-    version="$(python3 -c "
+    if version="$(python3 - "$info_plist" <<'PYTHON_EOF'
 import plistlib
 import sys
-with open('$info_plist', 'rb') as f:
+
+with open(sys.argv[1], 'rb') as f:
     plist = plistlib.load(f)
-    print(plist.get('CFBundleShortVersionString', ''))
-" 2>/dev/null || echo "")"
-    build="$(python3 -c "
+print(plist.get('CFBundleShortVersionString', ''))
+PYTHON_EOF
+    )"; then
+      :
+    else
+      version=""
+    fi
+    if build="$(python3 - "$info_plist" <<'PYTHON_EOF'
 import plistlib
 import sys
-with open('$info_plist', 'rb') as f:
+
+with open(sys.argv[1], 'rb') as f:
     plist = plistlib.load(f)
-    print(plist.get('CFBundleVersion', ''))
-" 2>/dev/null || echo "")"
+print(plist.get('CFBundleVersion', ''))
+PYTHON_EOF
+    )"; then
+      :
+    else
+      build=""
+    fi
   fi
 
   if [[ -z "$version" || -z "$build" ]]; then
     echo "ERROR: Failed to extract version or build from IPA" >&2
+    print_retry_hint "$ipa_path"
     exit 1
   fi
 
@@ -249,6 +308,42 @@ get_upstream_dev_sha() {
   echo "$upstream_sha"
 }
 
+# Ensure a commit SHA exists on GitHub (push temp branch if needed)
+ensure_sha_on_github() {
+  local repo_info="$1"
+  local sha="$2"
+  local tag="$3"
+
+  # If GitHub can already resolve this commit, we're good.
+  if gh api "repos/$repo_info/git/commits/$sha" --silent >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "[record-release] NOTE: fork SHA not found on GitHub; pushing temp branch so tag can reference it..."
+
+  # Create a unique, sortable branch name.
+  local ts branch
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  branch="ci-build/${tag}-${ts}"
+
+  # Push the commit object by creating a temporary branch.
+  if ! git push origin "$sha:refs/heads/$branch"; then
+    echo "ERROR: fork SHA $sha is not present on GitHub and pushing temp branch failed." >&2
+    echo "Release creation will not proceed." >&2
+    echo "To retry manually:" >&2
+    echo "  git push origin $sha:refs/heads/$branch" >&2
+    exit 1
+  fi
+
+  # Confirm GitHub can now resolve the commit.
+  if ! gh api "repos/$repo_info/git/commits/$sha" --silent >/dev/null 2>&1; then
+    echo "ERROR: Temp branch push succeeded, but GitHub still cannot resolve commit $sha." >&2
+    exit 1
+  fi
+
+  echo "[record-release] Temp branch pushed: $branch"
+}
+
 # Generate release description body
 generate_release_body() {
   local version="$1"
@@ -346,6 +441,15 @@ main() {
   echo "[record-release] Upstream/dev SHA: ${upstream_dev_sha:0:12}"
   echo "[record-release] Fork SHA: ${fork_sha:0:12}"
 
+  # Ensure we have a fork SHA to point the tag at
+  if [[ -z "$fork_sha" ]]; then
+    echo "ERROR: Unable to determine fork SHA (git rev-parse HEAD returned empty)." >&2
+    exit 1
+  fi
+  
+  # Ensure the fork SHA exists on GitHub; if not, push a temp branch so tagging works.
+  ensure_sha_on_github "$repo_info" "$fork_sha" "$tag"
+
   # Get patch metadata
   local patches_json
   patches_json="$(get_patch_metadata)"
@@ -427,33 +531,31 @@ PYTHON_EOF
   # Create/update tag via GitHub API (uses GH_TOKEN/GH_PAT)
   echo "[record-release] Creating/updating tag: $tag"
 
-  # Ensure we have a fork SHA to point the tag at
-  if [[ -z "$fork_sha" ]]; then
-    echo "ERROR: Unable to determine fork SHA (git rev-parse HEAD returned empty)." >&2
-    exit 1
-  fi
-
   # Create or force-update refs/tags/<tag> to point at fork_sha
-  if gh api "repos/$repo_info/git/refs/tags/$tag" --silent >/dev/null 2>&1; then
-    if ! gh api -X PATCH "repos/$repo_info/git/refs/tags/$tag" -f sha="$fork_sha" -f force=true --silent >/dev/null 2>&1; then
+  if gh api -i "repos/$repo_info/git/refs/tags/$tag" >/dev/null; then
+    if ! gh api -i -X PATCH "repos/$repo_info/git/refs/tags/$tag" -f sha="$fork_sha" -f force=true; then
       echo "ERROR: Failed to update tag '$tag' via GitHub API." >&2
       echo "Release creation will not proceed." >&2
       echo "Likely causes:" >&2
       echo "  - Missing permissions: GH_PAT token lacks required repo permissions" >&2
       echo "  - Network issue: Cannot reach GitHub" >&2
+      echo "  - Tag ruleset/protection is blocking this tag pattern" >&2
+      echo "  - Commit SHA not present on GitHub (should be handled by ensure_sha_on_github, but keep as a hint)" >&2
       echo "To retry after fixing:" >&2
-      echo "  GH_TOKEN=\"$GH_PAT\" IPA_PATH=\"$ipa_path\" scripts/record-release.sh" >&2
+      echo "  GH_PAT=\"<token>\" IPA_PATH=\"$ipa_path\" scripts/record-release.sh" >&2
       exit 1
     fi
   else
-    if ! gh api -X POST "repos/$repo_info/git/refs" -f ref="refs/tags/$tag" -f sha="$fork_sha" --silent >/dev/null 2>&1; then
+    if ! gh api -i -X POST "repos/$repo_info/git/refs" -f ref="refs/tags/$tag" -f sha="$fork_sha"; then
       echo "ERROR: Failed to create tag '$tag' via GitHub API." >&2
       echo "Release creation will not proceed." >&2
       echo "Likely causes:" >&2
       echo "  - Missing permissions: GH_PAT token lacks required repo permissions" >&2
       echo "  - Network issue: Cannot reach GitHub" >&2
+      echo "  - Tag ruleset/protection is blocking this tag pattern" >&2
+      echo "  - Commit SHA not present on GitHub (should be handled by ensure_sha_on_github, but keep as a hint)" >&2
       echo "To retry after fixing:" >&2
-      echo "  GH_TOKEN=\"$GH_PAT\" IPA_PATH=\"$ipa_path\" scripts/record-release.sh" >&2
+      echo "  GH_PAT=\"<token>\" IPA_PATH=\"$ipa_path\" scripts/record-release.sh" >&2
       exit 1
     fi
   fi
