@@ -1,0 +1,2575 @@
+From 81d20ab231908f5d10fcdc9169b8e8c7749436d7 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Tue, 13 Jan 2026 22:33:50 +0100
+Subject: [PATCH] feat: watch-complication-improvements
+
+---
+ Config.xcconfig                               |   5 +-
+ .../ExtensionDelegate.swift                   |  24 +
+ Trio Watch App Extension/TrioWatchApp.swift   |   2 +
+ .../Views/ComplicationDebugView.swift         | 291 ++++++++++
+ .../Views/TrioMainWatchView.swift             |  47 +-
+ .../WatchState+Requests.swift                 |  19 +
+ Trio Watch App Extension/WatchState.swift     | 516 +++++++++++------
+ Trio Watch App/Info.plist                     |   2 +
+ Trio Watch Complication/Info.plist            |   2 +
+ .../TrioWatchComplication.swift               | 358 ++++++++++--
+ .../TrioWatchComplicationPreview.swift        | 124 ++++
+ .../TrioComplicationDataStore.swift           | 543 ++++++++++++++++++
+ Trio/Resources/TrioWatch.entitlements         |  10 +
+ .../WatchManager/AppleWatchManager.swift      |   6 +-
+ 14 files changed, 1740 insertions(+), 209 deletions(-)
+ create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
+ create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
+ create mode 100644 Trio Watch Complication/TrioWatchComplicationPreview.swift
+ create mode 100644 Trio Watch Shared/TrioComplicationDataStore.swift
+ create mode 100644 Trio/Resources/TrioWatch.entitlements
+
+diff --git a/Config.xcconfig b/Config.xcconfig
+index b847fdbbd..9fc183c72 100644
+--- a/Config.xcconfig
++++ b/Config.xcconfig
+@@ -16,14 +16,15 @@ BUNDLE_IDENTIFIER = org.nightscout.$(DEVELOPMENT_TEAM).trio
+ // The TRIO_APP_GROUP_ID should not be modified - it is required to have this exact format
+ // to build with GitHub actions and to work with xDrip4iOS
+ TRIO_APP_GROUP_ID = group.org.nightscout.$(DEVELOPMENT_TEAM).trio.trio-app-group
++CODE_SIGN_ENTITLEMENTS[sdk=watchos*] = Trio/Resources/TrioWatch.entitlements
+ 
+ // The developers set the version numbers, please leave them alone
+ APP_VERSION = 0.6.0
+-APP_DEV_VERSION = 0.6.0.41
++APP_DEV_VERSION = 0.6.0.34
+ APP_BUILD_NUMBER = 1
+ COPYRIGHT_NOTICE =
+ 
+ // Optional overrides - these can be used to insert your TEAMID into the DEVELOPER_TEAM field
+ #include? "../../ConfigOverride.xcconfig"
+ #include? "../ConfigOverride.xcconfig"
+-#include? "ConfigOverride.xcconfig"
+\ No newline at end of file
++#include? "ConfigOverride.xcconfig"
+diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
+new file mode 100644
+index 000000000..c9b3fdf69
+--- /dev/null
++++ b/Trio Watch App Extension/ExtensionDelegate.swift	
+@@ -0,0 +1,24 @@
++import WatchKit
++
++final class ExtensionDelegate: NSObject, WKApplicationDelegate {
++    func applicationDidFinishLaunching() {
++        Task { await WatchLogger.shared.log("Watch extension launched") }
++        WatchState.shared.scheduleBackgroundRefresh()
++    }
++
++    func applicationDidBecomeActive() {
++        Task { await WatchLogger.shared.log("🟢 Watch app became active - requesting fresh data") }
++        WatchState.shared.noteAppBecameActive()
++        WatchState.shared.requestWatchStateUpdate()
++        // Note: forceComplicationUpdate() is now called in finalizePendingData() after fresh data arrives
++        // This prevents the race condition where stale data was saved before fresh data arrived
++    }
++
++    func applicationWillResignActive() {
++        Task { await WatchLogger.shared.log("Watch app entering background") }
++    }
++
++    func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
++        WatchState.shared.handleBackgroundTasks(backgroundTasks)
++    }
++}
+diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
+index ccc8911ca..3b86e2547 100644
+--- a/Trio Watch App Extension/TrioWatchApp.swift	
++++ b/Trio Watch App Extension/TrioWatchApp.swift	
+@@ -1,7 +1,9 @@
+ import SwiftUI
+ import UserNotifications
++import WatchKit
+ 
+ @main struct TrioWatchApp: App {
++    @WKApplicationDelegateAdaptor(ExtensionDelegate.self) var appDelegate
+     @Environment(\.scenePhase) private var scenePhase
+ 
+     init() {
+diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
+new file mode 100644
+index 000000000..2ed99d980
+--- /dev/null
++++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
+@@ -0,0 +1,291 @@
++import SwiftUI
++import WatchKit
++
++struct ComplicationDebugView: View {
++    @State private var snapshot: TrioComplicationSnapshot?
++    @State private var showConfirmation = false
++    @State private var confirmationMessage = ""
++    @State private var refreshTrigger = UUID()
++
++    private let dataStore = TrioComplicationDataStore.shared
++
++    var body: some View {
++        ScrollView {
++            VStack(alignment: .leading, spacing: 8) {
++                // SECTION 1: Data Store State
++                sectionHeader("DATA STORE")
++                dataStoreStateView
++
++                Divider().padding(.vertical, 4)
++
++                // SECTION 2: Reload Status
++                sectionHeader("RELOAD STATUS")
++                reloadStatusView
++
++                Divider().padding(.vertical, 4)
++
++                // SECTION 3: Actions
++                sectionHeader("ACTIONS")
++                actionsView
++            }
++            .padding(.horizontal, 8)
++        }
++        .navigationTitle("Debug")
++        .onAppear { loadSnapshot() }
++        .overlay(confirmationOverlay)
++        .id(refreshTrigger)
++    }
++
++    // MARK: - Data Store State Section
++
++    private var dataStoreStateView: some View {
++        VStack(alignment: .leading, spacing: 4) {
++            if let s = snapshot {
++                HStack {
++                    Text("Glucose:")
++                    Spacer()
++                    Text(s.glucose)
++                        .foregroundColor(glucoseColor(for: s.glucose))
++                        .fontWeight(.bold)
++                }
++
++                HStack {
++                    Text("Trend:")
++                    Spacer()
++                    Text(s.trend.isEmpty ? "--" : s.trend)
++                }
++
++                HStack {
++                    Text("Delta:")
++                    Spacer()
++                    Text(s.delta)
++                }
++
++                HStack {
++                    Text("Reading:")
++                    Spacer()
++                    VStack(alignment: .trailing, spacing: 2) {
++                        Text(formatTime(s.readingDate))
++                        Text("(\(formatAge(s.readingDate)))")
++                            .font(.caption2)
++                            .foregroundColor(ageColor(s.readingDate))
++                    }
++                }
++
++                HStack {
++                    Text("Saved:")
++                    Spacer()
++                    Text(formatTime(s.date))
++                }
++
++                if let state = s.state, !state.isEmpty {
++                    HStack {
++                        Text("State:")
++                        Spacer()
++                        Text(state)
++                            .foregroundColor(.orange)
++                    }
++                }
++            } else {
++                Text("No snapshot available")
++                    .foregroundColor(.secondary)
++                    .frame(maxWidth: .infinity, alignment: .center)
++            }
++
++            HStack {
++                Text("Path:")
++                Spacer()
++                Text(truncatePath(dataStore.appGroupContainerPath))
++                    .font(.system(size: 9))
++                    .foregroundColor(.secondary)
++                    .lineLimit(1)
++            }
++        }
++        .font(.caption)
++    }
++
++    // MARK: - Reload Status Section
++
++    private var reloadStatusView: some View {
++        VStack(alignment: .leading, spacing: 4) {
++            HStack {
++                Text("Last reload:")
++                Spacer()
++                Text(formatTime(dataStore.lastReloadTimestamp))
++            }
++
++            HStack {
++                Text("Elapsed:")
++                Spacer()
++                Text("\(Int(dataStore.secondsSinceLastReload))s ago")
++            }
++
++            HStack {
++                Text("Debounce:")
++                Spacer()
++                if dataStore.isDebounceActive {
++                    HStack(spacing: 4) {
++                        Circle()
++                            .fill(Color.red)
++                            .frame(width: 8, height: 8)
++                        Text("\(Int(dataStore.secondsUntilNextReloadAllowed))s")
++                    }
++                    .foregroundColor(.red)
++                } else {
++                    HStack(spacing: 4) {
++                        Circle()
++                            .fill(Color.green)
++                            .frame(width: 8, height: 8)
++                        Text("Ready")
++                    }
++                    .foregroundColor(.green)
++                }
++            }
++        }
++        .font(.caption)
++    }
++
++    // MARK: - Actions Section
++
++    private var actionsView: some View {
++        VStack(spacing: 8) {
++            Button {
++                Task {
++                    await WatchLogger.shared.log("🔧 Debug: Force Reload tapped")
++                }
++                dataStore.forceReload()
++                showConfirmation(message: "✅ Reload triggered!")
++                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
++                    loadSnapshot()
++                }
++            } label: {
++                HStack {
++                    Image(systemName: "arrow.clockwise")
++                    Text("Force Reload")
++                }
++                .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.bordered)
++            .tint(.blue)
++
++            Button {
++                Task {
++                    await WatchLogger.shared.log("🔧 Debug: Request Fresh Data tapped")
++                }
++                WatchState.shared.requestWatchStateUpdate()
++                showConfirmation(message: "📡 Requesting...")
++            } label: {
++                HStack {
++                    Image(systemName: "iphone.radiowaves.left.and.right")
++                    Text("Request Data")
++                }
++                .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.bordered)
++            .tint(.orange)
++
++            Button {
++                loadSnapshot()
++                refreshTrigger = UUID()
++                showConfirmation(message: "🔄 Refreshed")
++            } label: {
++                HStack {
++                    Image(systemName: "arrow.triangle.2.circlepath")
++                    Text("Refresh View")
++                }
++                .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.bordered)
++            .tint(.gray)
++        }
++    }
++
++    // MARK: - Confirmation Overlay
++
++    private var confirmationOverlay: some View {
++        Group {
++            if showConfirmation {
++                VStack {
++                    Spacer()
++                    Text(confirmationMessage)
++                        .font(.caption)
++                        .padding(.horizontal, 12)
++                        .padding(.vertical, 8)
++                        .background(.ultraThinMaterial)
++                        .cornerRadius(8)
++                        .padding(.bottom, 20)
++                }
++                .transition(.move(edge: .bottom).combined(with: .opacity))
++            }
++        }
++        .animation(.easeInOut(duration: 0.3), value: showConfirmation)
++    }
++
++    // MARK: - Helpers
++
++    private func sectionHeader(_ title: String) -> some View {
++        Text(title)
++            .font(.caption2)
++            .fontWeight(.semibold)
++            .foregroundColor(.secondary)
++            .frame(maxWidth: .infinity, alignment: .leading)
++            .padding(.top, 4)
++    }
++
++    private func loadSnapshot() {
++        snapshot = dataStore.latestSnapshot()
++    }
++
++    private func showConfirmation(message: String) {
++        confirmationMessage = message
++        showConfirmation = true
++        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
++            showConfirmation = false
++        }
++    }
++
++    private func formatTime(_ date: Date) -> String {
++        if date == .distantPast { return "--" }
++        let formatter = DateFormatter()
++        formatter.dateFormat = "HH:mm:ss"
++        return formatter.string(from: date)
++    }
++
++    private func formatAge(_ date: Date) -> String {
++        if date == .distantPast { return "--" }
++        let seconds = Int(Date().timeIntervalSince(date))
++        if seconds < 60 { return "\(seconds)s ago" }
++        if seconds < 3600 { return "\(seconds / 60)m ago" }
++        return "\(seconds / 3600)h ago"
++    }
++
++    private func ageColor(_ date: Date) -> Color {
++        if date == .distantPast { return .secondary }
++        let age = Date().timeIntervalSince(date)
++        if age < 300 { return .green }
++        if age < 900 { return .yellow }
++        return .red
++    }
++
++    private func glucoseColor(for value: String) -> Color {
++        guard let glucose = Double(value) else { return .secondary }
++        if glucose < 70 { return .red }
++        if glucose > 180 { return .orange }
++        return .green
++    }
++
++    private func truncatePath(_ path: String?) -> String {
++        guard let path = path else { return "Unknown" }
++        let components = path.components(separatedBy: "/")
++        if components.count > 3 {
++            return ".../" + components.suffix(2).joined(separator: "/")
++        }
++        return path
++    }
++}
++
++#Preview {
++    NavigationStack {
++        ComplicationDebugView()
++    }
++}
+diff --git a/Trio Watch App Extension/Views/TrioMainWatchView.swift b/Trio Watch App Extension/Views/TrioMainWatchView.swift
+index 9e381bcee..830ebac67 100644
+--- a/Trio Watch App Extension/Views/TrioMainWatchView.swift	
++++ b/Trio Watch App Extension/Views/TrioMainWatchView.swift	
+@@ -3,7 +3,7 @@ import SwiftUI
+ import WatchKit
+ 
+ struct TrioMainWatchView: View {
+-    @State private var state = WatchState()
++    @State private var state = WatchState.shared
+ 
+     // misc
+     @State private var currentPage: Int = 0
+@@ -25,8 +25,8 @@ struct TrioMainWatchView: View {
+         guard let lastUpdateTimestamp = state.lastWatchStateUpdate else {
+             return true
+         }
+-        let now = Date().timeIntervalSince1970
+-        let secondsSinceUpdate = now - lastUpdateTimestamp
++        let now = Date()
++        let secondsSinceUpdate = now.timeIntervalSince(lastUpdateTimestamp)
+         // Return true if last update older than 5 min, so 1 loop cycle
+         return secondsSinceUpdate > 5 * 60
+     }
+@@ -69,6 +69,12 @@ struct TrioMainWatchView: View {
+                         rotationDegrees: rotationDegrees,
+                         isWatchStateDated: isWatchStateDated || isSessionUnreachable
+                     )
++                    .onLongPressGesture(minimumDuration: 1.0) {
++                        // Long press to quickly access debug view
++                        withAnimation {
++                            currentPage = 2
++                        }
++                    }
+ 
+                     if state.showSyncingAnimation {
+                         Image(systemName: "iphone.radiowaves.left.and.right")
+@@ -94,8 +100,41 @@ struct TrioMainWatchView: View {
+                     maxYAxisValue: state.maxYAxisValue
+                 )
+                 .tag(1)
++
++                // Page 3: Complication Debug View
++                ComplicationDebugView()
++                    .tag(2)
+             }
+             .onAppear {
++                Task {
++                    await WatchLogger.shared.log("Watch main view appeared - requesting data")
++                }
++                state.requestWatchStateUpdate()
++
++                let hasValidWatchData = state.currentGlucose != "--" && !state.currentGlucose.isEmpty
++                if !hasValidWatchData, let snapshot = TrioComplicationDataStore.shared.latestSnapshot() {
++                    state.currentGlucose = snapshot.glucose
++                    state.trend = snapshot.trend
++                    state.delta = snapshot.delta
++                    if let glucoseColor = snapshot.glucoseColor {
++                        state.currentGlucoseColorString = glucoseColor
++                    }
++                    state.lastWatchStateUpdate = snapshot.readingDate
++                    state.showSyncingAnimation = true
++                } else if let snapshot = TrioComplicationDataStore.shared.latestSnapshot(),
++                          let lastUpdate = state.lastWatchStateUpdate,
++                          snapshot.readingDate > lastUpdate
++                {
++                    state.currentGlucose = snapshot.glucose
++                    state.trend = snapshot.trend
++                    state.delta = snapshot.delta
++                    if let glucoseColor = snapshot.glucoseColor {
++                        state.currentGlucoseColorString = glucoseColor
++                    }
++                    state.lastWatchStateUpdate = snapshot.readingDate
++                    state.showSyncingAnimation = false
++                }
++
+                 /// Hard reset variables when main view appears
+                 /// Reset `bolusAmount` and `recommendedBolus` to ensure no stale / old value is set when user opens bolus input or meal combo the next time.
+                 state.bolusAmount = 0
+@@ -103,7 +142,7 @@ struct TrioMainWatchView: View {
+             }
+             .background(trioBackgroundColor)
+             .tabViewStyle(.verticalPage)
+-            .digitalCrownRotation($currentPage.doubleBinding(), from: 0, through: 1, by: 1)
++            .digitalCrownRotation($currentPage.doubleBinding(), from: 0, through: 2, by: 1)
+             .onChange(of: state.trend) { _, newTrend in
+                 withAnimation {
+                     updateRotation(for: newTrend)
+diff --git a/Trio Watch App Extension/WatchState+Requests.swift b/Trio Watch App Extension/WatchState+Requests.swift
+index d47a971c9..f53d1ce43 100644
+--- a/Trio Watch App Extension/WatchState+Requests.swift	
++++ b/Trio Watch App Extension/WatchState+Requests.swift	
+@@ -234,6 +234,7 @@ extension WatchState {
+             Task {
+                 await WatchLogger.shared.log("⌚️ No session available for state update")
+             }
++            loadFallbackDataFromComplication()
+             return
+         }
+ 
+@@ -242,6 +243,7 @@ extension WatchState {
+                 await WatchLogger.shared.log("⌚️ Session not activated. Activating...")
+             }
+             session.activate()
++            loadFallbackDataFromComplication()
+             return
+         }
+ 
+@@ -258,11 +260,28 @@ extension WatchState {
+                     await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+                     await WatchLogger.shared.flushPersistedLogs()
+                 }
++                DispatchQueue.main.async {
++                    self.loadFallbackDataFromComplication()
++                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
++                        self.requestWatchStateUpdate()
++                    }
++                }
++            }
++
++            syncTimeoutWorkItem?.cancel()
++            let timeoutWorkItem = DispatchWorkItem { [weak self] in
++                Task {
++                    await WatchLogger.shared.log("WatchState update timeout - using fallback data")
++                }
++                self?.loadFallbackDataFromComplication()
+             }
++            syncTimeoutWorkItem = timeoutWorkItem
++            DispatchQueue.main.asyncAfter(deadline: .now() + 30.0, execute: timeoutWorkItem)
+         } else {
+             Task {
+                 await WatchLogger.shared.log("⌚️ Phone not reachable for WatchState update")
+             }
++            loadFallbackDataFromComplication()
+         }
+     }
+ }
+diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
+index f4fb33fde..26263bf41 100644
+--- a/Trio Watch App Extension/WatchState.swift	
++++ b/Trio Watch App Extension/WatchState.swift	
+@@ -1,20 +1,19 @@
+ import Foundation
+ import SwiftUI
+ import WatchConnectivity
++import WatchKit
+ 
+-/// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
+-/// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
+ @Observable final class WatchState: NSObject, WCSessionDelegate {
+-    // MARK: - Properties
++    static let shared = WatchState()
++
++    // MARK: - WatchConnectivity
+ 
+-    /// The WatchConnectivity session instance used for communication
+     var session: WCSession?
+-    /// Indicates if the paired iPhone is currently reachable
+     var isReachable = false
++    var lastWatchStateUpdate: Date?
+ 
+-    var lastWatchStateUpdate: TimeInterval?
++    // MARK: - Main view metrics
+ 
+-    /// main view relevant metrics
+     var currentGlucose: String = "--"
+     var currentGlucoseColorString: String = "#ffffff"
+     var trend: String? = ""
+@@ -28,59 +27,81 @@ import WatchConnectivity
+     var overridePresets: [OverridePresetWatch] = []
+     var tempTargetPresets: [TempTargetPresetWatch] = []
+ 
+-    /// treatments inputs
+-    /// used to store carbs for combined meal-bolus-treatments
++    // MARK: - Treatment inputs
++
+     var carbsAmount: Int = 0
+     var fatAmount: Int = 0
+     var proteinAmount: Int = 0
+     var bolusAmount: Double = 0.0
+     var confirmationProgress: Double = 0.0
+ 
+-    // Safety limits
++    // MARK: - Safety limits
++
+     var maxBolus: Decimal = 10
+     var maxCarbs: Decimal = 250
+     var maxFat: Decimal = 250
+     var maxProtein: Decimal = 250
+ 
+-    // Pump specific dosing increment
++    // MARK: - Pump-specific increments
++
+     var bolusIncrement: Decimal = 0.05
+     var confirmBolusFaster: Bool = false
+ 
+-    // Acknowlegement handling
++    // MARK: - Acknowledgment handling
++
+     var showCommsAnimation: Bool = false
+     var showAcknowledgmentBanner: Bool = false
+     var acknowledgementStatus: AcknowledgementStatus = .pending
+     var acknowledgmentMessage: String = ""
+     var shouldNavigateToRoot: Bool = true
+ 
+-    // Bolus calculation progress
+-    var showBolusCalculationProgress: Bool = false
++    // MARK: - Progress state
+ 
+-    // Meal bolus-specific properties
++    var showBolusCalculationProgress: Bool = false
+     var mealBolusStep: MealBolusStep = .savingCarbs
+     var isMealBolusCombo: Bool = false
+-
+     var recommendedBolus: Decimal = 0
+ 
+-    // MARK: - Debouncing and batch processing helpers
++    // MARK: - Debouncing and sync helpers
+ 
+-    /// Temporary storage for new data arriving via WatchConnectivity.
+     private var pendingData: [String: Any] = [:]
+-
+-    /// Work item to schedule finalizing the pending data.
+     private var finalizeWorkItem: DispatchWorkItem?
+-
+-    /// A flag to tell the UI we’re still updating.
+     var showSyncingAnimation: Bool = false
++    var syncTimeoutWorkItem: DispatchWorkItem?
++
++    private var activationTimestamp: Date?
++    private var forcedSinceActivation = false
++
++    private var transferRetryCount = 0
++    private let maxTransferRetries = 3
++    private var retryWorkItem: DispatchWorkItem?
++
++    private var backgroundRefreshCount = 0
++    private var lastBackgroundRefreshDate: Date?
+ 
+     var deviceType = WatchSize.current
+ 
++    private var isColdStart: Bool {
++        guard let activationTimestamp = activationTimestamp else { return true }
++        return Date().timeIntervalSince(activationTimestamp) < 60
++    }
++
+     override init() {
+         super.init()
+         setupSession()
++
++        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
++            self.forceComplicationUpdate()
++            self.scheduleBackgroundRefresh()
++        }
++    }
++
++    func noteAppBecameActive() {
++        activationTimestamp = Date()
++        forcedSinceActivation = false
++        Task { await WatchLogger.shared.log("Cold start window active for 60s") }
+     }
+ 
+-    /// Configures the WatchConnectivity session if supported on the device
+     private func setupSession() {
+         if WCSession.isSupported() {
+             let session = WCSession.default
+@@ -88,16 +109,16 @@ import WatchConnectivity
+             session.activate()
+             self.session = session
+             Task {
+-                await WatchLogger.shared.log("⌚️ WCSession setup complete.")
++                await WatchLogger.shared.log("WCSession setup complete.")
+             }
+         } else {
+             Task {
+-                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
++                await WatchLogger.shared.log("WCSession is not supported on this device")
+             }
+         }
+     }
+ 
+-    // MARK: – Handle Acknowledgement Messages FROM Phone
++    // MARK: - Acknowledgement handling
+ 
+     func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
+         Task {
+@@ -106,21 +127,17 @@ import WatchConnectivity
+ 
+         if success {
+             Task {
+-                await WatchLogger.shared.log("⌚️ Acknowledgment received: \(message)")
++                await WatchLogger.shared.log("Acknowledgment received: \(message)")
+             }
+             acknowledgementStatus = .success
+             acknowledgmentMessage = message
+-
+-            // Hide progress animation
+             DispatchQueue.main.async {
+                 self.showCommsAnimation = false
+             }
+         } else {
+             Task {
+-                await WatchLogger.shared.log("⌚️ Acknowledgment failed: \(message)")
++                await WatchLogger.shared.log("Acknowledgment failed: \(message)")
+             }
+-
+-            // Hide progress animation
+             DispatchQueue.main.async {
+                 self.showCommsAnimation = false
+             }
+@@ -135,7 +152,7 @@ import WatchConnectivity
+ 
+             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                 self.showAcknowledgmentBanner = false
+-                self.showSyncingAnimation = false // Just ensure this is 100% set to false
++                self.showSyncingAnimation = false
+                 Task {
+                     await WatchLogger.shared.log("Cleared ack banner and syncing animation")
+                 }
+@@ -145,14 +162,12 @@ import WatchConnectivity
+ 
+     // MARK: - WCSessionDelegate
+ 
+-    /// Called when the session has completed activation
+-    /// Updates the reachability status and logs the activation state
+     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
+         DispatchQueue.main.async {
+             if let error = error {
+                 Task {
+-                    await WatchLogger.shared.log("⌚️ Watch session activation failed: \(error)", force: true)
+-                    await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
++                    await WatchLogger.shared.log("Watch session activation failed: \(error)", force: true)
++                    await WatchLogger.shared.log("Saving logs to disk as fallback.")
+                     await WatchLogger.shared.flushPersistedLogs()
+                 }
+                 return
+@@ -160,84 +175,68 @@ import WatchConnectivity
+ 
+             if activationState == .activated {
+                 Task {
+-                    await WatchLogger.shared.log("⌚️ Watch session activated with state: \(activationState.rawValue)")
++                    await WatchLogger.shared.log("Watch session activated with state: \(activationState.rawValue)")
+                 }
+ 
+                 self.forceConditionalWatchStateUpdate()
+-
+                 self.isReachable = session.isReachable
+ 
+                 Task {
+-                    await WatchLogger.shared.log("⌚️ Watch isReachable after activation: \(session.isReachable)")
++                    await WatchLogger.shared.log("Watch isReachable after activation: \(session.isReachable)")
+                 }
+             }
+         }
+     }
+ 
+-    /// Handles incoming messages from the paired iPhone when Phone is in the foreground
+     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
+         Task {
+-            await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
++            await WatchLogger.shared.log("Watch received data: \(message)")
+         }
+ 
+-        // If the message has a nested "watchState" dictionary with date as TimeInterval
+         if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
+-           let timestamp = watchStateDict[WatchMessageKeys.date] as? TimeInterval
++           let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
+         {
+-            let date = Date(timeIntervalSince1970: timestamp)
+-
+-            // Check if it's not older than 15 min
+             if date >= Date().addingTimeInterval(-15 * 60) {
+                 Task {
+-                    await WatchLogger.shared.log("⌚️ Handling watchState from \(date)")
++                    await WatchLogger.shared.log("Handling watchState from \(date)")
+                 }
+                 processWatchMessage(message)
+             } else {
+                 Task {
+-                    await WatchLogger.shared.log("⌚️ Received outdated watchState data (\(date))")
++                    await WatchLogger.shared.log("Received outdated watchState data (\(date))")
+                 }
+                 DispatchQueue.main.async {
+                     self.showSyncingAnimation = false
+                 }
+             }
+             return
+-        }
+-
+-        // Else if the message is an "ack" at the top level
+-        // e.g. { "acknowledged": true, "message": "Started Temp Target...", "date": Date(...) }
+-        else if
++        } else if
+             let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
+             let ackMessage = message[WatchMessageKeys.message] as? String,
+             let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
+         {
+             Task {
+                 await WatchLogger.shared
+-                    .log("⌚️ Handling ack with message: \(ackMessage), success: \(acknowledged), ackCode: \(ackCodeRaw)")
++                    .log("Handling ack with message: \(ackMessage), success: \(acknowledged), ackCode: \(ackCodeRaw)")
+             }
+             DispatchQueue.main.async {
+-                // For ack messages, we do NOT show “Syncing...”
+                 self.showSyncingAnimation = false
+             }
+             processWatchMessage(message)
+             return
+-
+-                    // Recommended bolus is also not part of the WatchState message, hence the extra condition here
+-        } else if
+-            let recommendedBolus = message[WatchMessageKeys.recommendedBolus] as? NSNumber
+-        {
++        } else if let recommendedBolus = message[WatchMessageKeys.recommendedBolus] as? NSNumber {
+             Task {
+-                await WatchLogger.shared.log("⌚️ Received recommended bolus: \(recommendedBolus)")
++                await WatchLogger.shared.log("Received recommended bolus: \(recommendedBolus)")
+             }
+ 
+             DispatchQueue.main.async {
+                 self.recommendedBolus = recommendedBolus.decimalValue
+                 self.showBolusCalculationProgress = false
+             }
+-
+             return
+         } else {
+             Task {
+-                await WatchLogger.shared.log("⌚️ Faulty data. Skipping...")
++                await WatchLogger.shared.log("Faulty data. Skipping.")
+             }
+             DispatchQueue.main.async {
+                 self.showSyncingAnimation = false
+@@ -246,98 +245,110 @@ import WatchConnectivity
+     }
+ 
+     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+-        guard let snapshot = WatchStateSnapshot(from: userInfo) else {
++        Task {
++            await WatchLogger.shared.log("Received userInfo with keys: \(userInfo.keys.joined(separator: ", "))")
++        }
++
++        let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
++
++        let readingDate = latestGlucoseDate(from: payload) ?? dateValue(from: payload[WatchMessageKeys.date])
++        guard let readingDate = readingDate else {
+             Task {
+-                await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)
++                await WatchLogger.shared.log("Invalid snapshot received (missing date)")
+             }
+             return
+         }
+ 
+-        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
+-
+-        guard snapshot.date > lastProcessed else {
++        let glucose = payload[WatchMessageKeys.currentGlucose] as? String ?? "--"
++        if let lastSnapshot = TrioComplicationDataStore.shared.latestSnapshot(),
++           lastSnapshot.readingDate == readingDate,
++           lastSnapshot.glucose == glucose
++        {
+             Task {
+-                await WatchLogger.shared.log("⌚️ Ignoring outdated or duplicate WatchState snapshot", force: true)
++                await WatchLogger.shared.log("Skipping duplicate snapshot at \(readingDate)")
+             }
+             return
+         }
+ 
+-        WatchStateSnapshot.saveLatestDateToDisk(snapshot.date)
+-
+         DispatchQueue.main.async {
+-            self.scheduleUIUpdate(with: snapshot.payload)
++            self.scheduleUIUpdate(with: payload)
+         }
+     }
+ 
+     func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
+         if let error = error {
+             Task {
+-                await WatchLogger.shared.log("⌚️ transferUserInfo failed with error: \(error)")
+-                await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
++                await WatchLogger.shared.log("transferUserInfo failed with error: \(error)")
++                await WatchLogger.shared.log("Saving logs to disk as fallback.")
+                 await WatchLogger.shared.flushPersistedLogs()
+             }
++
++            if transferRetryCount < maxTransferRetries {
++                transferRetryCount += 1
++                let retryDelay = TimeInterval(transferRetryCount * 2)
++
++                retryWorkItem?.cancel()
++                retryWorkItem = DispatchWorkItem { [weak self] in
++                    self?.requestWatchStateUpdate()
++                }
++
++                DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: retryWorkItem!)
++            } else {
++                transferRetryCount = 0
++                loadFallbackDataFromComplication()
++            }
++        } else {
++            transferRetryCount = 0
+         }
+     }
+ 
+-    /// Called when the reachability status of the paired iPhone changes
+-    /// Updates the local reachability status
+     func sessionReachabilityDidChange(_ session: WCSession) {
+         DispatchQueue.main.async {
+             Task {
+-                await WatchLogger.shared.log("⌚️ Watch reachability changed: \(session.isReachable)")
++                await WatchLogger.shared.log("Watch reachability changed: \(session.isReachable)")
+             }
+ 
++            self.isReachable = session.isReachable
++
+             if session.isReachable {
+-                self.forceConditionalWatchStateUpdate()
++                if self.isColdStart, !self.forcedSinceActivation {
++                    self.forceConditionalWatchStateUpdate()
++                    self.forcedSinceActivation = true
++                }
+ 
+-                // reset input amounts
+                 self.bolusAmount = 0
+                 self.carbsAmount = 0
+-
+-                // reset auth progress
+                 self.confirmationProgress = 0
+             }
+         }
+     }
+ 
+-    /// Conditionally triggers a watch state update if the last known update was too long ago or has never occurred.
+-    ///
+-    /// This method checks the `lastWatchStateUpdate` timestamp to determine how many seconds
+-    /// have elapsed since the last update under the following conditions
+-    ///  - If `lastWatchStateUpdate` is `nil` (meaning there has never been an update), or
+-    ///  - If more than 15 seconds have passed,
+-    ///
+-    /// it will show a syncing animation and request a new watch state update from the iPhone app.
+     private func forceConditionalWatchStateUpdate() {
+         guard let lastUpdateTimestamp = lastWatchStateUpdate else {
+             Task {
+                 await WatchLogger.shared.log("Forcing initial WatchState update")
+             }
+-
+-            // If there's no recorded timestamp, we must force a fresh update immediately.
+             showSyncingAnimation = true
+             requestWatchStateUpdate()
++            forcedSinceActivation = true
+             return
+         }
+ 
+-        let now = Date().timeIntervalSince1970
+-        let secondsSinceUpdate = now - lastUpdateTimestamp
++        let now = Date()
++        let secondsSinceUpdate = now.timeIntervalSince(lastUpdateTimestamp)
+         Task {
+             await WatchLogger.shared.log("Time since last update: \(secondsSinceUpdate) seconds")
+         }
+ 
+-        // If more than 15 seconds have elapsed since the last update, force an(other) update.
+-        if secondsSinceUpdate > 15 {
++        if secondsSinceUpdate > 15 || isColdStart {
+             showSyncingAnimation = true
+             requestWatchStateUpdate()
+-            return
++            forcedSinceActivation = true
+         }
+     }
+ 
+-    /// Handles incoming messages that either contain an acknowledgement or fresh watchState data  (<15 min)
+     private func processWatchMessage(_ message: [String: Any]) {
+         DispatchQueue.main.async {
+-            // 1) Acknowledgment logic
+             if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
+                let ackMessage = message[WatchMessageKeys.message] as? String,
+                let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
+@@ -348,7 +359,7 @@ import WatchConnectivity
+                 }
+ 
+                 Task {
+-                    await WatchLogger.shared.log("⌚️ Received acknowledgment: \(ackMessage), success: \(acknowledged)")
++                    await WatchLogger.shared.log("Received acknowledgment: \(ackMessage), success: \(acknowledged)")
+                 }
+ 
+                 switch ackCode {
+@@ -371,26 +382,29 @@ import WatchConnectivity
+                 }
+             }
+ 
+-            // 2) Raw watchState data
+             if let watchStateData = message[WatchMessageKeys.watchState] as? [String: Any] {
+                 self.scheduleUIUpdate(with: watchStateData)
+             }
+         }
+     }
+ 
+-    /// Accumulate new data, set isSyncing, and debounce final update
+     private func scheduleUIUpdate(with newData: [String: Any]) {
+-        if let incomingTimestamp = newData[WatchMessageKeys.date] as? TimeInterval,
+-           let lastTimestamp = lastWatchStateUpdate,
+-           incomingTimestamp <= lastTimestamp
++        guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
++            Task {
++                await WatchLogger.shared.log("Invalid date format in WatchState data")
++            }
++            return
++        }
++
++        if let lastTimestamp = lastWatchStateUpdate,
++           incomingDate <= lastTimestamp
+         {
+             Task {
+-                await WatchLogger.shared.log("Skipping UI update — outdated WatchState (\(incomingTimestamp))")
++                await WatchLogger.shared.log("Skipping UI update — outdated WatchState (\(incomingDate))")
+             }
+             return
+         }
+ 
+-        // 1) Mark as syncing
+         DispatchQueue.main.async {
+             self.showSyncingAnimation = true
+         }
+@@ -399,31 +413,27 @@ import WatchConnectivity
+             await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
+         }
+ 
+-        // 2) Merge data into our pendingData
+         pendingData.merge(newData) { _, newVal in newVal }
+ 
+-        // 3) Cancel any previous finalization
+         finalizeWorkItem?.cancel()
+ 
+-        // 4) Create and schedule a new finalization
+         let workItem = DispatchWorkItem { [self] in
+             Task {
+-                await WatchLogger.shared.log("⏳ Debounced update fired")
++                await WatchLogger.shared.log("Debounced update fired")
+             }
+             self.finalizePendingData()
+         }
+         finalizeWorkItem = workItem
+-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: workItem)
++        let delay: TimeInterval = isColdStart ? 0.2 : 0.1
++        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+     }
+ 
+-    /// Applies all pending data to the watch state in one shot
+     private func finalizePendingData() {
+         guard !pendingData.isEmpty else {
+             Task {
+-                await WatchLogger.shared.log("⚠️ finalizePendingData called with empty data")
++                await WatchLogger.shared.log("finalizePendingData called with empty data")
+             }
+ 
+-            // If we have no actual data, just end syncing
+             DispatchQueue.main.async {
+                 self.showSyncingAnimation = false
+             }
+@@ -431,38 +441,40 @@ import WatchConnectivity
+         }
+ 
+         Task {
+-            await WatchLogger.shared.log("⌚️ Finalizing pending data")
++            await WatchLogger.shared.log("Finalizing pending data")
+         }
+ 
+-        // Actually set your main UI properties here
+         processRawDataForWatchState(pendingData)
+-
+-        // Clear
+         pendingData.removeAll()
+ 
+-        // Done - hide sync animation
+         DispatchQueue.main.async {
+             self.showSyncingAnimation = false
+         }
+ 
++        // Force complication update with the fresh data that was just processed
++        // This bypasses debounce since fresh data just arrived
++        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
++            self.forceComplicationUpdate()
++        }
++
+         Task {
+-            await WatchLogger.shared.log("✅ Watch UI update complete")
++            await WatchLogger.shared.log("Watch UI update complete")
+         }
+     }
+ 
+-    /// Updates the UI properties
+     private func processRawDataForWatchState(_ message: [String: Any]) {
+         Task {
+             await WatchLogger.shared.log("Processing raw WatchState data with keys: \(message.keys.joined(separator: ", "))")
+         }
+ 
+-        if let timestamp = message[WatchMessageKeys.date] as? TimeInterval {
+-            lastWatchStateUpdate = timestamp
+-            Task {
+-                await WatchLogger.shared.log("Updated lastWatchStateUpdate: \(timestamp)")
+-            }
++        if let date = dateValue(from: message[WatchMessageKeys.date]) {
++            lastWatchStateUpdate = date
++            forcedSinceActivation = false
+         }
+ 
++        syncTimeoutWorkItem?.cancel()
++        syncTimeoutWorkItem = nil
++
+         if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
+             self.currentGlucose = currentGlucose
+         }
+@@ -494,29 +506,27 @@ import WatchConnectivity
+         if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
+             glucoseValues = glucoseData.compactMap { data in
+                 guard let glucose = data["glucose"] as? Double,
+-                      let timestamp = data["date"] as? TimeInterval,
+                       let colorString = data["color"] as? String
+                 else { return nil }
+ 
+-                return (
+-                    Date(timeIntervalSince1970: timestamp),
+-                    glucose,
+-                    colorString.toColor() // Convert colorString to Color
+-                )
++                let dateValue = dateValue(from: data["date"])
++                guard let date = dateValue else { return nil }
++
++                return (date: date, glucose: glucose, color: colorString.toColor())
+             }
+             .sorted { $0.date < $1.date }
+         }
+ 
+-        if let minYAxisValue = message[WatchMessageKeys.minYAxisValue] {
+-            if let decimalValue = (minYAxisValue as? NSNumber)?.decimalValue {
+-                self.minYAxisValue = decimalValue
+-            }
++        if let minYAxisValue = message[WatchMessageKeys.minYAxisValue],
++           let decimalValue = (minYAxisValue as? NSNumber)?.decimalValue
++        {
++            self.minYAxisValue = decimalValue
+         }
+ 
+-        if let maxYAxisValue = message[WatchMessageKeys.maxYAxisValue] {
+-            if let decimalValue = (maxYAxisValue as? NSNumber)?.decimalValue {
+-                self.maxYAxisValue = decimalValue
+-            }
++        if let maxYAxisValue = message[WatchMessageKeys.maxYAxisValue],
++           let decimalValue = (maxYAxisValue as? NSNumber)?.decimalValue
++        {
++            self.maxYAxisValue = decimalValue
+         }
+ 
+         if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
+@@ -537,41 +547,227 @@ import WatchConnectivity
+             }
+         }
+ 
+-        if let maxBolusValue = message[WatchMessageKeys.maxBolus] {
+-            if let decimalValue = (maxBolusValue as? NSNumber)?.decimalValue {
+-                maxBolus = decimalValue
++        if let maxBolusValue = message[WatchMessageKeys.maxBolus],
++           let decimalValue = (maxBolusValue as? NSNumber)?.decimalValue
++        {
++            maxBolus = decimalValue
++        }
++
++        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs],
++           let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue
++        {
++            maxCarbs = decimalValue
++        }
++
++        if let maxFatValue = message[WatchMessageKeys.maxFat],
++           let decimalValue = (maxFatValue as? NSNumber)?.decimalValue
++        {
++            maxFat = decimalValue
++        }
++
++        if let maxProteinValue = message[WatchMessageKeys.maxProtein],
++           let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue
++        {
++            maxProtein = decimalValue
++        }
++
++        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement],
++           let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue
++        {
++            self.bolusIncrement = max(decimalValue, 0.05)
++        }
++
++        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] as? Bool {
++            self.confirmBolusFaster = confirmBolusFaster
++        }
++
++        saveComplicationSnapshot(from: message)
++    }
++
++    private func saveComplicationSnapshot(from message: [String: Any]) {
++        Task {
++            await WatchLogger.shared.log("📸 saveComplicationSnapshot called")
++        }
++
++        let readingDate = latestGlucoseDate(from: message) ?? dateValue(from: message[WatchMessageKeys.date])
++        guard let readingDate = readingDate else {
++            Task {
++                await WatchLogger.shared.log("📸 saveComplicationSnapshot SKIPPED: no valid readingDate")
++            }
++            return
++        }
++
++        let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
++        let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
++        let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
++        let glucoseColorValue = (message[WatchMessageKeys.currentGlucoseColorString] as? String) ?? currentGlucoseColorString
++
++        Task {
++            await WatchLogger.shared.log("📸 Saving snapshot: glucose=\(glucoseValue), readingDate=\(readingDate)")
++        }
++
++        let snapshot = TrioComplicationSnapshot(
++            glucose: glucoseValue,
++            trend: trendValue,
++            delta: deltaValue,
++            readingDate: readingDate,
++            date: Date(),
++            glucoseColor: glucoseColorValue
++        )
++
++        TrioComplicationDataStore.shared.save(snapshot)
++        // Note: `save(snapshot)` uses default `triggerReload: true`, which calls `coalescedReload()` internally. Use `save(snapshot, triggerReload: false)` if you plan to call `forceReload()` separately.
++    }
++
++    func forceComplicationUpdate() {
++        Task {
++            await WatchLogger.shared.log("🔄 forceComplicationUpdate called")
++        }
++
++        guard !currentGlucose.isEmpty,
++              !currentGlucose.contains("??"),
++              !currentGlucose.localizedCaseInsensitiveContains("error")
++        else {
++            Task {
++                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: invalid glucose '\(currentGlucose)'")
++            }
++            return
++        }
++
++        if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
++            // CGM limitations means we need to filter out values outside of this range
++            guard glucoseValue > 40 && glucoseValue < 400 else {
++                Task {
++                    await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
++                }
++                return
+             }
+         }
+ 
+-        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
+-            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
+-                maxCarbs = decimalValue
++        let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp ?? lastWatchStateUpdate ?? .distantPast
++        let snapshot = TrioComplicationSnapshot(
++            glucose: currentGlucose,
++            trend: trend ?? "",
++            delta: delta ?? "",
++            readingDate: effectiveReadingDate,
++            date: Date(),
++            glucoseColor: currentGlucoseColorString
++        )
++
++        Task {
++            await WatchLogger.shared.log("🔄 forceComplicationUpdate: glucose=\(currentGlucose), readingDate=\(effectiveReadingDate)")
++        }
++
++        // Save without triggering coalesced reload, then force reload immediately
++        // This avoids double-reload when coalescedReload would also trigger
++        TrioComplicationDataStore.shared.save(snapshot, triggerReload: false)
++        TrioComplicationDataStore.shared.forceReload()
++    }
++
++    #if os(watchOS)
++        func scheduleBackgroundRefresh() {
++            let hasRecentData = lastWatchStateUpdate != nil &&
++                Date().timeIntervalSince(lastWatchStateUpdate!) < 300
++
++            let nextInterval: TimeInterval
++            if isReachable {
++                nextInterval = hasRecentData ? 300 : 180
++            } else {
++                nextInterval = hasRecentData ? 900 : 600
++            }
++
++            let refreshDate = Date().addingTimeInterval(nextInterval)
++            WKExtension.shared().scheduleBackgroundRefresh(withPreferredDate: refreshDate, userInfo: nil) { error in
++                Task {
++                    if let error = error {
++                        await WatchLogger.shared.log("Failed to schedule background refresh: \(error)")
++                    } else {
++                        await WatchLogger.shared.log("Scheduled background refresh at \(refreshDate)")
++                    }
++                }
+             }
+         }
+ 
+-        if let maxFatValue = message[WatchMessageKeys.maxFat] {
+-            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
+-                maxFat = decimalValue
++        func handleBackgroundTasks(_ tasks: Set<WKRefreshBackgroundTask>) {
++            Task {
++                await WatchLogger.shared.log("Handling background tasks: \(tasks.count)")
++            }
++
++            for task in tasks {
++                if let refreshTask = task as? WKApplicationRefreshBackgroundTask {
++                    backgroundRefreshCount += 1
++                    lastBackgroundRefreshDate = Date()
++
++                    if isReachable {
++                        requestWatchStateUpdate()
++                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
++                            self.forceComplicationUpdate()
++                        }
++                    } else {
++                        loadFallbackDataFromComplication()
++                        forceComplicationUpdate()
++                    }
++
++                    refreshTask.setTaskCompletedWithSnapshot(false)
++                    scheduleBackgroundRefresh()
++                } else {
++                    task.setTaskCompletedWithSnapshot(false)
++                }
+             }
+         }
++    #endif
+ 
+-        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
+-            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
+-                maxProtein = decimalValue
++    func loadFallbackDataFromComplication() {
++        guard let snapshot = TrioComplicationDataStore.shared.latestSnapshot() else {
++            DispatchQueue.main.async {
++                self.showSyncingAnimation = false
+             }
++            return
+         }
+ 
+-        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
+-            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
+-                // limit minimum to 0.05 to avoid dealing with 0.025 increments
+-                self.bolusIncrement = max(decimalValue, 0.05)
++        if let lastUpdate = lastWatchStateUpdate,
++           Date().timeIntervalSince(lastUpdate) <= 15
++        {
++            DispatchQueue.main.async {
++                self.showSyncingAnimation = false
+             }
++            return
+         }
+ 
+-        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] {
+-            if let booleanValue = confirmBolusFaster as? Bool {
+-                self.confirmBolusFaster = booleanValue
++        DispatchQueue.main.async {
++            self.currentGlucose = snapshot.glucose
++            self.trend = snapshot.trend
++            self.delta = snapshot.delta
++            if let glucoseColor = snapshot.glucoseColor {
++                self.currentGlucoseColorString = glucoseColor
+             }
++            self.lastWatchStateUpdate = snapshot.readingDate
++            self.showSyncingAnimation = false
++            self.syncTimeoutWorkItem?.cancel()
++        }
++    }
++
++    private func dateValue(from value: Any?) -> Date? {
++        if let date = value as? Date {
++            return date
++        }
++        if let seconds = value as? TimeInterval {
++            return Date(timeIntervalSince1970: seconds)
++        }
++        if let number = value as? NSNumber {
++            return Date(timeIntervalSince1970: number.doubleValue)
++        }
++        return nil
++    }
++
++    private func latestGlucoseDate(from message: [String: Any]) -> Date? {
++        guard let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] else {
++            return nil
++        }
++
++        let dates = glucoseData.compactMap { data in
++            dateValue(from: data["date"])
+         }
++        return dates.max()
+     }
+ }
+diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
+index 8d15acbed..9e4d7910b 100644
+--- a/Trio Watch App/Info.plist	
++++ b/Trio Watch App/Info.plist	
+@@ -2,6 +2,8 @@
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <plist version="1.0">
+ <dict>
++	<key>AppGroupID</key>
++	<string>$(APP_GROUP_ID)</string>
+ 	<key>EXAppExtensionAttributes</key>
+ 	<dict>
+ 		<key>EXExtensionPointIdentifier</key>
+diff --git a/Trio Watch Complication/Info.plist b/Trio Watch Complication/Info.plist
+index 0f118fb75..6f081ab69 100644
+--- a/Trio Watch Complication/Info.plist	
++++ b/Trio Watch Complication/Info.plist	
+@@ -2,6 +2,8 @@
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <plist version="1.0">
+ <dict>
++	<key>AppGroupID</key>
++	<string>$(APP_GROUP_ID)</string>
+ 	<key>NSExtension</key>
+ 	<dict>
+ 		<key>NSExtensionPointIdentifier</key>
+diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
+index 411968936..e1daf312a 100644
+--- a/Trio Watch Complication/TrioWatchComplication.swift	
++++ b/Trio Watch Complication/TrioWatchComplication.swift	
+@@ -1,40 +1,191 @@
++import Foundation
+ import SwiftUI
+ import WidgetKit
+ 
+-// MARK: - Timeline Entry
++private enum ComplicationDefaults {
++    static let widgetKind = TrioComplicationDataStore.complicationKind
++    static let fallbackGlucose = "--"
++    static let fallbackDelta = "--"
++    static let fallbackTrend = "↔︎"
++}
+ 
+ struct TrioWatchComplicationEntry: TimelineEntry {
+     let date: Date
++    let readingDate: Date
++    let glucose: String
++    let trend: String
++    let delta: String
++    let state: String?
++    let glucoseColor: String?
++
++    init(
++        date: Date,
++        readingDate: Date? = nil,
++        glucose: String,
++        trend: String,
++        delta: String,
++        state: String? = nil,
++        glucoseColor: String? = nil
++    ) {
++        self.date = date
++        self.readingDate = readingDate ?? date
++        self.glucose = glucose
++        self.trend = trend
++        self.delta = delta
++        self.state = state
++        self.glucoseColor = glucoseColor
++    }
++
++    init(snapshot: TrioComplicationSnapshot) {
++        self.init(
++            date: Date(),
++            readingDate: snapshot.readingDate,
++            glucose: snapshot.glucose,
++            trend: snapshot.trend,
++            delta: snapshot.delta,
++            state: snapshot.state,
++            glucoseColor: snapshot.glucoseColor
++        )
++    }
++
++    var trendSymbol: String {
++        TrendSymbolMapper.symbol(from: trend)
++    }
++
++    var glucoseNumber: String {
++        let trimmed = glucose.trimmingCharacters(in: .whitespacesAndNewlines)
++        return trimmed.isEmpty ? ComplicationDefaults.fallbackGlucose : trimmed
++    }
++
++    var trendSymbolOnly: String {
++        trendSymbol
++    }
++
++    var statePrefix: String {
++        let stateText = state ?? ""
++        return stateText.isEmpty ? "" : "\(stateText) "
++    }
++
++    var deltaDisplayText: String {
++        let trimmed = delta.trimmingCharacters(in: .whitespacesAndNewlines)
++        return trimmed.isEmpty ? ComplicationDefaults.fallbackDelta : trimmed
++    }
++
++    var hasValidReading: Bool {
++        let trimmed = glucose.trimmingCharacters(in: .whitespacesAndNewlines)
++        return !trimmed.isEmpty && trimmed != ComplicationDefaults.fallbackGlucose && state == nil
++    }
++
++    var glucoseDisplayColor: Color {
++        if let hexColor = glucoseColor, let color = Color(hex: hexColor) {
++            return color
++        }
++
++        guard let glucoseValue = Double(glucose) else {
++            return .secondary
++        }
++
++        let lowThreshold: Double = 70
++        let highThreshold: Double = 180
++
++        if glucoseValue <= lowThreshold {
++            return .red
++        } else if glucoseValue >= highThreshold {
++            return .orange
++        } else {
++            return .green
++        }
++    }
+ }
+ 
+-// MARK: - Provider
++private enum TrendSymbolMapper {
++    static func symbol(from rawValue: String) -> String {
++        switch rawValue {
++        case "TripleUp": return "↑↑↑"
++        case "DoubleUp": return "↑↑"
++        case "SingleUp": return "↑"
++        case "FortyFiveUp": return "↗︎"
++        case "Flat": return "→"
++        case "FortyFiveDown": return "↘︎"
++        case "SingleDown": return "↓"
++        case "DoubleDown": return "↓↓"
++        case "TripleDown": return "↓↓↓"
++        case "NONE", "NOT COMPUTABLE", "NotComputable", "RATE OUT OF RANGE": return "↔︎"
++        default:
++            if rawValue.contains("↑") || rawValue.contains("↓") || rawValue.contains("→") ||
++                rawValue.contains("↗") || rawValue.contains("↘︎")
++            {
++                return rawValue
++            }
++            return ""
++        }
++    }
++}
+ 
+ struct TrioWatchComplicationProvider: TimelineProvider {
++    private let refreshInterval: TimeInterval = 300
++
+     func placeholder(in _: Context) -> TrioWatchComplicationEntry {
+-        TrioWatchComplicationEntry(date: Date())
++        TrioWatchComplicationEntry(
++            date: Date(),
++            readingDate: Date(),
++            glucose: "110",
++            trend: "Flat",
++            delta: "+1"
++        )
+     }
+ 
+-    func getSnapshot(in _: Context, completion: @escaping (TrioWatchComplicationEntry) -> Void) {
+-        let entry = TrioWatchComplicationEntry(date: Date())
+-        completion(entry)
++    func getSnapshot(in context: Context, completion: @escaping (TrioWatchComplicationEntry) -> Void) {
++        if context.isPreview {
++            completion(placeholder(in: context))
++            return
++        }
++        completion(loadLatestEntry())
+     }
+ 
+     func getTimeline(in _: Context, completion: @escaping (Timeline<TrioWatchComplicationEntry>) -> Void) {
+-        let entry = TrioWatchComplicationEntry(date: Date())
+-        let timeline = Timeline(entries: [entry], policy: .never)
+-        completion(timeline)
++        let snapshot = loadLatestEntry()
++        var entries: [TrioWatchComplicationEntry] = []
++        let now = Date().roundedDownToMinute
++
++        for minuteOffset in 0 ..< 30 {
++            let entryDate = now.addingTimeInterval(TimeInterval(minuteOffset * 60))
++            let entry = TrioWatchComplicationEntry(
++                date: entryDate,
++                readingDate: snapshot.readingDate,
++                glucose: snapshot.glucose,
++                trend: snapshot.trend,
++                delta: snapshot.delta,
++                state: snapshot.state,
++                glucoseColor: snapshot.glucoseColor
++            )
++            entries.append(entry)
++        }
++        let nextRefresh = now.addingTimeInterval(refreshInterval)
++        completion(Timeline(entries: entries, policy: .after(nextRefresh)))
+     }
+-}
+ 
+-// MARK: - Views
++    private func loadLatestEntry() -> TrioWatchComplicationEntry {
++        if let snapshot = TrioComplicationDataStore.shared.latestSnapshot() {
++            return TrioWatchComplicationEntry(snapshot: snapshot)
++        }
++        return TrioWatchComplicationEntry(
++            date: Date(),
++            readingDate: .distantPast,
++            glucose: ComplicationDefaults.fallbackGlucose,
++            trend: ComplicationDefaults.fallbackTrend,
++            delta: ComplicationDefaults.fallbackDelta,
++            state: "--"
++        )
++    }
++}
+ 
+-//// Displayed View Wrapper
+ struct TrioWatchComplicationEntryView: View {
+-    @Environment(\.widgetFamily) private var widgetFamily
+-
+     var entry: TrioWatchComplicationEntry
+ 
+-    var body: some View {
++    @Environment(\.widgetFamily) private var widgetFamily
++
++    @ViewBuilder var body: some View {
+         switch widgetFamily {
+         case .accessoryCircular:
+             TrioAccessoryCircularView(entry: entry)
+@@ -43,48 +194,130 @@ struct TrioWatchComplicationEntryView: View {
+         default:
+             Image("ComplicationIcon")
+                 .widgetAccentable()
+-                .widgetBackground(backgroundView: Color.clear)
+         }
+     }
+ }
+ 
+-/// Corner Complication
+ struct TrioAccessoryCornerView: View {
+-    var entry: TrioWatchComplicationProvider.Entry
++    var entry: TrioWatchComplicationEntry
+ 
+     var body: some View {
+-        Text("")
++        Text(attributedGlucoseLine)
++            .font(.system(size: 12, weight: .semibold, design: .rounded))
++            .minimumScaleFactor(0.6)
++            .widgetAccentable()
+             .widgetCurvesContent()
+             .widgetLabel {
+-                Text("Trio")
++                let age = max(0, entry.date.timeIntervalSince(entry.readingDate))
++                let recencyColor: Color = age < 5 * 60 ? .green :
++                    age < 15 * 60 ? .yellow : .red
++                let deltaText = entry.deltaDisplayText
++                let timeText = shortRelativeTime(from: entry.readingDate, now: entry.date)
++                let hasDelta = !deltaText.isEmpty && deltaText != ComplicationDefaults.fallbackDelta
++                let hasReading = entry.hasValidReading
++
++                Text(attributedSecondLine(
++                    deltaText: deltaText,
++                    timeText: timeText,
++                    recencyColor: recencyColor,
++                    hasDelta: hasDelta,
++                    hasReading: hasReading
++                ))
++                .font(.system(size: 10, weight: .medium, design: .rounded))
++                .lineLimit(1)
++                .minimumScaleFactor(0.5)
++                .truncationMode(.tail)
+             }
+-            .widgetBackground(backgroundView: Color.clear)
++    }
++
++    private var attributedGlucoseLine: AttributedString {
++        var result = AttributedString()
++
++        if !entry.statePrefix.isEmpty {
++            var stateAttr = AttributedString(entry.statePrefix)
++            stateAttr.foregroundColor = .white
++            result.append(stateAttr)
++        }
++
++        var glucoseAttr = AttributedString(entry.glucoseNumber)
++        glucoseAttr.foregroundColor = entry.glucoseDisplayColor
++        result.append(glucoseAttr)
++
++        if !entry.trendSymbolOnly.isEmpty {
++            var spaceAttr = AttributedString(" ")
++            spaceAttr.foregroundColor = .white
++            result.append(spaceAttr)
++        }
++
++        if !entry.trendSymbolOnly.isEmpty {
++            var trendAttr = AttributedString(entry.trendSymbolOnly)
++            trendAttr.foregroundColor = .white
++            result.append(trendAttr)
++        }
++
++        return result
++    }
++
++    private func attributedSecondLine(
++        deltaText: String,
++        timeText: String,
++        recencyColor: Color,
++        hasDelta: Bool,
++        hasReading: Bool
++    ) -> AttributedString {
++        var result = AttributedString()
++
++        if hasReading && hasDelta {
++            var deltaAttr = AttributedString(deltaText)
++            deltaAttr.foregroundColor = .white
++            result.append(deltaAttr)
++
++            var separatorAttr = AttributedString(" • ")
++            separatorAttr.foregroundColor = .white
++            result.append(separatorAttr)
++
++            var timeAttr = AttributedString(timeText)
++            timeAttr.foregroundColor = recencyColor
++            result.append(timeAttr)
++        } else if hasReading {
++            var timeAttr = AttributedString(timeText)
++            timeAttr.foregroundColor = recencyColor
++            result.append(timeAttr)
++        } else {
++            var fallbackAttr = AttributedString(ComplicationDefaults.fallbackDelta)
++            fallbackAttr.foregroundColor = .white
++            result.append(fallbackAttr)
++        }
++
++        return result
+     }
+ }
+ 
+-/// Circular Complication
+ struct TrioAccessoryCircularView: View {
+-    var entry: TrioWatchComplicationProvider.Entry
++    var entry: TrioWatchComplicationEntry
+ 
+     var body: some View {
+-        Image("ComplicationIcon")
+-            .resizable()
+-            .widgetAccentable()
+-            .widgetBackground(backgroundView: Color.clear)
++        VStack {
++            Text(entry.glucoseNumber)
++                .font(.headline)
++                .foregroundColor(entry.glucoseDisplayColor)
++            Text(entry.trendSymbolOnly)
++                .foregroundColor(.white)
++        }
++        .widgetAccentable()
+     }
+ }
+ 
+-// MARK: - Widget Configuration
+-
+ @main struct TrioWatchComplication: Widget {
+-    let kind: String = "TrioWatchComplication"
++    let kind: String = ComplicationDefaults.widgetKind
+ 
+     var body: some WidgetConfiguration {
+         StaticConfiguration(kind: kind, provider: TrioWatchComplicationProvider()) { entry in
+             TrioWatchComplicationEntryView(entry: entry)
++                .containerBackground(.fill.tertiary, for: .widget)
+         }
+-        .configurationDisplayName("Trio")
+-        .description("Displays Trio app icon as complication")
++        .configurationDisplayName(String(localized: "Trio Glucose"))
++        .description(String(localized: "Shows current glucose, delta, and trend data."))
+         .supportedFamilies([
+             .accessoryCorner,
+             .accessoryCircular
+@@ -92,14 +325,59 @@ struct TrioAccessoryCircularView: View {
+     }
+ }
+ 
+-extension View {
+-    func widgetBackground(backgroundView: some View) -> some View {
+-        if #available(watchOS 10.0, iOSApplicationExtension 17.0, iOS 17.0, *) {
+-            return containerBackground(for: .widget) {
+-                backgroundView
+-            }
+-        } else {
+-            return background(backgroundView)
++private func shortRelativeTime(from readingDate: Date, now: Date = Date()) -> String {
++    if readingDate == .distantPast { return "--" }
++
++    let interval = max(0, now.timeIntervalSince(readingDate))
++    if interval < 60 { return "NOW" }
++
++    // Use floor division to avoid rounding up (e.g., 61 minutes should show "1h", not "2h")
++    let totalMinutes = Int(interval / 60)
++
++    if totalMinutes < 60 {
++        return "\(totalMinutes)m"
++    } else if totalMinutes < 1440 {
++        // For times between 1 hour and 24 hours, show hours
++        // Use integer division (not ceil) to avoid showing "2h" for 61 minutes
++        let hours = totalMinutes / 60
++        return "\(hours)h"
++    } else {
++        let days = totalMinutes / 1440
++        return "\(days)d"
++    }
++}
++
++extension Color {
++    init?(hex: String) {
++        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
++        var int: UInt64 = 0
++        Scanner(string: hex).scanHexInt64(&int)
++        let a, r, g, b: UInt64
++        switch hex.count {
++        case 3:
++            (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
++        case 6:
++            (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
++        case 8:
++            (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
++        default:
++            return nil
+         }
++
++        self.init(
++            .sRGB,
++            red: Double(r) / 255,
++            green: Double(g) / 255,
++            blue: Double(b) / 255,
++            opacity: Double(a) / 255
++        )
++    }
++}
++
++extension Date {
++    var roundedDownToMinute: Date {
++        let calendar = Calendar.current
++        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: self)
++        return calendar.date(from: components) ?? self
+     }
+ }
+diff --git a/Trio Watch Complication/TrioWatchComplicationPreview.swift b/Trio Watch Complication/TrioWatchComplicationPreview.swift
+new file mode 100644
+index 000000000..e4bce5153
+--- /dev/null
++++ b/Trio Watch Complication/TrioWatchComplicationPreview.swift	
+@@ -0,0 +1,124 @@
++import SwiftUI
++import WidgetKit
++
++#if DEBUG
++    struct TrioWatchComplicationPreview: PreviewProvider {
++        static var previews: some View {
++            Group {
++                TrioAccessoryCornerView(
++                    entry: .init(
++                        snapshot: TrioComplicationSnapshot(
++                            glucose: "110",
++                            trend: "Flat",
++                            delta: "+2",
++                            readingDate: Date(),
++                            date: Date(),
++                            glucoseColor: "#30D158"
++                        )
++                    )
++                )
++                .containerBackground(.fill.tertiary, for: .widget)
++                .previewDisplayName("Recent (Green)")
++                .previewContext(WidgetPreviewContext(family: .accessoryCorner))
++
++                TrioAccessoryCornerView(
++                    entry: .init(
++                        snapshot: TrioComplicationSnapshot(
++                            glucose: "92",
++                            trend: "SingleDown",
++                            delta: "-4",
++                            readingDate: Date().addingTimeInterval(-4 * 60),
++                            date: Date(),
++                            glucoseColor: "#FF9500"
++                        )
++                    )
++                )
++                .containerBackground(.fill.tertiary, for: .widget)
++                .previewDisplayName("Medium (Yellow)")
++                .previewContext(WidgetPreviewContext(family: .accessoryCorner))
++
++                TrioAccessoryCornerView(
++                    entry: .init(
++                        snapshot: TrioComplicationSnapshot(
++                            glucose: "125",
++                            trend: "SingleUp",
++                            delta: "+4",
++                            readingDate: Date().addingTimeInterval(-10 * 60),
++                            date: Date(),
++                            glucoseColor: "#30D158"
++                        )
++                    )
++                )
++                .containerBackground(.fill.tertiary, for: .widget)
++                .previewDisplayName("Medium (Yellow, 10m)")
++                .previewContext(WidgetPreviewContext(family: .accessoryCorner))
++
++                TrioAccessoryCornerView(
++                    entry: .init(
++                        snapshot: TrioComplicationSnapshot(
++                            glucose: "--",
++                            trend: "",
++                            delta: "--",
++                            readingDate: Date().addingTimeInterval(-30 * 60),
++                            date: Date(),
++                            state: "--",
++                            glucoseColor: nil
++                        )
++                    )
++                )
++                .containerBackground(.fill.tertiary, for: .widget)
++                .previewDisplayName("Stale (Red)")
++                .previewContext(WidgetPreviewContext(family: .accessoryCorner))
++
++                TrioAccessoryCornerView(
++                    entry: .init(
++                        snapshot: TrioComplicationSnapshot(
++                            glucose: "--",
++                            trend: "",
++                            delta: "--",
++                            readingDate: .distantPast,
++                            date: Date(),
++                            state: "!!",
++                            glucoseColor: nil
++                        )
++                    )
++                )
++                .containerBackground(.fill.tertiary, for: .widget)
++                .previewDisplayName("Error State (!!)")
++                .previewContext(WidgetPreviewContext(family: .accessoryCorner))
++
++                TrioAccessoryCornerView(
++                    entry: .init(
++                        snapshot: TrioComplicationSnapshot(
++                            glucose: "250",
++                            trend: "DoubleUp",
++                            delta: "+15",
++                            readingDate: Date().addingTimeInterval(-2 * 60),
++                            date: Date(),
++                            glucoseColor: "#FF9500"
++                        )
++                    )
++                )
++                .containerBackground(.fill.tertiary, for: .widget)
++                .previewDisplayName("High Glucose (Orange)")
++                .previewContext(WidgetPreviewContext(family: .accessoryCorner))
++
++                TrioAccessoryCornerView(
++                    entry: .init(
++                        snapshot: TrioComplicationSnapshot(
++                            glucose: "65",
++                            trend: "SingleDown",
++                            delta: "-8",
++                            readingDate: Date().addingTimeInterval(-1 * 60),
++                            date: Date(),
++                            glucoseColor: "#FF3B30"
++                        )
++                    )
++                )
++                .containerBackground(.fill.tertiary, for: .widget)
++                .previewDisplayName("Low Glucose (Red)")
++                .previewContext(WidgetPreviewContext(family: .accessoryCorner))
++            }
++        }
++    }
++#endif
+diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
+new file mode 100644
+index 000000000..b935ea5d3
+--- /dev/null
++++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
+@@ -0,0 +1,543 @@
++import Foundation
++import WidgetKit
++
++struct TrioComplicationSnapshot: Equatable, Codable {
++    private enum Constants {
++        static let fallbackGlucose = "--"
++        static let fallbackDelta = "--"
++    }
++
++    let glucose: String
++    let trend: String
++    let delta: String
++    let date: Date
++    let readingDate: Date
++    let state: String?
++    let glucoseColor: String?
++
++    init(
++        glucose rawGlucose: String,
++        trend rawTrend: String,
++        delta rawDelta: String,
++        readingDate: Date,
++        date: Date,
++        state: String? = nil,
++        glucoseColor: String? = nil
++    ) {
++        glucose = Self.sanitizedGlucose(from: rawGlucose)
++        trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
++        delta = Self.sanitizedDelta(from: rawDelta)
++        self.readingDate = readingDate
++        self.date = date
++        self.state = state
++        self.glucoseColor = glucoseColor
++    }
++
++    private static func sanitizedGlucose(from value: String) -> String {
++        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !trimmed.isEmpty else { return Constants.fallbackGlucose }
++        if trimmed == Constants.fallbackGlucose { return Constants.fallbackGlucose }
++
++        let digitsAndSeparators = CharacterSet(charactersIn: "0123456789.")
++        let numericPortion = trimmed
++            .components(separatedBy: digitsAndSeparators.inverted)
++            .joined()
++
++        if let doubleValue = Double(numericPortion), doubleValue > 0 {
++            let rounded = Int(doubleValue.rounded())
++            return String(rounded)
++        }
++
++        return trimmed
++    }
++
++    private static func sanitizedDelta(from value: String) -> String {
++        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !trimmed.isEmpty else { return Constants.fallbackDelta }
++        if trimmed == Constants.fallbackDelta { return Constants.fallbackDelta }
++
++        let allowed = CharacterSet(charactersIn: "+-0123456789.,")
++        let filteredScalars = trimmed.unicodeScalars.filter { allowed.contains($0) }
++        let normalized = String(filteredScalars).replacingOccurrences(of: ",", with: ".")
++
++        guard !normalized.isEmpty, let numericValue = Double(normalized) else {
++            return trimmed
++        }
++
++        let magnitude = abs(numericValue)
++        let roundedMagnitude = magnitude.rounded()
++        if abs(roundedMagnitude - magnitude) < 0.05 {
++            let signedInt = Int(roundedMagnitude) * (numericValue >= 0 ? 1 : -1)
++            return String(format: "%+d", signedInt)
++        }
++
++        return String(format: "%+.1f", numericValue)
++    }
++}
++
++/// Data store for watch complication snapshots and reload coordination.
++/// This class is main-thread confined: all public API methods (`save`, `coalescedReload`, `forceReload`)
++/// must be called from the main thread or will hop to main before executing.
++final class TrioComplicationDataStore {
++    static let shared = TrioComplicationDataStore()
++    static let complicationKind = "TrioWatchComplication"
++
++    // MARK: - UserDefaults Keys
++
++    private static let lastReloadKey = "TrioComplication_lastReload"
++    private static let lastValidTimestampKey = "TrioComplication_lastValidTimestamp"
++    private static let reloadGenerationTokenKey = "TrioComplication_reloadGenerationToken"
++
++    // MARK: - Persisted State (shared across processes via UserDefaults in App Group)
++
++    /// Last valid glucose reading timestamp - persisted to survive process restarts.
++    /// Falls back to in-memory storage if appGroupDefaults is unavailable.
++    static var lastValidTimestamp: Date? {
++        get {
++            if let defaults = shared.appGroupDefaults,
++               let date = defaults.object(forKey: lastValidTimestampKey) as? Date {
++                return date
++            }
++            return shared.inMemoryLastValidTimestamp
++        }
++        set {
++            if let defaults = shared.appGroupDefaults {
++                defaults.set(newValue, forKey: lastValidTimestampKey)
++            } else {
++                // Only update in-memory fallback when App Group defaults are unavailable
++                shared.inMemoryLastValidTimestamp = newValue
++            }
++        }
++    }
++
++    /// Last reload timestamp - persisted to share debounce state across processes
++    /// Falls back to in-memory storage if appGroupDefaults is unavailable
++    private var lastReload: Date {
++        get {
++            if let defaults = appGroupDefaults,
++               let date = defaults.object(forKey: Self.lastReloadKey) as? Date {
++                return date
++            }
++            // Fallback to in-memory storage when App Group is unavailable
++            return inMemoryLastReload
++        }
++        set {
++            if let defaults = appGroupDefaults {
++                defaults.set(newValue, forKey: Self.lastReloadKey)
++            }
++            // Always update in-memory fallback for per-process debounce
++            inMemoryLastReload = newValue
++        }
++    }
++
++    /// Reload generation token - UUID string regenerated ONLY when an actual WidgetKit reload is initiated
++    /// (coalescedReload passes debounce, or forceReload). Used to detect if a newer reload attempt has
++    /// occurred since a retry was scheduled. Does NOT change on saves - only on actual reload initiation.
++    /// Uses UUID string (not numeric) to avoid UserDefaults type coercion issues.
++    static var reloadGenerationToken: String {
++        get {
++            if let defaults = shared.appGroupDefaults,
++               let token = defaults.string(forKey: reloadGenerationTokenKey) {
++                return token
++            }
++            // Fallback to in-memory storage when App Group is unavailable
++            return shared.inMemoryReloadGenerationToken
++        }
++        set {
++            if let defaults = shared.appGroupDefaults {
++                defaults.set(newValue, forKey: reloadGenerationTokenKey)
++            }
++            // Always update in-memory fallback for per-process token tracking
++            shared.inMemoryReloadGenerationToken = newValue
++        }
++    }
++
++    // MARK: - Private Properties
++
++    private let sharedContainerURLProvider: () -> URL?
++    private let fileManager: FileManager
++    private let snapshotFilename: String
++
++    /// Pending retry work item - cancelled only when a new reload is actually initiated
++    /// All access must be on main queue to avoid race conditions
++    private var pendingRetryWorkItem: DispatchWorkItem?
++
++    /// Unique ID of the currently pending retry (used to identify stale retries without capturing work item)
++    private var pendingRetryID: UUID?
++
++    /// In-memory fallback for lastReload when appGroupDefaults is nil (per-process debounce)
++    private var inMemoryLastReload: Date = .distantPast
++
++    /// In-memory fallback for reloadGenerationToken when appGroupDefaults is nil (per-process token)
++    private var inMemoryReloadGenerationToken: String = UUID().uuidString
++
++    /// In-memory fallback for lastValidTimestamp when appGroupDefaults is nil
++    private var inMemoryLastValidTimestamp: Date?
++
++    /// One-time flag to log appGroupDefaults unavailability
++    private static var hasLoggedAppGroupUnavailable = false
++
++    private var snapshotFileURL: URL? {
++        sharedContainerURLProvider()?.appendingPathComponent(snapshotFilename)
++    }
++
++    private var appGroupDefaults: UserDefaults? {
++        guard let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String else {
++            // Log once when App Group is unavailable
++            if !Self.hasLoggedAppGroupUnavailable {
++                Self.hasLoggedAppGroupUnavailable = true
++                log("⚠️ AppGroupID not found in Info.plist; using in-memory fallbacks for debounce/token")
++            }
++            return nil
++        }
++        let defaults = UserDefaults(suiteName: suiteName)
++        if defaults == nil && !Self.hasLoggedAppGroupUnavailable {
++            Self.hasLoggedAppGroupUnavailable = true
++            log("⚠️ App Group UserDefaults unavailable; using in-memory fallbacks for debounce/token")
++        }
++        return defaults
++    }
++
++    // MARK: - Debug Properties (for ComplicationDebugView)
++
++    var lastReloadTimestamp: Date {
++        lastReload
++    }
++
++    var secondsSinceLastReload: TimeInterval {
++        Date().timeIntervalSince(lastReload)
++    }
++
++    var secondsUntilNextReloadAllowed: TimeInterval {
++        max(0, 30 - secondsSinceLastReload)
++    }
++
++    var isDebounceActive: Bool {
++        secondsSinceLastReload < 30
++    }
++
++    var appGroupContainerPath: String? {
++        snapshotFileURL?.deletingLastPathComponent().path
++    }
++
++    // MARK: - Initialization
++
++    init(
++        sharedContainerURLProvider: @escaping () -> URL? = TrioComplicationDataStore.defaultSharedContainerURL,
++        fileManager: FileManager = .default,
++        snapshotFilename: String = "snapshot.json"
++    ) {
++        self.sharedContainerURLProvider = sharedContainerURLProvider
++        self.fileManager = fileManager
++        self.snapshotFilename = snapshotFilename
++    }
++
++    // MARK: - Save Methods
++
++    func save(
++        glucose: String,
++        trend: String?,
++        delta: String?,
++        readingDate: Date,
++        date: Date,
++        glucoseColor: String? = nil,
++        triggerReload: Bool = true
++    ) {
++        let snapshot = TrioComplicationSnapshot(
++            glucose: glucose,
++            trend: trend ?? "",
++            delta: delta ?? "",
++            readingDate: readingDate,
++            date: date,
++            glucoseColor: glucoseColor
++        )
++        save(snapshot, triggerReload: triggerReload)
++    }
++
++    /// Saves a snapshot to disk. Main-thread confined.
++    /// - Parameters:
++    ///   - snapshot: The snapshot to save
++    ///   - triggerReload: If true (default), triggers a coalesced reload after saving.
++    ///                    Set to false to skip reload (e.g., if you plan to call `forceReload()` separately).
++    ///                    Note: pending retries are preserved regardless of this flag; they are only
++    ///                    cancelled when an actual reload is initiated.
++    func save(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool = true) {
++        onMain { [self] in
++            saveOnMain(snapshot, triggerReload: triggerReload)
++        }
++    }
++
++    private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool) {
++        assert(Thread.isMainThread, "saveOnMain must be called on main thread")
++        guard let fileURL = snapshotFileURL else {
++            log("❌ Snapshot save FAILED: no App Group container URL")
++            return
++        }
++
++        log("💾 Saving snapshot: glucose=\(snapshot.glucose), trend=\(snapshot.trend), " +
++            "delta=\(snapshot.delta), readingDate=\(formatDate(snapshot.readingDate))")
++
++        do {
++            let encoder = JSONEncoder()
++            encoder.dateEncodingStrategy = .iso8601
++            let data = try encoder.encode(snapshot)
++            try fileManager.createDirectory(
++                at: fileURL.deletingLastPathComponent(),
++                withIntermediateDirectories: true,
++                attributes: nil
++            )
++
++            let backupURL = fileURL.deletingLastPathComponent().appendingPathComponent("snapshot.bak")
++            if fileManager.fileExists(atPath: fileURL.path) {
++                _ = try? fileManager.removeItem(at: backupURL)
++                _ = try? fileManager.copyItem(at: fileURL, to: backupURL)
++            }
++
++            try data.write(to: fileURL, options: [.atomic])
++            Self.lastValidTimestamp = snapshot.readingDate
++
++            // Note: reloadGenerationToken is NOT updated here. It only changes when an actual reload
++            // is initiated. This ensures pending retries remain valid even after saves with triggerReload=false.
++
++            log("✅ Snapshot saved successfully")
++
++            if triggerReload {
++                coalescedReloadOnMain()
++            }
++        } catch {
++            log("❌ Snapshot save FAILED: \(error.localizedDescription)")
++        }
++    }
++
++    // MARK: - Load Methods
++
++    /// Loads the latest complication snapshot from disk.
++    /// May be called from any thread. Updates `lastValidTimestamp` as a side-effect (serialized on main
++    /// when App Group defaults are unavailable to protect in-memory fallback).
++    func latestSnapshot() -> TrioComplicationSnapshot? {
++        guard let fileURL = snapshotFileURL else {
++            log("❌ Snapshot load FAILED: no App Group container URL")
++            return fallbackSnapshot(state: "--")
++        }
++
++        guard fileManager.fileExists(atPath: fileURL.path) else {
++            log("⚠️ Snapshot file missing at \(fileURL.lastPathComponent)")
++            return fallbackSnapshot(state: "!!")
++        }
++
++        let decoder = JSONDecoder()
++        decoder.dateDecodingStrategy = .iso8601
++
++        func decode(from url: URL) throws -> TrioComplicationSnapshot {
++            let data = try Data(contentsOf: url)
++            guard !data.isEmpty else { throw NSError(domain: "EmptySnapshot", code: -1) }
++            let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
++            // Update lastValidTimestamp; only hop to main when in-memory fallback is used
++            let readingDate = snapshot.readingDate
++            if appGroupDefaults == nil {
++                onMain { Self.lastValidTimestamp = readingDate }
++            } else {
++                Self.lastValidTimestamp = readingDate
++            }
++            return snapshot
++        }
++
++        do {
++            let snapshot = try decode(from: fileURL)
++            let age = Int(Date().timeIntervalSince(snapshot.readingDate))
++            log("📖 Loaded snapshot: glucose=\(snapshot.glucose), age=\(age)s")
++            return snapshot
++        } catch {
++            let backupURL = fileURL.deletingLastPathComponent().appendingPathComponent("snapshot.bak")
++            if fileManager.fileExists(atPath: backupURL.path),
++               let snapshot = try? decode(from: backupURL) {
++                log("⚠️ Snapshot decode failed, using backup")
++                return snapshot
++            }
++            log("❌ Snapshot decode FAILED: \(error.localizedDescription)")
++            return fallbackSnapshot(state: "??")
++        }
++    }
++
++    // MARK: - Reload Methods
++
++    /// Triggers a complication timeline reload with 30-second debouncing. Main-thread confined.
++    /// - Parameters:
++    ///   - minInterval: Minimum time interval between reloads (default: 30 seconds)
++    ///   - isRetry: If true, this is a retry attempt and should not schedule another retry
++    func coalescedReload(minInterval: TimeInterval = 30, isRetry: Bool = false) {
++        onMain { [self] in
++            coalescedReloadOnMain(minInterval: minInterval, isRetry: isRetry)
++        }
++    }
++
++    private func coalescedReloadOnMain(minInterval: TimeInterval = 30, isRetry: Bool = false) {
++        assert(Thread.isMainThread, "coalescedReloadOnMain must be called on main thread")
++        let now = Date()
++        let elapsed = now.timeIntervalSince(lastReload)
++
++        if elapsed < minInterval {
++            log("⏳ Reload DEBOUNCED: \(Int(elapsed))s elapsed (min: \(Int(minInterval))s)")
++            return
++        }
++
++        // Cancel any pending retry since we're initiating a new reload
++        cancelPendingRetryOnMain(reason: "superseded by new reload")
++
++        // Generate new reload generation token (only changes when actual reload occurs)
++        Self.reloadGenerationToken = UUID().uuidString
++
++        log("🔄 Reload TRIGGERED: \(Int(elapsed))s since last reload\(isRetry ? " (retry)" : "")")
++        lastReload = now
++        reloadTimeline()
++
++        // Schedule a single bounded retry after the debounce window, unless this is already a retry.
++        // WidgetKit reloads can be dropped/delayed; we do one bounded retry after the debounce window
++        // unless a newer reload occurs.
++        if !isRetry {
++            scheduleRetryAfterReloadOnMain(minInterval: minInterval)
++        }
++    }
++
++    /// Forces an immediate complication timeline reload, bypassing the debounce. Main-thread confined.
++    func forceReload() {
++        onMain { [self] in
++            forceReloadOnMain()
++        }
++    }
++
++    private func forceReloadOnMain() {
++        assert(Thread.isMainThread, "forceReloadOnMain must be called on main thread")
++
++        // Cancel any pending retry since we're initiating a new reload
++        cancelPendingRetryOnMain(reason: "superseded by force reload")
++
++        // Generate new reload generation token (only changes when actual reload occurs)
++        Self.reloadGenerationToken = UUID().uuidString
++
++        log("🔄 FORCE reload triggered (bypassing debounce)")
++        lastReload = Date()
++        reloadTimeline()
++
++        // Schedule a single bounded retry after the debounce window.
++        // WidgetKit reloads can be dropped/delayed; we do one bounded retry after the debounce window
++        // unless a newer reload occurs.
++        scheduleRetryAfterReloadOnMain(minInterval: 30)
++    }
++
++    #if canImport(WidgetKit)
++        private func reloadTimeline() {
++            log("🔔 Calling WidgetCenter.reloadTimelines(ofKind: \(Self.complicationKind))")
++
++            let reloadBlock = {
++                if #available(watchOS 10.0, *) {
++                    WidgetCenter.shared.reloadTimelines(ofKind: Self.complicationKind)
++                } else {
++                    WidgetCenter.shared.reloadAllTimelines()
++                }
++            }
++
++            if Thread.isMainThread {
++                reloadBlock()
++            } else {
++                DispatchQueue.main.async(execute: reloadBlock)
++            }
++        }
++    #endif
++
++    // MARK: - Private Helpers (Main-Thread Confined)
++
++    /// Executes a block on the main thread. If already on main, runs inline; otherwise dispatches
++    /// asynchronously. Callers must NOT assume the work has completed when this method returns.
++    private func onMain(_ block: @escaping () -> Void) {
++        if Thread.isMainThread {
++            block()
++        } else {
++            DispatchQueue.main.async(execute: block)
++        }
++    }
++
++    /// Cancels any pending retry work item. Must be called on main queue.
++    /// - Parameter reason: Reason for cancellation (for logging)
++    private func cancelPendingRetryOnMain(reason: String) {
++        assert(Thread.isMainThread, "cancelPendingRetryOnMain must be called on main thread")
++        if pendingRetryWorkItem != nil {
++            pendingRetryWorkItem?.cancel()
++            pendingRetryWorkItem = nil
++            pendingRetryID = nil
++            log("⏹️ Retry CANCELLED: \(reason)")
++        }
++    }
++
++    /// Schedules a single bounded retry after the debounce window. Must be called on main queue.
++    /// - Parameter minInterval: The debounce interval used for the reload (default: 30 seconds)
++    /// The retry will be skipped if a newer reload has been initiated (reloadGenerationToken changes).
++    private func scheduleRetryAfterReloadOnMain(minInterval: TimeInterval) {
++        assert(Thread.isMainThread, "scheduleRetryAfterReloadOnMain must be called on main thread")
++
++        // Capture the reload generation token at the time of this reload
++        let tokenAtReload = Self.reloadGenerationToken
++
++        // Generate unique ID for this retry (used to detect stale retries without self-referential capture)
++        let retryID = UUID()
++        pendingRetryID = retryID
++
++        // Schedule retry after minInterval + 1s cushion to ensure it's outside the debounce window
++        let retryDelay = minInterval + 1.0
++        let workItem = DispatchWorkItem { [weak self] in
++            guard let self = self else { return }
++
++            // Check if this retry is still current (may have been replaced or cancelled)
++            guard self.pendingRetryID == retryID else { return }
++
++            // Clear pending retry state now that we're executing
++            self.pendingRetryWorkItem = nil
++            self.pendingRetryID = nil
++
++            // Check if a newer reload has occurred (token changes only on actual reload initiation)
++            if Self.reloadGenerationToken != tokenAtReload {
++                let prefix = String(tokenAtReload.prefix(8))
++                self.log("⏭️ Retry SKIPPED: newer reload occurred (token changed from '\(prefix)...')")
++                return
++            }
++
++            // Retry the reload, but mark it as a retry so it doesn't schedule another retry
++            self.log("🔄 Retry reload triggered after \(Int(retryDelay))s")
++            self.coalescedReloadOnMain(minInterval: minInterval, isRetry: true)
++        }
++
++        pendingRetryWorkItem = workItem
++        log("⏰ Retry scheduled: delay=\(Int(retryDelay))s, token='\(tokenAtReload.prefix(8))...'")
++        DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: workItem)
++    }
++
++    private func fallbackSnapshot(state: String) -> TrioComplicationSnapshot {
++        TrioComplicationSnapshot(
++            glucose: "--",
++            trend: "",
++            delta: "--",
++            readingDate: Self.lastValidTimestamp ?? .distantPast,
++            date: Date(),
++            state: state,
++            glucoseColor: nil
++        )
++    }
++
++    private static func defaultSharedContainerURL() -> URL? {
++        guard let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String else {
++            return nil
++        }
++        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
++    }
++
++    private func formatDate(_ date: Date) -> String {
++        if date == .distantPast { return "distantPast" }
++        let formatter = DateFormatter()
++        formatter.dateFormat = "HH:mm:ss"
++        return formatter.string(from: date)
++    }
++
++    private func log(_ message: String) {
++        NSLog("[ComplicationDataStore] %@", message)
++    }
++}
+diff --git a/Trio/Resources/TrioWatch.entitlements b/Trio/Resources/TrioWatch.entitlements
+new file mode 100644
+index 000000000..1f5229716
+--- /dev/null
++++ b/Trio/Resources/TrioWatch.entitlements
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>com.apple.security.application-groups</key>
++	<array>
++		<string>$(APP_GROUP_ID)</string>
++	</array>
++</dict>
++</plist>
+diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+index 27b6ac788..38508736f 100644
+--- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
++++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+@@ -439,7 +439,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+     func watchStateToDictionary(from state: WatchState) -> [String: Any] {
+         [
+-            WatchMessageKeys.date: state.date.timeIntervalSince1970,
++            WatchMessageKeys.date: state.date,
+             WatchMessageKeys.currentGlucose: state.currentGlucose ?? "--",
+             WatchMessageKeys.currentGlucoseColorString: state.currentGlucoseColorString ?? "#ffffff",
+             WatchMessageKeys.trend: state.trend ?? "",
+@@ -450,7 +450,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
+                 [
+                     "glucose": value.glucose,
+-                    "date": value.date.timeIntervalSince1970,
++                    "date": value.date,
+                     "color": value.color
+                 ]
+             },
+@@ -489,7 +489,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         }
+ 
+         guard session.isWatchAppInstalled else {
+-            debug(.watchManager, "⌚️❌ Trio Watch app is")
++            debug(.watchManager, "⌚️❌ Trio Watch app is not installed")
+             return
+         }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
