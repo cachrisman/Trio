@@ -4,9 +4,12 @@ set -euo pipefail
 # record-release.sh
 # Creates/updates GitHub Release for shipped builds (after TestFlight upload)
 #
-# Version: 1.1.0
+# Version: 1.2.0
 #
 # Changelog:
+#   1.2.0 - Add private backup release in cachrisman/trio-builds-private
+#         - Creates/updates draft release with same tag/title/body as public release
+#         - Uploads manifest JSON and IPA file as assets
 #   1.1.0 - Auto-push temp branch when fork SHA doesn't exist on GitHub
 #         - Stop swallowing GitHub API error details for better debugging
 #   1.0.0 - Initial release
@@ -19,13 +22,15 @@ Records a shipped build by:
   - Extracting version/build from IPA
   - Generating manifest JSON
   - Creating/updating Git tag
-  - Creating/updating GitHub Release
+  - Creating/updating GitHub Release (public)
   - Uploading manifest as release asset
+  - Creating/updating private backup release (draft) with manifest and IPA assets
 
 Environment variables:
-  GH_PAT          - GitHub Personal Access Token (required)
-  IPA_PATH       - Path to built IPA (auto-detected if not set)
-  GITHUB_REPOSITORY - Repository in owner/name format (auto-detected in CI)
+  GH_PAT                      - GitHub Personal Access Token (required)
+  IPA_PATH                    - Path to built IPA (auto-detected if not set)
+  GITHUB_REPOSITORY           - Repository in owner/name format (auto-detected in CI)
+  TRIO_BUILDS_PRIVATE_REPO    - Private backup repository (default: cachrisman/trio-builds-private)
 USAGE
 }
 
@@ -344,6 +349,27 @@ ensure_sha_on_github() {
   echo "[record-release] Temp branch pushed: $branch"
 }
 
+# Read stage summary if available
+get_stage_summary() {
+  local summary_file="build/artifacts/stage-summary.txt"
+  
+  # Also check common locations
+  local candidates=(
+    "build/artifacts/stage-summary.txt"
+    "../build/artifacts/stage-summary.txt"
+    "$(pwd)/build/artifacts/stage-summary.txt"
+  )
+  
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      cat "$candidate"
+      return
+    fi
+  done
+  
+  echo ""
+}
+
 # Generate release description body
 generate_release_body() {
   local version="$1"
@@ -367,7 +393,8 @@ Patches:"
   # Parse patches JSON and add to body
   if [[ "$patches_json" != "[]" && -n "$patches_json" ]]; then
     # Use Python to parse JSON and format patches (pass JSON via stdin to avoid quoting issues)
-    echo "$patches_json" | python3 <<'PYTHON_EOF'
+    body+="
+$(echo "$patches_json" | python3 <<'PYTHON_EOF'
 import json
 import sys
 
@@ -394,12 +421,81 @@ try:
 except Exception as e:
     print(f"(error parsing patches: {e})", file=sys.stderr)
 PYTHON_EOF
+)"
   else
     body+="
 (none)"
   fi
 
+  # Add stage timing summary if available
+  local stage_summary
+  stage_summary="$(get_stage_summary)"
+  if [[ -n "$stage_summary" ]]; then
+    body+="
+
+Build Stages:
+\`\`\`
+$stage_summary
+\`\`\`"
+  fi
+
   echo "$body"
+}
+
+# Create/update private backup release (draft) with manifest and IPA assets
+record_private_backup_release() {
+  local private_repo="$1"
+  local tag="$2"
+  local title="$3"
+  local body="$4"
+  local manifest_path="$5"
+  local ipa_path="$6"
+
+  echo "[record-release] Creating/updating private backup release (draft)..."
+
+  # Sanity check: ensure GH_TOKEN can access the private repo (fail fast)
+  if ! gh api "repos/$private_repo" --silent >/dev/null 2>&1; then
+    echo "ERROR: GH_TOKEN (from GH_PAT) cannot access repos/$private_repo. Verify GH_PAT permissions for this repo." >&2
+    exit 1
+  fi
+
+  # Create or update draft release
+  if gh release view "$tag" --repo "$private_repo" >/dev/null 2>&1; then
+    if ! gh release edit "$tag" \
+      --repo "$private_repo" \
+      --title "$title" \
+      --notes "$body" \
+      --draft \
+      >/dev/null 2>&1; then
+      echo "ERROR: Failed to update private backup release" >&2
+      exit 1
+    fi
+  else
+    if ! gh release create "$tag" \
+      --repo "$private_repo" \
+      --title "$title" \
+      --notes "$body" \
+      --draft \
+      >/dev/null 2>&1; then
+      echo "ERROR: Failed to create private backup release" >&2
+      exit 1
+    fi
+  fi
+
+  # Upload manifest and IPA as assets (replace if exists)
+  echo "[record-release] Uploading manifest and IPA to private backup release..."
+  if ! gh release upload "$tag" \
+    --repo "$private_repo" \
+    "$manifest_path" \
+    "$ipa_path" \
+    --clobber \
+    >/dev/null 2>&1; then
+    echo "ERROR: Failed to upload assets to private backup release" >&2
+    exit 1
+  fi
+
+  # Return the release URL
+  echo "https://github.com/$private_repo/releases/tag/$tag"
 }
 
 # Main execution
@@ -595,14 +691,20 @@ PYTHON_EOF
     echo "WARNING: Failed to upload manifest asset" >&2
   }
 
-  # Print release URL
+  # Create/update private backup release (draft) with manifest and IPA
+  local private_repo="${TRIO_BUILDS_PRIVATE_REPO:-cachrisman/trio-builds-private}"
+  local private_release_url
+  private_release_url="$(record_private_backup_release "$private_repo" "$tag" "$release_title" "$release_body" "$manifest_path" "$ipa_path")"
+
+  # Print release URLs
   local release_url
   release_url="https://github.com/$repo_info/releases/tag/$tag"
   echo ""
   echo "=========================================="
   echo "[record-release] ✅ Release recorded successfully"
   echo "=========================================="
-  echo "Release URL: $release_url"
+  echo "Public Release URL: $release_url"
+  echo "Private Backup Release URL (draft): $private_release_url"
   echo "Tag: $tag"
   echo "Manifest: $manifest_path"
   echo ""

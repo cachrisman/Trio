@@ -6,21 +6,23 @@ print_usage() {
 Usage: scripts/patch-test.sh [options]
 
 Options:
-  --no-submodules                 Skip submodule initialization.
+  --with-submodules               Initialize all submodules (default: skip).
   --include-submodules <list>     Comma-separated submodules to init; excludes others.
   --skip-patch <id|filename>      Skip a patch by number (e.g. 02) or full filename.
   -h, --help                      Show this help.
+
+By default, submodules are skipped to speed up patch validation.
 EOF
 }
 
-no_submodules=false
+with_submodules=false
 include_submodules=()
 skip_patches=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --no-submodules)
-      no_submodules=true
+    --with-submodules)
+      with_submodules=true
       ;;
     --include-submodules)
       shift
@@ -53,8 +55,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-if [ "$no_submodules" = true ] && [ ${#include_submodules[@]} -gt 0 ]; then
-  echo "Cannot combine --no-submodules with --include-submodules"
+if [ "$with_submodules" = true ] && [ ${#include_submodules[@]} -gt 0 ]; then
+  echo "Cannot combine --with-submodules with --include-submodules"
   exit 1
 fi
 
@@ -168,18 +170,20 @@ cd "$TEST_WORKTREE" || {
   exit 1
 }
 
-if [ "$no_submodules" = true ]; then
-  echo "Skipping submodule init (--no-submodules)"
-elif [ ${#include_submodules[@]} -gt 0 ]; then
+if [ ${#include_submodules[@]} -gt 0 ]; then
+  echo "Initializing specific submodules: ${include_submodules[*]}"
   if ! git submodule update --init --recursive -- "${include_submodules[@]}"; then
     echo "Submodule update failed (include list)"
     exit 1
   fi
-else
+elif [ "$with_submodules" = true ]; then
+  echo "Initializing all submodules (--with-submodules)"
   if ! git submodule update --init --recursive; then
     echo "Submodule update failed"
     exit 1
   fi
+else
+  echo "Skipping submodule init (default; use --with-submodules to include)"
 fi
 
 # Clean up test branch if it exists in the worktree

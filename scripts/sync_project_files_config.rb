@@ -37,4 +37,11 @@ module SyncProjectFilesConfig
   # Map target names to package dependencies (package name => product name)
   TARGET_PACKAGE_DEPS = {
   }.freeze
+
+  # Map target names to required build settings (setting_key => setting_value)
+  TARGET_BUILD_SETTINGS = {
+    "Trio Watch Complication Extension" => {
+      "INFOPLIST_KEY_AppGroupID" => "$(TRIO_APP_GROUP_ID)"
+    }
+  }.freeze
 end

@@ -47,6 +47,11 @@ EXPLICIT_FILES = explicit_files.uniq
 TARGET_GLOBS = SyncProjectFilesConfig::TARGET_GLOBS
 TARGET_RESOURCE_GLOBS = SyncProjectFilesConfig::TARGET_RESOURCE_GLOBS
 TARGET_PACKAGE_DEPS = SyncProjectFilesConfig::TARGET_PACKAGE_DEPS
+TARGET_BUILD_SETTINGS = if SyncProjectFilesConfig.const_defined?(:TARGET_BUILD_SETTINGS)
+  SyncProjectFilesConfig::TARGET_BUILD_SETTINGS
+else
+  {}
+end
 TARGET_EXCLUDE_GLOBS = if SyncProjectFilesConfig.const_defined?(:TARGET_EXCLUDE_GLOBS)
   SyncProjectFilesConfig::TARGET_EXCLUDE_GLOBS
 else
@@ -814,6 +819,32 @@ def sync_package_dependencies(project)
   additions
 end
 
+def sync_build_settings(project)
+  changes = []
+  
+  TARGET_BUILD_SETTINGS.each do |target_name, settings|
+    target = project.targets.find { |t| t.name == target_name }
+    unless target
+      warn "⚠️  Skipping missing target #{target_name}"
+      next
+    end
+
+    # Update all build configurations (Debug, Release, etc.)
+    target.build_configurations.each do |config|
+      settings.each do |key, value|
+        current_value = config.build_settings[key]
+        
+        if current_value != value
+          config.build_settings[key] = value
+          changes << [target_name, config.name, key, value]
+        end
+      end
+    end
+  end
+
+  changes
+end
+
 def sync_project
   Dir.chdir(PROJECT_ROOT) do
     base_ref = effective_base_ref
@@ -896,10 +927,13 @@ def sync_project
     # Sync package dependencies
     additions.concat(sync_package_dependencies(project))
 
+    # Sync build settings
+    build_setting_changes = sync_build_settings(project)
+
     project.save
 
-    if additions.empty? && removals.empty?
-      puts "No new files or dependencies to add."
+    if additions.empty? && removals.empty? && build_setting_changes.empty?
+      puts "No new files, dependencies, or build settings to update."
     else
       removals.each do |target, phase, path|
         puts "Removed duplicate #{path} -> #{target} (#{phase})"
@@ -907,6 +941,10 @@ def sync_project
 
       additions.each do |target, path, type|
         puts "Added #{path} -> #{target} (#{type})"
+      end
+
+      build_setting_changes.each do |target, config, key, value|
+        puts "Updated #{target} (#{config}): #{key} = #{value}"
       end
     end
   end

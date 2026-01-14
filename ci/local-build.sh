@@ -5,6 +5,11 @@ usage() {
   cat <<'USAGE'
 Usage: ./ci/local-build.sh [options]
 
+Build Modes:
+  --build-only               Build IPA + dSYMs only (skip TestFlight upload)
+  --release-only             Upload existing IPA to TestFlight (no build, no patches)
+                             Requires --ipa-path or Trio.ipa in repo root
+
 Options:
   --base-branch <name>       Base branch to build from (default: dev)
   --build-current            Build current branch state (skip patches)
@@ -13,12 +18,24 @@ Options:
   --no-reapply-stash         Do not apply local tracked changes
   --include-untracked        Copy untracked files into the worktree
   --include-project-file     Include Trio.xcodeproj/project.pbxproj from local changes
-  --build-only               Build IPA + dSYMs only (skip TestFlight upload)
-  --release-only            Upload existing Trio.ipa to TestFlight (no build, no patches)
+  --ipa-path <path>          Path to existing IPA file (used with --release-only)
   --sync-all                 Allow sync_project_files.rb to scan full globs
   --sync-explicit-only       Only sync explicit file list (default)
   --worktree-parent <path>   Parent dir for temporary worktrees
   -h, --help                 Show this help
+
+Examples:
+  # Build only (no TestFlight upload)
+  ./ci/local-build.sh --build-only
+
+  # Upload existing IPA from default location (./Trio.ipa)
+  ./ci/local-build.sh --release-only
+
+  # Upload IPA from custom path
+  ./ci/local-build.sh --release-only --ipa-path /path/to/Trio.ipa
+
+  # Full build + upload from dev with patches
+  ./ci/local-build.sh --base-branch dev
 USAGE
 }
 
@@ -35,6 +52,7 @@ INCLUDE_UNTRACKED=0
 WORKTREE_PARENT=""
 INCLUDE_PROJECT_FILE=0
 SYNC_EXPLICIT_ONLY=""
+IPA_PATH=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -71,6 +89,13 @@ while [[ $# -gt 0 ]]; do
     --release-only)
       RELEASE_ONLY=1
       ;;
+    --ipa-path=*)
+      IPA_PATH="${1#*=}"
+      ;;
+    --ipa-path)
+      shift
+      IPA_PATH="${1:-}"
+      ;;
     --sync-all)
       SYNC_EXPLICIT_ONLY=0
       ;;
@@ -99,6 +124,44 @@ while [[ $# -gt 0 ]]; do
 done
 
 ########################################
+# Argument validation
+########################################
+
+# Check for conflicting options
+if [[ "$RELEASE_ONLY" = "1" && "$BUILD_ONLY" = "1" ]]; then
+  echo ""
+  echo "[build] ⚠️  WARNING: --release-only and --build-only are mutually exclusive."
+  echo "[build]    --release-only uploads an existing IPA (no build)"
+  echo "[build]    --build-only builds an IPA (no upload)"
+  echo ""
+  usage
+  exit 1
+fi
+
+# Check for --ipa-path without --release-only
+if [[ -n "$IPA_PATH" && "$RELEASE_ONLY" != "1" ]]; then
+  echo ""
+  echo "[build] ⚠️  WARNING: --ipa-path requires --release-only."
+  echo "[build]    The --ipa-path option specifies an existing IPA to upload."
+  echo ""
+  echo "[build]    Usage: ./ci/local-build.sh --release-only --ipa-path /path/to/Trio.ipa"
+  echo ""
+  usage
+  exit 1
+fi
+
+# Check for conflicting build options
+if [[ "$BUILD_CURRENT" = "1" && "$BASE_BRANCH_SET" = "true" ]]; then
+  echo ""
+  echo "[build] ⚠️  WARNING: --build-current and --base-branch are typically not used together."
+  echo "[build]    --build-current: builds current branch state"
+  echo "[build]    --base-branch: specifies which branch to start from"
+  echo ""
+  echo "[build]    Continuing with --build-current behavior (ignoring --base-branch)..."
+  echo ""
+fi
+
+########################################
 # helper / state
 ########################################
 ROOT_DIR="$(pwd)"
@@ -116,6 +179,183 @@ preserve_worktree=false
 staged_summary=""
 unstaged_summary=""
 untracked_summary=""
+
+########################################
+# Stage timing infrastructure
+########################################
+STAGE_NAMES=()
+STAGE_DURATIONS=()
+STAGE_START_TIMESTAMPS=()
+STAGE_END_TIMESTAMPS=()
+STAGE_START_TIME=""
+STAGE_START_TIMESTAMP=""
+CURRENT_STAGE=""
+BUILD_START_TIME=""
+
+stage_start() {
+  local stage_name="$1"
+  CURRENT_STAGE="$stage_name"
+  STAGE_START_TIME=$(date +%s)
+  STAGE_START_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+  echo ""
+  echo "────────────────────────────────────────"
+  echo "[stage] ▶ Starting: $stage_name"
+  echo "────────────────────────────────────────"
+}
+
+stage_end() {
+  local status="${1:-success}"
+  if [[ -z "$STAGE_START_TIME" || -z "$CURRENT_STAGE" ]]; then
+    return
+  fi
+  
+  local end_time=$(date +%s)
+  local end_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  local duration=$((end_time - STAGE_START_TIME))
+  
+  STAGE_NAMES+=("$CURRENT_STAGE")
+  STAGE_DURATIONS+=("$duration")
+  STAGE_START_TIMESTAMPS+=("$STAGE_START_TIMESTAMP")
+  STAGE_END_TIMESTAMPS+=("$end_timestamp")
+  
+  local formatted_duration
+  formatted_duration=$(format_duration "$duration")
+  
+  if [[ "$status" == "success" ]]; then
+    echo "[stage] ✓ Completed: $CURRENT_STAGE ($formatted_duration)"
+  else
+    echo "[stage] ✗ Failed: $CURRENT_STAGE ($formatted_duration)"
+  fi
+  
+  STAGE_START_TIME=""
+  STAGE_START_TIMESTAMP=""
+  CURRENT_STAGE=""
+}
+
+format_duration() {
+  local seconds="$1"
+  if [[ $seconds -lt 60 ]]; then
+    echo "${seconds}s"
+  elif [[ $seconds -lt 3600 ]]; then
+    local mins=$((seconds / 60))
+    local secs=$((seconds % 60))
+    echo "${mins}m ${secs}s"
+  else
+    local hours=$((seconds / 3600))
+    local mins=$(((seconds % 3600) / 60))
+    local secs=$((seconds % 60))
+    echo "${hours}h ${mins}m ${secs}s"
+  fi
+}
+
+print_stage_summary() {
+  local final_status="${1:-success}"
+  local total_duration=0
+  local build_end_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  
+  if [[ -n "$BUILD_START_TIME" ]]; then
+    local end_time=$(date +%s)
+    total_duration=$((end_time - BUILD_START_TIME))
+  fi
+  
+  # Calculate column widths
+  local max_name_len=30
+  for name in "${STAGE_NAMES[@]}"; do
+    local len=${#name}
+    if [[ $len -gt $max_name_len ]]; then
+      max_name_len=$len
+    fi
+  done
+  
+  # Total width: "║  " (3) + name (max_name_len) + "  " (2) + duration (10) + "  ║" (3) = max_name_len + 18
+  local inner_width=$((max_name_len + 14))
+  local total_width=$((inner_width + 4))
+  
+  # Build the box
+  local top_border="╔$(printf '═%.0s' $(seq 1 $inner_width))╗"
+  local mid_border="╠$(printf '═%.0s' $(seq 1 $inner_width))╣"
+  local bot_border="╚$(printf '═%.0s' $(seq 1 $inner_width))╝"
+  
+  # Center the title
+  local title="BUILD STAGE SUMMARY"
+  local title_len=${#title}
+  local title_padding=$(( (inner_width - title_len) / 2 ))
+  local title_line="║$(printf ' %.0s' $(seq 1 $title_padding))${title}$(printf ' %.0s' $(seq 1 $((inner_width - title_padding - title_len))))║"
+  
+  echo ""
+  echo "$top_border"
+  echo "$title_line"
+  echo "$mid_border"
+  
+  local i=0
+  for name in "${STAGE_NAMES[@]}"; do
+    local duration="${STAGE_DURATIONS[$i]}"
+    local formatted
+    formatted=$(format_duration "$duration")
+    printf "║  %-${max_name_len}s  %8s  ║\n" "$name" "$formatted"
+    i=$((i + 1))
+  done
+  
+  echo "$mid_border"
+  
+  local total_formatted
+  total_formatted=$(format_duration "$total_duration")
+  
+  if [[ "$final_status" == "success" ]]; then
+    printf "║  %-${max_name_len}s  %8s  ║\n" "✅ TOTAL (Success)" "$total_formatted"
+  else
+    printf "║  %-${max_name_len}s  %8s  ║\n" "❌ TOTAL (Failed)" "$total_formatted"
+  fi
+  
+  echo "$bot_border"
+  echo ""
+  
+  # Write detailed timestamps to log file only (bypass tee)
+  if [[ -n "$LOGFILE" && -f "$LOGFILE" ]]; then
+    {
+      echo ""
+      echo "=== DETAILED STAGE TIMING (with timestamps) ==="
+      echo ""
+      printf "%-32s  %-20s  %-20s  %10s\n" "Stage" "Start" "End" "Duration"
+      printf "%-32s  %-20s  %-20s  %10s\n" "-----" "-----" "---" "--------"
+      
+      local j=0
+      for name in "${STAGE_NAMES[@]}"; do
+        local duration="${STAGE_DURATIONS[$j]}"
+        local start_ts="${STAGE_START_TIMESTAMPS[$j]}"
+        local end_ts="${STAGE_END_TIMESTAMPS[$j]}"
+        local formatted
+        formatted=$(format_duration "$duration")
+        printf "%-32s  %-20s  %-20s  %10s\n" "$name" "$start_ts" "$end_ts" "$formatted"
+        j=$((j + 1))
+      done
+      
+      echo ""
+      printf "%-32s  %-20s  %-20s  %10s\n" "TOTAL" "" "$build_end_timestamp" "$total_formatted"
+      echo ""
+    } >> "$LOGFILE"
+  fi
+  
+  # Write plain-text stage summary for release recording (no timestamps, simple format)
+  local summary_file="$ROOT_DIR/build/artifacts/stage-summary.txt"
+  mkdir -p "$(dirname "$summary_file")"
+  {
+    local k=0
+    for name in "${STAGE_NAMES[@]}"; do
+      local duration="${STAGE_DURATIONS[$k]}"
+      local formatted
+      formatted=$(format_duration "$duration")
+      printf "%-32s  %10s\n" "$name" "$formatted"
+      k=$((k + 1))
+    done
+    echo "--------------------------------  ----------"
+    if [[ "$final_status" == "success" ]]; then
+      printf "%-32s  %10s\n" "TOTAL (Success)" "$total_formatted"
+    else
+      printf "%-32s  %10s\n" "TOTAL (Failed)" "$total_formatted"
+    fi
+  } > "$summary_file"
+}
 
 normalize_path() {
   local path="$1"
@@ -156,6 +396,7 @@ export GIT_TERMINAL_PROMPT=0
 
 # Write a log header
 echo "=== ci/local-build.sh starting at $(date -u) ==="
+BUILD_START_TIME=$(date +%s)
 
 ########################################
 # Helper function to capture and display fastlane errors
@@ -325,13 +566,35 @@ fi
 if [[ "$RELEASE_ONLY" = "1" ]]; then
   echo "[build] RELEASE_ONLY=1 — skipping worktree, patches, and build."
 
-  if [[ ! -f "$ROOT_DIR/Trio.ipa" ]]; then
-    echo "[build] ERROR: $ROOT_DIR/Trio.ipa not found."
-    echo "[build] Run: ci/local-build.sh --build-only first to produce Trio.ipa."
+  stage_start "Setup (Release-Only)"
+
+  # Determine IPA path: use --ipa-path if provided, otherwise default to $ROOT_DIR/Trio.ipa
+  RELEASE_IPA_PATH="${IPA_PATH:-$ROOT_DIR/Trio.ipa}"
+
+  if [[ ! -f "$RELEASE_IPA_PATH" ]]; then
+    echo ""
+    echo "[build] ❌ ERROR: IPA file not found at: $RELEASE_IPA_PATH"
+    echo ""
+    if [[ -n "$IPA_PATH" ]]; then
+      echo "[build]    The specified --ipa-path does not exist."
+      echo "[build]    Check the path and try again."
+    else
+      echo "[build]    No IPA found at the default location ($ROOT_DIR/Trio.ipa)."
+      echo "[build]    Options:"
+      echo "[build]      1. Build first:  ./ci/local-build.sh --build-only"
+      echo "[build]      2. Specify path: ./ci/local-build.sh --release-only --ipa-path /path/to/Trio.ipa"
+    fi
+    echo ""
     exit 1
   fi
 
-  echo "[build] Using IPA: $ROOT_DIR/Trio.ipa"
+  echo "[build] Using IPA: $RELEASE_IPA_PATH"
+
+  # Copy IPA to expected location if using custom path
+  if [[ "$RELEASE_IPA_PATH" != "$ROOT_DIR/Trio.ipa" ]]; then
+    echo "[build] Copying IPA to $ROOT_DIR/Trio.ipa for fastlane..."
+    cp -f "$RELEASE_IPA_PATH" "$ROOT_DIR/Trio.ipa"
+  fi
 
   echo "[build] Running bundle _${BUNDLER_VERSION}_ install (safe)..."
   bundle _${BUNDLER_VERSION}_ install
@@ -344,12 +607,16 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
     echo "[build] FASTLANE_KEY appears to be multi-line already."
   fi
 
+  stage_end
+
   cd "$ROOT_DIR"
 
+  stage_start "TestFlight Upload"
   if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step"; then
     release_exit_code=$?
     exit $release_exit_code
   fi
+  stage_end
 
   echo "[build] TestFlight upload finished successfully."
 
@@ -357,7 +624,7 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
   # Record release (after successful TestFlight upload)
   ########################################
 
-  echo ""
+  stage_start "Record Release"
   echo "[build] Recording release to GitHub..."
 
   if [[ -f "$ROOT_DIR/Trio.ipa" ]]; then
@@ -369,13 +636,17 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
   else
     echo "[build] WARNING: Could not find IPA for release recording."
   fi
+  stage_end
 
+  print_stage_summary "success"
   exit 0
 fi
 
 ########################################
 # 1. Sanity checks for tools
 ########################################
+
+stage_start "Environment & Tool Validation"
 
 echo "[build] Checking required tools..."
 
@@ -397,6 +668,8 @@ echo "[build] Ruby:    $(ruby -v)"
 echo "[build] Bundler: $(bundle _${BUNDLER_VERSION}_ -v || echo 'bundler not found for this version')"
 echo "[build] Xcode:   $(xcode-select -p)"
 xcodebuild -version || true
+
+stage_end
 
 ########################################
 # 2. (Optional) Select Xcode version
@@ -546,6 +819,20 @@ cleanup() {
   fi
   cleanup_in_progress=true
 
+  # End any in-progress stage
+  if [[ -n "$CURRENT_STAGE" ]]; then
+    stage_end "failed"
+  fi
+
+  # Print stage summary if we have any stages recorded
+  if [[ ${#STAGE_NAMES[@]} -gt 0 ]]; then
+    if [[ $exit_code -eq 0 ]]; then
+      print_stage_summary "success"
+    else
+      print_stage_summary "failed"
+    fi
+  fi
+
   if [[ "$cleanup_enabled" != true ]]; then
     echo "=== cleanup invoked (exit code: $exit_code) ==="
     echo "[cleanup] Cleanup not initialized; skipping git cleanup"
@@ -582,6 +869,8 @@ cleanup() {
 }
 
 trap cleanup EXIT
+
+stage_start "Worktree Setup"
 
 # prepare git state
 if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -694,9 +983,13 @@ fi
 
 PATCHES_DIR="$BUILD_DIR/patches"
 
+stage_end
+
 ########################################
 # 3. Ensure certs and Config.xcconfig (delegates to safe helper)
 ########################################
+
+stage_start "Certificates & Config"
 
 echo "[build] Running local_create_certs.sh to ensure certificates / config..."
 # local_create_certs.sh should NOT call this script (avoid recursion). Fail fast if helper fails.
@@ -727,9 +1020,13 @@ if [[ ! -f "$BUILD_DIR/Config.xcconfig" && ! -f "/Config.xcconfig" ]]; then
   exit 1
 fi
 
+stage_end
+
 ########################################
 # 4. Customize Trio (patch application)
 ########################################
+
+stage_start "Patch Application"
 
 echo "[build] Running 'Customize Trio' step (patches)..."
 
@@ -818,12 +1115,18 @@ else
   echo "[build] No patches directory found"
 fi
 
+stage_end
+
 ########################################
 # 5. Ensure dependencies (safe even if already installed)
 ########################################
 
+stage_start "Ruby Dependencies"
+
 echo "[build] Running bundle _${BUNDLER_VERSION}_ install (again, safe)..."
 bundle _${BUNDLER_VERSION}_ install
+
+stage_end
 
 ########################################
 # 6. Prepare FASTLANE_KEY (handle '\n' case)
@@ -898,6 +1201,8 @@ if [[ -z "${SYNC_EXPLICIT_ONLY:-}" ]]; then
 fi
 export SYNC_EXPLICIT_ONLY
 
+stage_start "Build IPA"
+
 if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane build_trio" "Build step"; then
   build_exit_code=$?
   exit $build_exit_code
@@ -905,6 +1210,8 @@ fi
 
 stage_ipa_for_release
 stage_dsym_for_release
+
+stage_end
 
 ########################################
 # 8. Upload to TestFlight (with confirmation)
@@ -920,6 +1227,7 @@ if [[ "$BUILD_ONLY" = "1" ]]; then
   echo "[build] BUILD_ONLY=1 — skipping TestFlight upload."
   echo "[build] Build verification complete. IPA available at: $ROOT_DIR/Trio.ipa"
   echo ""
+  print_stage_summary "success"
   echo "[build] Local build finished successfully (no upload)."
   exit 0
 fi
@@ -928,10 +1236,14 @@ echo "[build] Ready to upload to TestFlight."
 # echo "[build] Press Enter to continue with upload, or Ctrl+C to cancel..."
 # read -r
 
+stage_start "TestFlight Upload"
+
 if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step"; then
   release_exit_code=$?
   exit $release_exit_code
 fi
+
+stage_end
 
 echo "[build] TestFlight upload finished successfully."
 
@@ -939,7 +1251,8 @@ echo "[build] TestFlight upload finished successfully."
 # 9. Record release (after successful TestFlight upload)
 ########################################
 
-echo ""
+stage_start "Record Release"
+
 echo "[build] Recording release to GitHub..."
 
 # Determine IPA path for record-release.sh
@@ -973,5 +1286,8 @@ else
   echo "[build] WARNING: Could not find IPA for release recording."
 fi
 
+stage_end
+
+print_stage_summary "success"
 echo "[build] Local build + TestFlight upload finished successfully."
 exit 0
