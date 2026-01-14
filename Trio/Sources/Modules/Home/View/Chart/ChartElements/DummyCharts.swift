@@ -38,9 +38,7 @@ extension MainChartView {
             }
         }
         .id("DummyMainChart")
-        .frame(
-            minHeight: geo.size.height * (0.28 - safeAreaSize)
-        )
+        .frame(height: mainChartHeight)
         .frame(width: screenSize.width - 10)
         .chartXAxis { mainChartXAxis }
         .chartXScale(domain: state.startMarker ... state.endMarker)
@@ -56,7 +54,7 @@ extension MainChartView {
     var dummyBasalChart: some View {
         Chart {}
             .id("DummyBasalChart")
-            .frame(minHeight: geo.size.height * 0.05)
+            .frame(height: basalChartHeight)
             .frame(width: screenSize.width - 10)
             .chartXAxis { basalChartXAxis }
             .chartXAxis(.hidden)
@@ -67,7 +65,7 @@ extension MainChartView {
     var dummyCobChart: some View {
         Chart {}
             .id("DummyCobChart")
-            .frame(minHeight: geo.size.height * 0.12)
+            .frame(height: cobChartHeight)
             .frame(width: screenSize.width - 10)
             .chartXScale(domain: state.startMarker ... state.endMarker)
             .chartXAxis { basalChartXAxis }
