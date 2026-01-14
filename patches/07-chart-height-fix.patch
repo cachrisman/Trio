@@ -1,6 +1,6 @@
-From 969760c700dd52c692983996fca78c8d44397ebd Mon Sep 17 00:00:00 2001
+From 12019a4836ea48b3b1ea7e5e85286f40a49b35e7 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 11 Jan 2026 01:18:28 +0100
+Date: Wed, 14 Jan 2026 22:53:12 +0100
 Subject: [PATCH] feat: chart-height-fix
 
 ---

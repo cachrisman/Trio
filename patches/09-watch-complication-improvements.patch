@@ -1,6 +1,6 @@
-From 81d20ab231908f5d10fcdc9169b8e8c7749436d7 Mon Sep 17 00:00:00 2001
+From 5664e6cb6277beacd27109edfeb7874426079a1d Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Tue, 13 Jan 2026 22:33:50 +0100
+Date: Wed, 14 Jan 2026 08:01:18 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
@@ -26,7 +26,7 @@ Subject: [PATCH] feat: watch-complication-improvements
  create mode 100644 Trio/Resources/TrioWatch.entitlements
 
 diff --git a/Config.xcconfig b/Config.xcconfig
-index b847fdbbd..9fc183c72 100644
+index 08bcb88d0..9fc183c72 100644
 --- a/Config.xcconfig
 +++ b/Config.xcconfig
 @@ -16,14 +16,15 @@ BUNDLE_IDENTIFIER = org.nightscout.$(DEVELOPMENT_TEAM).trio
@@ -37,8 +37,7 @@ index b847fdbbd..9fc183c72 100644
  
  // The developers set the version numbers, please leave them alone
  APP_VERSION = 0.6.0
--APP_DEV_VERSION = 0.6.0.41
-+APP_DEV_VERSION = 0.6.0.34
+ APP_DEV_VERSION = 0.6.0.42
  APP_BUILD_NUMBER = 1
  COPYRIGHT_NOTICE =
  
@@ -527,7 +526,7 @@ index d47a971c9..f53d1ce43 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f4fb33fde..26263bf41 100644
+index f4fb33fde..bb0875149 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,20 +1,19 @@
@@ -1240,7 +1239,7 @@ index f4fb33fde..26263bf41 100644
 +
 +        if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
 +            // CGM limitations means we need to filter out values outside of this range
-+            guard glucoseValue > 40 && glucoseValue < 400 else {
++            guard glucoseValue >= 40 && glucoseValue <= 400 else {
 +                Task {
 +                    await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
 +                }
