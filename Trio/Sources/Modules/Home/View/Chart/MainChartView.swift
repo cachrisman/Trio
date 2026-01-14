@@ -33,6 +33,26 @@ struct MainChartView: View {
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.calendar) var calendar
 
+    // NOTE:
+    // Historically these charts used `minHeight` to allow them to stretch if the
+    // surrounding layout provided extra vertical space. The flexible sizing also
+    // meant that a spacer recalculation or an unexpected safe-area change could
+    // cause the charts to over-expand. We now use fixed heights to keep the
+    // overlaid chart stack aligned. If future layouts need flexibility again,
+    // prefer a bounded range (`minHeight` + `maxHeight`) instead of a single
+    // unconstrained `minHeight`.
+    var mainChartHeight: CGFloat {
+        max(geo.size.height * (0.28 - safeAreaSize), 0)
+    }
+
+    var basalChartHeight: CGFloat {
+        max(geo.size.height * 0.05, 0)
+    }
+
+    var cobChartHeight: CGFloat {
+        max(geo.size.height * 0.12, 0)
+    }
+
     var upperLimit: Decimal {
         units == .mgdL ? 400 : 22.2
     }
@@ -187,9 +207,7 @@ extension MainChartView {
                 }
             }
             .id("MainChart")
-            .frame(
-                minHeight: geo.size.height * (0.28 - safeAreaSize)
-            )
+            .frame(height: mainChartHeight)
             .frame(width: fullWidth(viewWidth: screenSize.width))
             .chartXScale(domain: state.startMarker ... state.endMarker)
             .chartXAxis { mainChartXAxis }
