@@ -78,6 +78,8 @@ fastlane/Preview.html
 fastlane/screenshots
 fastlane/test_output
 fastlane/FastlaneRunner
+fastlane/README.md
+fastlane/new_certificate_needed.txt  
 
 ConfigOverride.xcconfig
 .trio-env
