@@ -1,7 +1,7 @@
-From 401af55e811c72f7f79f162e43fb2ed23dd602df Mon Sep 17 00:00:00 2001
+From 6e085987a68fec517c338fc59ae031817f82b93e Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sun, 18 Jan 2026 11:41:31 +0100
-Subject: [PATCH] feat: feature-cloud-logging
+Date: Sun, 18 Jan 2026 15:59:18 +0100
+Subject: [PATCH] feat: cloud-logging
 
 ---
  Trio/Sources/Application/AppDelegate.swift    |  34 +-
@@ -11,7 +11,7 @@ Subject: [PATCH] feat: feature-cloud-logging
  .../BetterStackLogtailProvider.swift          |  71 ++++
  .../CloudLogging/BetterStackSettings.swift    |  35 ++
  .../CloudLogEntryAggregator.swift             |  41 ++
- .../CloudLogging/CloudLogLineParsing.swift    | 255 +++++++++++++
+ .../CloudLogging/CloudLogLineParsing.swift    | 272 +++++++++++++
  .../CloudLogging/CloudLogProvider.swift       |  99 +++++
  .../CloudLogging/CloudLogUploadService.swift  | 161 ++++++++
  .../CloudLogging/CloudLogUploader.swift       | 357 ++++++++++++++++++
@@ -20,7 +20,7 @@ Subject: [PATCH] feat: feature-cloud-logging
  .../Settings/View/Subviews/ServicesView.swift |   1 +
  Trio/Sources/Router/Screen.swift              |   3 +
  TrioTests/CloudLogEntryAggregatorTests.swift  |  42 +++
- 16 files changed, 1567 insertions(+), 1 deletion(-)
+ 16 files changed, 1584 insertions(+), 1 deletion(-)
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
@@ -590,10 +590,10 @@ index 000000000..b9d2818fd
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
 new file mode 100644
-index 000000000..c6c320e5e
+index 000000000..9261bfcbb
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,272 @@
 +import Foundation
 +
 +enum CloudLogPlatform: String {
@@ -644,9 +644,11 @@ index 000000000..c6c320e5e
 +        var method: String?
 +        var lineNumber: String?
 +
-+        // Pattern: \] (.+\.swift) - (.+?) - (\d+) - (DEV|INFO|WARN|ERR):
-+        // Method name can contain special chars like (_:), so we match everything between the delimiters
-+        let fileMethodLineRegex = #"\]\s+([^\s]+\.swift)\s+-\s+(.+?)\s+-\s+(\d+)\s+-\s+(DEV|INFO|WARN|ERR):"#
++        // Pattern: \] (.+\.swift) - (.+?) - (\d+) - (<LEVEL>):
++        // Method name can contain special chars like (_:), so we match everything between the delimiters.
++        // Level can vary depending on logger implementation ("DEV", "DEBUG", "WARN", "WARNING", ...),
++        // so keep it permissive to avoid losing file/method/line parsing.
++        let fileMethodLineRegex = #"\]\s+([^\s]+\.swift)\s+-\s+(.+?)\s+-\s+(\d+)\s+-\s+([A-Z]+):"#
 +        if let regex = try? NSRegularExpression(pattern: fileMethodLineRegex) {
 +            let nsHeader = header as NSString
 +            let range = NSRange(location: 0, length: nsHeader.length)
@@ -669,7 +671,7 @@ index 000000000..c6c320e5e
 +        }
 +
 +        // Level = delimiter-aware: " - (DEV|INFO|WARN|ERR):"
-+        let levelRegex = #"\s-\s(DEV|INFO|WARN|ERR):\s"#
++        let levelRegex = #"\s-\s([A-Z]+):\s"#
 +        guard let levelMatch = header.range(of: levelRegex, options: .regularExpression) else {
 +            // If we can't confidently parse, still return the original line as message.
 +            let msg = continuation.isEmpty ? header : "\(header)\n\(continuation)"
@@ -684,10 +686,10 @@ index 000000000..c6c320e5e
 +
 +        let normalizedLevel: String?
 +        switch levelToken {
-+        case "DEV": normalizedLevel = "debug"
++        case "DEV", "DEBUG": normalizedLevel = "debug"
 +        case "INFO": normalizedLevel = "info"
-+        case "WARN": normalizedLevel = "warn"
-+        case "ERR": normalizedLevel = "error"
++        case "WARN", "WARNING": normalizedLevel = "warn"
++        case "ERR", "ERROR": normalizedLevel = "error"
 +        default: normalizedLevel = nil
 +        }
 +
@@ -735,36 +737,51 @@ index 000000000..c6c320e5e
 +
 +        // Extract file, line number, and function name
 +        // Format: [TIMESTAMP] [File.swift:line] function() → message
-+        // Pattern: \[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]\s+(.+?)\s*\(\)\s*→
 +        var file: String?
 +        var lineNumber: String?
 +        var method: String?
 +
-+        let fileLineMethodRegex = #"\[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]\s+(.+?)\s*\(\)\s*→"#
-+        if let regex = try? NSRegularExpression(pattern: fileLineMethodRegex) {
++        // Extract file + line independent of method parsing, since watch log methods can be:
++        // - finalizePendingData()            (trailing "()")
++        // - scheduleUIUpdate(with:)         (no trailing "()", includes signature)
++        // - session(_:didReceiveUserInfo:)  (no trailing "()", includes signature)
++        let fileLineRegex = #"\[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]"#
++        if let regex = try? NSRegularExpression(pattern: fileLineRegex) {
 +            let nsHeader = header as NSString
 +            let range = NSRange(location: 0, length: nsHeader.length)
-+            if let regexMatch = regex.firstMatch(in: header, range: range), regexMatch.numberOfRanges >= 4 {
-+                // Group 1: file (with .swift), Group 2: line number, Group 3: function name
++            if let regexMatch = regex.firstMatch(in: header, range: range), regexMatch.numberOfRanges >= 3 {
 +                let fileRange = regexMatch.range(at: 1)
 +                let lineRange = regexMatch.range(at: 2)
-+                let methodRange = regexMatch.range(at: 3)
-+
 +                if fileRange.location != NSNotFound {
 +                    file = nsHeader.substring(with: fileRange)
 +                }
 +                if lineRange.location != NSNotFound {
 +                    lineNumber = nsHeader.substring(with: lineRange)
 +                }
-+                if methodRange.location != NSNotFound {
-+                    method = nsHeader.substring(with: methodRange).trimmingCharacters(in: .whitespacesAndNewlines)
++            }
++        }
++
++        let arrowRange = header.range(of: "→") ?? header.range(of: "->")
++        if let arrowRange {
++            // Method = substring between the second closing bracket and the arrow
++            if let firstClose = header.firstIndex(of: "]") {
++                let afterFirst = header.index(after: firstClose)
++                if let secondClose = header[afterFirst...].firstIndex(of: "]") {
++                    var start = header.index(after: secondClose)
++                    while start < header.endIndex, header[start].isWhitespace {
++                        start = header.index(after: start)
++                    }
++                    let candidate = String(header[start..<arrowRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
++                    if !candidate.isEmpty {
++                        method = candidate.hasSuffix("()") ? String(candidate.dropLast(2)) : candidate
++                    }
 +                }
 +            }
 +        }
 +
 +        // Message = everything after the arrow
 +        let fullMessage: String
-+        if let arrowRange = header.range(of: "→") {
++        if let arrowRange {
 +            let msg = header[arrowRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
 +            let firstLineMessage = msg.isEmpty ? header : String(msg)
 +            fullMessage = continuation.isEmpty ? firstLineMessage : "\(firstLineMessage)\n\(continuation)"

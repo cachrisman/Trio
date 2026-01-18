@@ -1,32 +1,36 @@
-From 5664e6cb6277beacd27109edfeb7874426079a1d Mon Sep 17 00:00:00 2001
+From 6d8d01688b987134fe62bfae3c9614fedcd68d3e Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Wed, 14 Jan 2026 08:01:18 +0100
+Date: Sun, 18 Jan 2026 18:22:17 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
  Config.xcconfig                               |   5 +-
  .../ExtensionDelegate.swift                   |  24 +
  Trio Watch App Extension/TrioWatchApp.swift   |   2 +
- .../Views/ComplicationDebugView.swift         | 291 ++++++++++
+ .../Views/ComplicationDebugView.swift         | 372 +++++++++
  .../Views/TrioMainWatchView.swift             |  47 +-
  .../WatchState+Requests.swift                 |  19 +
- Trio Watch App Extension/WatchState.swift     | 516 +++++++++++------
- Trio Watch App/Info.plist                     |   2 +
+ Trio Watch App Extension/WatchState.swift     | 520 ++++++++----
+ Trio Watch App/Info.plist                     |  15 +-
+ Trio Watch App/TrioWatchApp.entitlements      |  10 +
  Trio Watch Complication/Info.plist            |   2 +
- .../TrioWatchComplication.swift               | 358 ++++++++++--
- .../TrioWatchComplicationPreview.swift        | 124 ++++
- .../TrioComplicationDataStore.swift           | 543 ++++++++++++++++++
+ .../TrioWatchComplication.entitlements        |  10 +
+ .../TrioWatchComplication.swift               | 358 ++++++++-
+ .../TrioWatchComplicationPreview.swift        | 124 +++
+ .../TrioComplicationDataStore.swift           | 739 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
  .../WatchManager/AppleWatchManager.swift      |   6 +-
- 14 files changed, 1740 insertions(+), 209 deletions(-)
+ 16 files changed, 2049 insertions(+), 214 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
+ create mode 100644 Trio Watch App/TrioWatchApp.entitlements
+ create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
  create mode 100644 Trio Watch Complication/TrioWatchComplicationPreview.swift
  create mode 100644 Trio Watch Shared/TrioComplicationDataStore.swift
  create mode 100644 Trio/Resources/TrioWatch.entitlements
 
 diff --git a/Config.xcconfig b/Config.xcconfig
-index 08bcb88d0..9fc183c72 100644
+index 185f36e62..641253f98 100644
 --- a/Config.xcconfig
 +++ b/Config.xcconfig
 @@ -16,14 +16,15 @@ BUNDLE_IDENTIFIER = org.nightscout.$(DEVELOPMENT_TEAM).trio
@@ -37,7 +41,7 @@ index 08bcb88d0..9fc183c72 100644
  
  // The developers set the version numbers, please leave them alone
  APP_VERSION = 0.6.0
- APP_DEV_VERSION = 0.6.0.42
+ APP_DEV_VERSION = 0.6.0.43
  APP_BUILD_NUMBER = 1
  COPYRIGHT_NOTICE =
  
@@ -93,10 +97,10 @@ index ccc8911ca..3b86e2547 100644
      init() {
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
 new file mode 100644
-index 000000000..2ed99d980
+index 000000000..edda15812
 --- /dev/null
 +++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,372 @@
 +import SwiftUI
 +import WatchKit
 +
@@ -198,6 +202,87 @@ index 000000000..2ed99d980
 +                    .font(.system(size: 9))
 +                    .foregroundColor(.secondary)
 +                    .lineLimit(1)
++            }
++
++            Divider().padding(.vertical, 2)
++
++            // App Group ID Debug Section
++            sectionHeader("APP GROUP")
++
++            HStack {
++                Text("AppGroupID:")
++                Spacer()
++                if let appGroupID = dataStore.appGroupID {
++                    Text(appGroupID)
++                        .font(.system(size: 9))
++                        .foregroundColor(.green)
++                        .lineLimit(1)
++                } else {
++                    Text("Not Found")
++                        .font(.system(size: 9))
++                        .foregroundColor(.red)
++                }
++            }
++
++            HStack {
++                Text("Container:")
++                Spacer()
++                if dataStore.appGroupContainerURL != nil {
++                    Text(dataStore.appGroupContainerAccessible ? "✓ Accessible" : "✗ Not Accessible")
++                        .font(.system(size: 9))
++                        .foregroundColor(dataStore.appGroupContainerAccessible ? .green : .red)
++                } else {
++                    Text("✗ No URL")
++                        .font(.system(size: 9))
++                        .foregroundColor(.red)
++                }
++            }
++
++            if let containerURL = dataStore.appGroupContainerURL {
++                HStack {
++                    Text("Container Path:")
++                    Spacer()
++                    Text(truncatePath(containerURL.path))
++                        .font(.system(size: 8))
++                        .foregroundColor(.secondary)
++                        .lineLimit(1)
++                }
++
++                HStack {
++                    Text("Snapshot File:")
++                    Spacer()
++                    if dataStore.snapshotFileExists {
++                        VStack(alignment: .trailing, spacing: 2) {
++                            Text("✓ Exists")
++                                .font(.system(size: 9))
++                                .foregroundColor(.green)
++                            if let size = dataStore.snapshotFileSize {
++                                Text("\(size) bytes")
++                                    .font(.system(size: 7))
++                                    .foregroundColor(.secondary)
++                            }
++                            if let age = dataStore.snapshotFileAge {
++                                Text("\(Int(age))s old")
++                                    .font(.system(size: 7))
++                                    .foregroundColor(.secondary)
++                            }
++                        }
++                    } else {
++                        Text("✗ Missing")
++                            .font(.system(size: 9))
++                            .foregroundColor(.red)
++                    }
++                }
++
++                if let files = try? FileManager.default.contentsOfDirectory(atPath: containerURL.path), !files.isEmpty {
++                    HStack {
++                        Text("Container Files:")
++                        Spacer()
++                        Text("\(files.count)")
++                            .font(.system(size: 8))
++                            .foregroundColor(.secondary)
++                    }
++                }
 +            }
 +        }
 +        .font(.caption)
@@ -526,7 +611,7 @@ index d47a971c9..f53d1ce43 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f4fb33fde..bb0875149 100644
+index f4fb33fde..f7985c1c8 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,20 +1,19 @@
@@ -1143,7 +1228,7 @@ index f4fb33fde..bb0875149 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -537,41 +547,227 @@ import WatchConnectivity
+@@ -537,41 +547,231 @@ import WatchConnectivity
              }
          }
  
@@ -1189,13 +1274,16 @@ index f4fb33fde..bb0875149 100644
 +
 +    private func saveComplicationSnapshot(from message: [String: Any]) {
 +        Task {
-+            await WatchLogger.shared.log("📸 saveComplicationSnapshot called")
++            await WatchLogger.shared.log("📸 saveComplicationSnapshot called with keys: \(message.keys.joined(separator: ", "))")
 +        }
 +
 +        let readingDate = latestGlucoseDate(from: message) ?? dateValue(from: message[WatchMessageKeys.date])
 +        guard let readingDate = readingDate else {
 +            Task {
 +                await WatchLogger.shared.log("📸 saveComplicationSnapshot SKIPPED: no valid readingDate")
++                await WatchLogger.shared.log("🔍 Debug: latestGlucoseDate returned: \(latestGlucoseDate(from: message)?.description ?? "nil")")
++                await WatchLogger.shared.log("🔍 Debug: dateValue from message returned: \(dateValue(from: message[WatchMessageKeys.date])?.description ?? "nil")")
++                await WatchLogger.shared.log("🔍 Debug: message[WatchMessageKeys.date] = \(message[WatchMessageKeys.date].map { String(describing: $0) } ?? "nil")")
 +            }
 +            return
 +        }
@@ -1206,7 +1294,8 @@ index f4fb33fde..bb0875149 100644
 +        let glucoseColorValue = (message[WatchMessageKeys.currentGlucoseColorString] as? String) ?? currentGlucoseColorString
 +
 +        Task {
-+            await WatchLogger.shared.log("📸 Saving snapshot: glucose=\(glucoseValue), readingDate=\(readingDate)")
++            await WatchLogger.shared.log("📸 Saving snapshot: glucose=\(glucoseValue), trend=\(trendValue), delta=\(deltaValue), readingDate=\(readingDate)")
++            await WatchLogger.shared.log("🔍 Debug: glucoseValue source - message: \(message[WatchMessageKeys.currentGlucose] as? String ?? "nil"), currentGlucose: \(currentGlucose)")
 +        }
 +
 +        let snapshot = TrioComplicationSnapshot(
@@ -1391,18 +1480,46 @@ index f4fb33fde..bb0875149 100644
      }
  }
 diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
-index 8d15acbed..9e4d7910b 100644
+index 8d15acbed..efb508e0d 100644
 --- a/Trio Watch App/Info.plist	
 +++ b/Trio Watch App/Info.plist	
-@@ -2,6 +2,8 @@
+@@ -2,10 +2,15 @@
  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
  <plist version="1.0">
  <dict>
+-	<key>EXAppExtensionAttributes</key>
+-	<dict>
+-		<key>EXExtensionPointIdentifier</key>
+-		<string>com.apple.appintents-extension</string>
+-	</dict>
++	<!--
++	  Watch app Info.plist “merge” file.
++
++	  The `Trio Watch App` target uses `GENERATE_INFOPLIST_FILE = YES`.
++	  Xcode’s generated watch app Info.plist output has not been reliably emitting custom keys
++	  via `INFOPLIST_KEY_*` (e.g. `INFOPLIST_KEY_AppGroupID`), so we provide a real Info.plist
++	  file and configure the target to merge it at build time (`INFOPLIST_FILE`).
++	-->
 +	<key>AppGroupID</key>
 +	<string>$(APP_GROUP_ID)</string>
- 	<key>EXAppExtensionAttributes</key>
- 	<dict>
- 		<key>EXExtensionPointIdentifier</key>
+ </dict>
+ </plist>
+diff --git a/Trio Watch App/TrioWatchApp.entitlements b/Trio Watch App/TrioWatchApp.entitlements
+new file mode 100644
+index 000000000..9a37de423
+--- /dev/null
++++ b/Trio Watch App/TrioWatchApp.entitlements	
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>com.apple.security.application-groups</key>
++	<array>
++		<string>$(TRIO_APP_GROUP_ID)</string>
++	</array>
++</dict>
++</plist>
 diff --git a/Trio Watch Complication/Info.plist b/Trio Watch Complication/Info.plist
 index 0f118fb75..6f081ab69 100644
 --- a/Trio Watch Complication/Info.plist	
@@ -1416,6 +1533,22 @@ index 0f118fb75..6f081ab69 100644
  	<key>NSExtension</key>
  	<dict>
  		<key>NSExtensionPointIdentifier</key>
+diff --git a/Trio Watch Complication/TrioWatchComplication.entitlements b/Trio Watch Complication/TrioWatchComplication.entitlements
+new file mode 100644
+index 000000000..9a37de423
+--- /dev/null
++++ b/Trio Watch Complication/TrioWatchComplication.entitlements	
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>com.apple.security.application-groups</key>
++	<array>
++		<string>$(TRIO_APP_GROUP_ID)</string>
++	</array>
++</dict>
++</plist>
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
 index 411968936..e1daf312a 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
@@ -1975,10 +2108,10 @@ index 000000000..e4bce5153
 +#endif
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..b935ea5d3
+index 000000000..3d7ac2e66
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,543 @@
+@@ -0,0 +1,739 @@
 +import Foundation
 +import WidgetKit
 +
@@ -2062,6 +2195,53 @@ index 000000000..b935ea5d3
 +final class TrioComplicationDataStore {
 +    static let shared = TrioComplicationDataStore()
 +    static let complicationKind = "TrioWatchComplication"
++
++    // MARK: - App Group ID Resolution
++
++    /// Canonical App Group ID format used by this project (derived from Team ID).
++    private static func appGroupID(forTeamID teamID: String) -> String {
++        "group.org.nightscout.\(teamID).trio.trio-app-group"
++    }
++
++    /// Attempts to extract the Team ID from a bundle identifier of the form:
++    /// - `org.nightscout.<TEAM>.trio`
++    /// - `org.nightscout.<TEAM>.trio.watchkitapp`
++    /// - `org.nightscout.<TEAM>.trio.watchkitapp.<Something>`
++    private static func extractTeamID(fromNightscoutBundleIdentifier bundleIdentifier: String?) -> String? {
++        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return nil }
++        let prefix = "org.nightscout."
++        guard let prefixRange = bundleIdentifier.range(of: prefix) else { return nil }
++        let afterPrefix = bundleIdentifier[prefixRange.upperBound...]
++
++        // Find the first occurrence of ".trio" after the prefix and treat the preceding segment as TEAMID.
++        guard let trioRange = afterPrefix.range(of: ".trio") else { return nil }
++        let teamID = String(afterPrefix[..<trioRange.lowerBound])
++        guard !teamID.isEmpty else { return nil }
++        return teamID
++    }
++
++    /// Resolves the App Group ID using multiple fallbacks, in priority order:
++    /// 1) `AppGroupID` key in the chosen bundle’s Info.plist
++    /// 2) Derive from the watch app’s `WKCompanionAppBundleIdentifier` (watchOS only)
++    /// 3) Derive from the chosen bundle’s bundle identifier
++    private static func resolveAppGroupID(bundle: Bundle) -> (value: String?, source: String) {
++        if let value = bundle.object(forInfoDictionaryKey: "AppGroupID") as? String, !value.isEmpty {
++            return (value, "Info.plist(AppGroupID)")
++        }
++
++        #if os(watchOS)
++        if let companionBundleID = Bundle.main.object(forInfoDictionaryKey: "WKCompanionAppBundleIdentifier") as? String,
++           let teamID = extractTeamID(fromNightscoutBundleIdentifier: companionBundleID) {
++            return (appGroupID(forTeamID: teamID), "Derived(WKCompanionAppBundleIdentifier)")
++        }
++        #endif
++
++        if let teamID = extractTeamID(fromNightscoutBundleIdentifier: bundle.bundleIdentifier) {
++            return (appGroupID(forTeamID: teamID), "Derived(bundleIdentifier)")
++        }
++
++        return (nil, "Unavailable")
++    }
 +
 +    // MARK: - UserDefaults Keys
 +
@@ -2163,19 +2343,40 @@ index 000000000..b935ea5d3
 +    }
 +
 +    private var appGroupDefaults: UserDefaults? {
-+        guard let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String else {
++        // Prefer the extension’s bundle (if present) because that is where Info.plist keys
++        // like AppGroupID are expected to live for the complication extension.
++        var bundle: Bundle = Bundle.main
++        var bundleSource = "Bundle.main"
++
++        let classBundle = Bundle(for: type(of: self))
++        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
++            bundle = classBundle
++            bundleSource = "Bundle(for: type(of: self))"
++        }
++
++        let bundleID = bundle.bundleIdentifier ?? "unknown"
++        log("🔍 appGroupDefaults: Using bundle: \(bundleSource) (ID: \(bundleID))")
++
++        let resolved = Self.resolveAppGroupID(bundle: bundle)
++        guard let suiteName = resolved.value else {
 +            // Log once when App Group is unavailable
 +            if !Self.hasLoggedAppGroupUnavailable {
 +                Self.hasLoggedAppGroupUnavailable = true
-+                log("⚠️ AppGroupID not found in Info.plist; using in-memory fallbacks for debounce/token")
++                log("⚠️ AppGroupID unavailable (bundle: \(bundleSource), ID: \(bundleID)); using in-memory fallbacks for debounce/token")
 +            }
 +            return nil
 +        }
++
++        log("✓ appGroupDefaults: Resolved AppGroupID: \(suiteName) (\(resolved.source))")
 +        let defaults = UserDefaults(suiteName: suiteName)
-+        if defaults == nil && !Self.hasLoggedAppGroupUnavailable {
-+            Self.hasLoggedAppGroupUnavailable = true
-+            log("⚠️ App Group UserDefaults unavailable; using in-memory fallbacks for debounce/token")
++        if defaults == nil {
++            if !Self.hasLoggedAppGroupUnavailable {
++                Self.hasLoggedAppGroupUnavailable = true
++                log("⚠️ App Group UserDefaults unavailable for suite: \(suiteName); using in-memory fallbacks for debounce/token")
++            }
++            return nil
 +        }
++        log("✓ appGroupDefaults: UserDefaults created successfully for suite: \(suiteName)")
 +        return defaults
 +    }
 +
@@ -2199,6 +2400,53 @@ index 000000000..b935ea5d3
 +
 +    var appGroupContainerPath: String? {
 +        snapshotFileURL?.deletingLastPathComponent().path
++    }
++
++    // MARK: - Debug Properties for ComplicationDebugView
++
++    var appGroupID: String? {
++        // Mirror the same resolution logic used for persistence so the debug UI reflects reality.
++        var bundle: Bundle = Bundle.main
++        let classBundle = Bundle(for: type(of: self))
++        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
++            bundle = classBundle
++        }
++        return Self.resolveAppGroupID(bundle: bundle).value
++    }
++
++    var appGroupContainerURL: URL? {
++        guard let suiteName = appGroupID else { return nil }
++        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
++    }
++
++    var appGroupContainerAccessible: Bool {
++        guard let url = appGroupContainerURL else { return false }
++        return FileManager.default.fileExists(atPath: url.path)
++    }
++
++    var snapshotFileExists: Bool {
++        guard let fileURL = snapshotFileURL else { return false }
++        return FileManager.default.fileExists(atPath: fileURL.path)
++    }
++
++    var snapshotFileSize: Int64? {
++        guard let fileURL = snapshotFileURL,
++              FileManager.default.fileExists(atPath: fileURL.path),
++              let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
++              let size = attributes[.size] as? Int64 else {
++            return nil
++        }
++        return size
++    }
++
++    var snapshotFileAge: TimeInterval? {
++        guard let fileURL = snapshotFileURL,
++              FileManager.default.fileExists(atPath: fileURL.path),
++              let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
++              let modificationDate = attributes[.modificationDate] as? Date else {
++            return nil
++        }
++        return Date().timeIntervalSince(modificationDate)
 +    }
 +
 +    // MARK: - Initialization
@@ -2252,29 +2500,56 @@ index 000000000..b935ea5d3
 +        assert(Thread.isMainThread, "saveOnMain must be called on main thread")
 +        guard let fileURL = snapshotFileURL else {
 +            log("❌ Snapshot save FAILED: no App Group container URL")
++            // Enhanced diagnostics
++            let containerURL = sharedContainerURLProvider()
++            log("🔍 Debug: sharedContainerURLProvider returned: \(containerURL?.path ?? "nil")")
++            log("🔍 Debug: snapshotFilename: \(snapshotFilename)")
 +            return
 +        }
 +
 +        log("💾 Saving snapshot: glucose=\(snapshot.glucose), trend=\(snapshot.trend), " +
 +            "delta=\(snapshot.delta), readingDate=\(formatDate(snapshot.readingDate))")
++        log("🔍 Debug: Target file URL: \(fileURL.path)")
 +
 +        do {
 +            let encoder = JSONEncoder()
 +            encoder.dateEncodingStrategy = .iso8601
 +            let data = try encoder.encode(snapshot)
++            log("🔍 Debug: Encoded snapshot size: \(data.count) bytes")
++
++            let containerDir = fileURL.deletingLastPathComponent()
++            log("🔍 Debug: Container directory: \(containerDir.path)")
++            log("🔍 Debug: Container directory exists: \(fileManager.fileExists(atPath: containerDir.path))")
++
 +            try fileManager.createDirectory(
-+                at: fileURL.deletingLastPathComponent(),
++                at: containerDir,
 +                withIntermediateDirectories: true,
 +                attributes: nil
 +            )
++            log("🔍 Debug: Container directory created/verified")
 +
-+            let backupURL = fileURL.deletingLastPathComponent().appendingPathComponent("snapshot.bak")
++            let backupURL = containerDir.appendingPathComponent("snapshot.bak")
 +            if fileManager.fileExists(atPath: fileURL.path) {
++                log("🔍 Debug: Existing snapshot file found, creating backup")
 +                _ = try? fileManager.removeItem(at: backupURL)
 +                _ = try? fileManager.copyItem(at: fileURL, to: backupURL)
++            } else {
++                log("🔍 Debug: No existing snapshot file (first save or was deleted)")
 +            }
 +
 +            try data.write(to: fileURL, options: [.atomic])
++            log("🔍 Debug: File written successfully, verifying...")
++
++            // Verify file was written
++            if fileManager.fileExists(atPath: fileURL.path) {
++                if let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
++                   let fileSize = attributes[.size] as? Int64 {
++                    log("🔍 Debug: File verified - size: \(fileSize) bytes")
++                }
++            } else {
++                log("⚠️ WARNING: File write reported success but file doesn't exist!")
++            }
++
 +            Self.lastValidTimestamp = snapshot.readingDate
 +
 +            // Note: reloadGenerationToken is NOT updated here. It only changes when an actual reload
@@ -2287,6 +2562,19 @@ index 000000000..b935ea5d3
 +            }
 +        } catch {
 +            log("❌ Snapshot save FAILED: \(error.localizedDescription)")
++            log("🔍 Debug: Error type: \(type(of: error))")
++            log("🔍 Debug: Error domain: \((error as NSError).domain), code: \((error as NSError).code)")
++            if let underlyingError = (error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError {
++                log("🔍 Debug: Underlying error: \(underlyingError.localizedDescription)")
++            }
++            // Check file permissions
++            let containerDir = fileURL.deletingLastPathComponent()
++            if fileManager.fileExists(atPath: containerDir.path) {
++                if let attributes = try? fileManager.attributesOfItem(atPath: containerDir.path),
++                   let permissions = attributes[.posixPermissions] as? Int {
++                    log("🔍 Debug: Container directory permissions: \(String(permissions, radix: 8))")
++                }
++            }
 +        }
 +    }
 +
@@ -2298,11 +2586,27 @@ index 000000000..b935ea5d3
 +    func latestSnapshot() -> TrioComplicationSnapshot? {
 +        guard let fileURL = snapshotFileURL else {
 +            log("❌ Snapshot load FAILED: no App Group container URL")
++            // Enhanced diagnostics
++            let containerURL = sharedContainerURLProvider()
++            log("🔍 Debug: sharedContainerURLProvider returned: \(containerURL?.path ?? "nil")")
++            log("🔍 Debug: snapshotFilename: \(snapshotFilename)")
 +            return fallbackSnapshot(state: "--")
 +        }
 +
++        log("🔍 Debug: Attempting to load snapshot from: \(fileURL.path)")
++        log("🔍 Debug: File exists: \(fileManager.fileExists(atPath: fileURL.path))")
++
 +        guard fileManager.fileExists(atPath: fileURL.path) else {
 +            log("⚠️ Snapshot file missing at \(fileURL.lastPathComponent)")
++            // Check if container directory exists
++            let containerDir = fileURL.deletingLastPathComponent()
++            log("🔍 Debug: Container directory exists: \(fileManager.fileExists(atPath: containerDir.path))")
++            if fileManager.fileExists(atPath: containerDir.path) {
++                // List files in container
++                if let files = try? fileManager.contentsOfDirectory(atPath: containerDir.path) {
++                    log("🔍 Debug: Files in container: \(files.joined(separator: ", "))")
++                }
++            }
 +            return fallbackSnapshot(state: "!!")
 +        }
 +
@@ -2505,10 +2809,35 @@ index 000000000..b935ea5d3
 +    }
 +
 +    private static func defaultSharedContainerURL() -> URL? {
-+        guard let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String else {
++        // In Widget Extensions, Bundle.main should be the extension bundle, but try multiple approaches
++        var bundle: Bundle = Bundle.main
++        var bundleSource = "Bundle.main"
++
++        // Try to find the extension bundle by looking for the class's bundle
++        let classBundle = Bundle(for: TrioComplicationDataStore.self)
++        // Check if this bundle has the AppGroupID key
++        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
++            bundle = classBundle
++            bundleSource = "Bundle(for: TrioComplicationDataStore.self)"
++        }
++
++        let bundleID = bundle.bundleIdentifier ?? "unknown"
++        NSLog("[ComplicationDataStore] 🔍 defaultSharedContainerURL: Using bundle: %@ (ID: %@)", bundleSource, bundleID)
++
++        let resolved = resolveAppGroupID(bundle: bundle)
++        guard let suiteName = resolved.value else {
++            NSLog("[ComplicationDataStore] ❌ AppGroupID unresolved (bundle: %@, ID: %@)", bundleSource, bundleID)
 +            return nil
 +        }
-+        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
++
++        NSLog("[ComplicationDataStore] ✓ Resolved AppGroupID (%@): %@", resolved.source, suiteName)
++        guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName) else {
++            NSLog("[ComplicationDataStore] ❌ Failed to get container URL for AppGroupID: %@", suiteName)
++            return nil
++        }
++
++        NSLog("[ComplicationDataStore] ✓ Container URL: %@", containerURL.path)
++        return containerURL
 +    }
 +
 +    private func formatDate(_ date: Date) -> String {
