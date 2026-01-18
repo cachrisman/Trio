@@ -3,7 +3,7 @@ import SwiftUI
 import WatchKit
 
 struct TrioMainWatchView: View {
-    @State private var state = WatchState()
+    @State private var state = WatchState.shared
 
     // misc
     @State private var currentPage: Int = 0
@@ -25,8 +25,8 @@ struct TrioMainWatchView: View {
         guard let lastUpdateTimestamp = state.lastWatchStateUpdate else {
             return true
         }
-        let now = Date().timeIntervalSince1970
-        let secondsSinceUpdate = now - lastUpdateTimestamp
+        let now = Date()
+        let secondsSinceUpdate = now.timeIntervalSince(lastUpdateTimestamp)
         // Return true if last update older than 5 min, so 1 loop cycle
         return secondsSinceUpdate > 5 * 60
     }
@@ -69,6 +69,12 @@ struct TrioMainWatchView: View {
                         rotationDegrees: rotationDegrees,
                         isWatchStateDated: isWatchStateDated || isSessionUnreachable
                     )
+                    .onLongPressGesture(minimumDuration: 1.0) {
+                        // Long press to quickly access debug view
+                        withAnimation {
+                            currentPage = 2
+                        }
+                    }
 
                     if state.showSyncingAnimation {
                         Image(systemName: "iphone.radiowaves.left.and.right")
@@ -94,8 +100,41 @@ struct TrioMainWatchView: View {
                     maxYAxisValue: state.maxYAxisValue
                 )
                 .tag(1)
+
+                // Page 3: Complication Debug View
+                ComplicationDebugView()
+                    .tag(2)
             }
             .onAppear {
+                Task {
+                    await WatchLogger.shared.log("Watch main view appeared - requesting data")
+                }
+                state.requestWatchStateUpdate()
+
+                let hasValidWatchData = state.currentGlucose != "--" && !state.currentGlucose.isEmpty
+                if !hasValidWatchData, let snapshot = TrioComplicationDataStore.shared.latestSnapshot() {
+                    state.currentGlucose = snapshot.glucose
+                    state.trend = snapshot.trend
+                    state.delta = snapshot.delta
+                    if let glucoseColor = snapshot.glucoseColor {
+                        state.currentGlucoseColorString = glucoseColor
+                    }
+                    state.lastWatchStateUpdate = snapshot.readingDate
+                    state.showSyncingAnimation = true
+                } else if let snapshot = TrioComplicationDataStore.shared.latestSnapshot(),
+                          let lastUpdate = state.lastWatchStateUpdate,
+                          snapshot.readingDate > lastUpdate
+                {
+                    state.currentGlucose = snapshot.glucose
+                    state.trend = snapshot.trend
+                    state.delta = snapshot.delta
+                    if let glucoseColor = snapshot.glucoseColor {
+                        state.currentGlucoseColorString = glucoseColor
+                    }
+                    state.lastWatchStateUpdate = snapshot.readingDate
+                    state.showSyncingAnimation = false
+                }
+
                 /// Hard reset variables when main view appears
                 /// Reset `bolusAmount` and `recommendedBolus` to ensure no stale / old value is set when user opens bolus input or meal combo the next time.
                 state.bolusAmount = 0
@@ -103,7 +142,7 @@ struct TrioMainWatchView: View {
             }
             .background(trioBackgroundColor)
             .tabViewStyle(.verticalPage)
-            .digitalCrownRotation($currentPage.doubleBinding(), from: 0, through: 1, by: 1)
+            .digitalCrownRotation($currentPage.doubleBinding(), from: 0, through: 2, by: 1)
             .onChange(of: state.trend) { _, newTrend in
                 withAnimation {
                     updateRotation(for: newTrend)
