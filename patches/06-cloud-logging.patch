@@ -1,10 +1,10 @@
-From 93c807381aad65466d2cb115ebe7e06fbb538dc4 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 11 Jan 2026 17:38:16 +0100
-Subject: [PATCH] feat: cloud-logging
+From 401af55e811c72f7f79f162e43fb2ed23dd602df Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Sun, 18 Jan 2026 11:41:31 +0100
+Subject: [PATCH] feat: feature-cloud-logging
 
 ---
- Trio/Sources/Application/AppDelegate.swift    |  27 ++
+ Trio/Sources/Application/AppDelegate.swift    |  34 +-
  Trio/Sources/Application/TrioApp.swift        |   1 +
  Trio/Sources/Assemblies/ServiceAssembly.swift |   1 +
  .../Helpers/AppTerminationTracker.swift       | 306 +++++++++++++++
@@ -20,7 +20,7 @@ Subject: [PATCH] feat: cloud-logging
  .../Settings/View/Subviews/ServicesView.swift |   1 +
  Trio/Sources/Router/Screen.swift              |   3 +
  TrioTests/CloudLogEntryAggregatorTests.swift  |  42 +++
- 16 files changed, 1561 insertions(+)
+ 16 files changed, 1567 insertions(+), 1 deletion(-)
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
@@ -33,15 +33,29 @@ Subject: [PATCH] feat: cloud-logging
  create mode 100644 TrioTests/CloudLogEntryAggregatorTests.swift
 
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
-index 46134bc21..fd0bada70 100644
+index 46134bc21..f938e4827 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
 +++ b/Trio/Sources/Application/AppDelegate.swift
-@@ -20,9 +20,36 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+@@ -7,7 +7,7 @@ import UserNotifications
+ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNotificationCenterDelegate {
+     func application(
+         _: UIApplication,
+-        didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]?
++        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+     ) -> Bool {
+         FirebaseApp.configure()
+ 
+@@ -20,9 +20,41 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
          Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(crashReportingEnabled)
          Crashlytics.crashlytics().setCustomValue(Bundle.main.appDevVersion ?? "unknown", forKey: "app_dev_version")
  
-+        // Check for unexpected termination from previous launch
++        // Check for unexpected termination from previous launch, then mark this launch.
++        // Note: AppTerminationTracker uses UserDefaults for state persistence. In rare cases
++        // (ultra-rapid termination <1s), the state may not be synced before iOS kills the app.
++        // If this becomes a problem, consider: (A) file-based atomic writes, (B) hybrid
++        // UserDefaults + file approach. For now, UserDefaults is sufficient for most cases.
 +        AppTerminationTracker.shared.checkForUnexpectedTermination()
++        AppTerminationTracker.shared.markAppLaunched(launchOptions: launchOptions)
 +
          return true
      }
