@@ -93,3 +93,48 @@ After syncing, re-run the patch validation.
 - Result
 - If failure: top error excerpt + likely cause + next step
 - If success: next step (patch gen, patch validation, build)
+
+---
+
+## Better Stack MCP Usage
+
+### Authentication
+
+- Before issuing any queries, authenticate with the Better Stack MCP server to obtain the required credentials.
+- Use the provided authentication flow to retrieve the username and password or token needed for subsequent MCP tool calls.
+- **Never log, echo, persist, or summarize authentication credentials in chat output.**
+
+### Querying Better Stack via MCP
+
+- Use the Better Stack MCP server to query logs and events related to Trio and Nightscout.
+- Prefer scoped, time-bounded queries (e.g., last 1h, 6h, 24h) rather than unbounded searches.
+- When available, filter by service, source, tag, or severity (e.g., `trio`, `nightscout`, `sensor`, `carbs`, `errors`, `warnings`).
+- If a query returns excessive data, refine it by narrowing the time range or adding filters before retrying.
+
+### Suggested default queries
+
+- "Show errors and warnings from Trio in the last 6 hours."
+- "List Nightscout anomalies or ingestion issues in the last 24 hours."
+- "Were there any data gaps or missing entries longer than 20 minutes in the last day?"
+- "Show log events within ±15 minutes of a specified timestamp (e.g., when a BG spike or drop occurred)."
+- "Summarize repeated warnings or unusual patterns since midnight."
+
+### Interpretation & summarization
+
+- Summarize findings in plain language before citing specific timestamps or log excerpts.
+- Highlight correlations across systems (e.g., Trio and Nightscout events occurring close together).
+- Explicitly state when no relevant events are found for the queried time window.
+- Prefer concise summaries over raw log dumps unless the user explicitly requests details.
+
+---
+
+## Diabetes & Nightscout Safety Guardrails
+
+- Treat all Nightscout and Trio data as **observational telemetry**, not medical guidance.
+- Do not infer intent, causality, or clinical meaning beyond what is directly supported by logs.
+- When summarizing BG-related events, use neutral phrasing such as:
+  - "A rapid rise was observed"
+  - "Data indicates a gap or ingestion delay"
+  - "No anomalies were detected in the logs"
+
+**Goal:** Help the user quickly answer "what happened?" by turning Better Stack logs into clear, time-scoped, non-speculative summaries while maintaining strict safety and privacy boundaries.

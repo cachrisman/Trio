@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v3 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v4 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -94,11 +94,12 @@ After syncing, re-run patch validation (below).
 
 ```bash
 git checkout dev
+git stash -u -m "WIP before feature work"  # if you have local changes
 git pull origin dev
 git checkout -b feature/<short-name>
 ```
 
-Develop normally; commit often.
+Develop normally; commit often. Keep the feature branch local (do not push to origin).
 
 ---
 
@@ -127,22 +128,90 @@ git checkout -b feature/<short-name>
 # commit normally; squashing is optional and not required
 ```
 
-### 2) Generate (or update) a patch from the dev worktree
+### 2) Generate a NEW patch from the dev worktree
+
+For creating a **new** patch (appending to the end of the stack):
 
 ```bash
 cd ../Trio-dev
 
 # Create a NEW patch (auto-numbered)
-./scripts/generate-patch.sh -n -s feature/<short-name> -t dev -d "short-description"
-
-# UPDATE an existing patch by writing directly to its filename
-# (example updates patch 06)
-./scripts/generate-patch.sh -n -s feature/<short-name> -t dev -o patches/06-short-description.patch -y
+./scripts/generate-patch.sh -n -s feature/<short-name> -t dev -d "short-description" \
+  --include-files "path/to/File1.swift,path/to/File2.swift"
 ```
 
 Notes:
-- Patch generation happens against the **patched dev baseline** (the tool applies the existing patch stack first), so conflicts are surfaced early.
+- The `--include-files` flag explicitly lists which files to include (recommended for safety).
 - Patch generation is intentionally **forbidden** from including infra/tooling paths (e.g. `scripts/`, `ci/`, `.github/`, `fastlane/`, `patches/`). Those changes must be committed directly to `dev`.
+
+---
+
+## Updating an existing patch (mid-stack)
+
+When updating a patch that's **in the middle of the stack** (e.g., patch 06 out of 09), you cannot compare against raw `dev`. You must compare against the state AFTER the preceding patches are applied.
+
+### Why this matters
+
+- For a **new** patch (e.g., creating patch 10), you want all existing patches (01-09) applied as the baseline.
+- For **updating** patch 06, you only want patches 01-05 applied as the baseline — not patches 07-09.
+
+### Workflow
+
+```bash
+# 0) Ensure dev is synced and clean
+git checkout dev
+git stash -u -m "WIP before patch update"  # if you have local changes
+git pull origin dev
+
+# 1) Create a "previous-patches" baseline branch
+#    Apply patches 01 through (N-1) where N is the patch you're updating
+git branch -D feature/<name>-previous-patches 2>/dev/null || true
+git checkout -b feature/<name>-previous-patches dev
+
+git am patches/01-*.patch
+git am patches/02-*.patch
+git am patches/03-*.patch
+git am patches/04-*.patch
+git am patches/05-*.patch
+# Stop BEFORE the patch you're updating (e.g., stop before 06)
+
+# 2) Reset the feature branch to previous-patches and apply the current patch
+git checkout feature/<name>  # or: git checkout -b feature/<name>
+git reset --hard feature/<name>-previous-patches
+git am patches/06-<name>.patch  # the patch you're updating
+
+# 3) Make your fixes
+# edit files...
+git add path/to/File1.swift path/to/File2.swift  # explicit file list
+git commit --amend -m "feat: <name>"
+
+# 4) Regenerate the patch against the previous-patches baseline
+./scripts/generate-patch.sh -n \
+  -s feature/<name> \
+  -t feature/<name>-previous-patches \
+  -o patches/06-<name>.patch \
+  --include-files "path/to/File1.swift,path/to/File2.swift" \
+  -y
+
+# 5) Validate the full stack
+./scripts/patch-test.sh
+
+# 6) Stage the updated patch on dev
+git checkout dev
+git add patches/06-<name>.patch
+# review, then commit
+
+# 7) Cleanup
+git branch -D feature/<name>-previous-patches  # delete the temporary baseline branch
+# Keep feature/<name> for future updates
+```
+
+### Notes
+
+- The `-t feature/<name>-previous-patches` flag tells `generate-patch.sh` to compare against your custom baseline, not raw `dev`.
+- Keep `feature/<name>` for future updates to this patch. Delete the `-previous-patches` branch after successful validation.
+
+---
 
 ### 3) Validate patch application before committing
 
@@ -152,11 +221,11 @@ Run the canonical patch-stack validation script:
 scripts/patch-test.sh
 ```
 
-This script encapsulates the worktree-based clean-`dev` flow and applies patches using `git am`:
-- applies the full existing patch stack in order
-- applies the candidate/generated patch
+This script:
+- creates a temporary worktree from clean `dev`
+- applies all patches in `./patches/` in order using `git am`
 - fails fast on the first error
-- cleans up any temporary worktrees/state
+- cleans up the temporary worktree
 
 If validation fails:
 - do **not** hand-edit patch files
@@ -186,11 +255,11 @@ Run the canonical patch-stack validation script:
 scripts/patch-test.sh
 ```
 
-This script encapsulates the worktree-based clean-`dev` flow and applies patches using `git am`:
-- applies the full existing patch stack in order
-- applies the candidate/generated patch
+This script:
+- creates a temporary worktree from clean `dev`
+- applies all patches in `./patches/` in order using `git am`
 - fails fast on the first error
-- cleans up any temporary worktrees/state
+- cleans up the temporary worktree
 
 If validation fails:
 - do **not** hand-edit patch files
@@ -297,6 +366,14 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v4
+- Added new section "Updating an existing patch (mid-stack)" with detailed workflow for updating patches in the middle of the stack using a `-previous-patches` baseline branch.
+- Clarified that feature branches should be kept locally (not pushed to origin) and `-previous-patches` branches should be deleted after use.
+- Added `git stash` step to "Start a feature branch" section.
+- Added `--include-files` flag to patch generation examples for explicit file selection.
+- Fixed stale wording in validation sections (removed "candidate/generated patch" language).
+- Clarified `patch-test.sh` behavior: applies all patches in `./patches/`, not a separate candidate.
 
 ### v3
 - Removed all `.am.patch` references: mailbox patches are now always `*.patch`.

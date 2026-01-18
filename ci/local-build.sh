@@ -22,6 +22,7 @@ Options:
   --sync-all                 Allow sync_project_files.rb to scan full globs
   --sync-explicit-only       Only sync explicit file list (default)
   --worktree-parent <path>   Parent dir for temporary worktrees
+  --preserve-worktree        Preserve worktree after build (for debugging)
   -h, --help                 Show this help
 
 Examples:
@@ -53,6 +54,7 @@ WORKTREE_PARENT=""
 INCLUDE_PROJECT_FILE=0
 SYNC_EXPLICIT_ONLY=""
 IPA_PATH=""
+PRESERVE_WORKTREE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -105,6 +107,9 @@ while [[ $# -gt 0 ]]; do
     --worktree-parent)
       shift
       WORKTREE_PARENT="${1:-}"
+      ;;
+    --preserve-worktree)
+      PRESERVE_WORKTREE=1
       ;;
     -h|--help)
       usage
@@ -844,7 +849,7 @@ cleanup() {
 
   if [[ "$WORKTREE_CREATED" = true && -n "$WORKTREE_DIR" ]]; then
     normalized_worktree="$(normalize_path "$WORKTREE_DIR")"
-    if [[ "$preserve_worktree" = true ]]; then
+    if [[ "$preserve_worktree" = true || "$PRESERVE_WORKTREE" = "1" ]]; then
       echo "[cleanup] Preserving worktree at $normalized_worktree"
     else
       echo "[cleanup] Removing worktree at $normalized_worktree"
