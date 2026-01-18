@@ -1,6 +1,6 @@
-From 6d8d01688b987134fe62bfae3c9614fedcd68d3e Mon Sep 17 00:00:00 2001
+From 63d9f307dfc4aae8416e3844ab06d4aa15932baa Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sun, 18 Jan 2026 18:22:17 +0100
+Date: Sun, 18 Jan 2026 21:40:57 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
@@ -1480,7 +1480,7 @@ index f4fb33fde..f7985c1c8 100644
      }
  }
 diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
-index 8d15acbed..efb508e0d 100644
+index 8d15acbed..be8edf8a9 100644
 --- a/Trio Watch App/Info.plist	
 +++ b/Trio Watch App/Info.plist	
 @@ -2,10 +2,15 @@
@@ -1501,7 +1501,7 @@ index 8d15acbed..efb508e0d 100644
 +	  file and configure the target to merge it at build time (`INFOPLIST_FILE`).
 +	-->
 +	<key>AppGroupID</key>
-+	<string>$(APP_GROUP_ID)</string>
++	<string>$(TRIO_APP_GROUP_ID)</string>
  </dict>
  </plist>
 diff --git a/Trio Watch App/TrioWatchApp.entitlements b/Trio Watch App/TrioWatchApp.entitlements
@@ -1521,7 +1521,7 @@ index 000000000..9a37de423
 +</dict>
 +</plist>
 diff --git a/Trio Watch Complication/Info.plist b/Trio Watch Complication/Info.plist
-index 0f118fb75..6f081ab69 100644
+index 0f118fb75..f3aa654f6 100644
 --- a/Trio Watch Complication/Info.plist	
 +++ b/Trio Watch Complication/Info.plist	
 @@ -2,6 +2,8 @@
@@ -1529,7 +1529,7 @@ index 0f118fb75..6f081ab69 100644
  <plist version="1.0">
  <dict>
 +	<key>AppGroupID</key>
-+	<string>$(APP_GROUP_ID)</string>
++	<string>$(TRIO_APP_GROUP_ID)</string>
  	<key>NSExtension</key>
  	<dict>
  		<key>NSExtensionPointIdentifier</key>
@@ -2853,7 +2853,7 @@ index 000000000..3d7ac2e66
 +}
 diff --git a/Trio/Resources/TrioWatch.entitlements b/Trio/Resources/TrioWatch.entitlements
 new file mode 100644
-index 000000000..1f5229716
+index 000000000..9a37de423
 --- /dev/null
 +++ b/Trio/Resources/TrioWatch.entitlements
 @@ -0,0 +1,10 @@
@@ -2863,7 +2863,7 @@ index 000000000..1f5229716
 +<dict>
 +	<key>com.apple.security.application-groups</key>
 +	<array>
-+		<string>$(APP_GROUP_ID)</string>
++		<string>$(TRIO_APP_GROUP_ID)</string>
 +	</array>
 +</dict>
 +</plist>
