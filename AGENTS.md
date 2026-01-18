@@ -100,7 +100,7 @@ After syncing, re-run the patch validation.
 
 ### Authentication
 
-- Before issuing any queries, authenticate with the Better Stack MCP server to obtain the required credentials.
+- Before issuing any queries, authenticate using the telemetry_list_teams_tool and the telemetry_create_cloud_connection_tool with the Better Stack MCP server to obtain the required credentials.
 - Use the provided authentication flow to retrieve the username and password or token needed for subsequent MCP tool calls.
 - **Never log, echo, persist, or summarize authentication credentials in chat output.**
 

@@ -407,6 +407,60 @@ BUILD_START_TIME=$(date +%s)
 # Helper function to capture and display fastlane errors
 ########################################
 
+extract_xcodebuild_error_excerpt() {
+  local raw_log_path="${1:-}"
+  local max_matches="${2:-20}"
+  local context_lines="${3:-2}"
+
+  [[ -n "$raw_log_path" ]] || return 0
+  [[ -f "$raw_log_path" ]] || return 0
+
+  echo ""
+  echo "=========================================="
+  echo "[build] 🔎 Extracting compiler errors from raw xcodebuild log"
+  echo "=========================================="
+  echo "[build] Source: $raw_log_path"
+  echo ""
+
+  # Find the first N error lines. We intentionally match the Swift-style ": error:" format.
+  # This is a best-effort extraction; the authoritative log remains the raw xcodebuild log.
+  local match_lines
+  match_lines="$(grep -nE '(^|: )fatal error:|(^|: )error:' "$raw_log_path" 2>/dev/null | head -n "$max_matches" | cut -d: -f1 || true)"
+
+  if [[ -z "$match_lines" ]]; then
+    echo "[build] No 'error:' lines found in raw xcodebuild log."
+    echo ""
+    return 0
+  fi
+
+  echo "=== Extracted compiler errors (first ${max_matches} matches, ±${context_lines} lines) ==="
+  echo ""
+
+  while IFS= read -r line_num; do
+    [[ -n "$line_num" ]] || continue
+
+    local start_line=$((line_num - context_lines))
+    local end_line=$((line_num + context_lines))
+    if [[ "$start_line" -lt 1 ]]; then
+      start_line=1
+    fi
+
+    echo "---- context around line ${line_num} ----"
+
+    if command -v nl >/dev/null 2>&1; then
+      sed -n "${start_line},${end_line}p" "$raw_log_path" 2>/dev/null | nl -ba -w6 -s'| ' -v "$start_line" || true
+    else
+      # Fallback (no line numbers) if nl is unavailable.
+      sed -n "${start_line},${end_line}p" "$raw_log_path" 2>/dev/null || true
+    fi
+
+    echo ""
+  done <<< "$match_lines"
+
+  echo "=== End extracted compiler errors ==="
+  echo ""
+}
+
 capture_fastlane_errors() {
   local command="$1"
   local step_name="$2"
@@ -459,6 +513,17 @@ capture_fastlane_errors() {
       tail -n 20 "$temp_output_file" 2>/dev/null || echo ""
       echo ""
     fi
+
+    # Option A: If xcodebuild failed, xcpretty sometimes hides the underlying Swift compiler diagnostics.
+    # Fastlane usually writes the raw xcodebuild output to a log file via `tee`. We extract the first few
+    # `error:` lines from that raw log so the *real* compiler error surfaces in this main build log.
+    local raw_xcodebuild_log=""
+    raw_xcodebuild_log="$(grep -Eo '/[^[:space:]]+/build/buildlog/LoopKit-Trio\.log' "$temp_output_file" 2>/dev/null | tail -n 1 || true)"
+    if [[ -z "$raw_xcodebuild_log" && -n "${BUILD_DIR:-}" ]]; then
+      # Best-effort fallback (matches our local-build worktree layout).
+      raw_xcodebuild_log="$BUILD_DIR/build/buildlog/LoopKit-Trio.log"
+    fi
+    extract_xcodebuild_error_excerpt "$raw_xcodebuild_log"
 
     echo "=========================================="
     echo "[build] Full build log available at: $LOGFILE"

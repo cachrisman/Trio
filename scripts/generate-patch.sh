@@ -1167,19 +1167,18 @@ if git help worktree >/dev/null 2>&1; then
         apply_error=$(mktemp)
         (
             cd "$wt_dir"
-            # Configure git identity for git am
-            git config user.name "Trio Patch Bot" || true
-            git config user.email "patch-bot@users.noreply.github.com" || true
             print_info "Patch summary (git apply --stat) on target branch '${TARGET_BRANCH}':"
             git apply --stat "$PATCH_ABS_PATH" 2>&1 || true
-            if git am --3way --keep-cr --whitespace=nowarn "$PATCH_ABS_PATH" >/dev/null 2>&1; then
+            if git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" \
+              am --3way --keep-cr --whitespace=nowarn "$PATCH_ABS_PATH" >/dev/null 2>&1; then
                 echo "SUCCESS" > "$apply_result"
                 # Reset to clean state before removing worktree (no abort needed on success)
                 git reset --hard "$TARGET_BRANCH" >/dev/null 2>&1 || true
             else
                 echo "FAILED" > "$apply_result"
                 git am --abort >/dev/null 2>&1 || true
-                git am --3way --keep-cr --whitespace=nowarn "$PATCH_ABS_PATH" 2>&1 | head -10 > "$apply_error" || true
+                git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" \
+                  am --3way --keep-cr --whitespace=nowarn "$PATCH_ABS_PATH" 2>&1 | head -10 > "$apply_error" || true
             fi
         )
         
