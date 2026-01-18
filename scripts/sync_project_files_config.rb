@@ -43,6 +43,9 @@ module SyncProjectFilesConfig
     "Trio Watch App" => {
       # Watch app uses a generated Info.plist; inject AppGroupID so runtime lookups succeed.
       "INFOPLIST_KEY_AppGroupID" => "$(TRIO_APP_GROUP_ID)",
+      # Force Xcode to merge keys from a real Info.plist file as well. This is required because
+      # the watch app’s generated Info.plist output has not been including custom keys like AppGroupID.
+      "INFOPLIST_FILE" => "Trio Watch App/Info.plist",
       # Ensure the watch app has App Group entitlement so containerURL(...) is non-nil.
       "CODE_SIGN_ENTITLEMENTS" => "Trio Watch App/TrioWatchApp.entitlements"
     },
