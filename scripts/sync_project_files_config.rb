@@ -40,8 +40,17 @@ module SyncProjectFilesConfig
 
   # Map target names to required build settings (setting_key => setting_value)
   TARGET_BUILD_SETTINGS = {
+    "Trio Watch App" => {
+      # Watch app uses a generated Info.plist; inject AppGroupID so runtime lookups succeed.
+      "INFOPLIST_KEY_AppGroupID" => "$(TRIO_APP_GROUP_ID)",
+      # Ensure the watch app has App Group entitlement so containerURL(...) is non-nil.
+      "CODE_SIGN_ENTITLEMENTS" => "Trio Watch App/TrioWatchApp.entitlements"
+    },
     "Trio Watch Complication Extension" => {
-      "INFOPLIST_KEY_AppGroupID" => "$(TRIO_APP_GROUP_ID)"
+      # Widget extension uses a generated Info.plist; inject AppGroupID so runtime lookups succeed.
+      "INFOPLIST_KEY_AppGroupID" => "$(TRIO_APP_GROUP_ID)",
+      # Ensure the complication extension has App Group entitlement so containerURL(...) is non-nil.
+      "CODE_SIGN_ENTITLEMENTS" => "Trio Watch Complication/TrioWatchComplication.entitlements"
     }
   }.freeze
 end
