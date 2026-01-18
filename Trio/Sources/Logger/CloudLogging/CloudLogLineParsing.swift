@@ -48,9 +48,11 @@ enum CloudLogLineParser {
         var method: String?
         var lineNumber: String?
 
-        // Pattern: \] (.+\.swift) - (.+?) - (\d+) - (DEV|INFO|WARN|ERR):
-        // Method name can contain special chars like (_:), so we match everything between the delimiters
-        let fileMethodLineRegex = #"\]\s+([^\s]+\.swift)\s+-\s+(.+?)\s+-\s+(\d+)\s+-\s+(DEV|INFO|WARN|ERR):"#
+        // Pattern: \] (.+\.swift) - (.+?) - (\d+) - (<LEVEL>):
+        // Method name can contain special chars like (_:), so we match everything between the delimiters.
+        // Level can vary depending on logger implementation ("DEV", "DEBUG", "WARN", "WARNING", ...),
+        // so keep it permissive to avoid losing file/method/line parsing.
+        let fileMethodLineRegex = #"\]\s+([^\s]+\.swift)\s+-\s+(.+?)\s+-\s+(\d+)\s+-\s+([A-Z]+):"#
         if let regex = try? NSRegularExpression(pattern: fileMethodLineRegex) {
             let nsHeader = header as NSString
             let range = NSRange(location: 0, length: nsHeader.length)
@@ -73,7 +75,7 @@ enum CloudLogLineParser {
         }
 
         // Level = delimiter-aware: " - (DEV|INFO|WARN|ERR):"
-        let levelRegex = #"\s-\s(DEV|INFO|WARN|ERR):\s"#
+        let levelRegex = #"\s-\s([A-Z]+):\s"#
         guard let levelMatch = header.range(of: levelRegex, options: .regularExpression) else {
             // If we can't confidently parse, still return the original line as message.
             let msg = continuation.isEmpty ? header : "\(header)\n\(continuation)"
@@ -88,10 +90,10 @@ enum CloudLogLineParser {
 
         let normalizedLevel: String?
         switch levelToken {
-        case "DEV": normalizedLevel = "debug"
+        case "DEV", "DEBUG": normalizedLevel = "debug"
         case "INFO": normalizedLevel = "info"
-        case "WARN": normalizedLevel = "warn"
-        case "ERR": normalizedLevel = "error"
+        case "WARN", "WARNING": normalizedLevel = "warn"
+        case "ERR", "ERROR": normalizedLevel = "error"
         default: normalizedLevel = nil
         }
 
@@ -139,36 +141,51 @@ enum CloudLogLineParser {
 
         // Extract file, line number, and function name
         // Format: [TIMESTAMP] [File.swift:line] function() → message
-        // Pattern: \[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]\s+(.+?)\s*\(\)\s*→
         var file: String?
         var lineNumber: String?
         var method: String?
 
-        let fileLineMethodRegex = #"\[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]\s+(.+?)\s*\(\)\s*→"#
-        if let regex = try? NSRegularExpression(pattern: fileLineMethodRegex) {
+        // Extract file + line independent of method parsing, since watch log methods can be:
+        // - finalizePendingData()            (trailing "()")
+        // - scheduleUIUpdate(with:)         (no trailing "()", includes signature)
+        // - session(_:didReceiveUserInfo:)  (no trailing "()", includes signature)
+        let fileLineRegex = #"\[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]"#
+        if let regex = try? NSRegularExpression(pattern: fileLineRegex) {
             let nsHeader = header as NSString
             let range = NSRange(location: 0, length: nsHeader.length)
-            if let regexMatch = regex.firstMatch(in: header, range: range), regexMatch.numberOfRanges >= 4 {
-                // Group 1: file (with .swift), Group 2: line number, Group 3: function name
+            if let regexMatch = regex.firstMatch(in: header, range: range), regexMatch.numberOfRanges >= 3 {
                 let fileRange = regexMatch.range(at: 1)
                 let lineRange = regexMatch.range(at: 2)
-                let methodRange = regexMatch.range(at: 3)
-
                 if fileRange.location != NSNotFound {
                     file = nsHeader.substring(with: fileRange)
                 }
                 if lineRange.location != NSNotFound {
                     lineNumber = nsHeader.substring(with: lineRange)
                 }
-                if methodRange.location != NSNotFound {
-                    method = nsHeader.substring(with: methodRange).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        let arrowRange = header.range(of: "→") ?? header.range(of: "->")
+        if let arrowRange {
+            // Method = substring between the second closing bracket and the arrow
+            if let firstClose = header.firstIndex(of: "]") {
+                let afterFirst = header.index(after: firstClose)
+                if let secondClose = header[afterFirst...].firstIndex(of: "]") {
+                    var start = header.index(after: secondClose)
+                    while start < header.endIndex, header[start].isWhitespace {
+                        start = header.index(after: start)
+                    }
+                    let candidate = String(header[start..<arrowRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !candidate.isEmpty {
+                        method = candidate.hasSuffix("()") ? String(candidate.dropLast(2)) : candidate
+                    }
                 }
             }
         }
 
         // Message = everything after the arrow
         let fullMessage: String
-        if let arrowRange = header.range(of: "→") {
+        if let arrowRange {
             let msg = header[arrowRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
             let firstLineMessage = msg.isEmpty ? header : String(msg)
             fullMessage = continuation.isEmpty ? firstLineMessage : "\(firstLineMessage)\n\(continuation)"
