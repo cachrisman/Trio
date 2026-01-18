@@ -9,6 +9,7 @@ Options:
   --with-submodules               Initialize all submodules (default: skip).
   --include-submodules <list>     Comma-separated submodules to init; excludes others.
   --skip-patch <id|filename>      Skip a patch by number (e.g. 02) or full filename.
+  --preserve-worktree             Keep test worktree on failure for manual debugging.
   -h, --help                      Show this help.
 
 By default, submodules are skipped to speed up patch validation.
@@ -18,6 +19,7 @@ EOF
 with_submodules=false
 include_submodules=()
 skip_patches=()
+preserve_worktree=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,6 +43,9 @@ while [ $# -gt 0 ]; do
         exit 1
       fi
       skip_patches+=("$1")
+      ;;
+    --preserve-worktree)
+      preserve_worktree=true
       ;;
     -h|--help)
       print_usage
@@ -104,14 +109,23 @@ failed_patch=""
 cleanup() {
   cd "$REPO_ROOT" 2>/dev/null || cd "$ORIGINAL_DIR" 2>/dev/null || cd ~
 
-  if [ -n "$TEST_WORKTREE" ] && [ -d "$TEST_WORKTREE" ]; then
-    git worktree remove --force "$TEST_WORKTREE" 2>/dev/null || true
-    rm -rf "$TEST_WORKTREE" 2>/dev/null || true
-  fi
+  # Preserve worktree on failure if --preserve-worktree was passed
+  if [ "$failed" = true ] && [ "$preserve_worktree" = true ]; then
+    echo ""
+    echo "Worktree preserved for debugging at: $TEST_WORKTREE"
+    echo "To clean up manually, run:"
+    echo "  git worktree remove --force $TEST_WORKTREE"
+    echo "  git branch -D tmp/patch-test tmp/test-apply-patches"
+  else
+    if [ -n "$TEST_WORKTREE" ] && [ -d "$TEST_WORKTREE" ]; then
+      git worktree remove --force "$TEST_WORKTREE" 2>/dev/null || true
+      rm -rf "$TEST_WORKTREE" 2>/dev/null || true
+    fi
 
-  git branch -D tmp/patch-test 2>/dev/null || true
-  git branch -D tmp/test-apply-patches 2>/dev/null || true
-  git worktree prune 2>/dev/null || true
+    git branch -D tmp/patch-test 2>/dev/null || true
+    git branch -D tmp/test-apply-patches 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+  fi
 
   cd "$ORIGINAL_DIR" 2>/dev/null || cd ~
 }
@@ -236,10 +250,29 @@ while IFS= read -r p; do
   echo "=========================================="
   
   # Apply mailbox patch using git am
-  if git am --3way --keep-cr --whitespace=nowarn "$p" 2>&1; then
+  am_output=$(git am --3way --keep-cr --whitespace=nowarn "$p" 2>&1)
+  am_status=$?
+  if [ $am_status -eq 0 ]; then
     echo "✅ Applied: $patch_name"
   else
     echo "❌ FAILED to apply: $patch_name"
+    echo ""
+    echo "--- git am error output ---"
+    echo "$am_output"
+    echo ""
+    echo "--- git status (conflicting files) ---"
+    git status --short
+    echo ""
+    echo "--- git diff (conflict details) ---"
+    git diff
+    echo ""
+    # Show the patch content that failed (git 2.25+)
+    if git am --show-current-patch=diff >/dev/null 2>&1; then
+      echo "--- Failing patch content (first 100 lines) ---"
+      git am --show-current-patch=diff | head -100
+      echo ""
+    fi
+    echo "--- End of diagnostics ---"
     git am --abort 2>/dev/null || true
     failed=true
     failed_patch="$p"
