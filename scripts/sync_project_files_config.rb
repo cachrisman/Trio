@@ -8,16 +8,19 @@ module SyncProjectFilesConfig
   TARGET_GLOBS = {
     "Trio" => [
       "Trio/Sources/**/*.{swift,m,mm}",
+      "Trio Watch Shared/ComplicationLogBuffer.swift",
       "Trio Watch Shared/TrioComplicationDataStore.swift"
     ],
     "Trio Watch App" => [
       "Trio Watch App Extension/**/*.{swift,m,mm}",
       "Trio/Sources/Models/NotificationIdentifiers.swift",
       "Trio/Sources/Models/WatchMessageKeys.swift",
+      "Trio Watch Shared/ComplicationLogBuffer.swift",
       "Trio Watch Shared/TrioComplicationDataStore.swift"
     ],
     "Trio Watch Complication Extension" => [
       "Trio Watch Complication/**/*.{swift,m,mm}",
+      "Trio Watch Shared/ComplicationLogBuffer.swift",
       "Trio Watch Shared/TrioComplicationDataStore.swift"
     ],
     "LiveActivityExtension" => ["LiveActivity/**/*.{swift,m,mm}"]

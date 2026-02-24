@@ -1,9 +1,17 @@
-From 6e085987a68fec517c338fc59ae031817f82b93e Mon Sep 17 00:00:00 2001
+From 8396d2e6b23981a9f9ec965a50829942a594cd8c Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sun, 18 Jan 2026 15:59:18 +0100
-Subject: [PATCH] feat: cloud-logging
+Date: Tue, 24 Feb 2026 23:04:39 +0100
+Subject: [PATCH] feat: cloud logging with complication log drain
 
+- Add BetterStack Logtail cloud logging provider with settings UI
+- Add CloudLogUploader, CloudLogLineParsing, CloudLogProvider, CloudLogEntryAggregator
+- Add AppTerminationTracker for detecting abnormal terminations
+- Add ComplicationLogBuffer for App Group file-based logging from Complication Extension
+- Add complication drain logic in WatchLogger with UTF-8 safe truncation, stable payloadIds, and upsert pending records
+- Tag complication-sourced logs with source=complication for BetterStack filtering
 ---
+ Trio Watch App Extension/WatchLogger.swift    | 140 +++++++
+ Trio Watch Shared/ComplicationLogBuffer.swift | 154 ++++++++
  Trio/Sources/Application/AppDelegate.swift    |  34 +-
  Trio/Sources/Application/TrioApp.swift        |   1 +
  Trio/Sources/Assemblies/ServiceAssembly.swift |   1 +
@@ -11,16 +19,17 @@ Subject: [PATCH] feat: cloud-logging
  .../BetterStackLogtailProvider.swift          |  71 ++++
  .../CloudLogging/BetterStackSettings.swift    |  35 ++
  .../CloudLogEntryAggregator.swift             |  41 ++
- .../CloudLogging/CloudLogLineParsing.swift    | 272 +++++++++++++
- .../CloudLogging/CloudLogProvider.swift       |  99 +++++
+ .../CloudLogging/CloudLogLineParsing.swift    | 277 ++++++++++++++
+ .../CloudLogging/CloudLogProvider.swift       | 103 +++++
  .../CloudLogging/CloudLogUploadService.swift  | 161 ++++++++
- .../CloudLogging/CloudLogUploader.swift       | 357 ++++++++++++++++++
+ .../CloudLogging/CloudLogUploader.swift       | 358 ++++++++++++++++++
  .../Modules/Settings/SettingItems.swift       |  11 +
  .../View/CloudLoggingSettingsView.swift       | 150 ++++++++
  .../Settings/View/Subviews/ServicesView.swift |   1 +
  Trio/Sources/Router/Screen.swift              |   3 +
- TrioTests/CloudLogEntryAggregatorTests.swift  |  42 +++
- 16 files changed, 1584 insertions(+), 1 deletion(-)
+ TrioTests/CloudLogEntryAggregatorTests.swift  |  42 ++
+ 18 files changed, 1888 insertions(+), 1 deletion(-)
+ create mode 100644 Trio Watch Shared/ComplicationLogBuffer.swift
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
@@ -32,6 +41,332 @@ Subject: [PATCH] feat: cloud-logging
  create mode 100644 Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
  create mode 100644 TrioTests/CloudLogEntryAggregatorTests.swift
 
+diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
+index 3f9a83de5..81aec9e2a 100644
+--- a/Trio Watch App Extension/WatchLogger.swift	
++++ b/Trio Watch App Extension/WatchLogger.swift	
+@@ -171,6 +171,8 @@ actor WatchLogger {
+     }
+ 
+     func flushPersistedLogs() async {
++        await drainComplicationLogs()
++
+         let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+             .appendingPathComponent("logs", isDirectory: true)
+ 
+@@ -335,9 +337,13 @@ actor WatchLogger {
+     }
+ 
+     /// Stores a pending payload record for later ACK matching.
++    /// Upserts by payloadId so retries with a stable ID don't create duplicate records.
+     func storePendingPayload(payloadId: String, type: String, filePath: String) async {
+         var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
+ 
++        // Remove existing record with same payloadId (upsert)
++        pendingPayloads.removeAll { $0["payloadId"] as? String == payloadId }
++
+         let record: [String: Any] = [
+             "payloadId": payloadId,
+             "type": type,
+@@ -372,4 +378,138 @@ actor WatchLogger {
+     func getPendingPayloads() async -> [[String: Any]] {
+         return UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
+     }
++
++    // MARK: - Complication Log Drain
++
++    /// Drains the Complication log buffer from App Group storage.
++    /// Retries orphan drain files first, then atomically renames the current log and sends it.
++    private func drainComplicationLogs() async {
++        guard let containerURL = ComplicationLogBuffer.sharedContainerURL() else { return }
++
++        let logsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
++        let fm = FileManager.default
++
++        guard let allFiles = try? fm.contentsOfDirectory(at: logsDir, includingPropertiesForKeys: [.creationDateKey]) else {
++            return
++        }
++
++        // Drain files from previous runs, sorted oldest-first
++        var drainFiles = allFiles
++            .filter { $0.lastPathComponent.hasPrefix("complication_log.drain.") && $0.lastPathComponent.hasSuffix(".txt") }
++            .sorted { url1, url2 in
++                let d1 = (try? url1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
++                let d2 = (try? url2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
++                return d1 < d2
++            }
++
++        // Retention: delete drain files older than 7 days, cap at 20
++        let now = Date()
++        drainFiles = drainFiles.filter { file in
++            if let created = (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate),
++               now.timeIntervalSince(created) > maxFileAge
++            {
++                try? fm.removeItem(at: file)
++                return false
++            }
++            return true
++        }
++        if drainFiles.count > maxPerPayloadFiles {
++            let excess = drainFiles.prefix(drainFiles.count - maxPerPayloadFiles)
++            for file in excess { try? fm.removeItem(at: file) }
++            drainFiles = Array(drainFiles.suffix(maxPerPayloadFiles))
++        }
++
++        // Retry orphan drain files
++        for drainFile in drainFiles {
++            await sendLogContentFromFile(fileURL: drainFile)
++        }
++
++        // Atomic rename: complication_log.txt -> complication_log.drain.<uuid>.txt
++        let logFile = logsDir.appendingPathComponent("complication_log.txt")
++        guard fm.fileExists(atPath: logFile.path) else { return }
++
++        let drainURL = logsDir.appendingPathComponent("complication_log.drain.\(UUID().uuidString).txt")
++        do {
++            try fm.moveItem(at: logFile, to: drainURL)
++        } catch {
++            return
++        }
++
++        await sendLogContentFromFile(fileURL: drainURL)
++    }
++
++    /// Extracts a stable payloadId from a drain filename, e.g.
++    /// `complication_log.drain.<UUID>.txt` -> `<UUID>`. Falls back to a new UUID.
++    private static func payloadIdFromDrainFile(_ fileURL: URL) -> String {
++        let name = fileURL.deletingPathExtension().lastPathComponent
++        let prefix = "complication_log.drain."
++        if let range = name.range(of: prefix) {
++            let candidate = String(name[range.upperBound...])
++            if !candidate.isEmpty { return candidate }
++        }
++        return UUID().uuidString
++    }
++
++    /// Sends log content from an external file as a watchLogs envelope.
++    /// On ACK the file is deleted; on error it is kept for retry via pending payloads.
++    /// Uses 64KB cap (matching ComplicationLogBuffer) rather than logSizeCap (16KB used for in-memory flushes).
++    private static let drainSizeCap = 64 * 1024
++
++    private func sendLogContentFromFile(fileURL: URL) async {
++        guard session.activationState == .activated else { return }
++
++        guard let data = try? Data(contentsOf: fileURL),
++              var content = String(data: data, encoding: .utf8),
++              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
++        else {
++            try? FileManager.default.removeItem(at: fileURL)
++            return
++        }
++
++        if content.utf8.count > Self.drainSizeCap {
++            let data = Data(content.utf8)
++            let truncData = data.prefix(Self.drainSizeCap)
++            if let lastNewline = truncData.lastIndex(of: UInt8(ascii: "\n")) {
++                content = String(decoding: truncData[...lastNewline], as: UTF8.self) + "[truncated]\n"
++            } else {
++                content = String(decoding: truncData, as: UTF8.self) + "\n[truncated]\n"
++            }
++        }
++
++        // Stable payloadId derived from drain filename UUID to prevent duplicate ingestion on retry
++        let payloadId = Self.payloadIdFromDrainFile(fileURL)
++        let envelope: [String: Any] = [
++            "type": "watchLogs",
++            "payloadId": payloadId,
++            "data": content
++        ]
++
++        let filePath = fileURL.path
++
++        if session.isReachable {
++            session.sendMessage(
++                envelope,
++                replyHandler: { reply in
++                    Task {
++                        if let ackType = reply["type"] as? String,
++                           ackType == "ack",
++                           let ackPayloadId = reply["payloadId"] as? String,
++                           ackPayloadId == payloadId
++                        {
++                            try? FileManager.default.removeItem(at: fileURL)
++                            await WatchLogger.shared.removePendingPayload(payloadId)
++                        }
++                    }
++                },
++                errorHandler: { _ in
++                    Task {
++                        await WatchLogger.shared.storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
++                    }
++                }
++            )
++        } else {
++            _ = session.transferUserInfo(envelope)
++            await storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
++        }
++    }
+ }
+diff --git a/Trio Watch Shared/ComplicationLogBuffer.swift b/Trio Watch Shared/ComplicationLogBuffer.swift
+new file mode 100644
+index 000000000..469f91f5c
+--- /dev/null
++++ b/Trio Watch Shared/ComplicationLogBuffer.swift	
+@@ -0,0 +1,154 @@
++import Foundation
++
++/// Append-only log buffer for the Complication Extension, written to App Group storage.
++/// The Watch App drains this file and sends raw lines via watchLogs envelope.
++/// Format matches WatchLogger: `[timestamp] [File.swift:line] function → message`
++/// ComplicationLogBuffer is used as the file/category so the parser can tag source=complication.
++enum ComplicationLogBuffer {
++    private static let logFileName = "complication_log.txt"
++    private static let logsSubdir = "logs"
++    private static let sizeCapBytes = 64 * 1024
++    private static let truncateKeepBytes = 32 * 1024
++
++    private static let queue = DispatchQueue(label: "ComplicationLogBuffer.queue")
++    private static var hasLoggedAppGroupUnavailable = false
++
++    private static let dateFormatter: DateFormatter = {
++        let formatter = DateFormatter()
++        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
++        return formatter
++    }()
++
++    /// Appends a formatted log line to the App Group buffer.
++    /// Falls back to NSLog if App Group is unavailable (throttled warning).
++    static func append(
++        _ message: String,
++        file: String = #fileID,
++        line: Int = #line,
++        function: String = #function
++    ) {
++        queue.async {
++            let shortFile = (file as NSString).lastPathComponent
++            let timestamp = dateFormatter.string(from: Date())
++            let entry = "[\(timestamp)] [\(shortFile):\(line)] \(function) → \(message)\n"
++
++            guard let logURL = logFileURL() else {
++                NSLog("[ComplicationLogBuffer] %@", String(entry.dropLast()))
++                if !hasLoggedAppGroupUnavailable {
++                    hasLoggedAppGroupUnavailable = true
++                    NSLog("[ComplicationLogBuffer] App Group unavailable; using NSLog fallback")
++                }
++                return
++            }
++
++            do {
++                let fm = FileManager.default
++                let dirURL = logURL.deletingLastPathComponent()
++                if !fm.fileExists(atPath: dirURL.path) {
++                    try fm.createDirectory(at: dirURL, withIntermediateDirectories: true)
++                }
++
++                guard let data = entry.data(using: .utf8) else { return }
++
++                if fm.fileExists(atPath: logURL.path) {
++                    let handle = try FileHandle(forWritingTo: logURL)
++                    handle.seekToEndOfFile()
++                    handle.write(data)
++                    try? handle.close()
++
++                    if let attrs = try? fm.attributesOfItem(atPath: logURL.path),
++                       let size = attrs[.size] as? Int64,
++                       size > sizeCapBytes
++                    {
++                        truncateKeepingNewest(at: logURL)
++                    }
++                } else {
++                    try data.write(to: logURL)
++                }
++            } catch {
++                NSLog("[ComplicationLogBuffer] write failed: %@", error.localizedDescription)
++            }
++        }
++    }
++
++    // MARK: - Truncation
++
++    private static func truncateKeepingNewest(at url: URL) {
++        guard let data = try? Data(contentsOf: url),
++              let content = String(data: data, encoding: .utf8) else { return }
++
++        let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
++
++        var keptBytes = 0
++        var keptLines: [String] = []
++        for line in lines.reversed() {
++            let lineBytes = (line + "\n").utf8.count
++            if keptBytes + lineBytes > truncateKeepBytes { break }
++            keptBytes += lineBytes
++            keptLines.insert(line, at: 0)
++        }
++
++        let droppedCount = lines.count - keptLines.count
++        let marker = "[dropped \(droppedCount) lines]\n"
++        let newContent = marker + keptLines.map { $0 + "\n" }.joined()
++        try? newContent.write(to: url, atomically: true, encoding: .utf8)
++    }
++
++    // MARK: - File URLs (also used by drain logic in Watch App)
++
++    /// Returns the log file URL in the App Group container, or nil if unavailable.
++    static func logFileURL() -> URL? {
++        guard let containerURL = sharedContainerURL() else { return nil }
++        return containerURL
++            .appendingPathComponent(logsSubdir, isDirectory: true)
++            .appendingPathComponent(logFileName, isDirectory: false)
++    }
++
++    /// Returns the shared container URL. Used by both append (Complication) and drain (Watch App).
++    static func sharedContainerURL() -> URL? {
++        var bundle: Bundle = .main
++        let classBundle = Bundle(for: _BundleAnchor.self)
++        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
++            bundle = classBundle
++        }
++
++        guard let suiteName = resolveAppGroupID(bundle: bundle).value else { return nil }
++        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
++    }
++
++    // MARK: - App Group Resolution (mirrors TrioComplicationDataStore)
++
++    private static func appGroupID(forTeamID teamID: String) -> String {
++        "group.org.nightscout.\(teamID).trio.trio-app-group"
++    }
++
++    private static func extractTeamID(fromBundleIdentifier bid: String?) -> String? {
++        guard let bid, !bid.isEmpty else { return nil }
++        let prefix = "org.nightscout."
++        guard let prefixRange = bid.range(of: prefix) else { return nil }
++        let after = bid[prefixRange.upperBound...]
++        guard let trioRange = after.range(of: ".trio") else { return nil }
++        let teamID = String(after[..<trioRange.lowerBound])
++        return teamID.isEmpty ? nil : teamID
++    }
++
++    private static func resolveAppGroupID(bundle: Bundle) -> (value: String?, source: String) {
++        if let value = bundle.object(forInfoDictionaryKey: "AppGroupID") as? String, !value.isEmpty {
++            return (value, "Info.plist(AppGroupID)")
++        }
++        #if os(watchOS)
++        if let companionID = Bundle.main.object(forInfoDictionaryKey: "WKCompanionAppBundleIdentifier") as? String,
++           let teamID = extractTeamID(fromBundleIdentifier: companionID)
++        {
++            return (appGroupID(forTeamID: teamID), "Derived(WKCompanionAppBundleIdentifier)")
++        }
++        #endif
++        if let teamID = extractTeamID(fromBundleIdentifier: bundle.bundleIdentifier) {
++            return (appGroupID(forTeamID: teamID), "Derived(bundleIdentifier)")
++        }
++        return (nil, "Unavailable")
++    }
++}
++
++/// Anchor class for Bundle(for:) lookup since the enum has no instances.
++private final class _BundleAnchor {}
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
 index 46134bc21..f938e4827 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
@@ -590,10 +925,10 @@ index 000000000..b9d2818fd
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
 new file mode 100644
-index 000000000..9261bfcbb
+index 000000000..9eabb9015
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,277 @@
 +import Foundation
 +
 +enum CloudLogPlatform: String {
@@ -609,6 +944,8 @@ index 000000000..9261bfcbb
 +    let file: String?
 +    let method: String?
 +    let lineNumber: String?
++    /// Identifies the log source for BetterStack filtering (e.g. "complication").
++    let source: String?
 +}
 +
 +enum CloudLogLineParser {
@@ -675,7 +1012,7 @@ index 000000000..9261bfcbb
 +        guard let levelMatch = header.range(of: levelRegex, options: .regularExpression) else {
 +            // If we can't confidently parse, still return the original line as message.
 +            let msg = continuation.isEmpty ? header : "\(header)\n\(continuation)"
-+            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg, file: file, method: method, lineNumber: lineNumber)
++            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg, file: file, method: method, lineNumber: lineNumber, source: nil)
 +        }
 +
 +        // Extract the actual level token and normalize
@@ -709,7 +1046,8 @@ index 000000000..9261bfcbb
 +            message: fullMessage,
 +            file: file,
 +            method: method,
-+            lineNumber: lineNumber
++            lineNumber: lineNumber,
++            source: nil
 +        )
 +    }
 +
@@ -792,7 +1130,9 @@ index 000000000..9261bfcbb
 +        // Apply message-based level detection to upgrade levels when appropriate
 +        let finalLevel = detectLevelFromMessage(fullMessage, originalLevel: nil)
 +
-+        return CloudParsedLogLine(dt: dt, category: category, level: finalLevel, message: fullMessage, file: file, method: method, lineNumber: lineNumber)
++        let source: String? = (file == "ComplicationLogBuffer.swift" || file == "TrioComplicationDataStore.swift") ? "complication" : nil
++
++        return CloudParsedLogLine(dt: dt, category: category, level: finalLevel, message: fullMessage, file: file, method: method, lineNumber: lineNumber, source: source)
 +    }
 +
 +    /// Normalizes "yyyy-MM-dd'T'HH:mm:ssZ" like "...+0100" into "...+01:00" if possible.
@@ -868,10 +1208,10 @@ index 000000000..9261bfcbb
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
 new file mode 100644
-index 000000000..557e8941a
+index 000000000..dfa695fcf
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,103 @@
 +import Foundation
 +
 +protocol CloudLogProvider {
@@ -926,6 +1266,7 @@ index 000000000..557e8941a
 +        case file
 +        case method
 +        case lineNumber
++        case source
 +        case raw
 +    }
 +
@@ -967,6 +1308,9 @@ index 000000000..557e8941a
 +            }
 +            if let lineNumber = attrs["lineNumber"] {
 +                try container.encode(lineNumber, forKey: .lineNumber)
++            }
++            if let source = attrs["source"] {
++                try container.encode(source, forKey: .source)
 +            }
 +        }
 +    }
@@ -1140,10 +1484,10 @@ index 000000000..893143be2
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
-index 000000000..a1b480187
+index 000000000..f68db0c27
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,357 @@
+@@ -0,0 +1,358 @@
 +import Foundation
 +
 +/// iPhone-only log tailer/uploader.
@@ -1284,6 +1628,7 @@ index 000000000..a1b480187
 +                if let f = parsed.file { attrs["file"] = f }
 +                if let m = parsed.method { attrs["method"] = m }
 +                if let ln = parsed.lineNumber { attrs["lineNumber"] = ln }
++                if let s = parsed.source { attrs["source"] = s }
 +                let msg = truncateMessage(parsed.message)
 +                return CloudLogEvent(message: msg, dt: parsed.dt, attributes: attrs, raw: entry)
 +            } else {
@@ -1692,7 +2037,7 @@ index 4c595ff8e..2bbd74fb1 100644
                          Text("Apple Health").navigationLink(to: .healthkit, from: self)
                      }
 diff --git a/Trio/Sources/Router/Screen.swift b/Trio/Sources/Router/Screen.swift
-index 5bdb8605e..71ccf5995 100644
+index 1bfc27857..41fcde16a 100644
 --- a/Trio/Sources/Router/Screen.swift
 +++ b/Trio/Sources/Router/Screen.swift
 @@ -42,6 +42,7 @@ enum Screen: Identifiable, Hashable {
@@ -1703,7 +2048,7 @@ index 5bdb8605e..71ccf5995 100644
      case remoteControlConfig
      case autosensSettings
      case smbSettings
-@@ -150,6 +151,8 @@ extension Screen {
+@@ -151,6 +152,8 @@ extension Screen {
              ContactImage.RootView(resolver: resolver)
          case .serviceSettings:
              ServicesView(resolver: resolver, state: Settings.StateModel())

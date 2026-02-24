@@ -1,26 +1,33 @@
-From 63d9f307dfc4aae8416e3844ab06d4aa15932baa Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sun, 18 Jan 2026 21:40:57 +0100
-Subject: [PATCH] feat: watch-complication-improvements
+From 22be7b82dc95af74656233a388da3ae9e8ad5142 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Tue, 24 Feb 2026 22:37:26 +0100
+Subject: [PATCH] feat: watch complication improvements
 
+- Add TrioComplicationDataStore for shared complication data persistence via App Group
+- Add ComplicationDebugView for on-device diagnostics
+- Add watch complication widgets with glucose, IOB, COB, trend display
+- Relax AppleWatchManager isReachable guards for background WatchState delivery
+- Standardize all watch targets on TRIO_APP_GROUP_ID
+- Route complication logging through ComplicationLogBuffer for cloud delivery
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
 ---
- Config.xcconfig                               |   5 +-
- .../ExtensionDelegate.swift                   |  24 +
+ .../ExtensionDelegate.swift                   |  29 +
  Trio Watch App Extension/TrioWatchApp.swift   |   2 +
  .../Views/ComplicationDebugView.swift         | 372 +++++++++
  .../Views/TrioMainWatchView.swift             |  47 +-
  .../WatchState+Requests.swift                 |  19 +
  Trio Watch App Extension/WatchState.swift     | 520 ++++++++----
  Trio Watch App/Info.plist                     |  15 +-
- Trio Watch App/TrioWatchApp.entitlements      |  10 +
+ Trio Watch App/TrioWatchApp.entitlements      |  11 +
  Trio Watch Complication/Info.plist            |   2 +
- .../TrioWatchComplication.entitlements        |  10 +
- .../TrioWatchComplication.swift               | 358 ++++++++-
+ .../TrioWatchComplication.entitlements        |  11 +
+ .../TrioWatchComplication.swift               | 358 +++++++-
  .../TrioWatchComplicationPreview.swift        | 124 +++
- .../TrioComplicationDataStore.swift           | 739 ++++++++++++++++++
+ .../TrioComplicationDataStore.swift           | 777 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
- .../WatchManager/AppleWatchManager.swift      |   6 +-
- 16 files changed, 2049 insertions(+), 214 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      |  98 ++-
+ 15 files changed, 2162 insertions(+), 233 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -29,39 +36,22 @@ Subject: [PATCH] feat: watch-complication-improvements
  create mode 100644 Trio Watch Shared/TrioComplicationDataStore.swift
  create mode 100644 Trio/Resources/TrioWatch.entitlements
 
-diff --git a/Config.xcconfig b/Config.xcconfig
-index 185f36e62..641253f98 100644
---- a/Config.xcconfig
-+++ b/Config.xcconfig
-@@ -16,14 +16,15 @@ BUNDLE_IDENTIFIER = org.nightscout.$(DEVELOPMENT_TEAM).trio
- // The TRIO_APP_GROUP_ID should not be modified - it is required to have this exact format
- // to build with GitHub actions and to work with xDrip4iOS
- TRIO_APP_GROUP_ID = group.org.nightscout.$(DEVELOPMENT_TEAM).trio.trio-app-group
-+CODE_SIGN_ENTITLEMENTS[sdk=watchos*] = Trio/Resources/TrioWatch.entitlements
- 
- // The developers set the version numbers, please leave them alone
- APP_VERSION = 0.6.0
- APP_DEV_VERSION = 0.6.0.43
- APP_BUILD_NUMBER = 1
- COPYRIGHT_NOTICE =
- 
- // Optional overrides - these can be used to insert your TEAMID into the DEVELOPER_TEAM field
- #include? "../../ConfigOverride.xcconfig"
- #include? "../ConfigOverride.xcconfig"
--#include? "ConfigOverride.xcconfig"
-\ No newline at end of file
-+#include? "ConfigOverride.xcconfig"
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
 new file mode 100644
-index 000000000..c9b3fdf69
+index 000000000..eb964f7d1
 --- /dev/null
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,29 @@
 +import WatchKit
 +
 +final class ExtensionDelegate: NSObject, WKApplicationDelegate {
 +    func applicationDidFinishLaunching() {
-+        Task { await WatchLogger.shared.log("Watch extension launched") }
++        Task {
++            await WatchLogger.shared.log("Watch extension launched", force: true)
++            // Emit App Group diagnostics early, before any snapshot reads/writes.
++            let diagnostics = TrioComplicationDataStore.shared.diagnosticsSummary(context: "applicationDidFinishLaunching")
++            await WatchLogger.shared.log(diagnostics, force: true)
++        }
 +        WatchState.shared.scheduleBackgroundRefresh()
 +    }
 +
@@ -97,7 +87,7 @@ index ccc8911ca..3b86e2547 100644
      init() {
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
 new file mode 100644
-index 000000000..edda15812
+index 000000000..2c4c68acd
 --- /dev/null
 +++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
 @@ -0,0 +1,372 @@
@@ -203,12 +193,12 @@ index 000000000..edda15812
 +                    .foregroundColor(.secondary)
 +                    .lineLimit(1)
 +            }
-+
++            
 +            Divider().padding(.vertical, 2)
-+
++            
 +            // App Group ID Debug Section
 +            sectionHeader("APP GROUP")
-+
++            
 +            HStack {
 +                Text("AppGroupID:")
 +                Spacer()
@@ -223,7 +213,7 @@ index 000000000..edda15812
 +                        .foregroundColor(.red)
 +                }
 +            }
-+
++            
 +            HStack {
 +                Text("Container:")
 +                Spacer()
@@ -237,7 +227,7 @@ index 000000000..edda15812
 +                        .foregroundColor(.red)
 +                }
 +            }
-+
++            
 +            if let containerURL = dataStore.appGroupContainerURL {
 +                HStack {
 +                    Text("Container Path:")
@@ -247,7 +237,7 @@ index 000000000..edda15812
 +                        .foregroundColor(.secondary)
 +                        .lineLimit(1)
 +                }
-+
++                
 +                HStack {
 +                    Text("Snapshot File:")
 +                    Spacer()
@@ -273,7 +263,7 @@ index 000000000..edda15812
 +                            .foregroundColor(.red)
 +                    }
 +                }
-+
++                
 +                if let files = try? FileManager.default.contentsOfDirectory(atPath: containerURL.path), !files.isEmpty {
 +                    HStack {
 +                        Text("Container Files:")
@@ -1506,10 +1496,10 @@ index 8d15acbed..be8edf8a9 100644
  </plist>
 diff --git a/Trio Watch App/TrioWatchApp.entitlements b/Trio Watch App/TrioWatchApp.entitlements
 new file mode 100644
-index 000000000..9a37de423
+index 000000000..00424bc47
 --- /dev/null
 +++ b/Trio Watch App/TrioWatchApp.entitlements	
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,11 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 +<plist version="1.0">
@@ -1520,6 +1510,7 @@ index 000000000..9a37de423
 +	</array>
 +</dict>
 +</plist>
++
 diff --git a/Trio Watch Complication/Info.plist b/Trio Watch Complication/Info.plist
 index 0f118fb75..f3aa654f6 100644
 --- a/Trio Watch Complication/Info.plist	
@@ -1535,10 +1526,10 @@ index 0f118fb75..f3aa654f6 100644
  		<key>NSExtensionPointIdentifier</key>
 diff --git a/Trio Watch Complication/TrioWatchComplication.entitlements b/Trio Watch Complication/TrioWatchComplication.entitlements
 new file mode 100644
-index 000000000..9a37de423
+index 000000000..00424bc47
 --- /dev/null
 +++ b/Trio Watch Complication/TrioWatchComplication.entitlements	
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,11 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 +<plist version="1.0">
@@ -1549,8 +1540,9 @@ index 000000000..9a37de423
 +	</array>
 +</dict>
 +</plist>
++
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
-index 411968936..e1daf312a 100644
+index 411968936..463ff421c 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
 +++ b/Trio Watch Complication/TrioWatchComplication.swift	
 @@ -1,40 +1,191 @@
@@ -1928,7 +1920,7 @@ index 411968936..e1daf312a 100644
 +
 +    // Use floor division to avoid rounding up (e.g., 61 minutes should show "1h", not "2h")
 +    let totalMinutes = Int(interval / 60)
-+
++    
 +    if totalMinutes < 60 {
 +        return "\(totalMinutes)m"
 +    } else if totalMinutes < 1440 {
@@ -2108,10 +2100,10 @@ index 000000000..e4bce5153
 +#endif
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..3d7ac2e66
+index 000000000..261ab32f7
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,739 @@
+@@ -0,0 +1,777 @@
 +import Foundation
 +import WidgetKit
 +
@@ -2337,6 +2329,9 @@ index 000000000..3d7ac2e66
 +
 +    /// One-time flag to log appGroupDefaults unavailability
 +    private static var hasLoggedAppGroupUnavailable = false
++    
++    /// One-time flag to log App Group diagnostics (per process)
++    private static var hasLoggedAppGroupDiagnostics = false
 +
 +    private var snapshotFileURL: URL? {
 +        sharedContainerURLProvider()?.appendingPathComponent(snapshotFilename)
@@ -2347,16 +2342,16 @@ index 000000000..3d7ac2e66
 +        // like AppGroupID are expected to live for the complication extension.
 +        var bundle: Bundle = Bundle.main
 +        var bundleSource = "Bundle.main"
-+
++        
 +        let classBundle = Bundle(for: type(of: self))
 +        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
 +            bundle = classBundle
 +            bundleSource = "Bundle(for: type(of: self))"
 +        }
-+
++        
 +        let bundleID = bundle.bundleIdentifier ?? "unknown"
 +        log("🔍 appGroupDefaults: Using bundle: \(bundleSource) (ID: \(bundleID))")
-+
++        
 +        let resolved = Self.resolveAppGroupID(bundle: bundle)
 +        guard let suiteName = resolved.value else {
 +            // Log once when App Group is unavailable
@@ -2366,7 +2361,7 @@ index 000000000..3d7ac2e66
 +            }
 +            return nil
 +        }
-+
++        
 +        log("✓ appGroupDefaults: Resolved AppGroupID: \(suiteName) (\(resolved.source))")
 +        let defaults = UserDefaults(suiteName: suiteName)
 +        if defaults == nil {
@@ -2401,9 +2396,9 @@ index 000000000..3d7ac2e66
 +    var appGroupContainerPath: String? {
 +        snapshotFileURL?.deletingLastPathComponent().path
 +    }
-+
++    
 +    // MARK: - Debug Properties for ComplicationDebugView
-+
++    
 +    var appGroupID: String? {
 +        // Mirror the same resolution logic used for persistence so the debug UI reflects reality.
 +        var bundle: Bundle = Bundle.main
@@ -2413,22 +2408,22 @@ index 000000000..3d7ac2e66
 +        }
 +        return Self.resolveAppGroupID(bundle: bundle).value
 +    }
-+
++    
 +    var appGroupContainerURL: URL? {
 +        guard let suiteName = appGroupID else { return nil }
 +        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
 +    }
-+
++    
 +    var appGroupContainerAccessible: Bool {
 +        guard let url = appGroupContainerURL else { return false }
 +        return FileManager.default.fileExists(atPath: url.path)
 +    }
-+
++    
 +    var snapshotFileExists: Bool {
 +        guard let fileURL = snapshotFileURL else { return false }
 +        return FileManager.default.fileExists(atPath: fileURL.path)
 +    }
-+
++    
 +    var snapshotFileSize: Int64? {
 +        guard let fileURL = snapshotFileURL,
 +              FileManager.default.fileExists(atPath: fileURL.path),
@@ -2438,7 +2433,7 @@ index 000000000..3d7ac2e66
 +        }
 +        return size
 +    }
-+
++    
 +    var snapshotFileAge: TimeInterval? {
 +        guard let fileURL = snapshotFileURL,
 +              FileManager.default.fileExists(atPath: fileURL.path),
@@ -2459,8 +2454,43 @@ index 000000000..3d7ac2e66
 +        self.sharedContainerURLProvider = sharedContainerURLProvider
 +        self.fileManager = fileManager
 +        self.snapshotFilename = snapshotFilename
++        
++        // Best-effort: log once per process at startup, so if the watch app/complication is
++        // failing due to App Group issues we have a single high-signal line in device logs.
++        logAppGroupDiagnosticsOnce(context: "init")
 +    }
 +
++    /// One-line, high-signal diagnostics for App Group resolution and container access.
++    /// Safe to call from any process that includes this file (watch app and complication extension).
++    func diagnosticsSummary(context: String = "runtime") -> String {
++        // Mirror the same bundle-selection logic used by appGroupDefaults.
++        var bundle: Bundle = Bundle.main
++        var bundleSource = "Bundle.main"
++        let classBundle = Bundle(for: type(of: self))
++        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
++            bundle = classBundle
++            bundleSource = "Bundle(for: type(of: self))"
++        }
++        
++        let bundleID = bundle.bundleIdentifier ?? "unknown"
++        let resolved = Self.resolveAppGroupID(bundle: bundle)
++        
++        let suiteName = resolved.value
++        let defaultsOK = suiteName.flatMap { UserDefaults(suiteName: $0) } != nil
++        let containerURL = suiteName.flatMap { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) }
++        
++        let snapshotPath = containerURL?.appendingPathComponent(snapshotFilename).path
++        let snapshotExists = snapshotPath.map { fileManager.fileExists(atPath: $0) } ?? false
++        
++        return "AppGroupDiagnostics(\(context)): bundle=\(bundleSource) id=\(bundleID) AppGroupID=\(suiteName ?? "nil") source=\(resolved.source) defaults=\(defaultsOK) container=\(containerURL?.path ?? "nil") snapshot=\(snapshotPath ?? "nil") exists=\(snapshotExists)"
++    }
++    
++    private func logAppGroupDiagnosticsOnce(context: String) {
++        guard !Self.hasLoggedAppGroupDiagnostics else { return }
++        Self.hasLoggedAppGroupDiagnostics = true
++        log(diagnosticsSummary(context: context))
++    }
++    
 +    // MARK: - Save Methods
 +
 +    func save(
@@ -2516,11 +2546,11 @@ index 000000000..3d7ac2e66
 +            encoder.dateEncodingStrategy = .iso8601
 +            let data = try encoder.encode(snapshot)
 +            log("🔍 Debug: Encoded snapshot size: \(data.count) bytes")
-+
++            
 +            let containerDir = fileURL.deletingLastPathComponent()
 +            log("🔍 Debug: Container directory: \(containerDir.path)")
 +            log("🔍 Debug: Container directory exists: \(fileManager.fileExists(atPath: containerDir.path))")
-+
++            
 +            try fileManager.createDirectory(
 +                at: containerDir,
 +                withIntermediateDirectories: true,
@@ -2539,7 +2569,7 @@ index 000000000..3d7ac2e66
 +
 +            try data.write(to: fileURL, options: [.atomic])
 +            log("🔍 Debug: File written successfully, verifying...")
-+
++            
 +            // Verify file was written
 +            if fileManager.fileExists(atPath: fileURL.path) {
 +                if let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
@@ -2549,7 +2579,7 @@ index 000000000..3d7ac2e66
 +            } else {
 +                log("⚠️ WARNING: File write reported success but file doesn't exist!")
 +            }
-+
++            
 +            Self.lastValidTimestamp = snapshot.readingDate
 +
 +            // Note: reloadGenerationToken is NOT updated here. It only changes when an actual reload
@@ -2595,7 +2625,7 @@ index 000000000..3d7ac2e66
 +
 +        log("🔍 Debug: Attempting to load snapshot from: \(fileURL.path)")
 +        log("🔍 Debug: File exists: \(fileManager.fileExists(atPath: fileURL.path))")
-+
++        
 +        guard fileManager.fileExists(atPath: fileURL.path) else {
 +            log("⚠️ Snapshot file missing at \(fileURL.lastPathComponent)")
 +            // Check if container directory exists
@@ -2812,7 +2842,7 @@ index 000000000..3d7ac2e66
 +        // In Widget Extensions, Bundle.main should be the extension bundle, but try multiple approaches
 +        var bundle: Bundle = Bundle.main
 +        var bundleSource = "Bundle.main"
-+
++        
 +        // Try to find the extension bundle by looking for the class's bundle
 +        let classBundle = Bundle(for: TrioComplicationDataStore.self)
 +        // Check if this bundle has the AppGroupID key
@@ -2820,22 +2850,22 @@ index 000000000..3d7ac2e66
 +            bundle = classBundle
 +            bundleSource = "Bundle(for: TrioComplicationDataStore.self)"
 +        }
-+
++        
 +        let bundleID = bundle.bundleIdentifier ?? "unknown"
 +        NSLog("[ComplicationDataStore] 🔍 defaultSharedContainerURL: Using bundle: %@ (ID: %@)", bundleSource, bundleID)
-+
++        
 +        let resolved = resolveAppGroupID(bundle: bundle)
 +        guard let suiteName = resolved.value else {
 +            NSLog("[ComplicationDataStore] ❌ AppGroupID unresolved (bundle: %@, ID: %@)", bundleSource, bundleID)
 +            return nil
 +        }
-+
++        
 +        NSLog("[ComplicationDataStore] ✓ Resolved AppGroupID (%@): %@", resolved.source, suiteName)
 +        guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName) else {
 +            NSLog("[ComplicationDataStore] ❌ Failed to get container URL for AppGroupID: %@", suiteName)
 +            return nil
 +        }
-+
++        
 +        NSLog("[ComplicationDataStore] ✓ Container URL: %@", containerURL.path)
 +        return containerURL
 +    }
@@ -2848,7 +2878,7 @@ index 000000000..3d7ac2e66
 +    }
 +
 +    private func log(_ message: String) {
-+        NSLog("[ComplicationDataStore] %@", message)
++        ComplicationLogBuffer.append(message)
 +    }
 +}
 diff --git a/Trio/Resources/TrioWatch.entitlements b/Trio/Resources/TrioWatch.entitlements
@@ -2868,10 +2898,165 @@ index 000000000..9a37de423
 +</dict>
 +</plist>
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 27b6ac788..38508736f 100644
+index 2fac30d08..0c8ce1c3c 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-@@ -439,7 +439,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -15,6 +15,8 @@ protocol WatchManager {
+ /// Handles bidirectional communication between iPhone and Apple Watch
+ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchManager {
+     private var session: WCSession?
++    
++    private static var hasLoggedAppGroupDiagnostics = false
+ 
+     @Injected() var broadcaster: Broadcaster!
+     @Injected() private var apsManager: APSManager!
+@@ -79,8 +81,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             .sink { [weak self] _ in
+                 guard let self = self else { return }
+                 // Skip if no watch is paired or app not installed
+-                guard let session = self.session, session.isPaired, session.isReachable,
+-                      session.isWatchAppInstalled else { return }
++                guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+                 Task {
+                     let state = await self.setupWatchState()
+                     await self.sendDataToWatch(state)
+@@ -106,7 +107,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         coreDataPublisher?.filteredByEntityName("OrefDetermination").sink { [weak self] _ in
+             guard let self = self else { return }
+             // Skip if no watch is paired or app not installed
+-            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
++            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+             Task {
+                 let state = await self.setupWatchState()
+                 await self.sendDataToWatch(state)
+@@ -117,7 +118,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         coreDataPublisher?.filteredByEntityName("GlucoseStored").sink { [weak self] _ in
+             guard let self = self else { return }
+             // Skip if no watch is paired or app not installed
+-            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
++            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+             Task {
+                 let state = await self.setupWatchState()
+                 await self.sendDataToWatch(state)
+@@ -134,7 +135,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         coreDataPublisher?.filteredByEntityName("OverrideStored").sink { [weak self] _ in
+             guard let self = self else { return }
+             // Skip if no watch is paired or app not installed
+-            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
++            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+             Task {
+                 let state = await self.setupWatchState()
+                 await self.sendDataToWatch(state)
+@@ -144,7 +145,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         coreDataPublisher?.filteredByEntityName("TempTargetStored").sink { [weak self] _ in
+             guard let self = self else { return }
+             // Skip if no watch is paired or app not installed
+-            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
++            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+             Task {
+                 let state = await self.setupWatchState()
+                 await self.sendDataToWatch(state)
+@@ -161,11 +162,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             self.session = session
+ 
+             debug(.watchManager, "📱 Phone session setup - isPaired: \(session.isPaired)")
++            logAppGroupDiagnosticsOnce(context: "setupWatchSession")
+         } else {
+             debug(.watchManager, "📱 WCSession is not supported on this device")
+         }
+     }
+ 
++    private static func extractTeamID(fromNightscoutBundleIdentifier bundleIdentifier: String?) -> String? {
++        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return nil }
++        let prefix = "org.nightscout."
++        guard let prefixRange = bundleIdentifier.range(of: prefix) else { return nil }
++        let afterPrefix = bundleIdentifier[prefixRange.upperBound...]
++        guard let trioRange = afterPrefix.range(of: ".trio") else { return nil }
++        let teamID = String(afterPrefix[..<trioRange.lowerBound])
++        return teamID.isEmpty ? nil : teamID
++    }
++    
++    private func appGroupIDCandidate() -> (value: String?, source: String) {
++        if let value = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String, !value.isEmpty {
++            return (value, "Info.plist(AppGroupID)")
++        }
++        
++        let bundleID = Bundle.main.bundleIdentifier
++        if let teamID = Self.extractTeamID(fromNightscoutBundleIdentifier: bundleID) {
++            return ("group.org.nightscout.\(teamID).trio.trio-app-group", "Derived(bundleIdentifier)")
++        }
++        
++        return (nil, "Unavailable")
++    }
++    
++    private func logAppGroupDiagnosticsOnce(context: String) {
++        guard !Self.hasLoggedAppGroupDiagnostics else { return }
++        Self.hasLoggedAppGroupDiagnostics = true
++        
++        let bundleID = Bundle.main.bundleIdentifier ?? "unknown"
++        let (suiteName, source) = appGroupIDCandidate()
++        let defaultsOK = suiteName.flatMap { UserDefaults(suiteName: $0) } != nil
++        let containerURL = suiteName.flatMap { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) }
++        
++        debug(
++            .watchManager,
++            "📦 AppGroupDiagnostics(\(context)): bundleID=\(bundleID) AppGroupID=\(suiteName ?? "nil") source=\(source) defaults=\(defaultsOK) container=\(containerURL?.path ?? "nil")"
++        )
++    }
++
+     /// Attempts to reestablish the Watch connection if it becomes unreachable
+     private func retryConnection() {
+         guard let session = session else { return }
+@@ -180,11 +220,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     /// - Returns: WatchState containing current glucose readings and trends and determination infos for displaying cob and iob in the view
+     func setupWatchState() async -> WatchState {
+         // Check if a watch is paired and reachable before doing expensive calculations
+-        guard let session = session, session.isPaired, session.isReachable, session.isWatchAppInstalled else {
+-            debug(.watchManager, "⌚️❌ Skipping setupWatchState - No Watch is paired or app not installed")
++        guard let session else {
++            debug(.watchManager, "⌚️❌ Skipping setupWatchState - WCSession not available")
++            return WatchState(date: Date())
++        }
++
++        if !session.isPaired {
++            debug(.watchManager, "⌚️❌ Skipping setupWatchState - No Watch is paired")
+             return WatchState(date: Date())
+         }
+ 
++        if !session.isWatchAppInstalled {
++            debug(.watchManager, "⌚️❌ Skipping setupWatchState - Trio Watch app is not installed")
++            return WatchState(date: Date())
++        }
++
++        if !session.isReachable {
++            debug(
++                .watchManager,
++                "⌚️⚠️ Watch is not reachable (activationState: \(session.activationState.rawValue)); continuing to build WatchState for background delivery"
++            )
++        }
++
+         // Skip if watch session is not activated
+         guard session.activationState == .activated else {
+             debug(.watchManager, "⌚️❌ Skipping setupWatchState - Watch session not activated")
+@@ -328,14 +385,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+                 // Calculate delta if we have at least 2 readings
+                 if glucoseObjects.count >= 2 {
+-                    var glucoseLast = Decimal(glucoseObjects[0].glucose)
+-                    var glucoseSecondLast = Decimal(glucoseObjects[1].glucose)
++                    var deltaValue = Decimal(glucoseObjects[0].glucose - glucoseObjects[1].glucose)
++
+                     if self.units == .mmolL {
+-                        glucoseLast = glucoseLast.asMmolL
+-                        glucoseSecondLast = glucoseSecondLast.asMmolL
++                        deltaValue = Double(truncating: deltaValue as NSNumber).asMmolL
+                     }
+ 
+-                    let deltaValue = glucoseLast - glucoseSecondLast
+                     let formattedDelta = Formatter.glucoseFormatter(for: self.units)
+                         .string(from: deltaValue as NSNumber) ?? "0"
+                     watchState.delta = deltaValue < 0 ? "\(formattedDelta)" : "+\(formattedDelta)"
+@@ -441,7 +496,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
      func watchStateToDictionary(from state: WatchState) -> [String: Any] {
          [
@@ -2880,7 +3065,7 @@ index 27b6ac788..38508736f 100644
              WatchMessageKeys.currentGlucose: state.currentGlucose ?? "--",
              WatchMessageKeys.currentGlucoseColorString: state.currentGlucoseColorString ?? "#ffffff",
              WatchMessageKeys.trend: state.trend ?? "",
-@@ -450,7 +450,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -452,7 +507,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                  [
                      "glucose": value.glucose,
@@ -2889,7 +3074,7 @@ index 27b6ac788..38508736f 100644
                      "color": value.color
                  ]
              },
-@@ -489,7 +489,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -491,7 +546,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          guard session.isWatchAppInstalled else {
@@ -2898,6 +3083,52 @@ index 27b6ac788..38508736f 100644
              return
          }
  
+@@ -769,8 +824,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                 debug(.watchManager, "📱 Watch requested watch state data update.")
+                 guard let self = self else { return }
+                 // Skip if no watch is paired or app not installed
+-                guard let session = self.session, session.isPaired, session.isReachable,
+-                      session.isWatchAppInstalled else { return }
++                guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+                 Task {
+                     let state = await self.setupWatchState()
+                     await self.sendDataToWatch(state)
+@@ -1012,8 +1066,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                 carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
+                 carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
+                 carbEntry.isUploadedToNS = false
+-                carbEntry.isUploadedToHealth = false
+-                carbEntry.isUploadedToTidepool = false
+ 
+                 do {
+                     guard context.hasChanges else {
+@@ -1076,8 +1128,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                     carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
+                     carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
+                     carbEntry.isUploadedToNS = false
+-                    carbEntry.isUploadedToHealth = false
+-                    carbEntry.isUploadedToTidepool = false
+ 
+                     guard context.hasChanges else {
+                         // Acknowledge failure
+@@ -1450,7 +1500,7 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+     // to update maxBolus
+     func pumpSettingsDidChange(_: PumpSettings) {
+         // Skip if no watch is paired or app not installed
+-        guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
++        guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+         Task {
+             let state = await self.setupWatchState()
+             await self.sendDataToWatch(state)
+@@ -1465,7 +1515,7 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+         highGlucose = settingsManager.settings.high
+ 
+         // Skip if no watch is paired or app not installed
+-        guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
++        guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+ 
+         Task {
+             let state = await self.setupWatchState()
 -- 
 2.50.1 (Apple Git-155)
 
