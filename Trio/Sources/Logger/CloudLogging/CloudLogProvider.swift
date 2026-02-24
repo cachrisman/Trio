@@ -52,6 +52,7 @@ struct CloudLogEvent: Encodable {
         case file
         case method
         case lineNumber
+        case source
         case raw
     }
 
@@ -93,6 +94,9 @@ struct CloudLogEvent: Encodable {
             }
             if let lineNumber = attrs["lineNumber"] {
                 try container.encode(lineNumber, forKey: .lineNumber)
+            }
+            if let source = attrs["source"] {
+                try container.encode(source, forKey: .source)
             }
         }
     }

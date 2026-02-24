@@ -13,6 +13,8 @@ struct CloudParsedLogLine {
     let file: String?
     let method: String?
     let lineNumber: String?
+    /// Identifies the log source for BetterStack filtering (e.g. "complication").
+    let source: String?
 }
 
 enum CloudLogLineParser {
@@ -79,7 +81,7 @@ enum CloudLogLineParser {
         guard let levelMatch = header.range(of: levelRegex, options: .regularExpression) else {
             // If we can't confidently parse, still return the original line as message.
             let msg = continuation.isEmpty ? header : "\(header)\n\(continuation)"
-            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg, file: file, method: method, lineNumber: lineNumber)
+            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg, file: file, method: method, lineNumber: lineNumber, source: nil)
         }
 
         // Extract the actual level token and normalize
@@ -113,7 +115,8 @@ enum CloudLogLineParser {
             message: fullMessage,
             file: file,
             method: method,
-            lineNumber: lineNumber
+            lineNumber: lineNumber,
+            source: nil
         )
     }
 
@@ -196,7 +199,9 @@ enum CloudLogLineParser {
         // Apply message-based level detection to upgrade levels when appropriate
         let finalLevel = detectLevelFromMessage(fullMessage, originalLevel: nil)
 
-        return CloudParsedLogLine(dt: dt, category: category, level: finalLevel, message: fullMessage, file: file, method: method, lineNumber: lineNumber)
+        let source: String? = (file == "ComplicationLogBuffer.swift" || file == "TrioComplicationDataStore.swift") ? "complication" : nil
+
+        return CloudParsedLogLine(dt: dt, category: category, level: finalLevel, message: fullMessage, file: file, method: method, lineNumber: lineNumber, source: source)
     }
 
     /// Normalizes "yyyy-MM-dd'T'HH:mm:ssZ" like "...+0100" into "...+01:00" if possible.

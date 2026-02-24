@@ -171,6 +171,8 @@ actor WatchLogger {
     }
 
     func flushPersistedLogs() async {
+        await drainComplicationLogs()
+
         let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             .appendingPathComponent("logs", isDirectory: true)
 
@@ -335,8 +337,12 @@ actor WatchLogger {
     }
 
     /// Stores a pending payload record for later ACK matching.
+    /// Upserts by payloadId so retries with a stable ID don't create duplicate records.
     func storePendingPayload(payloadId: String, type: String, filePath: String) async {
         var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
+
+        // Remove existing record with same payloadId (upsert)
+        pendingPayloads.removeAll { $0["payloadId"] as? String == payloadId }
 
         let record: [String: Any] = [
             "payloadId": payloadId,
@@ -371,5 +377,139 @@ actor WatchLogger {
     /// Gets all pending payload records.
     func getPendingPayloads() async -> [[String: Any]] {
         return UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
+    }
+
+    // MARK: - Complication Log Drain
+
+    /// Drains the Complication log buffer from App Group storage.
+    /// Retries orphan drain files first, then atomically renames the current log and sends it.
+    private func drainComplicationLogs() async {
+        guard let containerURL = ComplicationLogBuffer.sharedContainerURL() else { return }
+
+        let logsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
+        let fm = FileManager.default
+
+        guard let allFiles = try? fm.contentsOfDirectory(at: logsDir, includingPropertiesForKeys: [.creationDateKey]) else {
+            return
+        }
+
+        // Drain files from previous runs, sorted oldest-first
+        var drainFiles = allFiles
+            .filter { $0.lastPathComponent.hasPrefix("complication_log.drain.") && $0.lastPathComponent.hasSuffix(".txt") }
+            .sorted { url1, url2 in
+                let d1 = (try? url1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                let d2 = (try? url2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                return d1 < d2
+            }
+
+        // Retention: delete drain files older than 7 days, cap at 20
+        let now = Date()
+        drainFiles = drainFiles.filter { file in
+            if let created = (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate),
+               now.timeIntervalSince(created) > maxFileAge
+            {
+                try? fm.removeItem(at: file)
+                return false
+            }
+            return true
+        }
+        if drainFiles.count > maxPerPayloadFiles {
+            let excess = drainFiles.prefix(drainFiles.count - maxPerPayloadFiles)
+            for file in excess { try? fm.removeItem(at: file) }
+            drainFiles = Array(drainFiles.suffix(maxPerPayloadFiles))
+        }
+
+        // Retry orphan drain files
+        for drainFile in drainFiles {
+            await sendLogContentFromFile(fileURL: drainFile)
+        }
+
+        // Atomic rename: complication_log.txt -> complication_log.drain.<uuid>.txt
+        let logFile = logsDir.appendingPathComponent("complication_log.txt")
+        guard fm.fileExists(atPath: logFile.path) else { return }
+
+        let drainURL = logsDir.appendingPathComponent("complication_log.drain.\(UUID().uuidString).txt")
+        do {
+            try fm.moveItem(at: logFile, to: drainURL)
+        } catch {
+            return
+        }
+
+        await sendLogContentFromFile(fileURL: drainURL)
+    }
+
+    /// Extracts a stable payloadId from a drain filename, e.g.
+    /// `complication_log.drain.<UUID>.txt` -> `<UUID>`. Falls back to a new UUID.
+    private static func payloadIdFromDrainFile(_ fileURL: URL) -> String {
+        let name = fileURL.deletingPathExtension().lastPathComponent
+        let prefix = "complication_log.drain."
+        if let range = name.range(of: prefix) {
+            let candidate = String(name[range.upperBound...])
+            if !candidate.isEmpty { return candidate }
+        }
+        return UUID().uuidString
+    }
+
+    /// Sends log content from an external file as a watchLogs envelope.
+    /// On ACK the file is deleted; on error it is kept for retry via pending payloads.
+    /// Uses 64KB cap (matching ComplicationLogBuffer) rather than logSizeCap (16KB used for in-memory flushes).
+    private static let drainSizeCap = 64 * 1024
+
+    private func sendLogContentFromFile(fileURL: URL) async {
+        guard session.activationState == .activated else { return }
+
+        guard let data = try? Data(contentsOf: fileURL),
+              var content = String(data: data, encoding: .utf8),
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            try? FileManager.default.removeItem(at: fileURL)
+            return
+        }
+
+        if content.utf8.count > Self.drainSizeCap {
+            let data = Data(content.utf8)
+            let truncData = data.prefix(Self.drainSizeCap)
+            if let lastNewline = truncData.lastIndex(of: UInt8(ascii: "\n")) {
+                content = String(decoding: truncData[...lastNewline], as: UTF8.self) + "[truncated]\n"
+            } else {
+                content = String(decoding: truncData, as: UTF8.self) + "\n[truncated]\n"
+            }
+        }
+
+        // Stable payloadId derived from drain filename UUID to prevent duplicate ingestion on retry
+        let payloadId = Self.payloadIdFromDrainFile(fileURL)
+        let envelope: [String: Any] = [
+            "type": "watchLogs",
+            "payloadId": payloadId,
+            "data": content
+        ]
+
+        let filePath = fileURL.path
+
+        if session.isReachable {
+            session.sendMessage(
+                envelope,
+                replyHandler: { reply in
+                    Task {
+                        if let ackType = reply["type"] as? String,
+                           ackType == "ack",
+                           let ackPayloadId = reply["payloadId"] as? String,
+                           ackPayloadId == payloadId
+                        {
+                            try? FileManager.default.removeItem(at: fileURL)
+                            await WatchLogger.shared.removePendingPayload(payloadId)
+                        }
+                    }
+                },
+                errorHandler: { _ in
+                    Task {
+                        await WatchLogger.shared.storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
+                    }
+                }
+            )
+        } else {
+            _ = session.transferUserInfo(envelope)
+            await storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
+        }
     }
 }
