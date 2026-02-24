@@ -61,7 +61,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("Error sending carbs request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -93,7 +93,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ Error sending cancel override request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -126,7 +126,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ Error sending activate override request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -158,7 +158,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ Error sending cancel temp target request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -191,7 +191,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ Error sending activate temp target request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -224,7 +224,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("Error requesting bolus recommendation: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
     }
@@ -256,7 +256,7 @@ extension WatchState {
                 Task {
                     await WatchLogger.shared.log("⌚️ Error requesting WatchState update: \(error)")
                     await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                    await WatchLogger.shared.persistLogsLocally()
+                    await WatchLogger.shared.flushPersistedLogs()
                 }
             }
         } else {
