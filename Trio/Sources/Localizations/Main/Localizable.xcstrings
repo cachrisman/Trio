@@ -8227,6 +8227,7 @@
       }
     },
     "%@ and %@ g fat" : {
+      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
@@ -8351,6 +8352,7 @@
       }
     },
     "%@ and %@ g protein" : {
+      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
@@ -8470,6 +8472,130 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$@ 和 %2$@ 克蛋白質"
+          }
+        }
+      }
+    },
+    "%@ and %lld g fat" : {
+      "comment" : "The text to be displayed when fat is > 0 for the Add Carbs shortcut",
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ og %2$lld g fedt"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ und %2$lld g Fett"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ and %2$lld g fat"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ et %2$lld g de lipides"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ e %2$lld g di grassi"
+          }
+        },
+        "nb-NO" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ og %2$lld g fett"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ i %2$lld g tłuszczu"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ và %2$lld g chất béo"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 和 %2$lld 克脂肪"
+          }
+        }
+      }
+    },
+    "%@ and %lld g protein" : {
+      "comment" : "The text to be displayed when protein is > 0 for the Add Carbs shortcut",
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ og %2$lld g protein"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ und %2$lld g Eiweiß"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ and %2$lld g protein"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ et %2$lld g de protéines"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ e %2$lld g di proteine"
+          }
+        },
+        "nb-NO" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ og %2$lld g protein"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ en %2$lld gram eiwit"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ i %2$lld g białka"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ và %2$lld g chất đạm"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 和 %2$lld 克蛋白質"
           }
         }
       }
@@ -9320,6 +9446,22 @@
         }
       }
     },
+    "%@?" : {
+      "localizations" : {
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ ?"
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "?%@"
+          }
+        }
+      }
+    },
     "%@/U" : {
       "localizations" : {
         "bg" : {
@@ -10037,7 +10179,6 @@
       }
     },
     "%lld h" : {
-      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
@@ -25807,6 +25948,7 @@
       }
     },
     "Add %@ grams of carbs?" : {
+      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
@@ -26046,6 +26188,72 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "新增 %@ 而不注射"
+          }
+        }
+      }
+    },
+    "Add %lld g carbs" : {
+      "comment" : "A confirmation message that asks the user to confirm adding a certain amount of carbs, optionally including fat and protein.",
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilføj %lld gram kulhydrat"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld g Kohlenhydrate hinzufügen"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Confirmez-vous l'ajout de %lld grammes of glucides"
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "הוספת %lld גרם פחמימות"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungere %lld grammi di carboidrati"
+          }
+        },
+        "nb-NO" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Legge til %lld gram karbohydrater"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld gram koolhydraten toevoegen"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodać %lld gramów węglowodanów"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thêm %lld grams carbs"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要加入 %lld 克碳水化合物嗎"
           }
         }
       }
@@ -31204,6 +31412,7 @@
       }
     },
     "Added %@ g carbs" : {
+      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
@@ -31317,6 +31526,65 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已加入 %@ 克碳水化合物"
+          }
+        }
+      }
+    },
+    "Added %lld g carbs" : {
+      "comment" : "A message that confirms the adding of carbs via the Add Carbs shortcut",
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilføjet %lld g kulhydrater"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld g Kohlenhydrate hinzugefügt"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld g de glucides ont été ajoutés"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiunti %lld g carboidrati"
+          }
+        },
+        "nb-NO" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La til %lld g karbohydrater"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toegevoegd %lld gr koolhydraten"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodano %lld g węglowodanów"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Đã thêm %lld g carbs"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已加入 %lld 克碳水化合物"
           }
         }
       }
@@ -36157,6 +36425,9 @@
           }
         }
       }
+    },
+    "Allow Fetching From Nightscout" : {
+
     },
     "Allow Notifications" : {
       "localizations" : {
@@ -43695,6 +43966,9 @@
           }
         }
       }
+    },
+    "App Version" : {
+
     },
     "Appearance" : {
       "localizations" : {
@@ -51835,6 +52109,9 @@
         }
       }
     },
+    "Basal Rate (%@)" : {
+
+    },
     "Basal Rate Adjustment" : {
       "localizations" : {
         "bg" : {
@@ -57473,6 +57750,9 @@
         }
       }
     },
+    "Branch" : {
+
+    },
     "BRANCH: %@" : {
       "localizations" : {
         "bg" : {
@@ -57590,6 +57870,9 @@
           }
         }
       }
+    },
+    "Build Number" : {
+
     },
     "By default, Trio collects crash reports and other anonymized data related to errors, exceptions, and overall app performance." : {
       "localizations" : {
@@ -60730,6 +61013,9 @@
           }
         }
       }
+    },
+    "Carb Ratio (%@)" : {
+
     },
     "Carb Ratios" : {
       "comment" : "Carb Ratios header",
@@ -69966,6 +70252,7 @@
       }
     },
     "Confirm Before logging" : {
+      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
@@ -70067,6 +70354,36 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "Confirm Before logging"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Xác nhận trước khi ghi lại"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登錄前確認"
+          }
+        }
+      }
+    },
+    "Confirm Before Logging" : {
+      "comment" : "Label for a toggle switch that allows the user to confirm before logging a meal.",
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "nb-NO" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bekreft før lagring"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Potwierdź przed zalogowaniem"
           }
         },
         "vi" : {
@@ -72836,6 +73153,9 @@
           }
         }
       }
+    },
+    "Could not access documents directory" : {
+
     },
     "Count" : {
       "localizations" : {
@@ -107446,6 +107766,18 @@
         }
       }
     },
+    "Export Categories" : {
+
+    },
+    "Export Date" : {
+
+    },
+    "Export Error" : {
+
+    },
+    "Export failed: %@" : {
+
+    },
     "Export logs" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -107695,6 +108027,12 @@
           }
         }
       }
+    },
+    "Export Settings" : {
+      "comment" : "Export Settings menu item in Trio Settings Root View"
+    },
+    "Exporting..." : {
+
     },
     "Extended" : {
       "comment" : "Title string for BeepPreference.extended",
@@ -110135,6 +110473,9 @@
           }
         }
       }
+    },
+    "Failed to write export file: %@" : {
+
     },
     "Fat" : {
       "comment" : "Add Fat",
@@ -125132,6 +125473,9 @@
         }
       }
     },
+    "High Temptarget Raises Sensitivity" : {
+
+    },
     "High Threshold" : {
       "localizations" : {
         "bg" : {
@@ -126708,6 +127052,7 @@
       }
     },
     "How many grams of carbs did you eat?" : {
+      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
@@ -126944,6 +127289,7 @@
       }
     },
     "How many grams of fat did you eat?" : {
+      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
@@ -127061,7 +127407,60 @@
         }
       }
     },
+    "How many grams of fat?" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvor mange gram fedt?"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wie viele Gramm Fett?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Combien de grammes de lipides (graisses) ?"
+          }
+        },
+        "nb-NO" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvor mange gram fett?"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hoeveel gram vet?"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ile gramów tłuszczu?"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bao nhiêu gam chất béo?"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您吃了多少克脂肪?"
+          }
+        }
+      }
+    },
     "How many grams of protein did you eat?" : {
+      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
@@ -127169,6 +127568,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bạn đã ăn bao nhiêu gam chất đạm?"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "您吃了多少克蛋白質?"
+          }
+        }
+      }
+    },
+    "How many grams of protein?" : {
+      "comment" : "Request dialog text for the \"Quantity Protein\" parameter.",
+      "isCommentAutoGenerated" : true,
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvor mange gram protein?"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wie viele Gramm Eiweiß?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Combien de grammes de protéines ?"
+          }
+        },
+        "nb-NO" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvor mange gram protein?"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hoeveel gram eiwit?"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ile gramów białka?"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bao nhiêu gam carbs?"
           }
         },
         "zh-Hant" : {
@@ -133277,6 +133730,9 @@
         }
       }
     },
+    "Indefinite" : {
+
+    },
     "Indicates glucose smoothing is enabled." : {
       "localizations" : {
         "bg" : {
@@ -135692,6 +136148,9 @@
         }
       }
     },
+    "Insulin Type" : {
+
+    },
     "Intercept" : {
       "localizations" : {
         "bg" : {
@@ -137864,6 +138323,12 @@
           }
         }
       }
+    },
+    "ISF (%@)" : {
+
+    },
+    "ISF and CR" : {
+
     },
     "ISF/CR" : {
       "comment" : "Option for both ISF and CR",
@@ -145865,6 +146330,15 @@
         }
       }
     },
+    "Logging Failed: Max Carbs = %lld g" : {
+      "comment" : "An error message that the Add Carbs shortcut failed because the entered carbs exceeded the Max Carbs setting"
+    },
+    "Logging Failed: Max Fat = %lld g" : {
+      "comment" : "An error message that the Add Carbs shortcut failed because the entered fat exceeded the Max Fat setting"
+    },
+    "Logging Failed: Max Protein = %lld g" : {
+      "comment" : "An error message that the Add Carbs shortcut failed because the entered protein exceeded the Max Protein setting"
+    },
     "Loop at %@ failed." : {
       "localizations" : {
         "bg" : {
@@ -148880,6 +149354,9 @@
           }
         }
       }
+    },
+    "Low Temptarget Lowers Sensitivity" : {
+
     },
     "Low Threshold" : {
       "localizations" : {
@@ -158208,6 +158685,9 @@
           }
         }
       }
+    },
+    "Metadata" : {
+
     },
     "Meter glucose" : {
       "comment" : "When adding capillary glucose meater reading",
@@ -168695,6 +169175,9 @@
           }
         }
       }
+    },
+    "Not Connected" : {
+
     },
     "Not enough glucose data. You need at least three glucose readings in the last six hours to run the algorithm." : {
       "localizations" : {
@@ -188987,6 +189470,9 @@
           }
         }
       }
+    },
+    "Pump Type" : {
+
     },
     "Quantity Carbs" : {
       "localizations" : {
@@ -220630,6 +221116,9 @@
         }
       }
     },
+    "Suspend Zeros IOB" : {
+
+    },
     "suspend-end" : {
       "localizations" : {
         "bg" : {
@@ -223246,6 +223735,9 @@
           }
         }
       }
+    },
+    "Target (%@)" : {
+
     },
     "Target Behavior" : {
       "localizations" : {
@@ -229715,6 +230207,9 @@
           }
         }
       }
+    },
+    "The order of Fat and Protein inputs has changed." : {
+
     },
     "The oref algorithm determines insulin dosing based on a number of scenarios that it estimates with different types of forecasts." : {
       "localizations" : {
@@ -246224,6 +246719,9 @@
           }
         }
       }
+    },
+    "Trio Backup" : {
+
     },
     "Trio calculates your current Insulin On Board (IOB) from:" : {
       "localizations" : {
