@@ -1,5 +1,6 @@
 import Combine
 import CoreData
+import FirebaseCrashlytics
 import Foundation
 import Swinject
 import UIKit
@@ -38,6 +39,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private let queue = DispatchQueue(label: "BaseWatchManagerManager.queue", qos: .utility)
     private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
     private var subscriptions = Set<AnyCancellable>()
+
+    // Processed payload IDs for deduplication (LRU with TTL)
+    private let processedIdsKey = "watchProcessedIds"
+    private let processedIdsMaxCount = 100
+    private let processedIdsTTL: TimeInterval = 7 * 24 * 60 * 60 // 7 days
+    private let pendingAcksKey = "watchPendingAcks"
 
     typealias PumpEvent = PumpEventStored.EventType
 
@@ -321,14 +328,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
                 // Calculate delta if we have at least 2 readings
                 if glucoseObjects.count >= 2 {
-                    var glucoseLast = Decimal(glucoseObjects[0].glucose)
-                    var glucoseSecondLast = Decimal(glucoseObjects[1].glucose)
+                    var deltaValue = Decimal(glucoseObjects[0].glucose - glucoseObjects[1].glucose)
+
                     if self.units == .mmolL {
-                        glucoseLast = glucoseLast.asMmolL
-                        glucoseSecondLast = glucoseSecondLast.asMmolL
+                        deltaValue = Double(truncating: deltaValue as NSNumber).asMmolL
                     }
 
-                    let deltaValue = glucoseLast - glucoseSecondLast
                     let formattedDelta = Formatter.glucoseFormatter(for: self.units)
                         .string(from: deltaValue as NSNumber) ?? "0"
                     watchState.delta = deltaValue < 0 ? "\(formattedDelta)" : "+\(formattedDelta)"
@@ -353,11 +358,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 watchState.bolusIncrement = self.settingsManager.preferences.bolusIncrement
                 watchState.confirmBolusFaster = self.settingsManager.settings.confirmBolusFaster
 
-                debug(
-                    .watchManager,
-
-                    "📱 Setup WatchState - currentGlucose: \(watchState.currentGlucose ?? "nil"), trend: \(watchState.trend ?? "nil"), delta: \(watchState.delta ?? "nil"), values: \(watchState.glucoseValues.count)"
-                )
+                let glucoseInfo = "currentGlucose: \(watchState.currentGlucose ?? "nil"), " +
+                    "trend: \(watchState.trend ?? "nil"), " +
+                    "delta: \(watchState.delta ?? "nil"), " +
+                    "values: \(watchState.glucoseValues.count)"
+                debug(.watchManager, "📱 Setup WatchState - \(glucoseInfo)")
 
                 return watchState
             }
@@ -552,19 +557,220 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
     }
 
-    func session(_: WCSession, didReceiveMessage message: [String: Any]) {
-        // Handle logs first - doesn't need self, so it can run even during teardown
-        if let logs = message["watchLogs"] as? String {
-            SimpleLogReporter.appendToWatchLog(logs)
+    // MARK: - Processed IDs Management
+
+    /// Checks if a payloadId has been processed (deduplication).
+    private func isProcessed(_ payloadId: String) -> Bool {
+        guard let processedIds = UserDefaults.standard.dictionary(forKey: processedIdsKey) as? [String: TimeInterval] else {
+            return false
         }
 
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        guard let timestamp = processedIds[payloadId] else {
+            return false
+        }
+
+        // Check TTL
+        let now = Date().timeIntervalSince1970
+        if (now - timestamp) > processedIdsTTL {
+            // Expired - remove it
+            var updatedIds = processedIds
+            updatedIds.removeValue(forKey: payloadId)
+            UserDefaults.standard.set(updatedIds, forKey: processedIdsKey)
+            return false
+        }
+
+        return true
+    }
+
+    /// Records a payloadId as processed (durable storage).
+    private func recordProcessed(_ payloadId: String) {
+        var processedIds = UserDefaults.standard.dictionary(forKey: processedIdsKey) as? [String: TimeInterval] ?? [:]
+        let now = Date().timeIntervalSince1970
+
+        // Add new ID
+        processedIds[payloadId] = now
+
+        // Clean up expired entries
+        processedIds = processedIds.filter { (_, timestamp) in
+            (now - timestamp) <= processedIdsTTL
+        }
+
+        // Enforce LRU (keep most recent N)
+        if processedIds.count > processedIdsMaxCount {
+            let sorted = processedIds.sorted { $0.value > $1.value }
+            let toKeep = Dictionary(uniqueKeysWithValues: Array(sorted.prefix(processedIdsMaxCount)))
+            processedIds = toKeep
+        }
+
+        UserDefaults.standard.set(processedIds, forKey: processedIdsKey)
+    }
+
+    /// Gets acknowledged payloadIds from processedIds for a list of pending IDs.
+    private func getAcknowledgedIds(from pendingIds: [String]) -> [String] {
+        guard let processedIds = UserDefaults.standard.dictionary(forKey: processedIdsKey) as? [String: TimeInterval] else {
+            return []
+        }
+
+        let now = Date().timeIntervalSince1970
+        return pendingIds.filter { payloadId in
+            if let timestamp = processedIds[payloadId] {
+                return (now - timestamp) <= processedIdsTTL
+            }
+            return false
+        }
+    }
+
+    /// Stores a pending ACK for later delivery when watch becomes reachable.
+    private func storePendingAck(_ payloadId: String) {
+        var pendingAcks = UserDefaults.standard.array(forKey: pendingAcksKey) as? [[String: Any]] ?? []
+
+        let record: [String: Any] = [
+            "payloadId": payloadId,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+
+        pendingAcks.append(record)
+
+        // Clean up old records (older than 7 days)
+        let now = Date().timeIntervalSince1970
+        pendingAcks = pendingAcks.filter { record in
+            if let timestamp = record["timestamp"] as? TimeInterval {
+                return (now - timestamp) < (7 * 24 * 60 * 60)
+            }
+            return true
+        }
+
+        UserDefaults.standard.set(pendingAcks, forKey: pendingAcksKey)
+    }
+
+    /// Sends pending ACKs when watch becomes reachable.
+    private func sendPendingAcksIfReachable() {
+        guard let session = session, session.isReachable else {
+            return
+        }
+
+        guard let pendingAcks = UserDefaults.standard.array(forKey: pendingAcksKey) as? [[String: Any]],
+              !pendingAcks.isEmpty else {
+            return
+        }
+
+        let ackIds = pendingAcks.compactMap { $0["payloadId"] as? String }
+
+        if !ackIds.isEmpty {
+            let batchAck: [String: Any] = [
+                "type": "batchAck",
+                "ackIds": ackIds
+            ]
+
+            session.sendMessage(batchAck, replyHandler: nil) { error in
+                debug(.watchManager, "📱 Failed to send batchAck: \(error.localizedDescription)")
+            }
+
+            // Clear pending ACKs after sending
+            UserDefaults.standard.removeObject(forKey: pendingAcksKey)
+        }
+    }
+
+    // MARK: - WCSessionDelegate Methods
+
+    /// Implements the replyHandler version of didReceiveMessage for ACK support.
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        // Validate envelope structure — check type first so queryAcks (no payloadId) isn't rejected
+        guard let type = message["type"] as? String else {
+            self.session(session, didReceiveMessage: message)
+            replyHandler([:])
+            return
+        }
+
+        // Handle ACK query (no payloadId required)
+        if type == "queryAcks" {
+            if let pendingIds = message["pendingIds"] as? [String] {
+                let ackIds = getAcknowledgedIds(from: pendingIds)
+                let batchAck: [String: Any] = [
+                    "type": "batchAck",
+                    "ackIds": ackIds
+                ]
+                replyHandler(batchAck)
+            } else {
+                replyHandler([:])
+            }
+            return
+        }
+
+        guard let payloadId = message["payloadId"] as? String else {
+            self.session(session, didReceiveMessage: message)
+            replyHandler([:])
+            return
+        }
+
+        // Deduplicate BEFORE any Crashlytics calls
+        if isProcessed(payloadId) {
+            // Duplicate - send ACK immediately but skip processing
+            let ack: [String: Any] = [
+                "type": "ack",
+                "payloadId": payloadId
+            ]
+            replyHandler(ack)
+            return
+        }
+
+        // New payload - record as processed (durable) BEFORE processing
+        recordProcessed(payloadId)
+
+        // Enqueue payload handling (durable enqueue)
+        DispatchQueue.main.async { [weak self] in
+            if type == "watchLogs" {
+                if let logData = message["data"] as? String {
+                    SimpleLogReporter.appendToWatchLog(logData)
+                }
+            } else if type == "watchError" {
+                if let errorData = message["data"] as? [String: Any] {
+                    self?.handleWatchError(errorData)
+                }
+            }
+        }
+
+        // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
+        let ack: [String: Any] = [
+            "type": "ack",
+            "payloadId": payloadId
+        ]
+        replyHandler(ack)
+    }
+
+    func session(_: WCSession, didReceiveMessage message: [String: Any]) {
+        DispatchQueue.main.async { [weak self] in
+            // Check if this is an envelope message
+            if let type = message["type"] as? String,
+               let payloadId = message["payloadId"] as? String {
+                // This is an envelope message but no replyHandler - handle it
+                if type == "watchLogs" {
+                    if let logData = message["data"] as? String {
+                        SimpleLogReporter.appendToWatchLog(logData)
+                    }
+                } else if type == "watchError" {
+                    if let errorData = message["data"] as? [String: Any] {
+                        self?.handleWatchError(errorData)
+                    }
+                }
+                return
+            }
+
+            // Legacy message format
+            if let logs = message["watchLogs"] as? String {
+                SimpleLogReporter.appendToWatchLog(logs)
+            }
+
+            // Handle watch errors forwarded for Crashlytics logging
+            if let errorInfo = message["watchError"] as? [String: Any] {
+                self?.handleWatchError(errorInfo)
+            }
 
             if let requestWatchUpdate = message[WatchMessageKeys.requestWatchUpdate] as? String,
                requestWatchUpdate == WatchMessageKeys.watchState
             {
                 debug(.watchManager, "📱 Watch requested watch state data update.")
+                guard let self = self else { return }
                 // Skip if no watch is paired or app not installed
                 guard let session = self.session, session.isPaired, session.isReachable,
                       session.isWatchAppInstalled else { return }
@@ -577,21 +783,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
             if let snoozeMinutes = message[WatchMessageKeys.snoozeDuration] as? Int {
                 debug(.watchManager, "📱 Received snooze request from watch: \(snoozeMinutes) minutes")
-                await self.notificationsManager.applySnooze(for: TimeInterval(snoozeMinutes * 60))
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.notificationsManager.applySnooze(for: TimeInterval(snoozeMinutes * 60))
+                }
                 return
             } else if let bolusAmount = message[WatchMessageKeys.bolus] as? Double,
                       message[WatchMessageKeys.carbs] == nil,
                       message[WatchMessageKeys.date] == nil
             {
                 debug(.watchManager, "📱 Received bolus request from watch: \(bolusAmount)U")
-                self.handleBolusRequest(Decimal(bolusAmount))
+                self?.handleBolusRequest(Decimal(bolusAmount))
             } else if let carbsAmount = message[WatchMessageKeys.carbs] as? Int,
                       let timestamp = message[WatchMessageKeys.date] as? TimeInterval,
                       message[WatchMessageKeys.bolus] == nil
             {
                 let date = Date(timeIntervalSince1970: timestamp)
                 debug(.watchManager, "📱 Received carbs request from watch: \(carbsAmount)g at \(date)")
-                self.handleCarbsRequest(carbsAmount, date)
+                self?.handleCarbsRequest(carbsAmount, date)
             } else if let bolusAmount = message[WatchMessageKeys.bolus] as? Double,
                       let carbsAmount = message[WatchMessageKeys.carbs] as? Int,
                       let timestamp = message[WatchMessageKeys.date] as? TimeInterval
@@ -601,11 +810,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     .watchManager,
                     "📱 Received meal bolus combo request from watch: \(bolusAmount)U, \(carbsAmount)g at \(date)"
                 )
-                self.handleCombinedRequest(bolusAmount: Decimal(bolusAmount), carbsAmount: Decimal(carbsAmount), date: date)
+                self?.handleCombinedRequest(bolusAmount: Decimal(bolusAmount), carbsAmount: Decimal(carbsAmount), date: date)
             } else {
                 debug(.watchManager, "📱 Invalid or incomplete data received from watch. Received:  \(message)")
                 // Acknowledge failure
-                self.sendAcknowledgment(
+                self?.sendAcknowledgment(
                     toWatch: false,
                     message: "Error! Invalid or incomplete data received from watch.",
                     ackCode: .genericFailure
@@ -614,22 +823,22 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
             if message[WatchMessageKeys.cancelOverride] as? Bool == true {
                 debug(.watchManager, "📱 Received cancel override request from watch")
-                self.handleCancelOverride()
+                self?.handleCancelOverride()
             }
 
             if let presetName = message[WatchMessageKeys.activateOverride] as? String {
                 debug(.watchManager, "📱 Received activate override request from watch for preset: \(presetName)")
-                self.handleActivateOverride(presetName)
+                self?.handleActivateOverride(presetName)
             }
 
             if let presetName = message[WatchMessageKeys.activateTempTarget] as? String {
                 debug(.watchManager, "📱 Received activate temp target request from watch for preset: \(presetName)")
-                self.handleActivateTempTarget(presetName)
+                self?.handleActivateTempTarget(presetName)
             }
 
             if message[WatchMessageKeys.cancelTempTarget] as? Bool == true {
                 debug(.watchManager, "📱 Received cancel temp target request from watch")
-                self.handleCancelTempTarget()
+                self?.handleCancelTempTarget()
             }
 
             if message[WatchMessageKeys.requestBolusRecommendation] as? Bool == true {
@@ -687,14 +896,61 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     }
 
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        // Check if this is an envelope message
+        if let type = userInfo["type"] as? String,
+           let payloadId = userInfo["payloadId"] as? String {
+            // Validate envelope structure
+            // Deduplicate
+            if isProcessed(payloadId) {
+                // Duplicate - skip processing but store for ACK later
+                storePendingAck(payloadId)
+                return
+            }
+
+            // New payload - record as processed (durable)
+            recordProcessed(payloadId)
+
+            // Handle payload
+            if type == "watchLogs" {
+                if let logData = userInfo["data"] as? String {
+                    SimpleLogReporter.appendToWatchLog(logData)
+                }
+            } else if type == "watchError" {
+                if let errorData = userInfo["data"] as? [String: Any] {
+                    handleWatchError(errorData)
+                }
+            }
+
+            // Store pending ACK for later delivery when watch becomes reachable
+            storePendingAck(payloadId)
+
+            // Try to send ACK immediately if reachable (best-effort)
+            if let session = session, session.isReachable {
+                let ack: [String: Any] = [
+                    "type": "ack",
+                    "payloadId": payloadId
+                ]
+                session.sendMessage(ack, replyHandler: nil) { error in
+                    debug(.watchManager, "📱 Failed to send ACK for userInfo payloadId \(payloadId): \(error.localizedDescription)")
+                }
+            }
+
+            return
+        }
+
+        // Legacy message format
         if let logs = userInfo["watchLogs"] as? String {
             SimpleLogReporter.appendToWatchLog(logs)
         }
 
+        // Handle watch errors forwarded for Crashlytics logging
+        if let errorInfo = userInfo["watchError"] as? [String: Any] {
+            handleWatchError(errorInfo)
+        }
+
         if let snoozeMinutes = userInfo[WatchMessageKeys.snoozeDuration] as? Int {
             debug(.watchManager, "📱 Received snooze userInfo from watch: \(snoozeMinutes) minutes")
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            Task { @MainActor in
                 await self.notificationsManager.applySnooze(for: TimeInterval(snoozeMinutes * 60))
             }
         }
@@ -716,6 +972,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 let state = await self.setupWatchState()
                 await self.sendDataToWatch(state)
             }
+
+            // Send pending ACKs when watch becomes reachable
+            sendPendingAcksIfReachable()
         } else {
             // Try to reconnect after a short delay
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
@@ -756,8 +1015,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
                 carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
                 carbEntry.isUploadedToNS = false
-                carbEntry.isUploadedToHealth = false
-                carbEntry.isUploadedToTidepool = false
 
                 do {
                     guard context.hasChanges else {
@@ -820,8 +1077,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
                     carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
                     carbEntry.isUploadedToNS = false
-                    carbEntry.isUploadedToHealth = false
-                    carbEntry.isUploadedToTidepool = false
 
                     guard context.hasChanges else {
                         // Acknowledge failure
@@ -1264,6 +1519,91 @@ extension BaseWatchManager {
         }
 
         return nil
+    }
+
+    /// Handles errors forwarded from the watch app and logs them to Crashlytics.
+    /// - Parameter errorInfo: Dictionary containing error information from watchOS
+    private func handleWatchError(_ errorInfo: [String: Any]) {
+        // Set custom keys for watch errors
+        Crashlytics.crashlytics().setCustomValue("watchOS", forKey: "platform")
+
+        if let appVersion = errorInfo["appVersion"] as? String {
+            Crashlytics.crashlytics().setCustomValue(appVersion, forKey: "watch_app_version")
+        }
+
+        // Add context if available (limit to first 10 keys, truncate values to 256-512 chars)
+        if let context = errorInfo["context"] as? [String: String] {
+            let limitedContext = context.prefix(10)
+            for (key, value) in limitedContext {
+                let truncatedValue = String(value.prefix(512))
+                Crashlytics.crashlytics().setCustomValue(truncatedValue, forKey: "watch_\(key)")
+            }
+        }
+
+        // Handle saved context from crash recovery (limit and truncate)
+        if let savedContext = errorInfo["savedContext"] as? [String: String] {
+            let limitedContext = savedContext.prefix(10)
+            for (key, value) in limitedContext {
+                let truncatedValue = String(value.prefix(512))
+                Crashlytics.crashlytics().setCustomValue(truncatedValue, forKey: "watch_crash_\(key)")
+            }
+        }
+
+        // Handle different error types
+        let errorType = errorInfo["type"] as? String
+
+        if errorType == "potentialCrash" {
+            // Handle crash detection from previous session
+            let crashMessage = "Watch app detected potential crash from previous session"
+
+            Crashlytics.crashlytics().log("Watch crash detected: \(crashMessage)")
+
+            // Log recent logs if available
+            if let recentLogs = errorInfo["recentLogs"] as? String {
+                Crashlytics.crashlytics().log("Watch recent logs before crash:\n\(recentLogs)")
+            }
+
+            // Create a non-fatal error to represent the crash
+            let crashError = NSError(
+                domain: "watchOS",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: crashMessage,
+                    "source": "watchOS",
+                    "errorType": "potentialCrash"
+                ]
+            )
+            Crashlytics.crashlytics().record(error: crashError)
+            debug(.watchManager, "📱 Recorded watch crash detection to Crashlytics: \(crashMessage)")
+        } else if let errorDomain = errorInfo["errorDomain"] as? String,
+                  let errorCode = errorInfo["errorCode"] as? Int,
+                  let errorDescription = errorInfo["errorDescription"] as? String {
+            // Create an NSError from the watch error info
+            let error = NSError(
+                domain: errorDomain,
+                code: errorCode,
+                userInfo: [
+                    NSLocalizedDescriptionKey: errorDescription,
+                    "source": "watchOS"
+                ]
+            )
+            Crashlytics.crashlytics().record(error: error)
+            debug(.watchManager, "📱 Recorded watch error to Crashlytics: \(errorDescription)")
+        } else if let message = errorInfo["message"] as? String {
+            // Non-fatal issue with custom message
+            Crashlytics.crashlytics().log("Watch non-fatal issue: \(message)")
+            debug(.watchManager, "📱 Logged watch non-fatal issue to Crashlytics: \(message)")
+        }
+
+        // Log stack trace if available (use reportingStackTrace, fallback to stackTrace)
+        if let reportingStackTrace = errorInfo["reportingStackTrace"] as? [String] {
+            let stackTraceString = reportingStackTrace.joined(separator: "\n")
+            Crashlytics.crashlytics().log("Watch reporting stack trace:\n\(stackTraceString)")
+        } else if let stackTrace = errorInfo["stackTrace"] as? [String] {
+            // Fallback to legacy field name
+            let stackTraceString = stackTrace.joined(separator: "\n")
+            Crashlytics.crashlytics().log("Watch stack trace:\n\(stackTraceString)")
+        }
     }
 }
 
