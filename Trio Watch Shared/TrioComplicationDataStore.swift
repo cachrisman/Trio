@@ -216,6 +216,11 @@ final class TrioComplicationDataStore {
     /// In-memory fallback for lastValidTimestamp when appGroupDefaults is nil
     private var inMemoryLastValidTimestamp: Date?
 
+    /// In-memory cache of the last saved snapshot, used for dedup without per-save disk I/O
+    private var inMemorySavedSnapshot: TrioComplicationSnapshot?
+    /// Remaining cold-start seeding attempts (hydrates inMemorySavedSnapshot from disk)
+    private var seedAttemptsRemaining = 2
+
     /// Thread-safe one-time flags for logging (accessed from multiple threads via latestSnapshot).
     private static let flagLock = OSAllocatedUnfairLock(initialState: (appGroupUnavailable: false, diagnostics: false))
 
@@ -406,14 +411,57 @@ final class TrioComplicationDataStore {
     ///                    Set to false to skip reload (e.g., if you plan to call `forceReload()` separately).
     ///                    Note: pending retries are preserved regardless of this flag; they are only
     ///                    cancelled when an actual reload is initiated.
-    func save(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool = true) {
+    func save(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool = true, minInterval: TimeInterval = 30) {
         onMain { [self] in
-            saveOnMain(snapshot, triggerReload: triggerReload)
+            saveOnMain(snapshot, triggerReload: triggerReload, minInterval: minInterval)
         }
     }
 
-    private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool) {
+    private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool, minInterval: TimeInterval = 30) {
         assert(Thread.isMainThread, "saveOnMain must be called on main thread")
+
+        // Future-skew guard: reject snapshots with readingDate more than 2 minutes in the future.
+        if snapshot.readingDate.timeIntervalSinceNow > 120 {
+            log("⚠️ Dedup: rejected future snapshot (readingDate=\(snapshot.readingDate), now=\(Date()))")
+            return
+        }
+
+        // Cold-start cache seeding: hydrate from disk on first save after process launch.
+        // Allows up to 2 attempts to handle transient I/O failures; if both fail,
+        // the lastValidTimestamp monotonic fallback (below) guards against recency regression.
+        if inMemorySavedSnapshot == nil, seedAttemptsRemaining > 0 {
+            seedAttemptsRemaining -= 1
+            inMemorySavedSnapshot = latestSnapshot()
+            if inMemorySavedSnapshot == nil {
+                log("⚠️ Dedup seed: no persisted snapshot (attempts remaining: \(seedAttemptsRemaining))")
+            }
+        }
+
+        // Dedup + newer-wins guard using in-memory cache (no per-save disk I/O)
+        if let existing = inMemorySavedSnapshot {
+            let timeDiff = snapshot.readingDate.timeIntervalSince(existing.readingDate)
+            if timeDiff < 0.0 {
+                log("⏭️ Dedup: rejected older snapshot (timeDiff=\(String(format: "%.3f", timeDiff))s)")
+                return
+            }
+            // 1s tolerance is semantic policy: two readings within 1s with identical
+            // display data are treated as duplicates. Safe for all supported CGMs (minimum
+            // interval: 1 min for Libre 3, 5 min for G6/G7).
+            if timeDiff < 1.0, existing.glucose == snapshot.glucose,
+               existing.trend == snapshot.trend, existing.delta == snapshot.delta,
+               existing.glucoseColor == snapshot.glucoseColor, existing.state == snapshot.state {
+                log("⏭️ Dedup: skipped duplicate snapshot at \(snapshot.readingDate)")
+                return
+            }
+        } else if let lastTS = Self.lastValidTimestamp {
+            // Monotonic fallback: snapshot file was unreadable (seeding exhausted) but
+            // lastValidTimestamp in UserDefaults records the last known good readingDate.
+            if snapshot.readingDate.timeIntervalSince(lastTS) < 0.0 {
+                log("⏭️ Dedup: rejected older snapshot via lastValidTimestamp fallback (readingDate=\(snapshot.readingDate), lastValid=\(lastTS))")
+                return
+            }
+        }
+
         guard let fileURL = snapshotFileURL else {
             log("❌ Snapshot save FAILED: no App Group container URL")
             return
@@ -438,12 +486,14 @@ final class TrioComplicationDataStore {
             }
 
             try data.write(to: fileURL, options: [.atomic])
+            self.inMemorySavedSnapshot = snapshot
             Self.lastValidTimestamp = snapshot.readingDate
+            let ageSec = Int(Date().timeIntervalSince(snapshot.readingDate))
 
-            log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta)")
+            log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta), snapshot_age_seconds=\(ageSec)")
 
             if triggerReload {
-                coalescedReloadOnMain()
+                coalescedReloadOnMain(minInterval: minInterval)
             }
         } catch {
             log("❌ Snapshot save FAILED: \(error.localizedDescription) (domain: \((error as NSError).domain), code: \((error as NSError).code))")
@@ -532,24 +582,31 @@ final class TrioComplicationDataStore {
     }
 
     /// Forces an immediate complication timeline reload, bypassing the debounce. Main-thread confined.
-    func forceReload() {
+    /// - Parameter scheduleRetry: If true (default), schedules a retry after the reload.
+    ///   Pass false for paths that fire infrequently (e.g., forceComplicationUpdate).
+    func forceReload(scheduleRetry: Bool = true) {
         onMain { [self] in
-            forceReloadOnMain()
+            forceReloadOnMain(scheduleRetry: scheduleRetry)
         }
     }
 
-    private func forceReloadOnMain() {
+    private func forceReloadOnMain(scheduleRetry: Bool = true) {
         assert(Thread.isMainThread, "forceReloadOnMain must be called on main thread")
         cancelPendingRetryOnMain(reason: "superseded by force reload")
         Self.reloadGenerationToken = UUID().uuidString
         log("🔄 FORCE reload triggered (bypassing debounce)")
         lastReload = Date()
         reloadTimeline()
-        scheduleRetryAfterReloadOnMain(minInterval: 30)
+        if scheduleRetry {
+            scheduleRetryAfterReloadOnMain(minInterval: 30)
+        }
     }
 
     #if canImport(WidgetKit)
         private func reloadTimeline() {
+            if let lastTS = Self.lastValidTimestamp {
+                log("🔔 reload_snapshot_age_seconds=\(Int(Date().timeIntervalSince(lastTS)))")
+            }
             log("🔔 Calling WidgetCenter.reloadTimelines(ofKind: \(Self.complicationKind))")
 
             let reloadBlock = {
