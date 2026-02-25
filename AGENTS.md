@@ -41,6 +41,23 @@ Read first:
 
 A clean checkout of fork `dev` (synced to upstream) must be able to apply all patches in `./patches/` in order using `git am`.
 
+## Working with git worktrees
+
+This repo uses two worktrees pointing to the same underlying git repo:
+
+- `Trio-dev` — canonical location for patch tooling, build scripts, and dev branch work.
+- `Trio` — worktree for feature branch development and code changes.
+
+**Critical:** A branch checked out in one worktree cannot be created, deleted, or checked out in the other. If you get `fatal: a branch named '...' already exists`, switch the other worktree to a different branch first.
+
+## `git am --3way` for overlapping patches
+
+When a patch modifies a file that an earlier patch also modified, plain `git am` may fail because the context lines don't match the post-earlier-patches state. Use `git am --3way` to fall back to 3-way merge. Always review the merge result. The build script (`ci/local-build.sh`) uses `--3way` internally.
+
+## Agent sandbox notes
+
+`ci/local-build.sh` requires unrestricted filesystem/process access (it creates worktrees, runs Xcode builds, accesses signing certificates). In sandboxed agent environments (e.g., Cursor), request `all` permissions before running build commands.
+
 ## Common workflows
 
 ### Build current branch (no patches, no upload)

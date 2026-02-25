@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v4 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v5 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -157,59 +157,70 @@ When updating a patch that's **in the middle of the stack** (e.g., patch 06 out 
 
 ### Workflow
 
+All work uses **temporary `tmp/` branches** so the real `feature/<name>` development branch is never touched.
+
 ```bash
 # 0) Ensure dev is synced and clean
 git checkout dev
 git stash -u -m "WIP before patch update"  # if you have local changes
 git pull origin dev
 
-# 1) Create a "previous-patches" baseline branch
-#    Apply patches 01 through (N-1) where N is the patch you're updating
-git branch -D feature/<name>-previous-patches 2>/dev/null || true
-git checkout -b feature/<name>-previous-patches dev
+# 1) Create a temporary baseline branch (patches 01 through N-1)
+#    Use a glob or loop to apply them. Abort on first failure.
+git branch -D tmp/<name>-baseline 2>/dev/null || true
+git checkout -b tmp/<name>-baseline dev
 
-git am patches/01-*.patch
-git am patches/02-*.patch
-git am patches/03-*.patch
-git am patches/04-*.patch
-git am patches/05-*.patch
+for p in patches/0[1-5]-*.patch; do
+  git am "$p" || { echo "FAILED on $p — run: git am --abort"; exit 1; }
+done
 # Stop BEFORE the patch you're updating (e.g., stop before 06)
 
-# 2) Reset the feature branch to previous-patches and apply the current patch
-git checkout feature/<name>  # or: git checkout -b feature/<name>
-git reset --hard feature/<name>-previous-patches
-git am patches/06-<name>.patch  # the patch you're updating
+# 2) Create a temporary working branch and apply the current patch
+git branch -D tmp/<name>-update 2>/dev/null || true
+git checkout -b tmp/<name>-update tmp/<name>-baseline
+git am patches/06-<name>.patch
+# If git am fails due to context conflicts with earlier patches, try:
+#   git am --3way patches/06-<name>.patch
+# This uses 3-way merge to resolve context differences. Verify the result.
 
-# 3) Make your fixes
+# 3) Make your fixes (or cherry-pick from feature/<name>)
 # edit files...
 git add path/to/File1.swift path/to/File2.swift  # explicit file list
 git commit --amend -m "feat: <name>"
 
-# 4) Regenerate the patch against the previous-patches baseline
+# 4) Regenerate the patch against the baseline
+#    Use -a to include all changed files, or --include-files for explicit list.
 ./scripts/generate-patch.sh -n \
-  -s feature/<name> \
-  -t feature/<name>-previous-patches \
+  -s tmp/<name>-update \
+  -t tmp/<name>-baseline \
   -o patches/06-<name>.patch \
-  --include-files "path/to/File1.swift,path/to/File2.swift" \
-  -y
+  -a -y
+# Or with explicit file list:
+#   --include-files "path/to/File1.swift,path/to/File2.swift"
+# Note: expand the --include-files list if you touched additional files.
 
 # 5) Validate the full stack
 ./scripts/patch-test.sh
 
-# 6) Stage the updated patch on dev
+# 6) Cleanup temporary branches, then stage the updated patch
 git checkout dev
+git branch -D tmp/<name>-update 2>/dev/null || true
+git branch -D tmp/<name>-baseline 2>/dev/null || true
 git add patches/06-<name>.patch
 # review, then commit
-
-# 7) Cleanup
-git branch -D feature/<name>-previous-patches  # delete the temporary baseline branch
-# Keep feature/<name> for future updates
 ```
 
 ### Notes
 
-- The `-t feature/<name>-previous-patches` flag tells `generate-patch.sh` to compare against your custom baseline, not raw `dev`.
-- Keep `feature/<name>` for future updates to this patch. Delete the `-previous-patches` branch after successful validation.
+- The `-t tmp/<name>-baseline` flag tells `generate-patch.sh` to compare against your temporary baseline, not raw `dev`.
+- **Never modify or delete `feature/<name>`** during patch generation. The real feature branch is for ongoing development; the `tmp/` branches are disposable scaffolding.
+- Always `git checkout dev` (or another branch) **before** deleting branches — you cannot delete the branch you're currently on.
+- **Cherry-picking from feature branches:** In step 3, you can cherry-pick commits from your `feature/<name>` branch instead of editing directly: `git cherry-pick <sha>`, then amend the commit. Cherry picking commits is the preferred method.
+- **`git am --3way`:** When patch N modifies a file that an earlier patch also modifies, plain `git am` may fail because the context lines don't match. `git am --3way` falls back to 3-way merge and can often auto-resolve this. Always review the merge result. The build script (`ci/local-build.sh`) uses `--3way` internally for this reason.
+
+### Worktree considerations
+
+If you use git worktrees (e.g., `Trio` and `Trio-dev` pointing to the same repo), a branch checked out in one worktree **cannot be created or deleted** from the other. The `tmp/` prefix convention avoids conflicts with feature branches checked out in other worktrees.
 
 ---
 
@@ -366,6 +377,17 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v5
+- Rewrote "Updating an existing patch (mid-stack)" workflow based on lessons learned:
+  - All temporary branches now use a `tmp/` prefix (`tmp/<name>-baseline`, `tmp/<name>-update`) so the real `feature/<name>` development branch is never modified or deleted during patch generation.
+  - Step 1: replaced individual `git am` lines with a `for` loop with fail-fast (`git am --abort`) guidance.
+  - Step 3: added note about cherry-picking from feature branches as an alternative to direct editing.
+  - Step 4: added `-a` flag example alongside `--include-files` for when all changed files should be included.
+  - Step 6: cleanup deletes both `tmp/` branches; reordered to `git checkout dev` first (cannot delete the current branch).
+- Simplified "Worktree considerations" — `tmp/` prefix convention eliminates branch name conflicts with feature branches in other worktrees.
+- Added `git am --3way` guidance for patches that overlap with earlier patches in the stack.
+- Noted that `ci/local-build.sh` uses `--3way` internally.
 
 ### v4
 - Added new section "Updating an existing patch (mid-stack)" with detailed workflow for updating patches in the middle of the stack using a `-previous-patches` baseline branch.
