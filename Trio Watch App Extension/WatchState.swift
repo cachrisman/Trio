@@ -460,12 +460,6 @@ import WatchKit
             self.showSyncingAnimation = false
         }
 
-        // Force complication update with the fresh data that was just processed
-        // This bypasses debounce since fresh data just arrived
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.forceComplicationUpdate()
-        }
-
         Task {
             await WatchLogger.shared.log("Watch UI update complete")
         }
@@ -628,8 +622,7 @@ import WatchKit
             glucoseColor: glucoseColorValue
         )
 
-        TrioComplicationDataStore.shared.save(snapshot)
-        // Note: `save(snapshot)` uses default `triggerReload: true`, which calls `coalescedReload()` internally. Use `save(snapshot, triggerReload: false)` if you plan to call `forceReload()` separately.
+        TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
     }
 
     func forceComplicationUpdate() {
@@ -648,7 +641,6 @@ import WatchKit
         }
 
         if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
-            // CGM limitations means we need to filter out values outside of this range
             guard glucoseValue >= 40 && glucoseValue <= 400 else {
                 Task {
                     await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
@@ -657,7 +649,13 @@ import WatchKit
             }
         }
 
-        let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp ?? lastWatchStateUpdate ?? .distantPast
+        guard let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp else {
+            Task {
+                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: no valid CGM reading timestamp")
+            }
+            return
+        }
+
         let snapshot = TrioComplicationSnapshot(
             glucose: currentGlucose,
             trend: trend ?? "",
@@ -671,10 +669,8 @@ import WatchKit
             await WatchLogger.shared.log("🔄 forceComplicationUpdate: glucose=\(currentGlucose), readingDate=\(effectiveReadingDate)")
         }
 
-        // Save without triggering coalesced reload, then force reload immediately
-        // This avoids double-reload when coalescedReload would also trigger
         TrioComplicationDataStore.shared.save(snapshot, triggerReload: false)
-        TrioComplicationDataStore.shared.forceReload()
+        TrioComplicationDataStore.shared.forceReload(scheduleRetry: false)
     }
 
     #if os(watchOS)
