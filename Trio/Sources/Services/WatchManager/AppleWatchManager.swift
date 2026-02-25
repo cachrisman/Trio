@@ -16,6 +16,8 @@ protocol WatchManager {
 final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchManager {
     private var session: WCSession?
 
+    private static var hasLoggedAppGroupDiagnostics = false
+
     @Injected() var broadcaster: Broadcaster!
     @Injected() private var apsManager: APSManager!
     @Injected() private var settingsManager: SettingsManager!
@@ -79,8 +81,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             .sink { [weak self] _ in
                 guard let self = self else { return }
                 // Skip if no watch is paired or app not installed
-                guard let session = self.session, session.isPaired, session.isReachable,
-                      session.isWatchAppInstalled else { return }
+                guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
                 Task {
                     let state = await self.setupWatchState()
                     await self.sendDataToWatch(state)
@@ -106,7 +107,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         coreDataPublisher?.filteredByEntityName("OrefDetermination").sink { [weak self] _ in
             guard let self = self else { return }
             // Skip if no watch is paired or app not installed
-            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
+            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
             Task {
                 let state = await self.setupWatchState()
                 await self.sendDataToWatch(state)
@@ -117,7 +118,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         coreDataPublisher?.filteredByEntityName("GlucoseStored").sink { [weak self] _ in
             guard let self = self else { return }
             // Skip if no watch is paired or app not installed
-            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
+            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
             Task {
                 let state = await self.setupWatchState()
                 await self.sendDataToWatch(state)
@@ -134,7 +135,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         coreDataPublisher?.filteredByEntityName("OverrideStored").sink { [weak self] _ in
             guard let self = self else { return }
             // Skip if no watch is paired or app not installed
-            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
+            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
             Task {
                 let state = await self.setupWatchState()
                 await self.sendDataToWatch(state)
@@ -144,7 +145,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         coreDataPublisher?.filteredByEntityName("TempTargetStored").sink { [weak self] _ in
             guard let self = self else { return }
             // Skip if no watch is paired or app not installed
-            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
+            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
             Task {
                 let state = await self.setupWatchState()
                 await self.sendDataToWatch(state)
@@ -161,9 +162,48 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             self.session = session
 
             debug(.watchManager, "📱 Phone session setup - isPaired: \(session.isPaired)")
+            logAppGroupDiagnosticsOnce(context: "setupWatchSession")
         } else {
             debug(.watchManager, "📱 WCSession is not supported on this device")
         }
+    }
+
+    private static func extractTeamID(fromNightscoutBundleIdentifier bundleIdentifier: String?) -> String? {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return nil }
+        let prefix = "org.nightscout."
+        guard let prefixRange = bundleIdentifier.range(of: prefix) else { return nil }
+        let afterPrefix = bundleIdentifier[prefixRange.upperBound...]
+        guard let trioRange = afterPrefix.range(of: ".trio") else { return nil }
+        let teamID = String(afterPrefix[..<trioRange.lowerBound])
+        return teamID.isEmpty ? nil : teamID
+    }
+
+    private func appGroupIDCandidate() -> (value: String?, source: String) {
+        if let value = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String, !value.isEmpty {
+            return (value, "Info.plist(AppGroupID)")
+        }
+
+        let bundleID = Bundle.main.bundleIdentifier
+        if let teamID = Self.extractTeamID(fromNightscoutBundleIdentifier: bundleID) {
+            return ("group.org.nightscout.\(teamID).trio.trio-app-group", "Derived(bundleIdentifier)")
+        }
+
+        return (nil, "Unavailable")
+    }
+
+    private func logAppGroupDiagnosticsOnce(context: String) {
+        guard !Self.hasLoggedAppGroupDiagnostics else { return }
+        Self.hasLoggedAppGroupDiagnostics = true
+
+        let bundleID = Bundle.main.bundleIdentifier ?? "unknown"
+        let (suiteName, source) = appGroupIDCandidate()
+        let defaultsOK = suiteName.flatMap { UserDefaults(suiteName: $0) } != nil
+        let containerURL = suiteName.flatMap { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) }
+
+        debug(
+            .watchManager,
+            "📦 AppGroupDiagnostics(\(context)): bundleID=\(bundleID) AppGroupID=\(suiteName ?? "nil") source=\(source) defaults=\(defaultsOK) container=\(containerURL?.path ?? "nil")"
+        )
     }
 
     /// Attempts to reestablish the Watch connection if it becomes unreachable
@@ -180,9 +220,26 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     /// - Returns: WatchState containing current glucose readings and trends and determination infos for displaying cob and iob in the view
     func setupWatchState() async -> WatchState {
         // Check if a watch is paired and reachable before doing expensive calculations
-        guard let session = session, session.isPaired, session.isReachable, session.isWatchAppInstalled else {
-            debug(.watchManager, "⌚️❌ Skipping setupWatchState - No Watch is paired or app not installed")
+        guard let session else {
+            debug(.watchManager, "⌚️❌ Skipping setupWatchState - WCSession not available")
             return WatchState(date: Date())
+        }
+
+        if !session.isPaired {
+            debug(.watchManager, "⌚️❌ Skipping setupWatchState - No Watch is paired")
+            return WatchState(date: Date())
+        }
+
+        if !session.isWatchAppInstalled {
+            debug(.watchManager, "⌚️❌ Skipping setupWatchState - Trio Watch app is not installed")
+            return WatchState(date: Date())
+        }
+
+        if !session.isReachable {
+            debug(
+                .watchManager,
+                "⌚️⚠️ Watch is not reachable (activationState: \(session.activationState.rawValue)); continuing to build WatchState for background delivery"
+            )
         }
 
         // Skip if watch session is not activated
@@ -439,7 +496,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     func watchStateToDictionary(from state: WatchState) -> [String: Any] {
         [
-            WatchMessageKeys.date: state.date.timeIntervalSince1970,
+            WatchMessageKeys.date: state.date,
             WatchMessageKeys.currentGlucose: state.currentGlucose ?? "--",
             WatchMessageKeys.currentGlucoseColorString: state.currentGlucoseColorString ?? "#ffffff",
             WatchMessageKeys.trend: state.trend ?? "",
@@ -450,7 +507,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                 [
                     "glucose": value.glucose,
-                    "date": value.date.timeIntervalSince1970,
+                    "date": value.date,
                     "color": value.color
                 ]
             },
@@ -489,7 +546,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
 
         guard session.isWatchAppInstalled else {
-            debug(.watchManager, "⌚️❌ Trio Watch app is")
+            debug(.watchManager, "⌚️❌ Trio Watch app is not installed")
             return
         }
 
@@ -773,8 +830,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 debug(.watchManager, "📱 Watch requested watch state data update.")
                 guard let self = self else { return }
                 // Skip if no watch is paired or app not installed
-                guard let session = self.session, session.isPaired, session.isReachable,
-                      session.isWatchAppInstalled else { return }
+                guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
                 Task {
                     let state = await self.setupWatchState()
                     await self.sendDataToWatch(state)
@@ -1450,7 +1506,7 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
     // to update maxBolus
     func pumpSettingsDidChange(_: PumpSettings) {
         // Skip if no watch is paired or app not installed
-        guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
+        guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
         Task {
             let state = await self.setupWatchState()
             await self.sendDataToWatch(state)
@@ -1465,7 +1521,7 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
         highGlucose = settingsManager.settings.high
 
         // Skip if no watch is paired or app not installed
-        guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
+        guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
 
         Task {
             let state = await self.setupWatchState()
