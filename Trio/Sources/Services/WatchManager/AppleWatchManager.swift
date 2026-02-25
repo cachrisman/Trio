@@ -528,7 +528,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         pendingSendWorkItem?.cancel()
 
         let elapsed = now.timeIntervalSince(coalescerFirstScheduledAt ?? now)
-        let delay = (elapsed + 2.0) >= 5.0 ? 0.0 : 2.0
+        let delay = max(0.0, min(2.0, 5.0 - elapsed))
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
