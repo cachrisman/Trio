@@ -1,33 +1,25 @@
-From 22be7b82dc95af74656233a388da3ae9e8ad5142 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 24 Feb 2026 22:37:26 +0100
-Subject: [PATCH] feat: watch complication improvements
+From 6b98b51a681b32c10112694ecdeb8d994023ced9 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Wed, 25 Feb 2026 23:26:33 +0100
+Subject: [PATCH] feat: tmp-complication-fix
 
-- Add TrioComplicationDataStore for shared complication data persistence via App Group
-- Add ComplicationDebugView for on-device diagnostics
-- Add watch complication widgets with glucose, IOB, COB, trend display
-- Relax AppleWatchManager isReachable guards for background WatchState delivery
-- Standardize all watch targets on TRIO_APP_GROUP_ID
-- Route complication logging through ComplicationLogBuffer for cloud delivery
-
-Co-authored-by: Cursor <cursoragent@cursor.com>
 ---
  .../ExtensionDelegate.swift                   |  29 +
  Trio Watch App Extension/TrioWatchApp.swift   |   2 +
  .../Views/ComplicationDebugView.swift         | 372 +++++++++
- .../Views/TrioMainWatchView.swift             |  47 +-
+ .../Views/TrioMainWatchView.swift             |  55 +-
  .../WatchState+Requests.swift                 |  19 +
- Trio Watch App Extension/WatchState.swift     | 520 ++++++++----
+ Trio Watch App Extension/WatchState.swift     | 525 +++++++++----
  Trio Watch App/Info.plist                     |  15 +-
- Trio Watch App/TrioWatchApp.entitlements      |  11 +
+ Trio Watch App/TrioWatchApp.entitlements      |  10 +
  Trio Watch Complication/Info.plist            |   2 +
- .../TrioWatchComplication.entitlements        |  11 +
- .../TrioWatchComplication.swift               | 358 +++++++-
+ .../TrioWatchComplication.entitlements        |  10 +
+ .../TrioWatchComplication.swift               | 358 ++++++++-
  .../TrioWatchComplicationPreview.swift        | 124 +++
- .../TrioComplicationDataStore.swift           | 777 ++++++++++++++++++
+ .../TrioComplicationDataStore.swift           | 719 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
- .../WatchManager/AppleWatchManager.swift      |  98 ++-
- 15 files changed, 2162 insertions(+), 233 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 205 +++--
+ 15 files changed, 2172 insertions(+), 283 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -87,7 +79,7 @@ index ccc8911ca..3b86e2547 100644
      init() {
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
 new file mode 100644
-index 000000000..2c4c68acd
+index 000000000..edda15812
 --- /dev/null
 +++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
 @@ -0,0 +1,372 @@
@@ -193,12 +185,12 @@ index 000000000..2c4c68acd
 +                    .foregroundColor(.secondary)
 +                    .lineLimit(1)
 +            }
-+            
++
 +            Divider().padding(.vertical, 2)
-+            
++
 +            // App Group ID Debug Section
 +            sectionHeader("APP GROUP")
-+            
++
 +            HStack {
 +                Text("AppGroupID:")
 +                Spacer()
@@ -213,7 +205,7 @@ index 000000000..2c4c68acd
 +                        .foregroundColor(.red)
 +                }
 +            }
-+            
++
 +            HStack {
 +                Text("Container:")
 +                Spacer()
@@ -227,7 +219,7 @@ index 000000000..2c4c68acd
 +                        .foregroundColor(.red)
 +                }
 +            }
-+            
++
 +            if let containerURL = dataStore.appGroupContainerURL {
 +                HStack {
 +                    Text("Container Path:")
@@ -237,7 +229,7 @@ index 000000000..2c4c68acd
 +                        .foregroundColor(.secondary)
 +                        .lineLimit(1)
 +                }
-+                
++
 +                HStack {
 +                    Text("Snapshot File:")
 +                    Spacer()
@@ -263,7 +255,7 @@ index 000000000..2c4c68acd
 +                            .foregroundColor(.red)
 +                    }
 +                }
-+                
++
 +                if let files = try? FileManager.default.contentsOfDirectory(atPath: containerURL.path), !files.isEmpty {
 +                    HStack {
 +                        Text("Container Files:")
@@ -464,7 +456,7 @@ index 000000000..2c4c68acd
 +    }
 +}
 diff --git a/Trio Watch App Extension/Views/TrioMainWatchView.swift b/Trio Watch App Extension/Views/TrioMainWatchView.swift
-index 9e381bcee..830ebac67 100644
+index 9e381bcee..fdf522965 100644
 --- a/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 +++ b/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 @@ -3,7 +3,7 @@ import SwiftUI
@@ -500,23 +492,31 @@ index 9e381bcee..830ebac67 100644
  
                      if state.showSyncingAnimation {
                          Image(systemName: "iphone.radiowaves.left.and.right")
-@@ -94,8 +100,41 @@ struct TrioMainWatchView: View {
+@@ -94,16 +100,53 @@ struct TrioMainWatchView: View {
                      maxYAxisValue: state.maxYAxisValue
                  )
                  .tag(1)
 +
-+                // Page 3: Complication Debug View
-+                ComplicationDebugView()
-+                    .tag(2)
++                // Page 3: Complication Debug View (only constructed when visible)
++                Group {
++                    if currentPage == 2 {
++                        ComplicationDebugView()
++                    } else {
++                        Color.clear
++                    }
++                }
++                .tag(2)
              }
              .onAppear {
+-                /// Hard reset variables when main view appears
+-                /// Reset `bolusAmount` and `recommendedBolus` to ensure no stale / old value is set when user opens bolus input or meal combo the next time.
 +                Task {
-+                    await WatchLogger.shared.log("Watch main view appeared - requesting data")
++                    await WatchLogger.shared.log("Watch main view appeared")
 +                }
-+                state.requestWatchStateUpdate()
 +
++                let cachedSnapshot = TrioComplicationDataStore.shared.latestSnapshot()
 +                let hasValidWatchData = state.currentGlucose != "--" && !state.currentGlucose.isEmpty
-+                if !hasValidWatchData, let snapshot = TrioComplicationDataStore.shared.latestSnapshot() {
++                if !hasValidWatchData, let snapshot = cachedSnapshot {
 +                    state.currentGlucose = snapshot.glucose
 +                    state.trend = snapshot.trend
 +                    state.delta = snapshot.delta
@@ -525,7 +525,7 @@ index 9e381bcee..830ebac67 100644
 +                    }
 +                    state.lastWatchStateUpdate = snapshot.readingDate
 +                    state.showSyncingAnimation = true
-+                } else if let snapshot = TrioComplicationDataStore.shared.latestSnapshot(),
++                } else if let snapshot = cachedSnapshot,
 +                          let lastUpdate = state.lastWatchStateUpdate,
 +                          snapshot.readingDate > lastUpdate
 +                {
@@ -539,10 +539,8 @@ index 9e381bcee..830ebac67 100644
 +                    state.showSyncingAnimation = false
 +                }
 +
-                 /// Hard reset variables when main view appears
-                 /// Reset `bolusAmount` and `recommendedBolus` to ensure no stale / old value is set when user opens bolus input or meal combo the next time.
                  state.bolusAmount = 0
-@@ -103,7 +142,7 @@ struct TrioMainWatchView: View {
+                 state.recommendedBolus = 0
              }
              .background(trioBackgroundColor)
              .tabViewStyle(.verticalPage)
@@ -601,7 +599,7 @@ index d47a971c9..f53d1ce43 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f4fb33fde..f7985c1c8 100644
+index f4fb33fde..be2b472f1 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,20 +1,19 @@
@@ -631,7 +629,7 @@ index f4fb33fde..f7985c1c8 100644
      var currentGlucose: String = "--"
      var currentGlucoseColorString: String = "#ffffff"
      var trend: String? = ""
-@@ -28,59 +27,81 @@ import WatchConnectivity
+@@ -28,59 +27,87 @@ import WatchConnectivity
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
@@ -701,6 +699,10 @@ index f4fb33fde..f7985c1c8 100644
 +
 +    private var backgroundRefreshCount = 0
 +    private var lastBackgroundRefreshDate: Date?
++
++    /// Guards against duplicate requestWatchStateUpdate() calls on cold start.
++    /// Reset in noteAppBecameActive() on each active transition. Main-thread confined.
++    private var hasRequestedInitialUpdate = false
  
      var deviceType = WatchSize.current
  
@@ -720,8 +722,10 @@ index f4fb33fde..f7985c1c8 100644
 +    }
 +
 +    func noteAppBecameActive() {
++        assert(Thread.isMainThread, "noteAppBecameActive must be called on main thread")
 +        activationTimestamp = Date()
 +        forcedSinceActivation = false
++        hasRequestedInitialUpdate = false
 +        Task { await WatchLogger.shared.log("Cold start window active for 60s") }
      }
  
@@ -729,7 +733,7 @@ index f4fb33fde..f7985c1c8 100644
      private func setupSession() {
          if WCSession.isSupported() {
              let session = WCSession.default
-@@ -88,16 +109,16 @@ import WatchConnectivity
+@@ -88,16 +115,16 @@ import WatchConnectivity
              session.activate()
              self.session = session
              Task {
@@ -749,7 +753,7 @@ index f4fb33fde..f7985c1c8 100644
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
          Task {
-@@ -106,21 +127,17 @@ import WatchConnectivity
+@@ -106,21 +133,17 @@ import WatchConnectivity
  
          if success {
              Task {
@@ -773,7 +777,7 @@ index f4fb33fde..f7985c1c8 100644
              DispatchQueue.main.async {
                  self.showCommsAnimation = false
              }
-@@ -135,7 +152,7 @@ import WatchConnectivity
+@@ -135,7 +158,7 @@ import WatchConnectivity
  
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                  self.showAcknowledgmentBanner = false
@@ -782,7 +786,7 @@ index f4fb33fde..f7985c1c8 100644
                  Task {
                      await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                  }
-@@ -145,14 +162,12 @@ import WatchConnectivity
+@@ -145,14 +168,12 @@ import WatchConnectivity
  
      // MARK: - WCSessionDelegate
  
@@ -799,7 +803,7 @@ index f4fb33fde..f7985c1c8 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -160,84 +175,68 @@ import WatchConnectivity
+@@ -160,84 +181,68 @@ import WatchConnectivity
  
              if activationState == .activated {
                  Task {
@@ -895,7 +899,7 @@ index f4fb33fde..f7985c1c8 100644
              }
              DispatchQueue.main.async {
                  self.showSyncingAnimation = false
-@@ -246,98 +245,110 @@ import WatchConnectivity
+@@ -246,98 +251,113 @@ import WatchConnectivity
      }
  
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
@@ -1004,7 +1008,10 @@ index f4fb33fde..f7985c1c8 100644
 -    ///
 -    /// it will show a syncing animation and request a new watch state update from the iPhone app.
      private func forceConditionalWatchStateUpdate() {
++        assert(Thread.isMainThread, "forceConditionalWatchStateUpdate must be called on main thread")
          guard let lastUpdateTimestamp = lastWatchStateUpdate else {
++            guard !hasRequestedInitialUpdate else { return }
++            hasRequestedInitialUpdate = true
              Task {
                  await WatchLogger.shared.log("Forcing initial WatchState update")
              }
@@ -1041,7 +1048,7 @@ index f4fb33fde..f7985c1c8 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -348,7 +359,7 @@ import WatchConnectivity
+@@ -348,7 +368,7 @@ import WatchConnectivity
                  }
  
                  Task {
@@ -1050,7 +1057,7 @@ index f4fb33fde..f7985c1c8 100644
                  }
  
                  switch ackCode {
-@@ -371,26 +382,29 @@ import WatchConnectivity
+@@ -371,26 +391,29 @@ import WatchConnectivity
                  }
              }
  
@@ -1087,7 +1094,7 @@ index f4fb33fde..f7985c1c8 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -399,31 +413,27 @@ import WatchConnectivity
+@@ -399,31 +422,27 @@ import WatchConnectivity
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -1123,7 +1130,7 @@ index f4fb33fde..f7985c1c8 100644
              DispatchQueue.main.async {
                  self.showSyncingAnimation = false
              }
-@@ -431,38 +441,40 @@ import WatchConnectivity
+@@ -431,38 +450,34 @@ import WatchConnectivity
          }
  
          Task {
@@ -1142,12 +1149,6 @@ index f4fb33fde..f7985c1c8 100644
              self.showSyncingAnimation = false
          }
  
-+        // Force complication update with the fresh data that was just processed
-+        // This bypasses debounce since fresh data just arrived
-+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-+            self.forceComplicationUpdate()
-+        }
-+
          Task {
 -            await WatchLogger.shared.log("✅ Watch UI update complete")
 +            await WatchLogger.shared.log("Watch UI update complete")
@@ -1176,7 +1177,7 @@ index f4fb33fde..f7985c1c8 100644
          if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
              self.currentGlucose = currentGlucose
          }
-@@ -494,29 +506,27 @@ import WatchConnectivity
+@@ -494,29 +509,27 @@ import WatchConnectivity
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
              glucoseValues = glucoseData.compactMap { data in
                  guard let glucose = data["glucose"] as? Double,
@@ -1218,7 +1219,7 @@ index f4fb33fde..f7985c1c8 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -537,41 +547,231 @@ import WatchConnectivity
+@@ -537,41 +550,233 @@ import WatchConnectivity
              }
          }
  
@@ -1297,8 +1298,7 @@ index f4fb33fde..f7985c1c8 100644
 +            glucoseColor: glucoseColorValue
 +        )
 +
-+        TrioComplicationDataStore.shared.save(snapshot)
-+        // Note: `save(snapshot)` uses default `triggerReload: true`, which calls `coalescedReload()` internally. Use `save(snapshot, triggerReload: false)` if you plan to call `forceReload()` separately.
++        TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
 +    }
 +
 +    func forceComplicationUpdate() {
@@ -1317,19 +1317,21 @@ index f4fb33fde..f7985c1c8 100644
 +        }
 +
 +        if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
-+            // CGM limitations means we need to filter out values outside of this range
 +            guard glucoseValue >= 40 && glucoseValue <= 400 else {
 +                Task {
 +                    await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
 +                }
 +                return
++            }
++        }
++
++        guard let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp else {
++            Task {
++                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: no valid CGM reading timestamp")
              }
-         }
- 
--        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
--            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
--                maxCarbs = decimalValue
-+        let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp ?? lastWatchStateUpdate ?? .distantPast
++            return
++        }
++
 +        let snapshot = TrioComplicationSnapshot(
 +            glucose: currentGlucose,
 +            trend: trend ?? "",
@@ -1341,12 +1343,13 @@ index f4fb33fde..f7985c1c8 100644
 +
 +        Task {
 +            await WatchLogger.shared.log("🔄 forceComplicationUpdate: glucose=\(currentGlucose), readingDate=\(effectiveReadingDate)")
-+        }
-+
-+        // Save without triggering coalesced reload, then force reload immediately
-+        // This avoids double-reload when coalescedReload would also trigger
+         }
+ 
+-        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
+-            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
+-                maxCarbs = decimalValue
 +        TrioComplicationDataStore.shared.save(snapshot, triggerReload: false)
-+        TrioComplicationDataStore.shared.forceReload()
++        TrioComplicationDataStore.shared.forceReload(scheduleRetry: false)
 +    }
 +
 +    #if os(watchOS)
@@ -1496,10 +1499,10 @@ index 8d15acbed..be8edf8a9 100644
  </plist>
 diff --git a/Trio Watch App/TrioWatchApp.entitlements b/Trio Watch App/TrioWatchApp.entitlements
 new file mode 100644
-index 000000000..00424bc47
+index 000000000..9a37de423
 --- /dev/null
 +++ b/Trio Watch App/TrioWatchApp.entitlements	
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,10 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 +<plist version="1.0">
@@ -1510,7 +1513,6 @@ index 000000000..00424bc47
 +	</array>
 +</dict>
 +</plist>
-+
 diff --git a/Trio Watch Complication/Info.plist b/Trio Watch Complication/Info.plist
 index 0f118fb75..f3aa654f6 100644
 --- a/Trio Watch Complication/Info.plist	
@@ -1526,10 +1528,10 @@ index 0f118fb75..f3aa654f6 100644
  		<key>NSExtensionPointIdentifier</key>
 diff --git a/Trio Watch Complication/TrioWatchComplication.entitlements b/Trio Watch Complication/TrioWatchComplication.entitlements
 new file mode 100644
-index 000000000..00424bc47
+index 000000000..9a37de423
 --- /dev/null
 +++ b/Trio Watch Complication/TrioWatchComplication.entitlements	
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,10 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 +<plist version="1.0">
@@ -1540,9 +1542,8 @@ index 000000000..00424bc47
 +	</array>
 +</dict>
 +</plist>
-+
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
-index 411968936..463ff421c 100644
+index 411968936..e1daf312a 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
 +++ b/Trio Watch Complication/TrioWatchComplication.swift	
 @@ -1,40 +1,191 @@
@@ -1920,7 +1921,7 @@ index 411968936..463ff421c 100644
 +
 +    // Use floor division to avoid rounding up (e.g., 61 minutes should show "1h", not "2h")
 +    let totalMinutes = Int(interval / 60)
-+    
++
 +    if totalMinutes < 60 {
 +        return "\(totalMinutes)m"
 +    } else if totalMinutes < 1440 {
@@ -2100,11 +2101,12 @@ index 000000000..e4bce5153
 +#endif
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..261ab32f7
+index 000000000..4efb4a178
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,777 @@
+@@ -0,0 +1,719 @@
 +import Foundation
++import os
 +import WidgetKit
 +
 +struct TrioComplicationSnapshot: Equatable, Codable {
@@ -2205,7 +2207,6 @@ index 000000000..261ab32f7
 +        guard let prefixRange = bundleIdentifier.range(of: prefix) else { return nil }
 +        let afterPrefix = bundleIdentifier[prefixRange.upperBound...]
 +
-+        // Find the first occurrence of ".trio" after the prefix and treat the preceding segment as TEAMID.
 +        guard let trioRange = afterPrefix.range(of: ".trio") else { return nil }
 +        let teamID = String(afterPrefix[..<trioRange.lowerBound])
 +        guard !teamID.isEmpty else { return nil }
@@ -2213,9 +2214,9 @@ index 000000000..261ab32f7
 +    }
 +
 +    /// Resolves the App Group ID using multiple fallbacks, in priority order:
-+    /// 1) `AppGroupID` key in the chosen bundle’s Info.plist
-+    /// 2) Derive from the watch app’s `WKCompanionAppBundleIdentifier` (watchOS only)
-+    /// 3) Derive from the chosen bundle’s bundle identifier
++    /// 1) `AppGroupID` key in the chosen bundle's Info.plist
++    /// 2) Derive from the watch app's `WKCompanionAppBundleIdentifier` (watchOS only)
++    /// 3) Derive from the chosen bundle's bundle identifier
 +    private static func resolveAppGroupID(bundle: Bundle) -> (value: String?, source: String) {
 +        if let value = bundle.object(forInfoDictionaryKey: "AppGroupID") as? String, !value.isEmpty {
 +            return (value, "Info.plist(AppGroupID)")
@@ -2257,7 +2258,6 @@ index 000000000..261ab32f7
 +            if let defaults = shared.appGroupDefaults {
 +                defaults.set(newValue, forKey: lastValidTimestampKey)
 +            } else {
-+                // Only update in-memory fallback when App Group defaults are unavailable
 +                shared.inMemoryLastValidTimestamp = newValue
 +            }
 +        }
@@ -2271,14 +2271,12 @@ index 000000000..261ab32f7
 +               let date = defaults.object(forKey: Self.lastReloadKey) as? Date {
 +                return date
 +            }
-+            // Fallback to in-memory storage when App Group is unavailable
 +            return inMemoryLastReload
 +        }
 +        set {
 +            if let defaults = appGroupDefaults {
 +                defaults.set(newValue, forKey: Self.lastReloadKey)
 +            }
-+            // Always update in-memory fallback for per-process debounce
 +            inMemoryLastReload = newValue
 +        }
 +    }
@@ -2293,14 +2291,12 @@ index 000000000..261ab32f7
 +               let token = defaults.string(forKey: reloadGenerationTokenKey) {
 +                return token
 +            }
-+            // Fallback to in-memory storage when App Group is unavailable
 +            return shared.inMemoryReloadGenerationToken
 +        }
 +        set {
 +            if let defaults = shared.appGroupDefaults {
 +                defaults.set(newValue, forKey: reloadGenerationTokenKey)
 +            }
-+            // Always update in-memory fallback for per-process token tracking
 +            shared.inMemoryReloadGenerationToken = newValue
 +        }
 +    }
@@ -2327,52 +2323,23 @@ index 000000000..261ab32f7
 +    /// In-memory fallback for lastValidTimestamp when appGroupDefaults is nil
 +    private var inMemoryLastValidTimestamp: Date?
 +
-+    /// One-time flag to log appGroupDefaults unavailability
-+    private static var hasLoggedAppGroupUnavailable = false
-+    
-+    /// One-time flag to log App Group diagnostics (per process)
-+    private static var hasLoggedAppGroupDiagnostics = false
++    /// In-memory cache of the last saved snapshot, used for dedup without per-save disk I/O
++    private var inMemorySavedSnapshot: TrioComplicationSnapshot?
++    /// Remaining cold-start seeding attempts (hydrates inMemorySavedSnapshot from disk)
++    private var seedAttemptsRemaining = 2
++
++    /// Thread-safe one-time flags for logging (accessed from multiple threads via latestSnapshot).
++    private static let flagLock = OSAllocatedUnfairLock(initialState: (appGroupUnavailable: false, diagnostics: false))
 +
 +    private var snapshotFileURL: URL? {
 +        sharedContainerURLProvider()?.appendingPathComponent(snapshotFilename)
 +    }
 +
++    /// Cached at init time to avoid repeated bundle resolution, App Group ID lookup, and logging per access.
++    private let cachedAppGroupDefaults: UserDefaults?
++
 +    private var appGroupDefaults: UserDefaults? {
-+        // Prefer the extension’s bundle (if present) because that is where Info.plist keys
-+        // like AppGroupID are expected to live for the complication extension.
-+        var bundle: Bundle = Bundle.main
-+        var bundleSource = "Bundle.main"
-+        
-+        let classBundle = Bundle(for: type(of: self))
-+        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
-+            bundle = classBundle
-+            bundleSource = "Bundle(for: type(of: self))"
-+        }
-+        
-+        let bundleID = bundle.bundleIdentifier ?? "unknown"
-+        log("🔍 appGroupDefaults: Using bundle: \(bundleSource) (ID: \(bundleID))")
-+        
-+        let resolved = Self.resolveAppGroupID(bundle: bundle)
-+        guard let suiteName = resolved.value else {
-+            // Log once when App Group is unavailable
-+            if !Self.hasLoggedAppGroupUnavailable {
-+                Self.hasLoggedAppGroupUnavailable = true
-+                log("⚠️ AppGroupID unavailable (bundle: \(bundleSource), ID: \(bundleID)); using in-memory fallbacks for debounce/token")
-+            }
-+            return nil
-+        }
-+        
-+        log("✓ appGroupDefaults: Resolved AppGroupID: \(suiteName) (\(resolved.source))")
-+        let defaults = UserDefaults(suiteName: suiteName)
-+        if defaults == nil {
-+            if !Self.hasLoggedAppGroupUnavailable {
-+                Self.hasLoggedAppGroupUnavailable = true
-+                log("⚠️ App Group UserDefaults unavailable for suite: \(suiteName); using in-memory fallbacks for debounce/token")
-+            }
-+            return nil
-+        }
-+        log("✓ appGroupDefaults: UserDefaults created successfully for suite: \(suiteName)")
-+        return defaults
++        cachedAppGroupDefaults
 +    }
 +
 +    // MARK: - Debug Properties (for ComplicationDebugView)
@@ -2396,11 +2363,10 @@ index 000000000..261ab32f7
 +    var appGroupContainerPath: String? {
 +        snapshotFileURL?.deletingLastPathComponent().path
 +    }
-+    
++
 +    // MARK: - Debug Properties for ComplicationDebugView
-+    
++
 +    var appGroupID: String? {
-+        // Mirror the same resolution logic used for persistence so the debug UI reflects reality.
 +        var bundle: Bundle = Bundle.main
 +        let classBundle = Bundle(for: type(of: self))
 +        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
@@ -2408,22 +2374,22 @@ index 000000000..261ab32f7
 +        }
 +        return Self.resolveAppGroupID(bundle: bundle).value
 +    }
-+    
++
 +    var appGroupContainerURL: URL? {
 +        guard let suiteName = appGroupID else { return nil }
 +        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
 +    }
-+    
++
 +    var appGroupContainerAccessible: Bool {
 +        guard let url = appGroupContainerURL else { return false }
 +        return FileManager.default.fileExists(atPath: url.path)
 +    }
-+    
++
 +    var snapshotFileExists: Bool {
 +        guard let fileURL = snapshotFileURL else { return false }
 +        return FileManager.default.fileExists(atPath: fileURL.path)
 +    }
-+    
++
 +    var snapshotFileSize: Int64? {
 +        guard let fileURL = snapshotFileURL,
 +              FileManager.default.fileExists(atPath: fileURL.path),
@@ -2433,7 +2399,7 @@ index 000000000..261ab32f7
 +        }
 +        return size
 +    }
-+    
++
 +    var snapshotFileAge: TimeInterval? {
 +        guard let fileURL = snapshotFileURL,
 +              FileManager.default.fileExists(atPath: fileURL.path),
@@ -2454,16 +2420,43 @@ index 000000000..261ab32f7
 +        self.sharedContainerURLProvider = sharedContainerURLProvider
 +        self.fileManager = fileManager
 +        self.snapshotFilename = snapshotFilename
-+        
-+        // Best-effort: log once per process at startup, so if the watch app/complication is
-+        // failing due to App Group issues we have a single high-signal line in device logs.
++
++        // Resolve appGroupDefaults once at init (avoids repeated bundle/logging overhead per access).
++        self.cachedAppGroupDefaults = Self.resolveAppGroupDefaultsOnce()
++
 +        logAppGroupDiagnosticsOnce(context: "init")
++    }
++
++    /// One-shot resolution of App Group UserDefaults. Called once from init.
++    private static func resolveAppGroupDefaultsOnce() -> UserDefaults? {
++        var bundle: Bundle = Bundle.main
++        let classBundle = Bundle(for: TrioComplicationDataStore.self)
++        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
++            bundle = classBundle
++        }
++
++        let resolved = resolveAppGroupID(bundle: bundle)
++        guard let suiteName = resolved.value else {
++            flagLock.withLock { state in
++                guard !state.appGroupUnavailable else { return }
++                state.appGroupUnavailable = true
++            }
++            return nil
++        }
++
++        let defaults = UserDefaults(suiteName: suiteName)
++        if defaults == nil {
++            flagLock.withLock { state in
++                guard !state.appGroupUnavailable else { return }
++                state.appGroupUnavailable = true
++            }
++        }
++        return defaults
 +    }
 +
 +    /// One-line, high-signal diagnostics for App Group resolution and container access.
 +    /// Safe to call from any process that includes this file (watch app and complication extension).
 +    func diagnosticsSummary(context: String = "runtime") -> String {
-+        // Mirror the same bundle-selection logic used by appGroupDefaults.
 +        var bundle: Bundle = Bundle.main
 +        var bundleSource = "Bundle.main"
 +        let classBundle = Bundle(for: type(of: self))
@@ -2471,26 +2464,31 @@ index 000000000..261ab32f7
 +            bundle = classBundle
 +            bundleSource = "Bundle(for: type(of: self))"
 +        }
-+        
++
 +        let bundleID = bundle.bundleIdentifier ?? "unknown"
 +        let resolved = Self.resolveAppGroupID(bundle: bundle)
-+        
++
 +        let suiteName = resolved.value
 +        let defaultsOK = suiteName.flatMap { UserDefaults(suiteName: $0) } != nil
 +        let containerURL = suiteName.flatMap { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) }
-+        
++
 +        let snapshotPath = containerURL?.appendingPathComponent(snapshotFilename).path
 +        let snapshotExists = snapshotPath.map { fileManager.fileExists(atPath: $0) } ?? false
-+        
++
 +        return "AppGroupDiagnostics(\(context)): bundle=\(bundleSource) id=\(bundleID) AppGroupID=\(suiteName ?? "nil") source=\(resolved.source) defaults=\(defaultsOK) container=\(containerURL?.path ?? "nil") snapshot=\(snapshotPath ?? "nil") exists=\(snapshotExists)"
 +    }
-+    
++
 +    private func logAppGroupDiagnosticsOnce(context: String) {
-+        guard !Self.hasLoggedAppGroupDiagnostics else { return }
-+        Self.hasLoggedAppGroupDiagnostics = true
-+        log(diagnosticsSummary(context: context))
++        let shouldLog = Self.flagLock.withLock { state -> Bool in
++            guard !state.diagnostics else { return false }
++            state.diagnostics = true
++            return true
++        }
++        if shouldLog {
++            log(diagnosticsSummary(context: context))
++        }
 +    }
-+    
++
 +    // MARK: - Save Methods
 +
 +    func save(
@@ -2520,91 +2518,92 @@ index 000000000..261ab32f7
 +    ///                    Set to false to skip reload (e.g., if you plan to call `forceReload()` separately).
 +    ///                    Note: pending retries are preserved regardless of this flag; they are only
 +    ///                    cancelled when an actual reload is initiated.
-+    func save(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool = true) {
++    func save(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool = true, minInterval: TimeInterval = 30) {
 +        onMain { [self] in
-+            saveOnMain(snapshot, triggerReload: triggerReload)
++            saveOnMain(snapshot, triggerReload: triggerReload, minInterval: minInterval)
 +        }
 +    }
 +
-+    private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool) {
++    private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool, minInterval: TimeInterval = 30) {
 +        assert(Thread.isMainThread, "saveOnMain must be called on main thread")
-+        guard let fileURL = snapshotFileURL else {
-+            log("❌ Snapshot save FAILED: no App Group container URL")
-+            // Enhanced diagnostics
-+            let containerURL = sharedContainerURLProvider()
-+            log("🔍 Debug: sharedContainerURLProvider returned: \(containerURL?.path ?? "nil")")
-+            log("🔍 Debug: snapshotFilename: \(snapshotFilename)")
++
++        // Future-skew guard: reject snapshots with readingDate more than 2 minutes in the future.
++        if snapshot.readingDate.timeIntervalSinceNow > 120 {
++            log("⚠️ Dedup: rejected future snapshot (readingDate=\(snapshot.readingDate), now=\(Date()))")
 +            return
 +        }
 +
-+        log("💾 Saving snapshot: glucose=\(snapshot.glucose), trend=\(snapshot.trend), " +
-+            "delta=\(snapshot.delta), readingDate=\(formatDate(snapshot.readingDate))")
-+        log("🔍 Debug: Target file URL: \(fileURL.path)")
++        // Cold-start cache seeding: hydrate from disk on first save after process launch.
++        // Allows up to 2 attempts to handle transient I/O failures; if both fail,
++        // the lastValidTimestamp monotonic fallback (below) guards against recency regression.
++        if inMemorySavedSnapshot == nil, seedAttemptsRemaining > 0 {
++            seedAttemptsRemaining -= 1
++            inMemorySavedSnapshot = latestSnapshot()
++            if inMemorySavedSnapshot == nil {
++                log("⚠️ Dedup seed: no persisted snapshot (attempts remaining: \(seedAttemptsRemaining))")
++            }
++        }
++
++        // Dedup + newer-wins guard using in-memory cache (no per-save disk I/O)
++        if let existing = inMemorySavedSnapshot {
++            let timeDiff = snapshot.readingDate.timeIntervalSince(existing.readingDate)
++            if timeDiff < 0.0 {
++                log("⏭️ Dedup: rejected older snapshot (timeDiff=\(String(format: "%.3f", timeDiff))s)")
++                return
++            }
++            // 1s tolerance is semantic policy: two readings within 1s with identical
++            // display data are treated as duplicates. Safe for all supported CGMs (minimum
++            // interval: 1 min for Libre 3, 5 min for G6/G7).
++            if timeDiff < 1.0, existing.glucose == snapshot.glucose,
++               existing.trend == snapshot.trend, existing.delta == snapshot.delta,
++               existing.glucoseColor == snapshot.glucoseColor, existing.state == snapshot.state {
++                log("⏭️ Dedup: skipped duplicate snapshot at \(snapshot.readingDate)")
++                return
++            }
++        } else if let lastTS = Self.lastValidTimestamp {
++            // Monotonic fallback: snapshot file was unreadable (seeding exhausted) but
++            // lastValidTimestamp in UserDefaults records the last known good readingDate.
++            if snapshot.readingDate.timeIntervalSince(lastTS) < 0.0 {
++                log("⏭️ Dedup: rejected older snapshot via lastValidTimestamp fallback (readingDate=\(snapshot.readingDate), lastValid=\(lastTS))")
++                return
++            }
++        }
++
++        guard let fileURL = snapshotFileURL else {
++            log("❌ Snapshot save FAILED: no App Group container URL")
++            return
++        }
 +
 +        do {
 +            let encoder = JSONEncoder()
 +            encoder.dateEncodingStrategy = .iso8601
 +            let data = try encoder.encode(snapshot)
-+            log("🔍 Debug: Encoded snapshot size: \(data.count) bytes")
-+            
++
 +            let containerDir = fileURL.deletingLastPathComponent()
-+            log("🔍 Debug: Container directory: \(containerDir.path)")
-+            log("🔍 Debug: Container directory exists: \(fileManager.fileExists(atPath: containerDir.path))")
-+            
 +            try fileManager.createDirectory(
 +                at: containerDir,
 +                withIntermediateDirectories: true,
 +                attributes: nil
 +            )
-+            log("🔍 Debug: Container directory created/verified")
 +
 +            let backupURL = containerDir.appendingPathComponent("snapshot.bak")
 +            if fileManager.fileExists(atPath: fileURL.path) {
-+                log("🔍 Debug: Existing snapshot file found, creating backup")
 +                _ = try? fileManager.removeItem(at: backupURL)
 +                _ = try? fileManager.copyItem(at: fileURL, to: backupURL)
-+            } else {
-+                log("🔍 Debug: No existing snapshot file (first save or was deleted)")
 +            }
 +
 +            try data.write(to: fileURL, options: [.atomic])
-+            log("🔍 Debug: File written successfully, verifying...")
-+            
-+            // Verify file was written
-+            if fileManager.fileExists(atPath: fileURL.path) {
-+                if let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
-+                   let fileSize = attributes[.size] as? Int64 {
-+                    log("🔍 Debug: File verified - size: \(fileSize) bytes")
-+                }
-+            } else {
-+                log("⚠️ WARNING: File write reported success but file doesn't exist!")
-+            }
-+            
++            self.inMemorySavedSnapshot = snapshot
 +            Self.lastValidTimestamp = snapshot.readingDate
++            let ageSec = Int(Date().timeIntervalSince(snapshot.readingDate))
 +
-+            // Note: reloadGenerationToken is NOT updated here. It only changes when an actual reload
-+            // is initiated. This ensures pending retries remain valid even after saves with triggerReload=false.
-+
-+            log("✅ Snapshot saved successfully")
++            log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta), snapshot_age_seconds=\(ageSec)")
 +
 +            if triggerReload {
-+                coalescedReloadOnMain()
++                coalescedReloadOnMain(minInterval: minInterval)
 +            }
 +        } catch {
-+            log("❌ Snapshot save FAILED: \(error.localizedDescription)")
-+            log("🔍 Debug: Error type: \(type(of: error))")
-+            log("🔍 Debug: Error domain: \((error as NSError).domain), code: \((error as NSError).code)")
-+            if let underlyingError = (error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError {
-+                log("🔍 Debug: Underlying error: \(underlyingError.localizedDescription)")
-+            }
-+            // Check file permissions
-+            let containerDir = fileURL.deletingLastPathComponent()
-+            if fileManager.fileExists(atPath: containerDir.path) {
-+                if let attributes = try? fileManager.attributesOfItem(atPath: containerDir.path),
-+                   let permissions = attributes[.posixPermissions] as? Int {
-+                    log("🔍 Debug: Container directory permissions: \(String(permissions, radix: 8))")
-+                }
-+            }
++            log("❌ Snapshot save FAILED: \(error.localizedDescription) (domain: \((error as NSError).domain), code: \((error as NSError).code))")
 +        }
 +    }
 +
@@ -2616,27 +2615,11 @@ index 000000000..261ab32f7
 +    func latestSnapshot() -> TrioComplicationSnapshot? {
 +        guard let fileURL = snapshotFileURL else {
 +            log("❌ Snapshot load FAILED: no App Group container URL")
-+            // Enhanced diagnostics
-+            let containerURL = sharedContainerURLProvider()
-+            log("🔍 Debug: sharedContainerURLProvider returned: \(containerURL?.path ?? "nil")")
-+            log("🔍 Debug: snapshotFilename: \(snapshotFilename)")
 +            return fallbackSnapshot(state: "--")
 +        }
 +
-+        log("🔍 Debug: Attempting to load snapshot from: \(fileURL.path)")
-+        log("🔍 Debug: File exists: \(fileManager.fileExists(atPath: fileURL.path))")
-+        
 +        guard fileManager.fileExists(atPath: fileURL.path) else {
 +            log("⚠️ Snapshot file missing at \(fileURL.lastPathComponent)")
-+            // Check if container directory exists
-+            let containerDir = fileURL.deletingLastPathComponent()
-+            log("🔍 Debug: Container directory exists: \(fileManager.fileExists(atPath: containerDir.path))")
-+            if fileManager.fileExists(atPath: containerDir.path) {
-+                // List files in container
-+                if let files = try? fileManager.contentsOfDirectory(atPath: containerDir.path) {
-+                    log("🔍 Debug: Files in container: \(files.joined(separator: ", "))")
-+                }
-+            }
 +            return fallbackSnapshot(state: "!!")
 +        }
 +
@@ -2647,7 +2630,6 @@ index 000000000..261ab32f7
 +            let data = try Data(contentsOf: url)
 +            guard !data.isEmpty else { throw NSError(domain: "EmptySnapshot", code: -1) }
 +            let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
-+            // Update lastValidTimestamp; only hop to main when in-memory fallback is used
 +            let readingDate = snapshot.readingDate
 +            if appGroupDefaults == nil {
 +                onMain { Self.lastValidTimestamp = readingDate }
@@ -2659,8 +2641,6 @@ index 000000000..261ab32f7
 +
 +        do {
 +            let snapshot = try decode(from: fileURL)
-+            let age = Int(Date().timeIntervalSince(snapshot.readingDate))
-+            log("📖 Loaded snapshot: glucose=\(snapshot.glucose), age=\(age)s")
 +            return snapshot
 +        } catch {
 +            let backupURL = fileURL.deletingLastPathComponent().appendingPathComponent("snapshot.bak")
@@ -2696,52 +2676,44 @@ index 000000000..261ab32f7
 +            return
 +        }
 +
-+        // Cancel any pending retry since we're initiating a new reload
 +        cancelPendingRetryOnMain(reason: "superseded by new reload")
-+
-+        // Generate new reload generation token (only changes when actual reload occurs)
 +        Self.reloadGenerationToken = UUID().uuidString
 +
 +        log("🔄 Reload TRIGGERED: \(Int(elapsed))s since last reload\(isRetry ? " (retry)" : "")")
 +        lastReload = now
 +        reloadTimeline()
 +
-+        // Schedule a single bounded retry after the debounce window, unless this is already a retry.
-+        // WidgetKit reloads can be dropped/delayed; we do one bounded retry after the debounce window
-+        // unless a newer reload occurs.
 +        if !isRetry {
 +            scheduleRetryAfterReloadOnMain(minInterval: minInterval)
 +        }
 +    }
 +
 +    /// Forces an immediate complication timeline reload, bypassing the debounce. Main-thread confined.
-+    func forceReload() {
++    /// - Parameter scheduleRetry: If true (default), schedules a retry after the reload.
++    ///   Pass false for paths that fire infrequently (e.g., forceComplicationUpdate).
++    func forceReload(scheduleRetry: Bool = true) {
 +        onMain { [self] in
-+            forceReloadOnMain()
++            forceReloadOnMain(scheduleRetry: scheduleRetry)
 +        }
 +    }
 +
-+    private func forceReloadOnMain() {
++    private func forceReloadOnMain(scheduleRetry: Bool = true) {
 +        assert(Thread.isMainThread, "forceReloadOnMain must be called on main thread")
-+
-+        // Cancel any pending retry since we're initiating a new reload
 +        cancelPendingRetryOnMain(reason: "superseded by force reload")
-+
-+        // Generate new reload generation token (only changes when actual reload occurs)
 +        Self.reloadGenerationToken = UUID().uuidString
-+
 +        log("🔄 FORCE reload triggered (bypassing debounce)")
 +        lastReload = Date()
 +        reloadTimeline()
-+
-+        // Schedule a single bounded retry after the debounce window.
-+        // WidgetKit reloads can be dropped/delayed; we do one bounded retry after the debounce window
-+        // unless a newer reload occurs.
-+        scheduleRetryAfterReloadOnMain(minInterval: 30)
++        if scheduleRetry {
++            scheduleRetryAfterReloadOnMain(minInterval: 30)
++        }
 +    }
 +
 +    #if canImport(WidgetKit)
 +        private func reloadTimeline() {
++            if let lastTS = Self.lastValidTimestamp {
++                log("🔔 reload_snapshot_age_seconds=\(Int(Date().timeIntervalSince(lastTS)))")
++            }
 +            log("🔔 Calling WidgetCenter.reloadTimelines(ofKind: \(Self.complicationKind))")
 +
 +            let reloadBlock = {
@@ -2762,8 +2734,6 @@ index 000000000..261ab32f7
 +
 +    // MARK: - Private Helpers (Main-Thread Confined)
 +
-+    /// Executes a block on the main thread. If already on main, runs inline; otherwise dispatches
-+    /// asynchronously. Callers must NOT assume the work has completed when this method returns.
 +    private func onMain(_ block: @escaping () -> Void) {
 +        if Thread.isMainThread {
 +            block()
@@ -2772,8 +2742,6 @@ index 000000000..261ab32f7
 +        }
 +    }
 +
-+    /// Cancels any pending retry work item. Must be called on main queue.
-+    /// - Parameter reason: Reason for cancellation (for logging)
 +    private func cancelPendingRetryOnMain(reason: String) {
 +        assert(Thread.isMainThread, "cancelPendingRetryOnMain must be called on main thread")
 +        if pendingRetryWorkItem != nil {
@@ -2784,39 +2752,27 @@ index 000000000..261ab32f7
 +        }
 +    }
 +
-+    /// Schedules a single bounded retry after the debounce window. Must be called on main queue.
-+    /// - Parameter minInterval: The debounce interval used for the reload (default: 30 seconds)
-+    /// The retry will be skipped if a newer reload has been initiated (reloadGenerationToken changes).
 +    private func scheduleRetryAfterReloadOnMain(minInterval: TimeInterval) {
 +        assert(Thread.isMainThread, "scheduleRetryAfterReloadOnMain must be called on main thread")
 +
-+        // Capture the reload generation token at the time of this reload
 +        let tokenAtReload = Self.reloadGenerationToken
-+
-+        // Generate unique ID for this retry (used to detect stale retries without self-referential capture)
 +        let retryID = UUID()
 +        pendingRetryID = retryID
 +
-+        // Schedule retry after minInterval + 1s cushion to ensure it's outside the debounce window
 +        let retryDelay = minInterval + 1.0
 +        let workItem = DispatchWorkItem { [weak self] in
 +            guard let self = self else { return }
-+
-+            // Check if this retry is still current (may have been replaced or cancelled)
 +            guard self.pendingRetryID == retryID else { return }
 +
-+            // Clear pending retry state now that we're executing
 +            self.pendingRetryWorkItem = nil
 +            self.pendingRetryID = nil
 +
-+            // Check if a newer reload has occurred (token changes only on actual reload initiation)
 +            if Self.reloadGenerationToken != tokenAtReload {
 +                let prefix = String(tokenAtReload.prefix(8))
 +                self.log("⏭️ Retry SKIPPED: newer reload occurred (token changed from '\(prefix)...')")
 +                return
 +            }
 +
-+            // Retry the reload, but mark it as a retry so it doesn't schedule another retry
 +            self.log("🔄 Retry reload triggered after \(Int(retryDelay))s")
 +            self.coalescedReloadOnMain(minInterval: minInterval, isRetry: true)
 +        }
@@ -2839,34 +2795,21 @@ index 000000000..261ab32f7
 +    }
 +
 +    private static func defaultSharedContainerURL() -> URL? {
-+        // In Widget Extensions, Bundle.main should be the extension bundle, but try multiple approaches
 +        var bundle: Bundle = Bundle.main
-+        var bundleSource = "Bundle.main"
-+        
-+        // Try to find the extension bundle by looking for the class's bundle
 +        let classBundle = Bundle(for: TrioComplicationDataStore.self)
-+        // Check if this bundle has the AppGroupID key
 +        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
 +            bundle = classBundle
-+            bundleSource = "Bundle(for: TrioComplicationDataStore.self)"
 +        }
-+        
-+        let bundleID = bundle.bundleIdentifier ?? "unknown"
-+        NSLog("[ComplicationDataStore] 🔍 defaultSharedContainerURL: Using bundle: %@ (ID: %@)", bundleSource, bundleID)
-+        
++
 +        let resolved = resolveAppGroupID(bundle: bundle)
 +        guard let suiteName = resolved.value else {
-+            NSLog("[ComplicationDataStore] ❌ AppGroupID unresolved (bundle: %@, ID: %@)", bundleSource, bundleID)
 +            return nil
 +        }
-+        
-+        NSLog("[ComplicationDataStore] ✓ Resolved AppGroupID (%@): %@", resolved.source, suiteName)
++
 +        guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName) else {
-+            NSLog("[ComplicationDataStore] ❌ Failed to get container URL for AppGroupID: %@", suiteName)
 +            return nil
 +        }
-+        
-+        NSLog("[ComplicationDataStore] ✓ Container URL: %@", containerURL.path)
++
 +        return containerURL
 +    }
 +
@@ -2898,65 +2841,134 @@ index 000000000..9a37de423
 +</dict>
 +</plist>
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 2fac30d08..0c8ce1c3c 100644
+index 75c3c182b..17866e0af 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-@@ -15,6 +15,8 @@ protocol WatchManager {
- /// Handles bidirectional communication between iPhone and Apple Watch
+@@ -16,6 +16,8 @@ protocol WatchManager {
  final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchManager {
      private var session: WCSession?
-+    
-+    private static var hasLoggedAppGroupDiagnostics = false
  
++    private static var hasLoggedAppGroupDiagnostics = false
++
      @Injected() var broadcaster: Broadcaster!
      @Injected() private var apsManager: APSManager!
-@@ -79,8 +81,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     @Injected() private var settingsManager: SettingsManager!
+@@ -40,6 +42,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
+     private var subscriptions = Set<AnyCancellable>()
+ 
++    private var pendingSendWorkItem: DispatchWorkItem?
++    private var coalescerFirstScheduledAt: Date?
++
+     // Processed payload IDs for deduplication (LRU with TTL)
+     private let processedIdsKey = "watchProcessedIds"
+     private let processedIdsMaxCount = 100
+@@ -75,27 +80,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+         // Observer for glucose and manual glucose
+         glucoseStorage.updatePublisher
+-            .receive(on: DispatchQueue.global(qos: .background))
++            .receive(on: DispatchQueue.main)
              .sink { [weak self] _ in
-                 guard let self = self else { return }
-                 // Skip if no watch is paired or app not installed
+-                guard let self = self else { return }
+-                // Skip if no watch is paired or app not installed
 -                guard let session = self.session, session.isPaired, session.isReachable,
 -                      session.isWatchAppInstalled else { return }
-+                guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
-                 Task {
-                     let state = await self.setupWatchState()
-                     await self.sendDataToWatch(state)
-@@ -106,7 +107,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-         coreDataPublisher?.filteredByEntityName("OrefDetermination").sink { [weak self] _ in
-             guard let self = self else { return }
-             // Skip if no watch is paired or app not installed
+-                Task {
+-                    let state = await self.setupWatchState()
+-                    await self.sendDataToWatch(state)
+-                }
++                self?.scheduleWatchStateUpdate()
+             }
+             .store(in: &subscriptions)
+ 
+         iobService.iobPublisher
+-            .receive(on: DispatchQueue.global(qos: .background))
++            .receive(on: DispatchQueue.main)
+             .sink { [weak self] _ in
+-                guard let self = self else { return }
+-                Task {
+-                    let state = await self.setupWatchState()
+-                    await self.sendDataToWatch(state)
+-                }
++                self?.scheduleWatchStateUpdate()
+             }
+             .store(in: &subscriptions)
+ 
+@@ -103,26 +97,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     }
+ 
+     private func registerHandlers() {
+-        coreDataPublisher?.filteredByEntityName("OrefDetermination").sink { [weak self] _ in
+-            guard let self = self else { return }
+-            // Skip if no watch is paired or app not installed
 -            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
-+            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
-             Task {
-                 let state = await self.setupWatchState()
-                 await self.sendDataToWatch(state)
-@@ -117,7 +118,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-         coreDataPublisher?.filteredByEntityName("GlucoseStored").sink { [weak self] _ in
-             guard let self = self else { return }
-             // Skip if no watch is paired or app not installed
+-            Task {
+-                let state = await self.setupWatchState()
+-                await self.sendDataToWatch(state)
+-            }
+-        }.store(in: &subscriptions)
++        coreDataPublisher?.filteredByEntityName("OrefDetermination")
++            .receive(on: DispatchQueue.main)
++            .sink { [weak self] _ in
++                self?.scheduleWatchStateUpdate()
++            }.store(in: &subscriptions)
+ 
+         // Due to the Batch insert this only is used for observing Deletion of Glucose entries
+-        coreDataPublisher?.filteredByEntityName("GlucoseStored").sink { [weak self] _ in
+-            guard let self = self else { return }
+-            // Skip if no watch is paired or app not installed
 -            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
-+            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
-             Task {
-                 let state = await self.setupWatchState()
-                 await self.sendDataToWatch(state)
-@@ -134,7 +135,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-         coreDataPublisher?.filteredByEntityName("OverrideStored").sink { [weak self] _ in
+-            Task {
+-                let state = await self.setupWatchState()
+-                await self.sendDataToWatch(state)
+-            }
+-        }.store(in: &subscriptions)
++        coreDataPublisher?.filteredByEntityName("GlucoseStored")
++            .receive(on: DispatchQueue.main)
++            .sink { [weak self] _ in
++                self?.scheduleWatchStateUpdate()
++            }.store(in: &subscriptions)
+ 
+         coreDataPublisher?.filteredByEntityName("PumpEventStored").sink { [weak self] _ in
              guard let self = self else { return }
-             // Skip if no watch is paired or app not installed
+@@ -131,25 +117,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             }
+         }.store(in: &subscriptions)
+ 
+-        coreDataPublisher?.filteredByEntityName("OverrideStored").sink { [weak self] _ in
+-            guard let self = self else { return }
+-            // Skip if no watch is paired or app not installed
 -            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
-+            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
-             Task {
-                 let state = await self.setupWatchState()
-                 await self.sendDataToWatch(state)
-@@ -144,7 +145,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-         coreDataPublisher?.filteredByEntityName("TempTargetStored").sink { [weak self] _ in
-             guard let self = self else { return }
-             // Skip if no watch is paired or app not installed
+-            Task {
+-                let state = await self.setupWatchState()
+-                await self.sendDataToWatch(state)
+-            }
+-        }.store(in: &subscriptions)
++        coreDataPublisher?.filteredByEntityName("OverrideStored")
++            .receive(on: DispatchQueue.main)
++            .sink { [weak self] _ in
++                self?.scheduleWatchStateUpdate()
++            }.store(in: &subscriptions)
+ 
+-        coreDataPublisher?.filteredByEntityName("TempTargetStored").sink { [weak self] _ in
+-            guard let self = self else { return }
+-            // Skip if no watch is paired or app not installed
 -            guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
-+            guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
-             Task {
-                 let state = await self.setupWatchState()
-                 await self.sendDataToWatch(state)
-@@ -161,11 +162,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+-            Task {
+-                let state = await self.setupWatchState()
+-                await self.sendDataToWatch(state)
+-            }
+-        }.store(in: &subscriptions)
++        coreDataPublisher?.filteredByEntityName("TempTargetStored")
++            .receive(on: DispatchQueue.main)
++            .sink { [weak self] _ in
++                self?.scheduleWatchStateUpdate()
++            }.store(in: &subscriptions)
+     }
+ 
+     /// Sets up the WatchConnectivity session if the device supports it
+@@ -161,11 +139,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              self.session = session
  
              debug(.watchManager, "📱 Phone session setup - isPaired: \(session.isPaired)")
@@ -2975,29 +2987,29 @@ index 2fac30d08..0c8ce1c3c 100644
 +        let teamID = String(afterPrefix[..<trioRange.lowerBound])
 +        return teamID.isEmpty ? nil : teamID
 +    }
-+    
++
 +    private func appGroupIDCandidate() -> (value: String?, source: String) {
 +        if let value = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String, !value.isEmpty {
 +            return (value, "Info.plist(AppGroupID)")
 +        }
-+        
++
 +        let bundleID = Bundle.main.bundleIdentifier
 +        if let teamID = Self.extractTeamID(fromNightscoutBundleIdentifier: bundleID) {
 +            return ("group.org.nightscout.\(teamID).trio.trio-app-group", "Derived(bundleIdentifier)")
 +        }
-+        
++
 +        return (nil, "Unavailable")
 +    }
-+    
++
 +    private func logAppGroupDiagnosticsOnce(context: String) {
 +        guard !Self.hasLoggedAppGroupDiagnostics else { return }
 +        Self.hasLoggedAppGroupDiagnostics = true
-+        
++
 +        let bundleID = Bundle.main.bundleIdentifier ?? "unknown"
 +        let (suiteName, source) = appGroupIDCandidate()
 +        let defaultsOK = suiteName.flatMap { UserDefaults(suiteName: $0) } != nil
 +        let containerURL = suiteName.flatMap { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) }
-+        
++
 +        debug(
 +            .watchManager,
 +            "📦 AppGroupDiagnostics(\(context)): bundleID=\(bundleID) AppGroupID=\(suiteName ?? "nil") source=\(source) defaults=\(defaultsOK) container=\(containerURL?.path ?? "nil")"
@@ -3007,7 +3019,7 @@ index 2fac30d08..0c8ce1c3c 100644
      /// Attempts to reestablish the Watch connection if it becomes unreachable
      private func retryConnection() {
          guard let session = session else { return }
-@@ -180,11 +220,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -180,11 +197,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      /// - Returns: WatchState containing current glucose readings and trends and determination infos for displaying cob and iob in the view
      func setupWatchState() async -> WatchState {
          // Check if a watch is paired and reachable before doing expensive calculations
@@ -3020,14 +3032,14 @@ index 2fac30d08..0c8ce1c3c 100644
 +
 +        if !session.isPaired {
 +            debug(.watchManager, "⌚️❌ Skipping setupWatchState - No Watch is paired")
-             return WatchState(date: Date())
-         }
- 
-+        if !session.isWatchAppInstalled {
-+            debug(.watchManager, "⌚️❌ Skipping setupWatchState - Trio Watch app is not installed")
 +            return WatchState(date: Date())
 +        }
 +
++        if !session.isWatchAppInstalled {
++            debug(.watchManager, "⌚️❌ Skipping setupWatchState - Trio Watch app is not installed")
+             return WatchState(date: Date())
+         }
+ 
 +        if !session.isReachable {
 +            debug(
 +                .watchManager,
@@ -3038,25 +3050,7 @@ index 2fac30d08..0c8ce1c3c 100644
          // Skip if watch session is not activated
          guard session.activationState == .activated else {
              debug(.watchManager, "⌚️❌ Skipping setupWatchState - Watch session not activated")
-@@ -328,14 +385,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
- 
-                 // Calculate delta if we have at least 2 readings
-                 if glucoseObjects.count >= 2 {
--                    var glucoseLast = Decimal(glucoseObjects[0].glucose)
--                    var glucoseSecondLast = Decimal(glucoseObjects[1].glucose)
-+                    var deltaValue = Decimal(glucoseObjects[0].glucose - glucoseObjects[1].glucose)
-+
-                     if self.units == .mmolL {
--                        glucoseLast = glucoseLast.asMmolL
--                        glucoseSecondLast = glucoseSecondLast.asMmolL
-+                        deltaValue = Double(truncating: deltaValue as NSNumber).asMmolL
-                     }
- 
--                    let deltaValue = glucoseLast - glucoseSecondLast
-                     let formattedDelta = Formatter.glucoseFormatter(for: self.units)
-                         .string(from: deltaValue as NSNumber) ?? "0"
-                     watchState.delta = deltaValue < 0 ? "\(formattedDelta)" : "+\(formattedDelta)"
-@@ -441,7 +496,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -439,7 +473,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
      func watchStateToDictionary(from state: WatchState) -> [String: Any] {
          [
@@ -3065,7 +3059,7 @@ index 2fac30d08..0c8ce1c3c 100644
              WatchMessageKeys.currentGlucose: state.currentGlucose ?? "--",
              WatchMessageKeys.currentGlucoseColorString: state.currentGlucoseColorString ?? "#ffffff",
              WatchMessageKeys.trend: state.trend ?? "",
-@@ -452,7 +507,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -450,7 +484,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                  [
                      "glucose": value.glucose,
@@ -3074,7 +3068,42 @@ index 2fac30d08..0c8ce1c3c 100644
                      "color": value.color
                  ]
              },
-@@ -491,7 +546,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -478,6 +512,34 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         ]
+     }
+ 
++    /// Coalesces multiple publisher-driven WatchState updates into a single send.
++    /// Uses a 2s trailing debounce with 5s max-wait cap. Main-thread confined.
++    private func scheduleWatchStateUpdate() {
++        assert(Thread.isMainThread, "scheduleWatchStateUpdate must be called on main queue")
++        guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
++
++        let now = Date()
++        if coalescerFirstScheduledAt == nil {
++            coalescerFirstScheduledAt = now
++        }
++
++        pendingSendWorkItem?.cancel()
++
++        let elapsed = now.timeIntervalSince(coalescerFirstScheduledAt ?? now)
++        let delay = max(0.0, min(2.0, 5.0 - elapsed))
++
++        let workItem = DispatchWorkItem { [weak self] in
++            guard let self else { return }
++            self.coalescerFirstScheduledAt = nil
++            Task {
++                let state = await self.setupWatchState()
++                await self.sendDataToWatch(state)
++            }
++        }
++        pendingSendWorkItem = workItem
++        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
++    }
++
+     /// Sends the state of type WatchState to the connected Watch
+     /// - Parameter state: Current WatchState containing glucose data to be sent
+     @MainActor func sendDataToWatch(_ state: WatchState) async {
+@@ -489,7 +551,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          guard session.isWatchAppInstalled else {
@@ -3083,52 +3112,72 @@ index 2fac30d08..0c8ce1c3c 100644
              return
          }
  
-@@ -769,8 +824,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                 debug(.watchManager, "📱 Watch requested watch state data update.")
-                 guard let self = self else { return }
-                 // Skip if no watch is paired or app not installed
--                guard let session = self.session, session.isPaired, session.isReachable,
--                      session.isWatchAppInstalled else { return }
-+                guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
-                 Task {
-                     let state = await self.setupWatchState()
-                     await self.sendDataToWatch(state)
-@@ -1012,8 +1066,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                 carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
-                 carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
-                 carbEntry.isUploadedToNS = false
--                carbEntry.isUploadedToHealth = false
--                carbEntry.isUploadedToTidepool = false
+@@ -551,7 +613,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         debug(.watchManager, "📱 Phone session activated with state: \(activationState.rawValue)")
+         debug(.watchManager, "📱 Phone isReachable after activation: \(session.isReachable)")
  
-                 do {
-                     guard context.hasChanges else {
-@@ -1076,8 +1128,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                     carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
-                     carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
-                     carbEntry.isUploadedToNS = false
--                    carbEntry.isUploadedToHealth = false
--                    carbEntry.isUploadedToTidepool = false
- 
-                     guard context.hasChanges else {
-                         // Acknowledge failure
-@@ -1450,7 +1500,7 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
-     // to update maxBolus
-     func pumpSettingsDidChange(_: PumpSettings) {
-         // Skip if no watch is paired or app not installed
--        guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
-+        guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+-        // Try to send initial data after activation
++        DispatchQueue.main.async {
++            self.pendingSendWorkItem?.cancel()
++            self.coalescerFirstScheduledAt = nil
++        }
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -1465,7 +1515,7 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -772,9 +837,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             {
+                 debug(.watchManager, "📱 Watch requested watch state data update.")
+                 guard let self = self else { return }
+-                // Skip if no watch is paired or app not installed
+-                guard let session = self.session, session.isPaired, session.isReachable,
+-                      session.isWatchAppInstalled else { return }
++                guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
++                self.pendingSendWorkItem?.cancel()
++                self.coalescerFirstScheduledAt = nil
+                 Task {
+                     let state = await self.setupWatchState()
+                     await self.sendDataToWatch(state)
+@@ -968,7 +1033,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         debug(.watchManager, "📱 Phone reachability changed: \(session.isReachable)")
+ 
+         if session.isReachable {
+-            // Try to send data when connection is established
++            DispatchQueue.main.async {
++                self.pendingSendWorkItem?.cancel()
++                self.coalescerFirstScheduledAt = nil
++            }
+             Task {
+                 let state = await self.setupWatchState()
+                 await self.sendDataToWatch(state)
+@@ -1449,11 +1517,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+     // to update maxBolus
+     func pumpSettingsDidChange(_: PumpSettings) {
+-        // Skip if no watch is paired or app not installed
+-        guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
+-        Task {
+-            let state = await self.setupWatchState()
+-            await self.sendDataToWatch(state)
++        DispatchQueue.main.async {
++            self.scheduleWatchStateUpdate()
+         }
+     }
+ 
+@@ -1464,12 +1529,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+         lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
-         // Skip if no watch is paired or app not installed
+-        // Skip if no watch is paired or app not installed
 -        guard let session = self.session, session.isPaired, session.isReachable, session.isWatchAppInstalled else { return }
-+        guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
- 
-         Task {
-             let state = await self.setupWatchState()
+-
+-        Task {
+-            let state = await self.setupWatchState()
+-            await self.sendDataToWatch(state)
++        DispatchQueue.main.async {
++            self.scheduleWatchStateUpdate()
+         }
+     }
+ }
 -- 
 2.50.1 (Apple Git-155)
 
