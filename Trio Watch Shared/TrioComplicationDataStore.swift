@@ -1,0 +1,662 @@
+import Foundation
+import os
+import WidgetKit
+
+struct TrioComplicationSnapshot: Equatable, Codable {
+    private enum Constants {
+        static let fallbackGlucose = "--"
+        static let fallbackDelta = "--"
+    }
+
+    let glucose: String
+    let trend: String
+    let delta: String
+    let date: Date
+    let readingDate: Date
+    let state: String?
+    let glucoseColor: String?
+
+    init(
+        glucose rawGlucose: String,
+        trend rawTrend: String,
+        delta rawDelta: String,
+        readingDate: Date,
+        date: Date,
+        state: String? = nil,
+        glucoseColor: String? = nil
+    ) {
+        glucose = Self.sanitizedGlucose(from: rawGlucose)
+        trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
+        delta = Self.sanitizedDelta(from: rawDelta)
+        self.readingDate = readingDate
+        self.date = date
+        self.state = state
+        self.glucoseColor = glucoseColor
+    }
+
+    private static func sanitizedGlucose(from value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return Constants.fallbackGlucose }
+        if trimmed == Constants.fallbackGlucose { return Constants.fallbackGlucose }
+
+        let digitsAndSeparators = CharacterSet(charactersIn: "0123456789.")
+        let numericPortion = trimmed
+            .components(separatedBy: digitsAndSeparators.inverted)
+            .joined()
+
+        if let doubleValue = Double(numericPortion), doubleValue > 0 {
+            let rounded = Int(doubleValue.rounded())
+            return String(rounded)
+        }
+
+        return trimmed
+    }
+
+    private static func sanitizedDelta(from value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return Constants.fallbackDelta }
+        if trimmed == Constants.fallbackDelta { return Constants.fallbackDelta }
+
+        let allowed = CharacterSet(charactersIn: "+-0123456789.,")
+        let filteredScalars = trimmed.unicodeScalars.filter { allowed.contains($0) }
+        let normalized = String(filteredScalars).replacingOccurrences(of: ",", with: ".")
+
+        guard !normalized.isEmpty, let numericValue = Double(normalized) else {
+            return trimmed
+        }
+
+        let magnitude = abs(numericValue)
+        let roundedMagnitude = magnitude.rounded()
+        if abs(roundedMagnitude - magnitude) < 0.05 {
+            let signedInt = Int(roundedMagnitude) * (numericValue >= 0 ? 1 : -1)
+            return String(format: "%+d", signedInt)
+        }
+
+        return String(format: "%+.1f", numericValue)
+    }
+}
+
+/// Data store for watch complication snapshots and reload coordination.
+/// This class is main-thread confined: all public API methods (`save`, `coalescedReload`, `forceReload`)
+/// must be called from the main thread or will hop to main before executing.
+final class TrioComplicationDataStore {
+    static let shared = TrioComplicationDataStore()
+    static let complicationKind = "TrioWatchComplication"
+
+    // MARK: - App Group ID Resolution
+
+    /// Canonical App Group ID format used by this project (derived from Team ID).
+    private static func appGroupID(forTeamID teamID: String) -> String {
+        "group.org.nightscout.\(teamID).trio.trio-app-group"
+    }
+
+    /// Attempts to extract the Team ID from a bundle identifier of the form:
+    /// - `org.nightscout.<TEAM>.trio`
+    /// - `org.nightscout.<TEAM>.trio.watchkitapp`
+    /// - `org.nightscout.<TEAM>.trio.watchkitapp.<Something>`
+    private static func extractTeamID(fromNightscoutBundleIdentifier bundleIdentifier: String?) -> String? {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return nil }
+        let prefix = "org.nightscout."
+        guard let prefixRange = bundleIdentifier.range(of: prefix) else { return nil }
+        let afterPrefix = bundleIdentifier[prefixRange.upperBound...]
+
+        guard let trioRange = afterPrefix.range(of: ".trio") else { return nil }
+        let teamID = String(afterPrefix[..<trioRange.lowerBound])
+        guard !teamID.isEmpty else { return nil }
+        return teamID
+    }
+
+    /// Resolves the App Group ID using multiple fallbacks, in priority order:
+    /// 1) `AppGroupID` key in the chosen bundle's Info.plist
+    /// 2) Derive from the watch app's `WKCompanionAppBundleIdentifier` (watchOS only)
+    /// 3) Derive from the chosen bundle's bundle identifier
+    private static func resolveAppGroupID(bundle: Bundle) -> (value: String?, source: String) {
+        if let value = bundle.object(forInfoDictionaryKey: "AppGroupID") as? String, !value.isEmpty {
+            return (value, "Info.plist(AppGroupID)")
+        }
+
+        #if os(watchOS)
+        if let companionBundleID = Bundle.main.object(forInfoDictionaryKey: "WKCompanionAppBundleIdentifier") as? String,
+           let teamID = extractTeamID(fromNightscoutBundleIdentifier: companionBundleID) {
+            return (appGroupID(forTeamID: teamID), "Derived(WKCompanionAppBundleIdentifier)")
+        }
+        #endif
+
+        if let teamID = extractTeamID(fromNightscoutBundleIdentifier: bundle.bundleIdentifier) {
+            return (appGroupID(forTeamID: teamID), "Derived(bundleIdentifier)")
+        }
+
+        return (nil, "Unavailable")
+    }
+
+    // MARK: - UserDefaults Keys
+
+    private static let lastReloadKey = "TrioComplication_lastReload"
+    private static let lastValidTimestampKey = "TrioComplication_lastValidTimestamp"
+    private static let reloadGenerationTokenKey = "TrioComplication_reloadGenerationToken"
+
+    // MARK: - Persisted State (shared across processes via UserDefaults in App Group)
+
+    /// Last valid glucose reading timestamp - persisted to survive process restarts.
+    /// Falls back to in-memory storage if appGroupDefaults is unavailable.
+    static var lastValidTimestamp: Date? {
+        get {
+            if let defaults = shared.appGroupDefaults,
+               let date = defaults.object(forKey: lastValidTimestampKey) as? Date {
+                return date
+            }
+            return shared.inMemoryLastValidTimestamp
+        }
+        set {
+            if let defaults = shared.appGroupDefaults {
+                defaults.set(newValue, forKey: lastValidTimestampKey)
+            } else {
+                shared.inMemoryLastValidTimestamp = newValue
+            }
+        }
+    }
+
+    /// Last reload timestamp - persisted to share debounce state across processes
+    /// Falls back to in-memory storage if appGroupDefaults is unavailable
+    private var lastReload: Date {
+        get {
+            if let defaults = appGroupDefaults,
+               let date = defaults.object(forKey: Self.lastReloadKey) as? Date {
+                return date
+            }
+            return inMemoryLastReload
+        }
+        set {
+            if let defaults = appGroupDefaults {
+                defaults.set(newValue, forKey: Self.lastReloadKey)
+            }
+            inMemoryLastReload = newValue
+        }
+    }
+
+    /// Reload generation token - UUID string regenerated ONLY when an actual WidgetKit reload is initiated
+    /// (coalescedReload passes debounce, or forceReload). Used to detect if a newer reload attempt has
+    /// occurred since a retry was scheduled. Does NOT change on saves - only on actual reload initiation.
+    /// Uses UUID string (not numeric) to avoid UserDefaults type coercion issues.
+    static var reloadGenerationToken: String {
+        get {
+            if let defaults = shared.appGroupDefaults,
+               let token = defaults.string(forKey: reloadGenerationTokenKey) {
+                return token
+            }
+            return shared.inMemoryReloadGenerationToken
+        }
+        set {
+            if let defaults = shared.appGroupDefaults {
+                defaults.set(newValue, forKey: reloadGenerationTokenKey)
+            }
+            shared.inMemoryReloadGenerationToken = newValue
+        }
+    }
+
+    // MARK: - Private Properties
+
+    private let sharedContainerURLProvider: () -> URL?
+    private let fileManager: FileManager
+    private let snapshotFilename: String
+
+    /// Pending retry work item - cancelled only when a new reload is actually initiated
+    /// All access must be on main queue to avoid race conditions
+    private var pendingRetryWorkItem: DispatchWorkItem?
+
+    /// Unique ID of the currently pending retry (used to identify stale retries without capturing work item)
+    private var pendingRetryID: UUID?
+
+    /// In-memory fallback for lastReload when appGroupDefaults is nil (per-process debounce)
+    private var inMemoryLastReload: Date = .distantPast
+
+    /// In-memory fallback for reloadGenerationToken when appGroupDefaults is nil (per-process token)
+    private var inMemoryReloadGenerationToken: String = UUID().uuidString
+
+    /// In-memory fallback for lastValidTimestamp when appGroupDefaults is nil
+    private var inMemoryLastValidTimestamp: Date?
+
+    /// Thread-safe one-time flags for logging (accessed from multiple threads via latestSnapshot).
+    private static let flagLock = OSAllocatedUnfairLock(initialState: (appGroupUnavailable: false, diagnostics: false))
+
+    private var snapshotFileURL: URL? {
+        sharedContainerURLProvider()?.appendingPathComponent(snapshotFilename)
+    }
+
+    /// Cached at init time to avoid repeated bundle resolution, App Group ID lookup, and logging per access.
+    private let cachedAppGroupDefaults: UserDefaults?
+
+    private var appGroupDefaults: UserDefaults? {
+        cachedAppGroupDefaults
+    }
+
+    // MARK: - Debug Properties (for ComplicationDebugView)
+
+    var lastReloadTimestamp: Date {
+        lastReload
+    }
+
+    var secondsSinceLastReload: TimeInterval {
+        Date().timeIntervalSince(lastReload)
+    }
+
+    var secondsUntilNextReloadAllowed: TimeInterval {
+        max(0, 30 - secondsSinceLastReload)
+    }
+
+    var isDebounceActive: Bool {
+        secondsSinceLastReload < 30
+    }
+
+    var appGroupContainerPath: String? {
+        snapshotFileURL?.deletingLastPathComponent().path
+    }
+
+    // MARK: - Debug Properties for ComplicationDebugView
+
+    var appGroupID: String? {
+        var bundle: Bundle = Bundle.main
+        let classBundle = Bundle(for: type(of: self))
+        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
+            bundle = classBundle
+        }
+        return Self.resolveAppGroupID(bundle: bundle).value
+    }
+
+    var appGroupContainerURL: URL? {
+        guard let suiteName = appGroupID else { return nil }
+        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
+    }
+
+    var appGroupContainerAccessible: Bool {
+        guard let url = appGroupContainerURL else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    var snapshotFileExists: Bool {
+        guard let fileURL = snapshotFileURL else { return false }
+        return FileManager.default.fileExists(atPath: fileURL.path)
+    }
+
+    var snapshotFileSize: Int64? {
+        guard let fileURL = snapshotFileURL,
+              FileManager.default.fileExists(atPath: fileURL.path),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let size = attributes[.size] as? Int64 else {
+            return nil
+        }
+        return size
+    }
+
+    var snapshotFileAge: TimeInterval? {
+        guard let fileURL = snapshotFileURL,
+              FileManager.default.fileExists(atPath: fileURL.path),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let modificationDate = attributes[.modificationDate] as? Date else {
+            return nil
+        }
+        return Date().timeIntervalSince(modificationDate)
+    }
+
+    // MARK: - Initialization
+
+    init(
+        sharedContainerURLProvider: @escaping () -> URL? = TrioComplicationDataStore.defaultSharedContainerURL,
+        fileManager: FileManager = .default,
+        snapshotFilename: String = "snapshot.json"
+    ) {
+        self.sharedContainerURLProvider = sharedContainerURLProvider
+        self.fileManager = fileManager
+        self.snapshotFilename = snapshotFilename
+
+        // Resolve appGroupDefaults once at init (avoids repeated bundle/logging overhead per access).
+        self.cachedAppGroupDefaults = Self.resolveAppGroupDefaultsOnce()
+
+        logAppGroupDiagnosticsOnce(context: "init")
+    }
+
+    /// One-shot resolution of App Group UserDefaults. Called once from init.
+    private static func resolveAppGroupDefaultsOnce() -> UserDefaults? {
+        var bundle: Bundle = Bundle.main
+        let classBundle = Bundle(for: TrioComplicationDataStore.self)
+        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
+            bundle = classBundle
+        }
+
+        let resolved = resolveAppGroupID(bundle: bundle)
+        guard let suiteName = resolved.value else {
+            flagLock.withLock { state in
+                guard !state.appGroupUnavailable else { return }
+                state.appGroupUnavailable = true
+            }
+            return nil
+        }
+
+        let defaults = UserDefaults(suiteName: suiteName)
+        if defaults == nil {
+            flagLock.withLock { state in
+                guard !state.appGroupUnavailable else { return }
+                state.appGroupUnavailable = true
+            }
+        }
+        return defaults
+    }
+
+    /// One-line, high-signal diagnostics for App Group resolution and container access.
+    /// Safe to call from any process that includes this file (watch app and complication extension).
+    func diagnosticsSummary(context: String = "runtime") -> String {
+        var bundle: Bundle = Bundle.main
+        var bundleSource = "Bundle.main"
+        let classBundle = Bundle(for: type(of: self))
+        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
+            bundle = classBundle
+            bundleSource = "Bundle(for: type(of: self))"
+        }
+
+        let bundleID = bundle.bundleIdentifier ?? "unknown"
+        let resolved = Self.resolveAppGroupID(bundle: bundle)
+
+        let suiteName = resolved.value
+        let defaultsOK = suiteName.flatMap { UserDefaults(suiteName: $0) } != nil
+        let containerURL = suiteName.flatMap { FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) }
+
+        let snapshotPath = containerURL?.appendingPathComponent(snapshotFilename).path
+        let snapshotExists = snapshotPath.map { fileManager.fileExists(atPath: $0) } ?? false
+
+        return "AppGroupDiagnostics(\(context)): bundle=\(bundleSource) id=\(bundleID) AppGroupID=\(suiteName ?? "nil") source=\(resolved.source) defaults=\(defaultsOK) container=\(containerURL?.path ?? "nil") snapshot=\(snapshotPath ?? "nil") exists=\(snapshotExists)"
+    }
+
+    private func logAppGroupDiagnosticsOnce(context: String) {
+        let shouldLog = Self.flagLock.withLock { state -> Bool in
+            guard !state.diagnostics else { return false }
+            state.diagnostics = true
+            return true
+        }
+        if shouldLog {
+            log(diagnosticsSummary(context: context))
+        }
+    }
+
+    // MARK: - Save Methods
+
+    func save(
+        glucose: String,
+        trend: String?,
+        delta: String?,
+        readingDate: Date,
+        date: Date,
+        glucoseColor: String? = nil,
+        triggerReload: Bool = true
+    ) {
+        let snapshot = TrioComplicationSnapshot(
+            glucose: glucose,
+            trend: trend ?? "",
+            delta: delta ?? "",
+            readingDate: readingDate,
+            date: date,
+            glucoseColor: glucoseColor
+        )
+        save(snapshot, triggerReload: triggerReload)
+    }
+
+    /// Saves a snapshot to disk. Main-thread confined.
+    /// - Parameters:
+    ///   - snapshot: The snapshot to save
+    ///   - triggerReload: If true (default), triggers a coalesced reload after saving.
+    ///                    Set to false to skip reload (e.g., if you plan to call `forceReload()` separately).
+    ///                    Note: pending retries are preserved regardless of this flag; they are only
+    ///                    cancelled when an actual reload is initiated.
+    func save(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool = true) {
+        onMain { [self] in
+            saveOnMain(snapshot, triggerReload: triggerReload)
+        }
+    }
+
+    private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool) {
+        assert(Thread.isMainThread, "saveOnMain must be called on main thread")
+        guard let fileURL = snapshotFileURL else {
+            log("❌ Snapshot save FAILED: no App Group container URL")
+            return
+        }
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(snapshot)
+
+            let containerDir = fileURL.deletingLastPathComponent()
+            try fileManager.createDirectory(
+                at: containerDir,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+
+            let backupURL = containerDir.appendingPathComponent("snapshot.bak")
+            if fileManager.fileExists(atPath: fileURL.path) {
+                _ = try? fileManager.removeItem(at: backupURL)
+                _ = try? fileManager.copyItem(at: fileURL, to: backupURL)
+            }
+
+            try data.write(to: fileURL, options: [.atomic])
+            Self.lastValidTimestamp = snapshot.readingDate
+
+            log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta)")
+
+            if triggerReload {
+                coalescedReloadOnMain()
+            }
+        } catch {
+            log("❌ Snapshot save FAILED: \(error.localizedDescription) (domain: \((error as NSError).domain), code: \((error as NSError).code))")
+        }
+    }
+
+    // MARK: - Load Methods
+
+    /// Loads the latest complication snapshot from disk.
+    /// May be called from any thread. Updates `lastValidTimestamp` as a side-effect (serialized on main
+    /// when App Group defaults are unavailable to protect in-memory fallback).
+    func latestSnapshot() -> TrioComplicationSnapshot? {
+        guard let fileURL = snapshotFileURL else {
+            log("❌ Snapshot load FAILED: no App Group container URL")
+            return fallbackSnapshot(state: "--")
+        }
+
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            log("⚠️ Snapshot file missing at \(fileURL.lastPathComponent)")
+            return fallbackSnapshot(state: "!!")
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        func decode(from url: URL) throws -> TrioComplicationSnapshot {
+            let data = try Data(contentsOf: url)
+            guard !data.isEmpty else { throw NSError(domain: "EmptySnapshot", code: -1) }
+            let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
+            let readingDate = snapshot.readingDate
+            if appGroupDefaults == nil {
+                onMain { Self.lastValidTimestamp = readingDate }
+            } else {
+                Self.lastValidTimestamp = readingDate
+            }
+            return snapshot
+        }
+
+        do {
+            let snapshot = try decode(from: fileURL)
+            return snapshot
+        } catch {
+            let backupURL = fileURL.deletingLastPathComponent().appendingPathComponent("snapshot.bak")
+            if fileManager.fileExists(atPath: backupURL.path),
+               let snapshot = try? decode(from: backupURL) {
+                log("⚠️ Snapshot decode failed, using backup")
+                return snapshot
+            }
+            log("❌ Snapshot decode FAILED: \(error.localizedDescription)")
+            return fallbackSnapshot(state: "??")
+        }
+    }
+
+    // MARK: - Reload Methods
+
+    /// Triggers a complication timeline reload with 30-second debouncing. Main-thread confined.
+    /// - Parameters:
+    ///   - minInterval: Minimum time interval between reloads (default: 30 seconds)
+    ///   - isRetry: If true, this is a retry attempt and should not schedule another retry
+    func coalescedReload(minInterval: TimeInterval = 30, isRetry: Bool = false) {
+        onMain { [self] in
+            coalescedReloadOnMain(minInterval: minInterval, isRetry: isRetry)
+        }
+    }
+
+    private func coalescedReloadOnMain(minInterval: TimeInterval = 30, isRetry: Bool = false) {
+        assert(Thread.isMainThread, "coalescedReloadOnMain must be called on main thread")
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastReload)
+
+        if elapsed < minInterval {
+            log("⏳ Reload DEBOUNCED: \(Int(elapsed))s elapsed (min: \(Int(minInterval))s)")
+            return
+        }
+
+        cancelPendingRetryOnMain(reason: "superseded by new reload")
+        Self.reloadGenerationToken = UUID().uuidString
+
+        log("🔄 Reload TRIGGERED: \(Int(elapsed))s since last reload\(isRetry ? " (retry)" : "")")
+        lastReload = now
+        reloadTimeline()
+
+        if !isRetry {
+            scheduleRetryAfterReloadOnMain(minInterval: minInterval)
+        }
+    }
+
+    /// Forces an immediate complication timeline reload, bypassing the debounce. Main-thread confined.
+    func forceReload() {
+        onMain { [self] in
+            forceReloadOnMain()
+        }
+    }
+
+    private func forceReloadOnMain() {
+        assert(Thread.isMainThread, "forceReloadOnMain must be called on main thread")
+        cancelPendingRetryOnMain(reason: "superseded by force reload")
+        Self.reloadGenerationToken = UUID().uuidString
+        log("🔄 FORCE reload triggered (bypassing debounce)")
+        lastReload = Date()
+        reloadTimeline()
+        scheduleRetryAfterReloadOnMain(minInterval: 30)
+    }
+
+    #if canImport(WidgetKit)
+        private func reloadTimeline() {
+            log("🔔 Calling WidgetCenter.reloadTimelines(ofKind: \(Self.complicationKind))")
+
+            let reloadBlock = {
+                if #available(watchOS 10.0, *) {
+                    WidgetCenter.shared.reloadTimelines(ofKind: Self.complicationKind)
+                } else {
+                    WidgetCenter.shared.reloadAllTimelines()
+                }
+            }
+
+            if Thread.isMainThread {
+                reloadBlock()
+            } else {
+                DispatchQueue.main.async(execute: reloadBlock)
+            }
+        }
+    #endif
+
+    // MARK: - Private Helpers (Main-Thread Confined)
+
+    private func onMain(_ block: @escaping () -> Void) {
+        if Thread.isMainThread {
+            block()
+        } else {
+            DispatchQueue.main.async(execute: block)
+        }
+    }
+
+    private func cancelPendingRetryOnMain(reason: String) {
+        assert(Thread.isMainThread, "cancelPendingRetryOnMain must be called on main thread")
+        if pendingRetryWorkItem != nil {
+            pendingRetryWorkItem?.cancel()
+            pendingRetryWorkItem = nil
+            pendingRetryID = nil
+            log("⏹️ Retry CANCELLED: \(reason)")
+        }
+    }
+
+    private func scheduleRetryAfterReloadOnMain(minInterval: TimeInterval) {
+        assert(Thread.isMainThread, "scheduleRetryAfterReloadOnMain must be called on main thread")
+
+        let tokenAtReload = Self.reloadGenerationToken
+        let retryID = UUID()
+        pendingRetryID = retryID
+
+        let retryDelay = minInterval + 1.0
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            guard self.pendingRetryID == retryID else { return }
+
+            self.pendingRetryWorkItem = nil
+            self.pendingRetryID = nil
+
+            if Self.reloadGenerationToken != tokenAtReload {
+                let prefix = String(tokenAtReload.prefix(8))
+                self.log("⏭️ Retry SKIPPED: newer reload occurred (token changed from '\(prefix)...')")
+                return
+            }
+
+            self.log("🔄 Retry reload triggered after \(Int(retryDelay))s")
+            self.coalescedReloadOnMain(minInterval: minInterval, isRetry: true)
+        }
+
+        pendingRetryWorkItem = workItem
+        log("⏰ Retry scheduled: delay=\(Int(retryDelay))s, token='\(tokenAtReload.prefix(8))...'")
+        DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: workItem)
+    }
+
+    private func fallbackSnapshot(state: String) -> TrioComplicationSnapshot {
+        TrioComplicationSnapshot(
+            glucose: "--",
+            trend: "",
+            delta: "--",
+            readingDate: Self.lastValidTimestamp ?? .distantPast,
+            date: Date(),
+            state: state,
+            glucoseColor: nil
+        )
+    }
+
+    private static func defaultSharedContainerURL() -> URL? {
+        var bundle: Bundle = Bundle.main
+        let classBundle = Bundle(for: TrioComplicationDataStore.self)
+        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
+            bundle = classBundle
+        }
+
+        let resolved = resolveAppGroupID(bundle: bundle)
+        guard let suiteName = resolved.value else {
+            return nil
+        }
+
+        guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName) else {
+            return nil
+        }
+
+        return containerURL
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        if date == .distantPast { return "distantPast" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: date)
+    }
+
+    private func log(_ message: String) {
+        ComplicationLogBuffer.append(message)
+    }
+}
