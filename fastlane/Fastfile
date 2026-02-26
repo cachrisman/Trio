@@ -117,6 +117,11 @@ def get_app_store_connect_api_key
   )
 end
 
+# Only run setup_ci in known CI (e.g. GitHub Actions). Avoids poisoning default keychain locally.
+def in_ci
+  ENV['GITHUB_ACTIONS'] == 'true'
+end
+
 # Define method to parse xcconfig file, and replace $(DEVELOPMENT_TEAM) with ENV["TEAMID"]
 def parse_xcconfig_file(path)
   xcconfig = {}
@@ -146,7 +151,7 @@ ENV["BUNDLE_ID"] = xcconfig["BUNDLE_IDENTIFIER"]
 platform :ios do
   desc "Build Trio"
   lane :build_trio do
-    setup_ci if ENV['CI']
+    setup_ci if in_ci
     bundle_id = ENV["BUNDLE_ID"]
     workspace_root = GITHUB_WORKSPACE || Dir.pwd
 
@@ -328,7 +333,7 @@ platform :ios do
 
   desc "Provision Identifiers and Certificates"
   lane :identifiers do
-    setup_ci if ENV['CI']
+    setup_ci if in_ci
     ENV["MATCH_READONLY"] = false.to_s
     bundle_id = ENV["BUNDLE_ID"]
     
@@ -368,7 +373,7 @@ platform :ios do
 
   desc "Provision Certificates"
   lane :certs do
-    setup_ci if ENV['CI']
+    setup_ci if in_ci
     ENV["MATCH_READONLY"] = false.to_s
     bundle_id = ENV["BUNDLE_ID"]
     
@@ -390,7 +395,7 @@ platform :ios do
 
   desc "Validate Secrets"
   lane :validate_secrets do
-    setup_ci if ENV['CI']
+    setup_ci if in_ci
     ENV["MATCH_READONLY"] = true.to_s
     bundle_id = ENV["BUNDLE_ID"]
 
@@ -407,7 +412,7 @@ platform :ios do
 
   desc "Nuke Certs"
   lane :nuke_certs do
-    setup_ci if ENV['CI']
+    setup_ci if in_ci
     ENV["MATCH_READONLY"] = false.to_s
     
     get_app_store_connect_api_key
@@ -422,7 +427,7 @@ platform :ios do
 
   desc "Check Certificates and Trigger Workflow for Expired or Missing Certificates"
   lane :check_and_renew_certificates do
-    setup_ci if ENV['CI']
+    setup_ci if in_ci
     ENV["MATCH_READONLY"] = false.to_s
   
     get_app_store_connect_api_key
