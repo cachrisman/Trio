@@ -26,6 +26,13 @@ actor CloudLogUploader {
     private var lastSuccessfulUploadAt: Date?
     private let successCooldown: TimeInterval = 30
 
+    // MARK: - Better Stack ingestion filter (reduce volume; local logs unchanged)
+
+    private var ingestionThrottleLastSent: [String: Date] = [:]
+    private let ingestionThrottleInterval: TimeInterval = 60
+    private let ingestionStorageErrorMaxChars = 300
+    private let ingestionAutosensShortMaxChars = 15
+
     init(
         provider: CloudLogProvider,
         pairs: [RotatingPair],
@@ -147,9 +154,12 @@ actor CloudLogUploader {
             }
         }
 
+        // Apply ingestion filter: drop/throttle/trim for Better Stack volume reduction (local logs unchanged).
+        let eventsToUpload = applyIngestionFilter(events, now: Date())
+
         // Upload in batches with both count and byte-budget caps.
         // This helps avoid 413 errors regardless of log verbosity.
-        let batches = buildBatches(events: events)
+        let batches = buildBatches(events: eventsToUpload)
         for batch in batches {
             switch await provider.upload(events: batch) {
             case .success:
@@ -245,6 +255,75 @@ actor CloudLogUploader {
         }
 
         return attrs
+    }
+
+    // MARK: - Ingestion filter (Better Stack volume reduction)
+
+    /// Drops or trims events before upload. Local log files are unchanged.
+    private func applyIngestionFilter(_ events: [CloudLogEvent], now: Date) -> [CloudLogEvent] {
+        var result: [CloudLogEvent] = []
+        for event in events {
+            // Rule 2: Drop all PersistedProperty "Saved value successfully".
+            if event.message.contains("[PersistedProperty:") && event.message.contains("Saved value successfully.") {
+                continue
+            }
+
+            // Rule 1: Throttle OpenAPS Dynamic ISF prediction lines (1 per 60s per subtype).
+            if event.message.contains("Dynamic ISF (Logarithmic Formula)") {
+                let key: String?
+                if event.message.contains("adjusted predictions for IOB and ZT") { key = "openaps:IOB_ZT" }
+                else if event.message.contains("adjusted prediction for UAM") { key = "openaps:UAM" }
+                else { key = nil }
+                if let key = key {
+                    if let last = ingestionThrottleLastSent[key], now.timeIntervalSince(last) < ingestionThrottleInterval {
+                        continue
+                    }
+                    ingestionThrottleLastSent[key] = now
+                }
+            }
+
+            // Rule 5: Throttle short autosens.js lines (e.g. "autosens.js: 2g").
+            if let autosensRange = event.message.range(of: "autosens.js:") {
+                let rest = event.message[autosensRange.upperBound...].trimmingCharacters(in: .whitespaces)
+                if rest.count <= ingestionAutosensShortMaxChars {
+                    let key = "autosens:short"
+                    if let last = ingestionThrottleLastSent[key], now.timeIntervalSince(last) < ingestionThrottleInterval {
+                        continue
+                    }
+                    ingestionThrottleLastSent[key] = now
+                }
+            }
+
+            // Rule 3: Trim "Watch received data" — drop from "glucoseValues = (" onward in message and raw.
+            var message = event.message
+            var raw = event.raw
+            if message.contains("Watch received data") {
+                message = trimWatchReceivedDataMessage(message)
+                if let r = raw, r.contains("Watch received data") {
+                    raw = trimWatchReceivedDataMessage(r)
+                }
+            }
+
+            // Rule 4: Trim long storage/error messages (e.g. "Failed to retrieve file").
+            if message.contains("Failed to retrieve file") && message.count > ingestionStorageErrorMaxChars {
+                message = String(message.prefix(ingestionStorageErrorMaxChars)) + "…"
+                raw = nil
+            }
+
+            if message != event.message || raw != event.raw {
+                result.append(CloudLogEvent(message: message, dt: event.dt, attributes: event.attributes, raw: raw))
+            } else {
+                result.append(event)
+            }
+        }
+        return result
+    }
+
+    /// Keeps content before `glucoseValues = (`; drops the rest to reduce Better Stack payload size.
+    private func trimWatchReceivedDataMessage(_ text: String) -> String {
+        let marker = "glucoseValues = ("
+        guard let range = text.range(of: marker) else { return text }
+        return String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - State store
