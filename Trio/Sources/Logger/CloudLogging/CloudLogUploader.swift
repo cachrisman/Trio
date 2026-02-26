@@ -319,11 +319,13 @@ actor CloudLogUploader {
         return result
     }
 
-    /// Keeps content before `glucoseValues = (`; drops the rest to reduce Better Stack payload size.
+    /// Keeps content before `glucoseValues = (` (or `glucoseValues =     (` etc.); drops the rest to reduce Better Stack payload size.
     private func trimWatchReceivedDataMessage(_ text: String) -> String {
-        let marker = "glucoseValues = ("
-        guard let range = text.range(of: marker) else { return text }
-        return String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
+        // Match "glucoseValues =" followed by optional whitespace and "(" (watch state uses variable spacing).
+        guard let keyRange = text.range(of: "glucoseValues =") else { return text }
+        let afterKey = text[keyRange.upperBound...]
+        guard afterKey.firstIndex(where: { $0 == "(" }) != nil else { return text }
+        return String(text[..<keyRange.lowerBound]).trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - State store
