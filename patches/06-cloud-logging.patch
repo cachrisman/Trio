@@ -1,34 +1,28 @@
-From 8396d2e6b23981a9f9ec965a50829942a594cd8c Mon Sep 17 00:00:00 2001
+From cb3445cc606c2f997fb3d49c833c6ddd3a6cfd32 Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Tue, 24 Feb 2026 23:04:39 +0100
-Subject: [PATCH] feat: cloud logging with complication log drain
+Date: Thu, 26 Feb 2026 18:04:18 +0100
+Subject: [PATCH] feat: tmp-cloud-logging-update
 
-- Add BetterStack Logtail cloud logging provider with settings UI
-- Add CloudLogUploader, CloudLogLineParsing, CloudLogProvider, CloudLogEntryAggregator
-- Add AppTerminationTracker for detecting abnormal terminations
-- Add ComplicationLogBuffer for App Group file-based logging from Complication Extension
-- Add complication drain logic in WatchLogger with UTF-8 safe truncation, stable payloadIds, and upsert pending records
-- Tag complication-sourced logs with source=complication for BetterStack filtering
 ---
- Trio Watch App Extension/WatchLogger.swift    | 140 +++++++
- Trio Watch Shared/ComplicationLogBuffer.swift | 154 ++++++++
+ Trio Watch App Extension/WatchLogger.swift    | 140 ++++++
+ Trio Watch Shared/ComplicationLogBuffer.swift | 154 ++++++
  Trio/Sources/Application/AppDelegate.swift    |  34 +-
  Trio/Sources/Application/TrioApp.swift        |   1 +
  Trio/Sources/Assemblies/ServiceAssembly.swift |   1 +
- .../Helpers/AppTerminationTracker.swift       | 306 +++++++++++++++
- .../BetterStackLogtailProvider.swift          |  71 ++++
+ .../Helpers/AppTerminationTracker.swift       | 306 ++++++++++++
+ .../BetterStackLogtailProvider.swift          |  71 +++
  .../CloudLogging/BetterStackSettings.swift    |  35 ++
  .../CloudLogEntryAggregator.swift             |  41 ++
- .../CloudLogging/CloudLogLineParsing.swift    | 277 ++++++++++++++
- .../CloudLogging/CloudLogProvider.swift       | 103 +++++
- .../CloudLogging/CloudLogUploadService.swift  | 161 ++++++++
- .../CloudLogging/CloudLogUploader.swift       | 358 ++++++++++++++++++
+ .../CloudLogging/CloudLogLineParsing.swift    | 277 +++++++++++
+ .../CloudLogging/CloudLogProvider.swift       | 103 ++++
+ .../CloudLogging/CloudLogUploadService.swift  | 161 +++++++
+ .../CloudLogging/CloudLogUploader.swift       | 439 ++++++++++++++++++
  .../Modules/Settings/SettingItems.swift       |  11 +
- .../View/CloudLoggingSettingsView.swift       | 150 ++++++++
+ .../View/CloudLoggingSettingsView.swift       | 150 ++++++
  .../Settings/View/Subviews/ServicesView.swift |   1 +
  Trio/Sources/Router/Screen.swift              |   3 +
  TrioTests/CloudLogEntryAggregatorTests.swift  |  42 ++
- 18 files changed, 1888 insertions(+), 1 deletion(-)
+ 18 files changed, 1969 insertions(+), 1 deletion(-)
  create mode 100644 Trio Watch Shared/ComplicationLogBuffer.swift
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
@@ -1484,10 +1478,10 @@ index 000000000..893143be2
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
-index 000000000..f68db0c27
+index 000000000..1b7078bc1
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,439 @@
 +import Foundation
 +
 +/// iPhone-only log tailer/uploader.
@@ -1515,6 +1509,13 @@ index 000000000..f68db0c27
 +    private var isUploading = false
 +    private var lastSuccessfulUploadAt: Date?
 +    private let successCooldown: TimeInterval = 30
++
++    // MARK: - Better Stack ingestion filter (reduce volume; local logs unchanged)
++
++    private var ingestionThrottleLastSent: [String: Date] = [:]
++    private let ingestionThrottleInterval: TimeInterval = 60
++    private let ingestionStorageErrorMaxChars = 300
++    private let ingestionAutosensShortMaxChars = 15
 +
 +    init(
 +        provider: CloudLogProvider,
@@ -1637,9 +1638,12 @@ index 000000000..f68db0c27
 +            }
 +        }
 +
++        // Apply ingestion filter: drop/throttle/trim for Better Stack volume reduction (local logs unchanged).
++        let eventsToUpload = applyIngestionFilter(events, now: Date())
++
 +        // Upload in batches with both count and byte-budget caps.
 +        // This helps avoid 413 errors regardless of log verbosity.
-+        let batches = buildBatches(events: events)
++        let batches = buildBatches(events: eventsToUpload)
 +        for batch in batches {
 +            switch await provider.upload(events: batch) {
 +            case .success:
@@ -1735,6 +1739,77 @@ index 000000000..f68db0c27
 +        }
 +
 +        return attrs
++    }
++
++    // MARK: - Ingestion filter (Better Stack volume reduction)
++
++    /// Drops or trims events before upload. Local log files are unchanged.
++    private func applyIngestionFilter(_ events: [CloudLogEvent], now: Date) -> [CloudLogEvent] {
++        var result: [CloudLogEvent] = []
++        for event in events {
++            // Rule 2: Drop all PersistedProperty "Saved value successfully".
++            if event.message.contains("[PersistedProperty:") && event.message.contains("Saved value successfully.") {
++                continue
++            }
++
++            // Rule 1: Throttle OpenAPS Dynamic ISF prediction lines (1 per 60s per subtype).
++            if event.message.contains("Dynamic ISF (Logarithmic Formula)") {
++                let key: String?
++                if event.message.contains("adjusted predictions for IOB and ZT") { key = "openaps:IOB_ZT" }
++                else if event.message.contains("adjusted prediction for UAM") { key = "openaps:UAM" }
++                else { key = nil }
++                if let key = key {
++                    if let last = ingestionThrottleLastSent[key], now.timeIntervalSince(last) < ingestionThrottleInterval {
++                        continue
++                    }
++                    ingestionThrottleLastSent[key] = now
++                }
++            }
++
++            // Rule 5: Throttle short autosens.js lines (e.g. "autosens.js: 2g").
++            if let autosensRange = event.message.range(of: "autosens.js:") {
++                let rest = event.message[autosensRange.upperBound...].trimmingCharacters(in: .whitespaces)
++                if rest.count <= ingestionAutosensShortMaxChars {
++                    let key = "autosens:short"
++                    if let last = ingestionThrottleLastSent[key], now.timeIntervalSince(last) < ingestionThrottleInterval {
++                        continue
++                    }
++                    ingestionThrottleLastSent[key] = now
++                }
++            }
++
++            // Rule 3: Trim "Watch received data" — drop from "glucoseValues = (" onward in message and raw.
++            var message = event.message
++            var raw = event.raw
++            if message.contains("Watch received data") {
++                message = trimWatchReceivedDataMessage(message)
++                if let r = raw, r.contains("Watch received data") {
++                    raw = trimWatchReceivedDataMessage(r)
++                }
++            }
++
++            // Rule 4: Trim long storage/error messages (e.g. "Failed to retrieve file").
++            if message.contains("Failed to retrieve file") && message.count > ingestionStorageErrorMaxChars {
++                message = String(message.prefix(ingestionStorageErrorMaxChars)) + "…"
++                raw = nil
++            }
++
++            if message != event.message || raw != event.raw {
++                result.append(CloudLogEvent(message: message, dt: event.dt, attributes: event.attributes, raw: raw))
++            } else {
++                result.append(event)
++            }
++        }
++        return result
++    }
++
++    /// Keeps content before `glucoseValues = (` (or `glucoseValues =     (` etc.); drops the rest to reduce Better Stack payload size.
++    private func trimWatchReceivedDataMessage(_ text: String) -> String {
++        // Match "glucoseValues =" followed by optional whitespace and "(" (watch state uses variable spacing).
++        guard let keyRange = text.range(of: "glucoseValues =") else { return text }
++        let afterKey = text[keyRange.upperBound...]
++        guard afterKey.firstIndex(where: { $0 == "(" }) != nil else { return text }
++        return String(text[..<keyRange.lowerBound]).trimmingCharacters(in: .whitespaces)
 +    }
 +
 +    // MARK: - State store
