@@ -69,6 +69,11 @@ import WatchKit
     var showSyncingAnimation: Bool = false
     var syncTimeoutWorkItem: DispatchWorkItem?
 
+    /// Connectivity background tasks held until userInfo processing finishes. Main queue only.
+    private var pendingConnectivityTasks: [WKRefreshBackgroundTask] = []
+    private var lastUserInfoReceivedAt: Date?
+    private var quietWindowWorkItem: DispatchWorkItem?
+
     private var activationTimestamp: Date?
     private var forcedSinceActivation = false
 
@@ -292,8 +297,24 @@ import WatchKit
             return
         }
 
-        DispatchQueue.main.async {
-            self.scheduleUIUpdate(with: payload)
+        DispatchQueue.main.async { [self] in
+            if pendingConnectivityTasks.isEmpty {
+                scheduleUIUpdate(with: payload)
+            } else {
+                pendingData.merge(payload) { _, new in new }
+                lastUserInfoReceivedAt = Date()
+                quietWindowWorkItem?.cancel()
+                finalizeWorkItem?.cancel()
+                let work = DispatchWorkItem { [self] in
+                    finalizePendingData()
+                    for t in pendingConnectivityTasks {
+                        t.setTaskCompletedWithSnapshot(false)
+                    }
+                    pendingConnectivityTasks.removeAll()
+                }
+                quietWindowWorkItem = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+            }
         }
     }
 
@@ -735,6 +756,19 @@ import WatchKit
 
                     refreshTask.setTaskCompletedWithSnapshot(false)
                     scheduleBackgroundRefresh()
+                } else if task is WKWatchConnectivityRefreshBackgroundTask {
+                    // Hold until userInfo processing completes (quiet-window or 5s safety timeout). All access on main.
+                    // Multiple tasks in one wake are all stored; multiple didReceiveUserInfo reset the 300ms quiet window; last timer runs, then one finalize and complete all. If handle(_:backgroundTasks:) is delivered after the debounce already fired (userInfo first, then task), the 5s timeout rescues the task.
+                    DispatchQueue.main.async { [self] in
+                        pendingConnectivityTasks.append(task)
+                        let taskToComplete = task
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [self] in
+                            if let idx = pendingConnectivityTasks.firstIndex(where: { $0 === taskToComplete }) {
+                                pendingConnectivityTasks.remove(at: idx)
+                                taskToComplete.setTaskCompletedWithSnapshot(false)
+                            }
+                        }
+                    }
                 } else {
                     task.setTaskCompletedWithSnapshot(false)
                 }

@@ -2,6 +2,8 @@ import WatchKit
 
 final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     func applicationDidFinishLaunching() {
+        // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
+        TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
         Task {
             await WatchLogger.shared.log("Watch extension launched", force: true)
             // Emit App Group diagnostics early, before any snapshot reads/writes.
