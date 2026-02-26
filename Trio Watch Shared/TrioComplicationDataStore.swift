@@ -224,6 +224,18 @@ final class TrioComplicationDataStore {
     /// Thread-safe one-time flags for logging (accessed from multiple threads via latestSnapshot).
     private static let flagLock = OSAllocatedUnfairLock(initialState: (appGroupUnavailable: false, diagnostics: false))
 
+    /// Optional log forwarder (e.g. to WatchLogger). Set only by the Watch App Extension; complication extension never sets it.
+    /// Guarded by logForwarderLock because log() can be called from any thread (e.g. latestSnapshot() from WidgetKit's queue).
+    private static let logForwarderLock = OSAllocatedUnfairLock(initialState: LogForwarderState())
+    private static struct LogForwarderState {
+        var forwarder: ((String) -> Void)?
+    }
+
+    /// Set from the Watch App Extension at launch so TrioComplicationDataStore logs also go to WatchLogger. Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil there.
+    static func setLogForwarder(_ forwarder: ((String) -> Void)?) {
+        logForwarderLock.withLock { $0.forwarder = forwarder }
+    }
+
     private var snapshotFileURL: URL? {
         sharedContainerURLProvider()?.appendingPathComponent(snapshotFilename)
     }
@@ -419,6 +431,7 @@ final class TrioComplicationDataStore {
 
     private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool, minInterval: TimeInterval = 30) {
         assert(Thread.isMainThread, "saveOnMain must be called on main thread")
+        log("saveOnMain entered: glucose=\(snapshot.glucose), readingDate=\(snapshot.readingDate)")
 
         // Future-skew guard: reject snapshots with readingDate more than 2 minutes in the future.
         if snapshot.readingDate.timeIntervalSinceNow > 120 {
@@ -467,6 +480,7 @@ final class TrioComplicationDataStore {
             return
         }
 
+        log("saveOnMain: passed dedup, writing snapshot")
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
@@ -715,5 +729,7 @@ final class TrioComplicationDataStore {
 
     private func log(_ message: String) {
         ComplicationLogBuffer.append(message)
+        let forwarder = Self.logForwarderLock.withLock { $0.forwarder }
+        forwarder?(message)
     }
 }
