@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v5 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v6 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -292,7 +292,15 @@ Avoid using “apply patch A onto feature branch B” as the normal approach; in
 
 ## Local builds (authoritative, mirrors CI state)
 
-Use `ci/local-build.sh` (authoritative).
+Use `ci/local-build.sh` (authoritative). **Always run dev+patches builds from the `Trio-dev` worktree with `dev` checked out** (see branch requirement below).
+
+### Build + release (single pass, preferred for shipping)
+
+```bash
+ci/local-build.sh --base-branch dev
+```
+
+Preferred over split build-only/release-only because it builds, uploads, and records the release from the **same worktree**, ensuring the release manifest metadata matches what was actually compiled.
 
 ### Build-only (validate, no upload)
 
@@ -308,7 +316,7 @@ ci/local-build.sh --release-only
 
 Notes:
 - `--release-only` expects `./Trio.ipa` to exist (produced by the build-only step).
-- This splits “does it build?” from “upload to TestFlight”.
+- This splits "does it build?" from "upload to TestFlight".
 
 ### Build current branch state (skip patches)
 
@@ -321,6 +329,16 @@ ci/local-build.sh --build-current --build-only
 ```bash
 ci/local-build.sh --base-branch dev --reapply-stash --include-untracked --build-only
 ```
+
+### Branch requirement for dev+patches builds
+
+The build script's `REAPPLY_STASH` heuristic compares the current branch against `--base-branch`. When they match (e.g., you're on `dev` and building with `--base-branch dev`), uncommitted changes to patch files are automatically applied to the build worktree. When they differ (e.g., you're on `tmp/complication-fix` but `--base-branch dev`), `REAPPLY_STASH` defaults to `0` and uncommitted changes are **silently excluded**.
+
+**Rule:** Always `cd` to `Trio-dev` and `git checkout dev` before running `--base-branch dev` builds. If you must build from a non-dev branch, add `--reapply-stash` explicitly.
+
+### Release-only metadata caveat
+
+In `--release-only` mode, `record-release.sh` reads patch metadata from the current working directory (`ROOT_DIR/patches/`), **not** from the build worktree used during the build step. If patch files have uncommitted changes, the release manifest may show metadata that doesn't match the compiled binary. Prefer single-pass builds (build + release in one run) when shipping to avoid this discrepancy.
 
 ---
 
@@ -377,6 +395,12 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v6
+- Added "Build + release (single pass)" as the preferred shipping command to keep metadata consistent.
+- Added "Branch requirement for dev+patches builds" section documenting the `REAPPLY_STASH` heuristic: running `--base-branch dev` from a non-dev branch silently excludes uncommitted patch changes.
+- Added "Release-only metadata caveat" documenting that `--release-only` reads patch metadata from `ROOT_DIR`, not the build worktree, which can cause manifest/binary metadata mismatch.
+- Updated intro line to emphasize running from `Trio-dev` with `dev` checked out.
 
 ### v5
 - Rewrote "Updating an existing patch (mid-stack)" workflow based on lessons learned:

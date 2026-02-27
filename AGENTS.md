@@ -69,6 +69,7 @@ ci/local-build.sh --build-current --build-only
 ```bash
 ci/local-build.sh --base-branch dev --build-only
 ```
+**Important:** Run this from the `Trio-dev` worktree with `dev` checked out. If the current branch is not `dev`, the build script sets `REAPPLY_STASH=0` and silently excludes uncommitted changes to patch files. If you must build from a non-dev branch, add `--reapply-stash` explicitly.
 
 ### Validate patch stack (authoritative)
 ```bash
@@ -115,33 +116,57 @@ After syncing, re-run the patch validation.
 
 ## Better Stack MCP Usage
 
-### Authentication
+Agents use the Better Stack MCP server (`user-better-stack`) to query Trio and Nightscout logs via ClickHouse SQL. **The MCP must be configured with a valid Better Stack Team API token** in Cursor’s MCP settings. If `telemetry_list_teams_tool` returns "No teams available" or `telemetry_query` returns 401 / "Failed to obtain ClickHouse credentials", the token is missing or invalid — the user must add or refresh it in the Better Stack MCP config. See [Better Stack API token docs](https://betterstack.com/docs/logs/api/getting-started/#obtaining-a-logtail-api-token).
 
-- Before issuing any queries, authenticate using the telemetry_list_teams_tool and the telemetry_create_cloud_connection_tool with the Better Stack MCP server to obtain the required credentials.
-- Use the provided authentication flow to retrieve the username and password or token needed for subsequent MCP tool calls.
-- **Never log, echo, persist, or summarize authentication credentials in chat output.**
+**Never log, echo, persist, or summarize credentials** returned by `telemetry_create_cloud_connection_tool`.
 
-### Querying Better Stack via MCP
+### How agents should search logs (do this every time)
 
-- Use the Better Stack MCP server to query logs and events related to Trio and Nightscout.
-- Prefer scoped, time-bounded queries (e.g., last 1h, 6h, 24h) rather than unbounded searches.
-- When available, filter by service, source, tag, or severity (e.g., `trio`, `nightscout`, `sensor`, `carbs`, `errors`, `warnings`).
-- If a query returns excessive data, refine it by narrowing the time range or adding filters before retrying.
+1. **Create cloud connection (use defaults first)**  
+   Call `telemetry_create_cloud_connection_tool` with **team_id `491594`** and **source_id `1659391`** (Trio) unless you need Nightscout logs, in which case use source_id `1659378`.  
+   This must run before any query; it establishes the session. Do not echo or store the credentials in the response.  
+   **If this fails** (e.g. "No team found", 401): then call `telemetry_list_teams_tool` with `{}`, note the team ID from the response, call `telemetry_list_sources_tool` with `{"team_id": <that_id>}`, note the source_id for Trio or Nightscout, and retry create_cloud_connection with those IDs.
 
-### Suggested default queries
+2. **Run queries**  
+   `telemetry_query` with three arguments:
+   - **query**: ClickHouse SQL string (see query format below).
+   - **table**: For Trio use `t491594.trio`; for Nightscout use `t491594.nightscout_chrisman_io`. If you had to discover team/source in step 1, use `t<team_id>.<source_slug>` (slug from source name: lowercase, underscores for spaces).
+   - **source_id**: For Trio use `1659391`; for Nightscout use `1659378`. If you had to discover IDs in step 1, use the source_id from list_sources.
+
+3. **Optional: schema / query help**  
+   `telemetry_get_query_instructions_tool` with `{"id": <source_id>, "source_type": "logs"}` returns collection names, `raw` JSON fields, and example SQL. Use `1659391` for Trio (or the source_id you discovered).
+
+### Query format (Trio logs)
+
+- **Hot buffer vs full history**: `remote(t491594_trio_logs)` holds only the **last ~30–40 minutes** of data (hot tier). Querying e.g. “last 40 HOUR” with only `FROM remote(...)` will return only that recent slice, not 40 hours. For **yesterday and today** or any real historical window, include S3:  
+  `FROM remote(t491594_trio_logs) WHERE dt >= ... AND dt < ... UNION ALL SELECT ... FROM s3Cluster(primary, t491594_trio_s3) WHERE _row_type = 1 AND dt >= ... AND dt < ...`  
+  (same time bounds in both branches). Use `t<team_id>_trio_logs` / `t<team_id>_trio_s3` if you discovered a different team_id.
+- **Recent data (hot only)**: For the last few minutes to ~1 hour, `FROM remote(t491594_trio_logs)` with `WHERE dt > now() - INTERVAL N HOUR` (e.g. 1, 6). If you had to discover team_id, use `t<team_id>_trio_logs`.
+- **Message / category**: Stored in the `raw` JSON column. Use `JSONExtract(raw, 'message', 'Nullable(String)')`, `JSONExtract(raw, 'category', 'Nullable(String)')`, etc.
+- **High-volume patterns**: Column `_pattern` groups similar lines. Use `GROUP BY _pattern ORDER BY count(*) DESC` to find dominant patterns.
+- **Always**: Use a time bound (e.g. `INTERVAL 18 HOUR`) and a reasonable `LIMIT` to avoid oversized results.
+
+### Example queries (Trio, last 18h)
+
+Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your team/source if different):
+
+- **Volume**: `SELECT count(*) AS events_18h, sum(length(raw)) AS bytes_18h FROM remote(t491594_trio_logs) WHERE dt > now() - INTERVAL 18 HOUR`
+- **PersistedProperty count (expect 0 after filter)**: `SELECT count(*) FROM remote(t491594_trio_logs) WHERE dt > now() - INTERVAL 18 HOUR AND JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%[PersistedProperty:%' AND JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%Saved value successfully%'`
+- **Watch received data (check trim)**: `SELECT length(JSONExtract(raw, 'message', 'Nullable(String)')) AS len, JSONExtract(raw, 'message', 'Nullable(String)') AS msg FROM remote(t491594_trio_logs) WHERE dt > now() - INTERVAL 18 HOUR AND JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%Watch received data%' ORDER BY len DESC LIMIT 5`
+- **Top patterns**: `SELECT _pattern, count(*) AS cnt FROM remote(t491594_trio_logs) WHERE dt > now() - INTERVAL 18 HOUR GROUP BY _pattern ORDER BY cnt DESC LIMIT 20`
+
+### Suggested asks (natural language)
 
 - "Show errors and warnings from Trio in the last 6 hours."
 - "List Nightscout anomalies or ingestion issues in the last 24 hours."
 - "Were there any data gaps or missing entries longer than 20 minutes in the last day?"
-- "Show log events within ±15 minutes of a specified timestamp (e.g., when a BG spike or drop occurred)."
 - "Summarize repeated warnings or unusual patterns since midnight."
 
 ### Interpretation & summarization
 
-- Summarize findings in plain language before citing specific timestamps or log excerpts.
-- Highlight correlations across systems (e.g., Trio and Nightscout events occurring close together).
-- Explicitly state when no relevant events are found for the queried time window.
-- Prefer concise summaries over raw log dumps unless the user explicitly requests details.
+- Summarize in plain language before citing timestamps or log excerpts.
+- State when no relevant events are found for the time window.
+- Prefer concise summaries over raw dumps unless the user asks for details.
 
 ---
 
