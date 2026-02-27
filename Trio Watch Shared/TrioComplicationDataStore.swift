@@ -227,7 +227,7 @@ final class TrioComplicationDataStore {
     /// Optional log forwarder (e.g. to WatchLogger). Set only by the Watch App Extension; complication extension never sets it.
     /// Guarded by logForwarderLock because log() can be called from any thread (e.g. latestSnapshot() from WidgetKit's queue).
     private static let logForwarderLock = OSAllocatedUnfairLock(initialState: LogForwarderState())
-    private static struct LogForwarderState {
+    private struct LogForwarderState {
         var forwarder: ((String) -> Void)?
     }
 
