@@ -1,25 +1,25 @@
-From 6b98b51a681b32c10112694ecdeb8d994023ced9 Mon Sep 17 00:00:00 2001
+From bb308043eb5a7aa44638a7e8714c1375e7fa5e87 Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Wed, 25 Feb 2026 23:26:33 +0100
-Subject: [PATCH] feat: tmp-complication-fix
+Date: Thu, 26 Feb 2026 18:08:53 +0100
+Subject: [PATCH] feat: watch-complication-improvements
 
 ---
- .../ExtensionDelegate.swift                   |  29 +
+ .../ExtensionDelegate.swift                   |  31 +
  Trio Watch App Extension/TrioWatchApp.swift   |   2 +
  .../Views/ComplicationDebugView.swift         | 372 +++++++++
  .../Views/TrioMainWatchView.swift             |  55 +-
  .../WatchState+Requests.swift                 |  19 +
- Trio Watch App Extension/WatchState.swift     | 525 +++++++++----
+ Trio Watch App Extension/WatchState.swift     | 561 +++++++++----
  Trio Watch App/Info.plist                     |  15 +-
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
  Trio Watch Complication/Info.plist            |   2 +
  .../TrioWatchComplication.entitlements        |  10 +
  .../TrioWatchComplication.swift               | 358 ++++++++-
  .../TrioWatchComplicationPreview.swift        | 124 +++
- .../TrioComplicationDataStore.swift           | 719 ++++++++++++++++++
+ .../TrioComplicationDataStore.swift           | 735 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
  .../WatchManager/AppleWatchManager.swift      | 205 +++--
- 15 files changed, 2172 insertions(+), 283 deletions(-)
+ 15 files changed, 2225 insertions(+), 284 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -30,14 +30,16 @@ Subject: [PATCH] feat: tmp-complication-fix
 
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
 new file mode 100644
-index 000000000..eb964f7d1
+index 000000000..6707c3b25
 --- /dev/null
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,31 @@
 +import WatchKit
 +
 +final class ExtensionDelegate: NSObject, WKApplicationDelegate {
 +    func applicationDidFinishLaunching() {
++        // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
++        TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
 +        Task {
 +            await WatchLogger.shared.log("Watch extension launched", force: true)
 +            // Emit App Group diagnostics early, before any snapshot reads/writes.
@@ -599,7 +601,7 @@ index d47a971c9..f53d1ce43 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f4fb33fde..be2b472f1 100644
+index f4fb33fde..c1e954fb4 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,20 +1,19 @@
@@ -629,7 +631,7 @@ index f4fb33fde..be2b472f1 100644
      var currentGlucose: String = "--"
      var currentGlucoseColorString: String = "#ffffff"
      var trend: String? = ""
-@@ -28,59 +27,87 @@ import WatchConnectivity
+@@ -28,59 +27,92 @@ import WatchConnectivity
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
@@ -690,6 +692,11 @@ index f4fb33fde..be2b472f1 100644
      var showSyncingAnimation: Bool = false
 +    var syncTimeoutWorkItem: DispatchWorkItem?
 +
++    /// Connectivity background tasks held until userInfo processing finishes. Main queue only.
++    private var pendingConnectivityTasks: [WKRefreshBackgroundTask] = []
++    private var lastUserInfoReceivedAt: Date?
++    private var quietWindowWorkItem: DispatchWorkItem?
++
 +    private var activationTimestamp: Date?
 +    private var forcedSinceActivation = false
 +
@@ -733,7 +740,7 @@ index f4fb33fde..be2b472f1 100644
      private func setupSession() {
          if WCSession.isSupported() {
              let session = WCSession.default
-@@ -88,16 +115,16 @@ import WatchConnectivity
+@@ -88,16 +120,16 @@ import WatchConnectivity
              session.activate()
              self.session = session
              Task {
@@ -753,7 +760,7 @@ index f4fb33fde..be2b472f1 100644
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
          Task {
-@@ -106,21 +133,17 @@ import WatchConnectivity
+@@ -106,21 +138,17 @@ import WatchConnectivity
  
          if success {
              Task {
@@ -777,7 +784,7 @@ index f4fb33fde..be2b472f1 100644
              DispatchQueue.main.async {
                  self.showCommsAnimation = false
              }
-@@ -135,7 +158,7 @@ import WatchConnectivity
+@@ -135,7 +163,7 @@ import WatchConnectivity
  
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                  self.showAcknowledgmentBanner = false
@@ -786,7 +793,7 @@ index f4fb33fde..be2b472f1 100644
                  Task {
                      await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                  }
-@@ -145,14 +168,12 @@ import WatchConnectivity
+@@ -145,14 +173,12 @@ import WatchConnectivity
  
      // MARK: - WCSessionDelegate
  
@@ -803,7 +810,7 @@ index f4fb33fde..be2b472f1 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -160,84 +181,68 @@ import WatchConnectivity
+@@ -160,84 +186,68 @@ import WatchConnectivity
  
              if activationState == .activated {
                  Task {
@@ -899,7 +906,7 @@ index f4fb33fde..be2b472f1 100644
              }
              DispatchQueue.main.async {
                  self.showSyncingAnimation = false
-@@ -246,98 +251,113 @@ import WatchConnectivity
+@@ -246,98 +256,129 @@ import WatchConnectivity
      }
  
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
@@ -936,9 +943,26 @@ index f4fb33fde..be2b472f1 100644
  
 -        WatchStateSnapshot.saveLatestDateToDisk(snapshot.date)
 -
-         DispatchQueue.main.async {
+-        DispatchQueue.main.async {
 -            self.scheduleUIUpdate(with: snapshot.payload)
-+            self.scheduleUIUpdate(with: payload)
++        DispatchQueue.main.async { [self] in
++            if pendingConnectivityTasks.isEmpty {
++                scheduleUIUpdate(with: payload)
++            } else {
++                pendingData.merge(payload) { _, new in new }
++                lastUserInfoReceivedAt = Date()
++                quietWindowWorkItem?.cancel()
++                finalizeWorkItem?.cancel()
++                let work = DispatchWorkItem { [self] in
++                    finalizePendingData()
++                    for t in pendingConnectivityTasks {
++                        t.setTaskCompletedWithSnapshot(false)
++                    }
++                    pendingConnectivityTasks.removeAll()
++                }
++                quietWindowWorkItem = work
++                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
++            }
          }
      }
  
@@ -1048,7 +1072,7 @@ index f4fb33fde..be2b472f1 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -348,7 +368,7 @@ import WatchConnectivity
+@@ -348,7 +389,7 @@ import WatchConnectivity
                  }
  
                  Task {
@@ -1057,7 +1081,7 @@ index f4fb33fde..be2b472f1 100644
                  }
  
                  switch ackCode {
-@@ -371,26 +391,29 @@ import WatchConnectivity
+@@ -371,26 +412,29 @@ import WatchConnectivity
                  }
              }
  
@@ -1094,7 +1118,7 @@ index f4fb33fde..be2b472f1 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -399,31 +422,27 @@ import WatchConnectivity
+@@ -399,31 +443,27 @@ import WatchConnectivity
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -1130,7 +1154,7 @@ index f4fb33fde..be2b472f1 100644
              DispatchQueue.main.async {
                  self.showSyncingAnimation = false
              }
-@@ -431,38 +450,34 @@ import WatchConnectivity
+@@ -431,38 +471,34 @@ import WatchConnectivity
          }
  
          Task {
@@ -1177,7 +1201,7 @@ index f4fb33fde..be2b472f1 100644
          if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
              self.currentGlucose = currentGlucose
          }
-@@ -494,29 +509,27 @@ import WatchConnectivity
+@@ -494,29 +530,27 @@ import WatchConnectivity
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
              glucoseValues = glucoseData.compactMap { data in
                  guard let glucose = data["glucose"] as? Double,
@@ -1219,7 +1243,7 @@ index f4fb33fde..be2b472f1 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -537,41 +550,233 @@ import WatchConnectivity
+@@ -537,41 +571,246 @@ import WatchConnectivity
              }
          }
  
@@ -1312,26 +1336,35 @@ index f4fb33fde..be2b472f1 100644
 +        else {
 +            Task {
 +                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: invalid glucose '\(currentGlucose)'")
-+            }
+             }
 +            return
-+        }
-+
+         }
+ 
+-        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
+-            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
+-                maxCarbs = decimalValue
 +        if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
 +            guard glucoseValue >= 40 && glucoseValue <= 400 else {
 +                Task {
 +                    await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
 +                }
 +                return
-+            }
-+        }
-+
+             }
+         }
+ 
+-        if let maxFatValue = message[WatchMessageKeys.maxFat] {
+-            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
+-                maxFat = decimalValue
 +        guard let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp else {
 +            Task {
 +                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: no valid CGM reading timestamp")
              }
 +            return
-+        }
-+
+         }
+ 
+-        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
+-            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
+-                maxProtein = decimalValue
 +        let snapshot = TrioComplicationSnapshot(
 +            glucose: currentGlucose,
 +            trend: trend ?? "",
@@ -1343,11 +1376,8 @@ index f4fb33fde..be2b472f1 100644
 +
 +        Task {
 +            await WatchLogger.shared.log("🔄 forceComplicationUpdate: glucose=\(currentGlucose), readingDate=\(effectiveReadingDate)")
-         }
- 
--        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
--            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
--                maxCarbs = decimalValue
++        }
++
 +        TrioComplicationDataStore.shared.save(snapshot, triggerReload: false)
 +        TrioComplicationDataStore.shared.forceReload(scheduleRetry: false)
 +    }
@@ -1373,12 +1403,9 @@ index f4fb33fde..be2b472f1 100644
 +                        await WatchLogger.shared.log("Scheduled background refresh at \(refreshDate)")
 +                    }
 +                }
-             }
-         }
- 
--        if let maxFatValue = message[WatchMessageKeys.maxFat] {
--            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
--                maxFat = decimalValue
++            }
++        }
++
 +        func handleBackgroundTasks(_ tasks: Set<WKRefreshBackgroundTask>) {
 +            Task {
 +                await WatchLogger.shared.log("Handling background tasks: \(tasks.count)")
@@ -1401,16 +1428,26 @@ index f4fb33fde..be2b472f1 100644
 +
 +                    refreshTask.setTaskCompletedWithSnapshot(false)
 +                    scheduleBackgroundRefresh()
++                } else if task is WKWatchConnectivityRefreshBackgroundTask {
++                    // Hold until userInfo processing completes (quiet-window or 5s safety timeout). All access on main.
++                    // Multiple tasks in one wake are all stored; multiple didReceiveUserInfo reset the 300ms quiet window; last timer runs, then one finalize and complete all. If handle(_:backgroundTasks:) is delivered after the debounce already fired (userInfo first, then task), the 5s timeout rescues the task.
++                    DispatchQueue.main.async { [self] in
++                        pendingConnectivityTasks.append(task)
++                        let taskToComplete = task
++                        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [self] in
++                            if let idx = pendingConnectivityTasks.firstIndex(where: { $0 === taskToComplete }) {
++                                pendingConnectivityTasks.remove(at: idx)
++                                taskToComplete.setTaskCompletedWithSnapshot(false)
++                            }
++                        }
++                    }
 +                } else {
 +                    task.setTaskCompletedWithSnapshot(false)
 +                }
-             }
-         }
++            }
++        }
 +    #endif
- 
--        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
--            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
--                maxProtein = decimalValue
++
 +    func loadFallbackDataFromComplication() {
 +        guard let snapshot = TrioComplicationDataStore.shared.latestSnapshot() else {
 +            DispatchQueue.main.async {
@@ -2101,10 +2138,10 @@ index 000000000..e4bce5153
 +#endif
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..4efb4a178
+index 000000000..af6aa7eb1
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,719 @@
+@@ -0,0 +1,735 @@
 +import Foundation
 +import os
 +import WidgetKit
@@ -2331,6 +2368,18 @@ index 000000000..4efb4a178
 +    /// Thread-safe one-time flags for logging (accessed from multiple threads via latestSnapshot).
 +    private static let flagLock = OSAllocatedUnfairLock(initialState: (appGroupUnavailable: false, diagnostics: false))
 +
++    /// Optional log forwarder (e.g. to WatchLogger). Set only by the Watch App Extension; complication extension never sets it.
++    /// Guarded by logForwarderLock because log() can be called from any thread (e.g. latestSnapshot() from WidgetKit's queue).
++    private static let logForwarderLock = OSAllocatedUnfairLock(initialState: LogForwarderState())
++    private struct LogForwarderState {
++        var forwarder: ((String) -> Void)?
++    }
++
++    /// Set from the Watch App Extension at launch so TrioComplicationDataStore logs also go to WatchLogger. Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil there.
++    static func setLogForwarder(_ forwarder: ((String) -> Void)?) {
++        logForwarderLock.withLock { $0.forwarder = forwarder }
++    }
++
 +    private var snapshotFileURL: URL? {
 +        sharedContainerURLProvider()?.appendingPathComponent(snapshotFilename)
 +    }
@@ -2526,6 +2575,7 @@ index 000000000..4efb4a178
 +
 +    private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool, minInterval: TimeInterval = 30) {
 +        assert(Thread.isMainThread, "saveOnMain must be called on main thread")
++        log("saveOnMain entered: glucose=\(snapshot.glucose), readingDate=\(snapshot.readingDate)")
 +
 +        // Future-skew guard: reject snapshots with readingDate more than 2 minutes in the future.
 +        if snapshot.readingDate.timeIntervalSinceNow > 120 {
@@ -2574,6 +2624,7 @@ index 000000000..4efb4a178
 +            return
 +        }
 +
++        log("saveOnMain: passed dedup, writing snapshot")
 +        do {
 +            let encoder = JSONEncoder()
 +            encoder.dateEncodingStrategy = .iso8601
@@ -2822,6 +2873,8 @@ index 000000000..4efb4a178
 +
 +    private func log(_ message: String) {
 +        ComplicationLogBuffer.append(message)
++        let forwarder = Self.logForwarderLock.withLock { $0.forwarder }
++        forwarder?(message)
 +    }
 +}
 diff --git a/Trio/Resources/TrioWatch.entitlements b/Trio/Resources/TrioWatch.entitlements
