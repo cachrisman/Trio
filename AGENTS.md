@@ -32,6 +32,9 @@ Read first:
 8) **For plan/workflow document edits, increment the document version and update the changelog.**
    - When editing plan/workflow docs (e.g., `*.plan.md`, `*.cursor.md`, workflow prompts/checklists), always increment the document's version number and update the changelog section in the same change.
 
+9) **If you stash at the beginning of a workflow, pop at the end.**
+   - The worktree state should be the same as before the run (aside from any commits you were asked to make).
+
 ## Non-negotiable rules for working with patches
 
 1) **Keep patch filenames and ordering deterministic.**
