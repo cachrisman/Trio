@@ -1,7 +1,7 @@
-From bb308043eb5a7aa44638a7e8714c1375e7fa5e87 Mon Sep 17 00:00:00 2001
+From ebaa6e7e901f6bd24160578ecbab017587047dc9 Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Thu, 26 Feb 2026 18:08:53 +0100
-Subject: [PATCH] feat: watch-complication-improvements
+Date: Tue, 3 Mar 2026 00:35:16 +0100
+Subject: [PATCH] feat: tmp-09-update
 
 ---
  .../ExtensionDelegate.swift                   |  31 +
@@ -14,12 +14,13 @@ Subject: [PATCH] feat: watch-complication-improvements
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
  Trio Watch Complication/Info.plist            |   2 +
  .../TrioWatchComplication.entitlements        |  10 +
- .../TrioWatchComplication.swift               | 358 ++++++++-
+ .../TrioWatchComplication.swift               | 371 +++++++-
  .../TrioWatchComplicationPreview.swift        | 124 +++
- .../TrioComplicationDataStore.swift           | 735 ++++++++++++++++++
+ Trio Watch Shared/ComplicationLogBuffer.swift | 161 +---
+ .../TrioComplicationDataStore.swift           | 790 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
  .../WatchManager/AppleWatchManager.swift      | 205 +++--
- 15 files changed, 2225 insertions(+), 284 deletions(-)
+ 16 files changed, 2306 insertions(+), 432 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -1580,11 +1581,12 @@ index 000000000..9a37de423
 +</dict>
 +</plist>
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
-index 411968936..e1daf312a 100644
+index 411968936..4c793402f 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
 +++ b/Trio Watch Complication/TrioWatchComplication.swift	
-@@ -1,40 +1,191 @@
+@@ -1,40 +1,204 @@
 +import Foundation
++import os
  import SwiftUI
  import WidgetKit
  
@@ -1712,6 +1714,7 @@ index 411968936..e1daf312a 100644
  
  struct TrioWatchComplicationProvider: TimelineProvider {
 +    private let refreshInterval: TimeInterval = 300
++    private static let timelineLog = Logger(subsystem: "org.nightscout.trio.watch.complication", category: "getTimeline")
 +
      func placeholder(in _: Context) -> TrioWatchComplicationEntry {
 -        TrioWatchComplicationEntry(date: Date())
@@ -1739,6 +1742,17 @@ index 411968936..e1daf312a 100644
 -        let entry = TrioWatchComplicationEntry(date: Date())
 -        let timeline = Timeline(entries: [entry], policy: .never)
 -        completion(timeline)
++        // Instrumentation: log so reload→getTimeline correlation can be checked in Better Stack (Phase 0.2).
++        // Verify both event types (complication_reload_requested from watch app, complication_get_timeline_called here) appear for the same device so joins on reload_id (and reload_requested_at_epoch_seconds as fallback/sanity check) are valid.
++        let nowEpochSeconds = Int(Date().timeIntervalSince1970)
++        if let newest = TrioComplicationDataStore.shared.newestReloadRecord() {
++            let latency = max(0, nowEpochSeconds - newest.requestedAtEpochSeconds)
++            Self.timelineLog.info("event=complication_get_timeline_called most_recent_reload_id=\(newest.id.uuidString, privacy: .public) latency_seconds=\(latency, privacy: .public) reload_requested_at_epoch_seconds=\(newest.requestedAtEpochSeconds, privacy: .public)")
++        } else {
++            // Literals only; if refactored to interpolate e.g. "none", use privacy: .public.
++            Self.timelineLog.info("event=complication_get_timeline_called most_recent_reload_id=none latency_seconds=-1 reload_requested_at_epoch_seconds=-1")
++        }
++
 +        let snapshot = loadLatestEntry()
 +        var entries: [TrioWatchComplicationEntry] = []
 +        let now = Date().roundedDownToMinute
@@ -1790,7 +1804,7 @@ index 411968936..e1daf312a 100644
          switch widgetFamily {
          case .accessoryCircular:
              TrioAccessoryCircularView(entry: entry)
-@@ -43,48 +194,130 @@ struct TrioWatchComplicationEntryView: View {
+@@ -43,48 +207,130 @@ struct TrioWatchComplicationEntryView: View {
          default:
              Image("ComplicationIcon")
                  .widgetAccentable()
@@ -1938,7 +1952,7 @@ index 411968936..e1daf312a 100644
          .supportedFamilies([
              .accessoryCorner,
              .accessoryCircular
-@@ -92,14 +325,59 @@ struct TrioAccessoryCircularView: View {
+@@ -92,14 +338,59 @@ struct TrioAccessoryCircularView: View {
      }
  }
  
@@ -2136,12 +2150,184 @@ index 000000000..e4bce5153
 +        }
 +    }
 +#endif
+diff --git a/Trio Watch Shared/ComplicationLogBuffer.swift b/Trio Watch Shared/ComplicationLogBuffer.swift
+index 469f91f5c..ff218fd9f 100644
+--- a/Trio Watch Shared/ComplicationLogBuffer.swift	
++++ b/Trio Watch Shared/ComplicationLogBuffer.swift	
+@@ -1,154 +1,19 @@
+ import Foundation
+ 
+-/// Append-only log buffer for the Complication Extension, written to App Group storage.
+-/// The Watch App drains this file and sends raw lines via watchLogs envelope.
+-/// Format matches WatchLogger: `[timestamp] [File.swift:line] function → message`
+-/// ComplicationLogBuffer is used as the file/category so the parser can tag source=complication.
++/// In-memory ring buffer for complication-related log lines. Used by TrioComplicationDataStore.log().
++/// Watch App Extension can set a forwarder on the data store so lines also go to WatchLogger; this buffer
++/// just retains recent entries for debugging. Thread-safe.
+ enum ComplicationLogBuffer {
+-    private static let logFileName = "complication_log.txt"
+-    private static let logsSubdir = "logs"
+-    private static let sizeCapBytes = 64 * 1024
+-    private static let truncateKeepBytes = 32 * 1024
+-
+-    private static let queue = DispatchQueue(label: "ComplicationLogBuffer.queue")
+-    private static var hasLoggedAppGroupUnavailable = false
+-
+-    private static let dateFormatter: DateFormatter = {
+-        let formatter = DateFormatter()
+-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+-        return formatter
+-    }()
+-
+-    /// Appends a formatted log line to the App Group buffer.
+-    /// Falls back to NSLog if App Group is unavailable (throttled warning).
+-    static func append(
+-        _ message: String,
+-        file: String = #fileID,
+-        line: Int = #line,
+-        function: String = #function
+-    ) {
+-        queue.async {
+-            let shortFile = (file as NSString).lastPathComponent
+-            let timestamp = dateFormatter.string(from: Date())
+-            let entry = "[\(timestamp)] [\(shortFile):\(line)] \(function) → \(message)\n"
+-
+-            guard let logURL = logFileURL() else {
+-                NSLog("[ComplicationLogBuffer] %@", String(entry.dropLast()))
+-                if !hasLoggedAppGroupUnavailable {
+-                    hasLoggedAppGroupUnavailable = true
+-                    NSLog("[ComplicationLogBuffer] App Group unavailable; using NSLog fallback")
+-                }
+-                return
+-            }
+-
+-            do {
+-                let fm = FileManager.default
+-                let dirURL = logURL.deletingLastPathComponent()
+-                if !fm.fileExists(atPath: dirURL.path) {
+-                    try fm.createDirectory(at: dirURL, withIntermediateDirectories: true)
+-                }
+-
+-                guard let data = entry.data(using: .utf8) else { return }
+-
+-                if fm.fileExists(atPath: logURL.path) {
+-                    let handle = try FileHandle(forWritingTo: logURL)
+-                    handle.seekToEndOfFile()
+-                    handle.write(data)
+-                    try? handle.close()
+-
+-                    if let attrs = try? fm.attributesOfItem(atPath: logURL.path),
+-                       let size = attrs[.size] as? Int64,
+-                       size > sizeCapBytes
+-                    {
+-                        truncateKeepingNewest(at: logURL)
+-                    }
+-                } else {
+-                    try data.write(to: logURL)
+-                }
+-            } catch {
+-                NSLog("[ComplicationLogBuffer] write failed: %@", error.localizedDescription)
+-            }
++    private static let maxEntries = 200
++    private static let lock = NSLock()
++    private static var entries: [String] = []
++
++    static func append(_ message: String) {
++        lock.lock()
++        defer { lock.unlock() }
++        entries.append(message)
++        if entries.count > maxEntries {
++            entries = Array(entries.suffix(maxEntries))
+         }
+     }
+-
+-    // MARK: - Truncation
+-
+-    private static func truncateKeepingNewest(at url: URL) {
+-        guard let data = try? Data(contentsOf: url),
+-              let content = String(data: data, encoding: .utf8) else { return }
+-
+-        let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
+-
+-        var keptBytes = 0
+-        var keptLines: [String] = []
+-        for line in lines.reversed() {
+-            let lineBytes = (line + "\n").utf8.count
+-            if keptBytes + lineBytes > truncateKeepBytes { break }
+-            keptBytes += lineBytes
+-            keptLines.insert(line, at: 0)
+-        }
+-
+-        let droppedCount = lines.count - keptLines.count
+-        let marker = "[dropped \(droppedCount) lines]\n"
+-        let newContent = marker + keptLines.map { $0 + "\n" }.joined()
+-        try? newContent.write(to: url, atomically: true, encoding: .utf8)
+-    }
+-
+-    // MARK: - File URLs (also used by drain logic in Watch App)
+-
+-    /// Returns the log file URL in the App Group container, or nil if unavailable.
+-    static func logFileURL() -> URL? {
+-        guard let containerURL = sharedContainerURL() else { return nil }
+-        return containerURL
+-            .appendingPathComponent(logsSubdir, isDirectory: true)
+-            .appendingPathComponent(logFileName, isDirectory: false)
+-    }
+-
+-    /// Returns the shared container URL. Used by both append (Complication) and drain (Watch App).
+-    static func sharedContainerURL() -> URL? {
+-        var bundle: Bundle = .main
+-        let classBundle = Bundle(for: _BundleAnchor.self)
+-        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
+-            bundle = classBundle
+-        }
+-
+-        guard let suiteName = resolveAppGroupID(bundle: bundle).value else { return nil }
+-        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
+-    }
+-
+-    // MARK: - App Group Resolution (mirrors TrioComplicationDataStore)
+-
+-    private static func appGroupID(forTeamID teamID: String) -> String {
+-        "group.org.nightscout.\(teamID).trio.trio-app-group"
+-    }
+-
+-    private static func extractTeamID(fromBundleIdentifier bid: String?) -> String? {
+-        guard let bid, !bid.isEmpty else { return nil }
+-        let prefix = "org.nightscout."
+-        guard let prefixRange = bid.range(of: prefix) else { return nil }
+-        let after = bid[prefixRange.upperBound...]
+-        guard let trioRange = after.range(of: ".trio") else { return nil }
+-        let teamID = String(after[..<trioRange.lowerBound])
+-        return teamID.isEmpty ? nil : teamID
+-    }
+-
+-    private static func resolveAppGroupID(bundle: Bundle) -> (value: String?, source: String) {
+-        if let value = bundle.object(forInfoDictionaryKey: "AppGroupID") as? String, !value.isEmpty {
+-            return (value, "Info.plist(AppGroupID)")
+-        }
+-        #if os(watchOS)
+-        if let companionID = Bundle.main.object(forInfoDictionaryKey: "WKCompanionAppBundleIdentifier") as? String,
+-           let teamID = extractTeamID(fromBundleIdentifier: companionID)
+-        {
+-            return (appGroupID(forTeamID: teamID), "Derived(WKCompanionAppBundleIdentifier)")
+-        }
+-        #endif
+-        if let teamID = extractTeamID(fromBundleIdentifier: bundle.bundleIdentifier) {
+-            return (appGroupID(forTeamID: teamID), "Derived(bundleIdentifier)")
+-        }
+-        return (nil, "Unavailable")
+-    }
+ }
+-
+-/// Anchor class for Bundle(for:) lookup since the enum has no instances.
+-private final class _BundleAnchor {}
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..af6aa7eb1
+index 000000000..a34cc41bb
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,735 @@
+@@ -0,0 +1,790 @@
 +import Foundation
 +import os
 +import WidgetKit
@@ -2217,6 +2403,45 @@ index 000000000..af6aa7eb1
 +        }
 +
 +        return String(format: "%+.1f", numericValue)
++    }
++}
++
++/// Record of a complication reload request for instrumentation (WidgetKit budget/coalescing correlation).
++/// requestedAtEpochSeconds is the reload request time, not the CGM reading time. Do not use reading_date_epoch here.
++struct ComplicationReloadRecord: Codable {
++    let id: UUID
++    /// Reload request time (Int(Date().timeIntervalSince1970)). Not CGM reading time.
++    let requestedAtEpochSeconds: Int
++}
++
++/// Ring buffer of reload records in App Group UserDefaults. Watch app writes; complication extension reads only.
++/// Best-effort, not lossless: concurrent or overlapping writes can drop records; decode failure on read is treated as empty.
++private enum ComplicationReloadRing {
++    static let key = "complication_reload_ring"
++    static let capacity = 64
++
++    /// Appends a record to the ring (watch app only). Drops oldest if count > capacity.
++    static func append(_ record: ComplicationReloadRecord, suiteName: String) {
++        let defaults = UserDefaults(suiteName: suiteName)
++        guard let defaults else { return }
++        var list = (defaults.data(forKey: key).flatMap { try? JSONDecoder().decode([ComplicationReloadRecord].self, from: $0) }) ?? []
++        list.append(record)
++        if list.count > capacity {
++            list = Array(list.suffix(capacity))
++        }
++        if let data = try? JSONEncoder().encode(list) {
++            defaults.set(data, forKey: key)
++        }
++    }
++
++    /// Returns the newest record (most recent reload request). Complication extension reads only.
++    static func newestRecord(suiteName: String?) -> ComplicationReloadRecord? {
++        guard let suiteName,
++              let defaults = UserDefaults(suiteName: suiteName),
++              let data = defaults.data(forKey: key),
++              let list = try? JSONDecoder().decode([ComplicationReloadRecord].self, from: data),
++              let last = list.last else { return nil }
++        return last
 +    }
 +}
 +
@@ -2660,6 +2885,12 @@ index 000000000..af6aa7eb1
 +
 +    // MARK: - Load Methods
 +
++    /// Returns the most recent complication reload record, if any (for getTimeline instrumentation).
++    /// Complication extension reads only; do not write from the complication.
++    func newestReloadRecord() -> ComplicationReloadRecord? {
++        ComplicationReloadRing.newestRecord(suiteName: appGroupID)
++    }
++
 +    /// Loads the latest complication snapshot from disk.
 +    /// May be called from any thread. Updates `lastValidTimestamp` as a side-effect (serialized on main
 +    /// when App Group defaults are unavailable to protect in-memory fallback).
@@ -2761,7 +2992,17 @@ index 000000000..af6aa7eb1
 +    }
 +
 +    #if canImport(WidgetKit)
++        /// Must only be called from the Watch App; the Widget extension must not write the ring (enforced by #if !WIDGET_EXTENSION).
 +        private func reloadTimeline() {
++            let requestedAtEpochSeconds = Int(Date().timeIntervalSince1970)
++            let record = ComplicationReloadRecord(id: UUID(), requestedAtEpochSeconds: requestedAtEpochSeconds)
++            #if !WIDGET_EXTENSION
++            if let suiteName = appGroupID {
++                ComplicationReloadRing.append(record, suiteName: suiteName)
++            }
++            #endif
++            log("event=complication_reload_requested reload_id=\(record.id.uuidString) reload_requested_at_epoch_seconds=\(record.requestedAtEpochSeconds)")
++
 +            if let lastTS = Self.lastValidTimestamp {
 +                log("🔔 reload_snapshot_age_seconds=\(Int(Date().timeIntervalSince(lastTS)))")
 +            }
