@@ -23,10 +23,13 @@ Read first:
 5) **Do not hand-edit patch files to fix apply failures.**
    - Fix code and regenerate the patch.
 
-6) **Do not commit/push** unless explicitly asked.
+6) **Do not manually edit `Trio.xcodeproj/project.pbxproj`.**
+   - Target membership, build settings, and similar project structure changes must be driven by the sync scripts: `scripts/sync_project_files.rb` and `scripts/sync_project_files_config.rb`. Add or update configuration in `sync_project_files_config.rb` (e.g. `TARGET_GLOBS`, `TARGET_BUILD_SETTINGS`). The sync script is run during the build process; do not run it manually.
+
+7) **Do not commit/push** unless explicitly asked.
    - Summarize changes first.
 
-7) **For plan/workflow document edits, increment the document version and update the changelog.**
+8) **For plan/workflow document edits, increment the document version and update the changelog.**
    - When editing plan/workflow docs (e.g., `*.plan.md`, `*.cursor.md`, workflow prompts/checklists), always increment the document's version number and update the changelog section in the same change.
 
 ## Non-negotiable rules for working with patches

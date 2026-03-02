@@ -819,9 +819,15 @@ def sync_package_dependencies(project)
   additions
 end
 
+def resolve_build_setting_value(value, config)
+  return value unless value.is_a?(Hash)
+  name_str = config.name.to_s
+  value[config.name] || value[name_str] || value[name_str.to_sym]
+end
+
 def sync_build_settings(project)
   changes = []
-  
+
   TARGET_BUILD_SETTINGS.each do |target_name, settings|
     target = project.targets.find { |t| t.name == target_name }
     unless target
@@ -829,15 +835,20 @@ def sync_build_settings(project)
       next
     end
 
-    # Update all build configurations (Debug, Release, etc.)
     target.build_configurations.each do |config|
       settings.each do |key, value|
-        current_value = config.build_settings[key]
-        
-        if current_value != value
-          config.build_settings[key] = value
-          changes << [target_name, config.name, key, value]
+        effective_value = resolve_build_setting_value(value, config)
+
+        if value.is_a?(Hash) && effective_value.nil?
+          warn "Skipping #{key} for #{target_name} / #{config.name} (no mapping)"
+          next
         end
+
+        current_value = config.build_settings[key]
+        next if current_value == effective_value
+
+        config.build_settings[key] = effective_value
+        changes << [target_name, config.name, key, effective_value]
       end
     end
   end

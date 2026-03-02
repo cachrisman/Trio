@@ -71,7 +71,13 @@ module SyncProjectFilesConfig
       # Important: also set the sdk-qualified key to override any project-level
       # CODE_SIGN_ENTITLEMENTS[sdk=watchos*] defaults (which would otherwise win).
       "CODE_SIGN_ENTITLEMENTS" => "Trio Watch Complication/TrioWatchComplication.entitlements",
-      "CODE_SIGN_ENTITLEMENTS[sdk=watchos*]" => "Trio Watch Complication/TrioWatchComplication.entitlements"
+      "CODE_SIGN_ENTITLEMENTS[sdk=watchos*]" => "Trio Watch Complication/TrioWatchComplication.entitlements",
+      # Per-config: compile-time guard so the complication extension never writes the reload ring.
+      # Debug keeps DEBUG; Release must not get DEBUG. Values must include $(inherited).
+      "SWIFT_ACTIVE_COMPILATION_CONDITIONS" => {
+        "Debug" => "DEBUG WIDGET_EXTENSION $(inherited)",
+        "Release" => "WIDGET_EXTENSION $(inherited)"
+      }
     }
   }.freeze
 end
