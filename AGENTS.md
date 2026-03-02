@@ -32,6 +32,49 @@ Read first:
 8) **For plan/workflow document edits, increment the document version and update the changelog.**
    - When editing plan/workflow docs (e.g., `*.plan.md`, `*.cursor.md`, workflow prompts/checklists), always increment the document's version number and update the changelog section in the same change.
 
+9) **If you stash at the beginning of a workflow, pop at the end.**
+   - The worktree state should be the same as before the run (aside from any commits you were asked to make).
+   - Use `git stash -u` (include untracked) when the worktree has untracked files you care about (e.g. plan docs in `docs/`).
+
+## Untracked files and clean / reset
+
+- **`git clean -fd` (or scripts that run it) removes untracked files.** Procedures that "reset to clean dev" or "test patches from clean state" often run `git reset --hard` and `git clean -fd` in the repo. Any untracked file (e.g. `docs/complication-freshness-implementation-plan.md`) will be **permanently removed** unless it was stashed or committed elsewhere.
+- **Before running patch-test or any workflow that might clean the worktree:** Stash untracked files with `git stash -u -m "WIP untracked before clean"` so they can be restored with `git stash pop` afterward. Alternatively, commit plan/design docs to a docs branch (see "Tracking plan and design docs" below).
+- **Mid-stack patch update:** Step 0 in `docs/feature-branch-workflow-optimization.md` uses `git stash -u`; after step 6 (cleanup), run `git stash pop` to restore stashed changes including untracked files.
+
+## Tracking plan and design docs (dedicated `docs` branch)
+
+Plan and design docs (implementation plans, effectiveness analyses, implementation logs) live on the **`docs`** branch so `dev` stays code- and patch-focused. Do not merge `docs` into `dev`.
+
+### How to add or update docs on the `docs` branch
+
+Run these from the **Trio-dev** worktree.
+
+1. **Create the branch once** (if it doesn’t exist):
+   ```bash
+   git fetch origin docs 2>/dev/null || true
+   git checkout -b docs dev   # only if branch doesn't exist yet
+   # If it already exists remotely: git checkout docs && git pull origin docs
+   ```
+
+2. **Add and commit** the doc file(s) you added or changed (e.g. under `docs/`):
+   ```bash
+   git checkout docs
+   git add docs/complication-freshness-implementation-plan.md docs/complication-fix-a-b-effectiveness-analysis.md   # or the paths you changed
+   git status   # confirm what will be committed
+   git commit -m "docs: update implementation plan (v1.15)"   # or a short description
+   git push origin docs
+   ```
+
+3. **Switch back** to `dev` (or your previous branch) for code work:
+   ```bash
+   git checkout dev
+   ```
+
+When **editing** an existing plan or log: switch to `docs`, make your edits, then add/commit/push as above and switch back to `dev`. Only commit when the user asks you to; otherwise summarize the edits and remind them they can commit to `docs` when ready.
+
+**Visibility (no extra worktree):** You don’t need a separate docs worktree. In the existing Trio-dev worktree, run `git checkout docs` when you want to view or edit plan docs — the `docs/` folder will show the files from the `docs` branch. When done, run `git checkout dev` to return to code/patches work. The same workspace (Trio + Trio-dev) stays; only the branch in Trio-dev changes. When Trio-dev is on `dev`, those doc files won’t be in the tree (they exist only on `docs`).
+
 ## Non-negotiable rules for working with patches
 
 1) **Keep patch filenames and ordering deterministic.**
@@ -52,6 +95,15 @@ This repo uses two worktrees pointing to the same underlying git repo:
 - `Trio` — worktree for feature branch development and code changes.
 
 **Critical:** A branch checked out in one worktree cannot be created, deleted, or checked out in the other. If you get `fatal: a branch named '...' already exists`, switch the other worktree to a different branch first.
+
+### Run from dev
+
+These commands **must** be run from the **Trio-dev** worktree with **`dev`** checked out (so the current branch is `dev`, not a tmp or feature branch):
+
+- `ci/local-build.sh --base-branch dev` (and variants: `--build-only`, etc.)
+- `./scripts/generate-patch.sh` whenever it writes into `./patches/` (new or updated patch)
+
+Use `-s` / `-t` to specify source and target branches; the important part is that the worktree is on `dev` when the script runs. For mid-stack patch updates, run `git checkout dev` in Trio-dev before invoking `generate-patch.sh` (see `docs/feature-branch-workflow-optimization.md`).
 
 ## `git am --3way` for overlapping patches
 
@@ -74,12 +126,56 @@ ci/local-build.sh --base-branch dev --build-only
 ```
 **Important:** Run this from the `Trio-dev` worktree with `dev` checked out. If the current branch is not `dev`, the build script sets `REAPPLY_STASH=0` and silently excludes uncommitted changes to patch files. If you must build from a non-dev branch, add `--reapply-stash` explicitly.
 
+## When the user instructs a build
+
+When asked to run a build, do the following.
+
+### 1) Run the build in the background
+
+- Invoke `ci/local-build.sh` with the appropriate flags (e.g. `--base-branch dev --build-only` or `--build-current --build-only`) as a **background process**. Do not run it in the foreground so the agent can continue to monitor and respond.
+- **Do not** capture or redirect log output yourself. The script already writes all output to a timestamped log file under `build/artifacts/`.
+
+### 2) Provide a command to watch the build log
+
+- The build script creates a log file at `build/artifacts/ci-local-build-YYYYMMDD-HHMMSS.log` (e.g. `ci-local-build-20260303-115620.log`).
+- After starting the build, either list `build/artifacts/` to get the new log filename, or give the user a command that works for the latest log. Example (from repo root):
+
+  ```bash
+  tail -f build/artifacts/ci-local-build-YYYYMMDD-HHMMSS.log
+  ```
+
+  Or to follow the most recent build log:
+
+  ```bash
+  tail -f $(ls -t build/artifacts/ci-local-build-*.log 2>/dev/null | head -1)
+  ```
+
+- Tell the user they can run that command in a terminal to watch the build output live.
+
+### 3) Monitor build progress
+
+- Periodically check the build log (or process status) to see when the build completes or fails.
+- If the build is still running, you can report progress based on the log (e.g. "Build in progress, currently running …").
+
+### 4) If an error is detected
+
+- **Investigate immediately:** Read the relevant part of the log (e.g. around failure messages, ❌ markers, or "error:" / "ARCHIVE FAILED") to identify the cause.
+- **Propose a fix** and, if the fix is **relatively minor** (e.g. a clear typo, one-file change, or small logic fix):
+  - Implement the fix on the appropriate branch **in the Trio worktree** (feature branch or, for patch-stack builds, the branch that the patch was generated from).
+  - Regenerate the patch using `./scripts/generate-patch.sh` (see "Common workflows" and `docs/feature-branch-workflow-optimization.md`).
+  - Run `scripts/patch-test.sh` to validate the patch stack.
+  - If patch test passes, start a **new** build in the background and again give the user a `tail -f` command for the new log.
+- If the fix is not minor (e.g. architectural or multi-file), report the findings and proposed fix to the user and do not automatically implement or start a new build unless asked.
+
 ### Validate patch stack (authoritative)
 ```bash
 scripts/patch-test.sh
 ```
 
 ### Generate a patch (preferred)
+
+Run `./scripts/generate-patch.sh` from **Trio-dev** with **`dev`** checked out (see "Run from dev" above). For mid-stack updates, checkout `dev` before running it.
+
 ```bash
 ./scripts/generate-patch.sh -n -d "short-description"
 ```

@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v6 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v9 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -184,11 +184,16 @@ git am patches/06-<name>.patch
 # This uses 3-way merge to resolve context differences. Verify the result.
 
 # 3) Make your fixes (or cherry-pick from feature/<name>)
-# edit files...
+#    If the fix lives in the other worktree (e.g. Trio on a feature branch),
+#    copy the updated file(s) into this worktree, then git add and commit.
+# edit files...  OR  cp /path/to/Trio/worktree/path/to/File.swift .
 git add path/to/File1.swift path/to/File2.swift  # explicit file list
 git commit --amend -m "feat: <name>"
 
-# 4) Regenerate the patch against the baseline
+# 4.5) Checkout dev before regenerating (required: run generate-patch from dev)
+git checkout dev
+
+# 4) Regenerate the patch against the baseline (from Trio-dev with dev checked out)
 #    Use -a to include all changed files, or --include-files for explicit list.
 ./scripts/generate-patch.sh -n \
   -s tmp/<name>-update \
@@ -199,7 +204,7 @@ git commit --amend -m "feat: <name>"
 #   --include-files "path/to/File1.swift,path/to/File2.swift"
 # Note: expand the --include-files list if you touched additional files.
 
-# 5) Validate the full stack
+# 5) Validate the full stack (from Trio-dev; branch can be dev or any)
 ./scripts/patch-test.sh
 
 # 6) Cleanup temporary branches, then stage the updated patch
@@ -207,6 +212,8 @@ git checkout dev
 git branch -D tmp/<name>-update 2>/dev/null || true
 git branch -D tmp/<name>-baseline 2>/dev/null || true
 git add patches/06-<name>.patch
+# If you stashed in step 0 (including -u for untracked files), restore now:
+git stash pop
 # review, then commit
 ```
 
@@ -330,11 +337,29 @@ ci/local-build.sh --build-current --build-only
 ci/local-build.sh --base-branch dev --reapply-stash --include-untracked --build-only
 ```
 
+### AI agent: running builds
+
+When an AI agent is instructed to run a build, it should:
+
+1. **Run the build in the background** — do not run `ci/local-build.sh` in the foreground. The script already writes all output to `build/artifacts/ci-local-build-YYYYMMDD-HHMMSS.log`; the agent should not capture or redirect log output separately.
+
+2. **Give the user a command to watch the log** — e.g. `tail -f build/artifacts/ci-local-build-<timestamp>.log`, or `tail -f $(ls -t build/artifacts/ci-local-build-*.log 2>/dev/null | head -1)` to follow the latest log. Paths are relative to the repo root (e.g. from `Trio-dev`).
+
+3. **Monitor progress** — periodically check the log or process to detect completion or failure.
+
+4. **On build error** — investigate the log immediately. If the fix is relatively minor, the agent should implement the fix **in the Trio worktree** on the appropriate branch, regenerate the patch (`./scripts/generate-patch.sh`), run `scripts/patch-test.sh`, and if patch test passes start a new build in the background. For non-minor fixes, report findings and proposed fix to the user instead of auto-implementing.
+
+Full details are in **AGENTS.md** under "When the user instructs a build".
+
 ### Branch requirement for dev+patches builds
 
 The build script's `REAPPLY_STASH` heuristic compares the current branch against `--base-branch`. When they match (e.g., you're on `dev` and building with `--base-branch dev`), uncommitted changes to patch files are automatically applied to the build worktree. When they differ (e.g., you're on `tmp/complication-fix` but `--base-branch dev`), `REAPPLY_STASH` defaults to `0` and uncommitted changes are **silently excluded**.
 
 **Rule:** Always `cd` to `Trio-dev` and `git checkout dev` before running `--base-branch dev` builds. If you must build from a non-dev branch, add `--reapply-stash` explicitly.
+
+### Untracked files and clean/reset
+
+Procedures that "test from clean dev" (e.g. patch-test from a clean worktree, or any script that runs `git clean -fd` / `git reset --hard`) **remove untracked files**. Plan and design docs (e.g. in `docs/`) that are never committed will be lost if you run such a procedure in that worktree. **Before** running patch-test or a clean/reset in Trio-dev: stash with `git stash -u -m "WIP untracked before clean"`, or commit docs to a dedicated `docs` branch (see AGENTS.md "Tracking plan and design docs"). After the procedure, `git stash pop` restores stashed files.
 
 ### Release-only metadata caveat
 
@@ -395,6 +420,18 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v9
+- **Untracked files and clean/reset:** New subsection warning that `git clean` and "clean dev" procedures remove untracked files; instruct to stash with `-u` before such procedures or commit docs to a `docs` branch; reference AGENTS.md "Tracking plan and design docs".
+- **Mid-stack workflow:** Step 6 now includes `git stash pop` after cleanup so stashed changes (including untracked files from step 0 `git stash -u`) are restored before final commit.
+
+### v8
+- **Mid-stack patch update:** Added step 4.5: run `git checkout dev` in Trio-dev before regenerating the patch, so `generate-patch.sh` is always invoked with `dev` checked out. Added reminder that step 4 (regenerate) runs from Trio-dev with dev checked out.
+- **Copy from other worktree:** In step 3, added note that when the fix lives in the other worktree (e.g. Trio), copy the updated file(s) into the current worktree, then add and commit, before regenerating the patch.
+- Cross-reference: AGENTS.md "Run from dev" lists commands that must run from Trio-dev with dev checked out (build, generate-patch).
+
+### v7
+- Added "AI agent: running builds" under Local builds: run builds in the background, provide the user with a `tail -f` command for the build log (`build/artifacts/ci-local-build-*.log`), monitor progress, and on error investigate and—if the fix is minor—implement, regenerate patch, run patch-test, and start a new build. Cross-reference to AGENTS.md "When the user instructs a build".
 
 ### v6
 - Added "Build + release (single pass)" as the preferred shipping command to keep metadata consistent.
