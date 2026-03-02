@@ -76,6 +76,45 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     }
 }
 
+/// Record of a complication reload request for instrumentation (WidgetKit budget/coalescing correlation).
+/// requestedAtEpochSeconds is the reload request time, not the CGM reading time. Do not use reading_date_epoch here.
+struct ComplicationReloadRecord: Codable {
+    let id: UUID
+    /// Reload request time (Int(Date().timeIntervalSince1970)). Not CGM reading time.
+    let requestedAtEpochSeconds: Int
+}
+
+/// Ring buffer of reload records in App Group UserDefaults. Watch app writes; complication extension reads only.
+/// Best-effort, not lossless: concurrent or overlapping writes can drop records; decode failure on read is treated as empty.
+private enum ComplicationReloadRing {
+    static let key = "complication_reload_ring"
+    static let capacity = 64
+
+    /// Appends a record to the ring (watch app only). Drops oldest if count > capacity.
+    static func append(_ record: ComplicationReloadRecord, suiteName: String) {
+        let defaults = UserDefaults(suiteName: suiteName)
+        guard let defaults else { return }
+        var list = (defaults.data(forKey: key).flatMap { try? JSONDecoder().decode([ComplicationReloadRecord].self, from: $0) }) ?? []
+        list.append(record)
+        if list.count > capacity {
+            list = Array(list.suffix(capacity))
+        }
+        if let data = try? JSONEncoder().encode(list) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
+    /// Returns the newest record (most recent reload request). Complication extension reads only.
+    static func newestRecord(suiteName: String?) -> ComplicationReloadRecord? {
+        guard let suiteName,
+              let defaults = UserDefaults(suiteName: suiteName),
+              let data = defaults.data(forKey: key),
+              let list = try? JSONDecoder().decode([ComplicationReloadRecord].self, from: data),
+              let last = list.last else { return nil }
+        return last
+    }
+}
+
 /// Data store for watch complication snapshots and reload coordination.
 /// This class is main-thread confined: all public API methods (`save`, `coalescedReload`, `forceReload`)
 /// must be called from the main thread or will hop to main before executing.
@@ -524,6 +563,12 @@ final class TrioComplicationDataStore {
 
     // MARK: - Load Methods
 
+    /// Returns the most recent complication reload record, if any (for getTimeline instrumentation).
+    /// Complication extension reads only; do not write from the complication.
+    func newestReloadRecord() -> ComplicationReloadRecord? {
+        ComplicationReloadRing.newestRecord(suiteName: appGroupID)
+    }
+
     /// Loads the latest complication snapshot from disk.
     /// May be called from any thread. Updates `lastValidTimestamp` as a side-effect (serialized on main
     /// when App Group defaults are unavailable to protect in-memory fallback).
@@ -625,7 +670,17 @@ final class TrioComplicationDataStore {
     }
 
     #if canImport(WidgetKit)
+        /// Must only be called from the Watch App; the Widget extension must not write the ring (enforced by #if !WIDGET_EXTENSION).
         private func reloadTimeline() {
+            let requestedAtEpochSeconds = Int(Date().timeIntervalSince1970)
+            let record = ComplicationReloadRecord(id: UUID(), requestedAtEpochSeconds: requestedAtEpochSeconds)
+            #if !WIDGET_EXTENSION
+            if let suiteName = appGroupID {
+                ComplicationReloadRing.append(record, suiteName: suiteName)
+            }
+            #endif
+            log("event=complication_reload_requested reload_id=\(record.id.uuidString) reload_requested_at_epoch_seconds=\(record.requestedAtEpochSeconds)")
+
             if let lastTS = Self.lastValidTimestamp {
                 let ageSec = max(0, Int(Date().timeIntervalSince(lastTS)))
                 log("event=complication_reload_age age_seconds=\(ageSec) reading_date_epoch_seconds=\(Int(lastTS.timeIntervalSince1970)) reading_date=\(Self.iso8601Formatter.string(from: lastTS))")
