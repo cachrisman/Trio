@@ -135,6 +135,13 @@ final class TrioComplicationDataStore {
     private static let lastValidTimestampKey = "TrioComplication_lastValidTimestamp"
     private static let reloadGenerationTokenKey = "TrioComplication_reloadGenerationToken"
 
+    /// Reused for structured log fields (reading_date); avoids per-call allocation.
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
     // MARK: - Persisted State (shared across processes via UserDefaults in App Group)
 
     /// Last valid glucose reading timestamp - persisted to survive process restarts.
@@ -502,9 +509,10 @@ final class TrioComplicationDataStore {
             try data.write(to: fileURL, options: [.atomic])
             self.inMemorySavedSnapshot = snapshot
             Self.lastValidTimestamp = snapshot.readingDate
-            let ageSec = Int(Date().timeIntervalSince(snapshot.readingDate))
+            let ageSec = max(0, Int(Date().timeIntervalSince(snapshot.readingDate)))
 
             log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta), snapshot_age_seconds=\(ageSec)")
+            log("event=complication_save_age age_seconds=\(ageSec) reading_date_epoch_seconds=\(Int(snapshot.readingDate.timeIntervalSince1970)) reading_date=\(Self.iso8601Formatter.string(from: snapshot.readingDate))")
 
             if triggerReload {
                 coalescedReloadOnMain(minInterval: minInterval)
@@ -619,7 +627,8 @@ final class TrioComplicationDataStore {
     #if canImport(WidgetKit)
         private func reloadTimeline() {
             if let lastTS = Self.lastValidTimestamp {
-                log("🔔 reload_snapshot_age_seconds=\(Int(Date().timeIntervalSince(lastTS)))")
+                let ageSec = max(0, Int(Date().timeIntervalSince(lastTS)))
+                log("event=complication_reload_age age_seconds=\(ageSec) reading_date_epoch_seconds=\(Int(lastTS.timeIntervalSince1970)) reading_date=\(Self.iso8601Formatter.string(from: lastTS))")
             }
             log("🔔 Calling WidgetCenter.reloadTimelines(ofKind: \(Self.complicationKind))")
 
