@@ -1,5 +1,4 @@
 import Foundation
-import os
 import SwiftUI
 import WidgetKit
 
@@ -125,7 +124,6 @@ private enum TrendSymbolMapper {
 
 struct TrioWatchComplicationProvider: TimelineProvider {
     private let refreshInterval: TimeInterval = 300
-    private static let timelineLog = Logger(subsystem: "org.nightscout.trio.watch.complication", category: "getTimeline")
 
     func placeholder(in _: Context) -> TrioWatchComplicationEntry {
         TrioWatchComplicationEntry(
@@ -151,10 +149,18 @@ struct TrioWatchComplicationProvider: TimelineProvider {
         let nowEpochSeconds = Int(Date().timeIntervalSince1970)
         if let newest = TrioComplicationDataStore.shared.newestReloadRecord() {
             let latency = max(0, nowEpochSeconds - newest.requestedAtEpochSeconds)
-            Self.timelineLog.info("event=complication_get_timeline_called most_recent_reload_id=\(newest.id.uuidString, privacy: .public) latency_seconds=\(latency, privacy: .public) reload_requested_at_epoch_seconds=\(newest.requestedAtEpochSeconds, privacy: .public)")
+            TrioComplicationDataStore.shared.logWidgetGetTimelineInvocation(
+                mostRecentReloadId: newest.id.uuidString,
+                latencySeconds: latency,
+                reloadRequestedAtEpochSeconds: newest.requestedAtEpochSeconds
+            )
         } else {
             // Literals only; if refactored to interpolate e.g. "none", use privacy: .public.
-            Self.timelineLog.info("event=complication_get_timeline_called most_recent_reload_id=none latency_seconds=-1 reload_requested_at_epoch_seconds=-1")
+            TrioComplicationDataStore.shared.logWidgetGetTimelineInvocation(
+                mostRecentReloadId: "none",
+                latencySeconds: -1,
+                reloadRequestedAtEpochSeconds: -1
+            )
         }
 
         let snapshot = loadLatestEntry()

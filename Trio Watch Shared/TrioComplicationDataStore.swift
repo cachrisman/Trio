@@ -791,6 +791,13 @@ final class TrioComplicationDataStore {
         return formatter.string(from: date)
     }
 
+#if WIDGET_EXTENSION
+    /// Log getTimeline invocation for reload→getTimeline correlation (Phase 0.2). Uses shared log path so the event is written to ComplicationLogBuffer / complication_log.txt and can be drained to Better Stack by the watch app. Only compiled in the complication extension; do not call from the watch app.
+    func logWidgetGetTimelineInvocation(mostRecentReloadId: String, latencySeconds: Int, reloadRequestedAtEpochSeconds: Int) {
+        log("event=complication_get_timeline_called most_recent_reload_id=\(mostRecentReloadId) latency_seconds=\(latencySeconds) reload_requested_at_epoch_seconds=\(reloadRequestedAtEpochSeconds)")
+    }
+#endif
+
     private func log(_ message: String) {
         ComplicationLogBuffer.append(message)
         let forwarder = Self.logForwarderLock.withLock { $0.forwarder }
