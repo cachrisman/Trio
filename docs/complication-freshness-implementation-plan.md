@@ -1,8 +1,8 @@
 # Watch Complication Freshness — Implementation Plan
 
-**Version:** 1.16
-**Date:** 2026-03-03
-**Based on:** v1.15; Phase 0.2 complete and shipped (ComplicationLogBuffer hybrid/sync/contract). See changelog.
+**Version:** 1.17
+**Date:** 2026-03-04
+**Based on:** v1.16; Phase 0.2 observability (Better Stack dashboard, Extract Metrics, setup doc). See changelog.
 
 **Preferred order of attack:**
 
@@ -1093,6 +1093,7 @@ Do not implement. If delivery-delay dominates after Phases 1–4, revisit then.
 | 0.1   | 2026-03-02 | **Complete.** `TrioComplicationDataStore.swift`: In `saveOnMain`, after successful write, emit structured log `event=complication_save_age` with `age_seconds`, `reading_date_epoch_seconds`, `reading_date` (ISO8601). In `reloadTimeline()`, emit `event=complication_reload_age` with same field set (epoch from `lastTS`). Static `ISO8601DateFormatter` reuse; negative age clamped to 0; legacy `reload_snapshot_age_seconds` log line removed. Human-readable "Snapshot saved…" line retained. Join key: `reading_date_epoch_seconds` (Int). |
 | 0.2   | 2026-03-02 | **Complete.** Reload→getTimeline correlation: `ComplicationReloadRecord` + 64-entry ring in App Group UserDefaults (`complication_reload_ring`). Watch app appends before each `reloadTimelines` and logs `event=complication_reload_requested` with `reload_id` (uuidString), `reload_requested_at_epoch_seconds`. Complication extension reads ring in `getTimeline`, logs `event=complication_get_timeline_called` with `most_recent_reload_id`, `latency_seconds`, `reload_requested_at_epoch_seconds` (os.Logger, privacy: .public). Compile-time guard: `#if !WIDGET_EXTENSION` around ring append; sync scripts set per-config `SWIFT_ACTIVE_COMPILATION_CONDITIONS` for Trio Watch Complication Extension (Debug: DEBUG + WIDGET_EXTENSION, Release: WIDGET_EXTENSION only). New file `ComplicationLogBuffer.swift` (in-memory ring for DataStore logs). Join keys: `reload_id` primary; `reload_requested_at_epoch_seconds` fallback/sanity. Post-deploy: verify both event types land in Better Stack within 24h. |
 | 0.2 (shipped) | 2026-03-03 | **Phase 0.2 complete and shipped.** `ComplicationLogBuffer.swift`: hybrid buffer (in-memory ring all targets; file append only when `WIDGET_EXTENSION` / complication target). Sync file write in complication process so write completes before return. Contract: writer only `complication_log.txt`; best-effort delivery; rare corruption possible if truncation races drain. Built and deployed (patch 09). |
+| 0.2 observability | 2026-03-04 | **Phase 0.2 dashboard and setup doc.** Better Stack dashboard ID 689533 "Trio • Complication Freshness (Phase 0.2)": Extract Metrics on Trio source (complication_reload_requested_count, complication_get_timeline_called_count, five latency buckets, complication_latency_seconds with avg/max/quantiles). 14 charts in 3 sections — Volume & Reload Efficiency (reload vs getTimeline line, 60–300s / >300s text, Max Latency, Reload efficiency, counts), Burstiness (reloads per 5‑min bucket line, P95 burstiness, Burst Windows Count, Max burst), Latency health (avg/max/P50/P90/P95 over time, latency buckets per hour, Complication Reload Latency bar). Queries use pre-aggregated columns (no `name` filter); 30‑min buckets for latency line; 1‑h for latency buckets bar. Setup doc `docs/better-stack-complication-dashboard-setup.md`: Step 1 Extract Metrics definitions, Step 2 query patterns, individual-latency note, full dashboard summary with current queries, limitations. |
 
 
 ---
@@ -1119,5 +1120,6 @@ Do not implement. If delivery-delay dominates after Phases 1–4, revisit then.
 | 1.14    | 2026-03-02 | Phase 0.2: os.Logger interpolations marked privacy: .public so correlation values are not redacted; explicit "Phase 0.2 log verification (do immediately after deploy)" step added — verify both event types land in Better Stack for same device within 24h. |
 | 1.15    | 2026-03-02 | Phase 0.2 marked complete. Implementation log: added Phase 0.2 row (ring buffer, compile-time guard, ComplicationLogBuffer, join keys, post-deploy verification). Summary table: 0.2 Cursor-ready set to ✅ Complete. |
 | 1.16    | 2026-03-03 | Implementation log: added 0.2 (shipped) row — ComplicationLogBuffer hybrid ring+file, sync write, contract; Phase 0.2 complete and shipped (patch 09). Header updated to v1.16. |
+| 1.17    | 2026-03-04 | Implementation log: added 0.2 observability row — Better Stack dashboard (ID 689533), Extract Metrics, 14 charts in 3 sections, setup doc `better-stack-complication-dashboard-setup.md`. Header updated to v1.17. |
 
 
