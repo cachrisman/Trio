@@ -1,6 +1,6 @@
-From b209627da123eae3d9f30b0a41d1ec1e33024d4d Mon Sep 17 00:00:00 2001
+From c2c0e7977b2311b61a4756663a4039c4c8a98d71 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 10 Jan 2026 23:28:56 +0100
+Date: Wed, 4 Mar 2026 21:55:24 +0100
 Subject: [PATCH] Update G7SensorKit (show reading timestamp with seconds)
 
 ---
@@ -22,12 +22,12 @@ index ca2bf7849..83cc6918b 100644
  [submodule "OmniKit"]
  	path = OmniKit
 diff --git a/G7SensorKit b/G7SensorKit
-index ee064ddcc..a083f6d7f 160000
+index 0c0930500..8b212ce48 160000
 --- a/G7SensorKit
 +++ b/G7SensorKit
 @@ -1 +1 @@
--Subproject commit ee064ddcc1c13e0050ee56d0eec38a6bdc0d3c76
-+Subproject commit a083f6d7f9392894f92fc0ce02f6596a38c7434d
+-Subproject commit 0c093050084b63d7af0dc99307dba09239eb3180
++Subproject commit 8b212ce48e7de768e918481e4480bcd204754c09
 -- 
 2.50.1 (Apple Git-155)
 
