@@ -1,12 +1,12 @@
-From f1b4d72792cb269f27d16ee439ce991202adf184 Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Tue, 3 Mar 2026 19:24:52 +0100
-Subject: [PATCH] feat: tmp-09-changes
+From 50be33307fda302555158ac92b1e6cdaba54f8f7 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Wed, 4 Mar 2026 22:12:09 +0100
+Subject: [PATCH] feat: watch-complication-improvements
 
 ---
  .../ExtensionDelegate.swift                   |  31 +
  Trio Watch App Extension/TrioWatchApp.swift   |   2 +
- .../Views/ComplicationDebugView.swift         | 372 ++++++++
+ .../Views/ComplicationDebugView.swift         | 373 ++++++++
  .../Views/TrioMainWatchView.swift             |  55 +-
  .../WatchState+Requests.swift                 |  19 +
  Trio Watch App Extension/WatchState.swift     | 561 ++++++++----
@@ -17,10 +17,10 @@ Subject: [PATCH] feat: tmp-09-changes
  .../TrioWatchComplication.swift               | 377 ++++++++-
  .../TrioWatchComplicationPreview.swift        | 124 +++
  Trio Watch Shared/ComplicationLogBuffer.swift | 145 ++--
- .../TrioComplicationDataStore.swift           | 797 ++++++++++++++++++
+ .../TrioComplicationDataStore.swift           | 801 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
  .../WatchManager/AppleWatchManager.swift      | 205 +++--
- 16 files changed, 2401 insertions(+), 334 deletions(-)
+ 16 files changed, 2406 insertions(+), 334 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -82,10 +82,10 @@ index ccc8911ca..3b86e2547 100644
      init() {
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
 new file mode 100644
-index 000000000..edda15812
+index 000000000..6a7f9a21f
 --- /dev/null
 +++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
-@@ -0,0 +1,372 @@
+@@ -0,0 +1,373 @@
 +import SwiftUI
 +import WatchKit
 +
@@ -322,7 +322,8 @@ index 000000000..edda15812
 +                Task {
 +                    await WatchLogger.shared.log("🔧 Debug: Force Reload tapped")
 +                }
-+                dataStore.forceReload()
++                // scheduleRetry: false — debug view one-shot; no retry needed (Phase 1.3).
++                dataStore.forceReload(scheduleRetry: false)
 +                showConfirmation(message: "✅ Reload triggered!")
 +                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
 +                    loadSnapshot()
@@ -2368,10 +2369,10 @@ index 469f91f5c..17036ebca 100644
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..e42ae2092
+index 000000000..13a285469
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,797 @@
+@@ -0,0 +1,801 @@
 +import Foundation
 +import os
 +import WidgetKit
@@ -2920,7 +2921,7 @@ index 000000000..e42ae2092
 +            log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta), snapshot_age_seconds=\(ageSec)")
 +
 +            if triggerReload {
-+                coalescedReloadOnMain(minInterval: minInterval)
++                coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false)
 +            }
 +        } catch {
 +            log("❌ Snapshot save FAILED: \(error.localizedDescription) (domain: \((error as NSError).domain), code: \((error as NSError).code))")
@@ -2992,7 +2993,7 @@ index 000000000..e42ae2092
 +        }
 +    }
 +
-+    private func coalescedReloadOnMain(minInterval: TimeInterval = 30, isRetry: Bool = false) {
++    private func coalescedReloadOnMain(minInterval: TimeInterval = 30, isRetry: Bool = false, scheduleRetry: Bool = true) {
 +        assert(Thread.isMainThread, "coalescedReloadOnMain must be called on main thread")
 +        let now = Date()
 +        let elapsed = now.timeIntervalSince(lastReload)
@@ -3009,6 +3010,10 @@ index 000000000..e42ae2092
 +        lastReload = now
 +        reloadTimeline()
 +
++        guard scheduleRetry else {
++            log("⏭️ Retry skipped: scheduleRetry=false (save path)")
++            return
++        }
 +        if !isRetry {
 +            scheduleRetryAfterReloadOnMain(minInterval: minInterval)
 +        }
