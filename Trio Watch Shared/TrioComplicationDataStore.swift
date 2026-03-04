@@ -554,7 +554,7 @@ final class TrioComplicationDataStore {
             log("event=complication_save_age age_seconds=\(ageSec) reading_date_epoch_seconds=\(Int(snapshot.readingDate.timeIntervalSince1970)) reading_date=\(Self.iso8601Formatter.string(from: snapshot.readingDate))")
 
             if triggerReload {
-                coalescedReloadOnMain(minInterval: minInterval)
+                coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false)
             }
         } catch {
             log("❌ Snapshot save FAILED: \(error.localizedDescription) (domain: \((error as NSError).domain), code: \((error as NSError).code))")
@@ -626,7 +626,7 @@ final class TrioComplicationDataStore {
         }
     }
 
-    private func coalescedReloadOnMain(minInterval: TimeInterval = 30, isRetry: Bool = false) {
+    private func coalescedReloadOnMain(minInterval: TimeInterval = 30, isRetry: Bool = false, scheduleRetry: Bool = true) {
         assert(Thread.isMainThread, "coalescedReloadOnMain must be called on main thread")
         let now = Date()
         let elapsed = now.timeIntervalSince(lastReload)
@@ -643,6 +643,10 @@ final class TrioComplicationDataStore {
         lastReload = now
         reloadTimeline()
 
+        guard scheduleRetry else {
+            log("⏭️ Retry skipped: scheduleRetry=false (save path)")
+            return
+        }
         if !isRetry {
             scheduleRetryAfterReloadOnMain(minInterval: minInterval)
         }

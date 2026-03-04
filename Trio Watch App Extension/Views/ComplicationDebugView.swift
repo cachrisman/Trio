@@ -234,7 +234,8 @@ struct ComplicationDebugView: View {
                 Task {
                     await WatchLogger.shared.log("🔧 Debug: Force Reload tapped")
                 }
-                dataStore.forceReload()
+                // scheduleRetry: false — debug view one-shot; no retry needed (Phase 1.3).
+                dataStore.forceReload(scheduleRetry: false)
                 showConfirmation(message: "✅ Reload triggered!")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     loadSnapshot()
