@@ -1,7 +1,7 @@
 # Watch Complication snapshot_age_seconds: Improvement Suggestions
 
-**Version:** 1.0  
-**Date:** 2026-02-27  
+**Version:** 1.1  
+**Date:** 2026-03-04  
 **Context:** Follow-up to the patch-application/chat transcript and the complication freshness plan; focuses on improving the `snapshot_age_seconds` metric and reducing perceived complication staleness (e.g. "+8m" recency when the app shows fresher data).
 
 ---
@@ -25,6 +25,8 @@ Logs from the Trio source (Better Stack, last ~18h hot buffer) show how `snapsho
 **Observed reload-time ages:** 9, 16 (good); 87, 137, 229, 310, 405, 406, 439, 440 (poor).
 
 So both “how old the data was when we saved it” and “how old the data was when we asked WidgetKit to reload” vary a lot; high values correlate with the “+8m” staleness reported in the transcript.
+
+Note: WCSession delivery, system wake budgets, and iOS connectivity are outside the app's full control; the app does not control the WCSession send queue end-to-end. The app's contribution is robust queue drain on wake and not adding artificial delays.
 
 ### 1.2 Reload and debounce pattern
 
@@ -75,6 +77,8 @@ So: debounce (e.g. 5s) is helping, but every coalesced reload still schedules a 
 1. **Make retry conditional or opt-in:** e.g. schedule retry only when `snapshot_age_seconds` at reload time is above a threshold (e.g. > 60), or add a parameter so the main “new data just saved” path does not schedule a retry.
 2. **Cap retries:** at most one retry per “generation” (already partially enforced by `reloadGenerationToken`); consider no retry when the snapshot was already fresh at reload time (e.g. age &lt; 60s).
 3. **Document:** “Reloads per reading” should account for 1 initial + 1 retry when projecting WidgetKit budget (as in red-team feedback).
+
+**Reconnect / catch-up behavior:** The platform handles reconnect and catch-up via queued WatchConnectivity delivery and by waking the watch app with `WKWatchConnectivityRefreshBackgroundTask` when payloads are delivered. A separate app-level reconnect signal is not required. If post-reconnect staleness persists, investigate `handle(_:)` / `hasContentPending` / drain behavior rather than adding reachability callbacks (e.g. `WCSession.sessionReachabilityDidChange`), which are unreliable across watchOS versions.
 
 **Expected impact:** Fewer `reloadTimelines` calls, less budget exhaustion, reloads more likely to occur when they materially improve freshness; `reload_snapshot_age_seconds` distribution should improve over time as a result.
 
@@ -148,6 +152,8 @@ So: debounce (e.g. 5s) is helping, but every coalesced reload still schedules a 
 2. **Use in validation:** Define targets (e.g. “p95 save age &lt; 120s”, “p95 reload age &lt; 180s”) and track after each change (dedup, retry policy, phone-side coalescing).
 3. **Red-team alignment:** Matches “Metrics to add: complication_snapshot_age_seconds (p50/p95/p99)” and “reload_requests_total by type”.
 
+**getTimeline / budget characterization:** `reloadTimelines` calls can be coalesced or throttled by the system; they are not 1:1 with `getTimeline` executions. A persistent large divergence from baseline between reload requests and `getTimeline` calls is the signal of budget exhaustion (not "first reload after reset"). Expect coalescing; measure distribution and baselines rather than raw 1:1 equality.
+
 **Expected impact:** Data-driven validation of fixes; ability to detect regressions and set clear freshness goals.
 
 ---
@@ -175,6 +181,8 @@ So: debounce (e.g. 5s) is helping, but every coalesced reload still schedules a 
 3. **Any new guard that compares message fields to “last snapshot”:** Compare sanitized-to-sanitized (e.g. build a `TrioComplicationSnapshot` from the message and use `==` or the same 1s + display-field logic as in `saveOnMain`).
 4. **lastValidTimestamp:** Only update when the new value is strictly newer than the current value (monotonic); consider documenting that both processes can read it but only the “writer” of the snapshot file should advance it after a successful write.
 
+**App Group cross-process locking:** Do not use `flock` or other POSIX file locks for App Group cross-process synchronization on watchOS; on Darwin they do not provide cross-process mutual exclusion for App Group storage. Prefer monotonic guards and accept TOCTOU risk where acceptable. `NSFileCoordinator` is an option but can block the complication provider and risk WidgetKit timeouts. Default to monotonic guards unless proven necessary.
+
 **Expected impact:** Fewer duplicate saves and reloads; no regression to older data when out-of-order or duplicate payloads arrive; better `snapshot_age_seconds` at save (fewer redundant writes) and at reload (fewer reloads).
 
 ---
@@ -184,3 +192,4 @@ So: debounce (e.g. 5s) is helping, but every coalesced reload still schedules a 
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-02-27 | Initial document: transcript context, Better Stack log evidence, code refs, top 5 suggestions (retry/reload volume; CGM-only recency; timeline recency; snapshot_age_seconds as metric; dedup/out-of-order). |
+| 1.1 | 2026-03-04 | Phase 1.1 doc corrections: §1.1 Bucket 1 scope (WCSession/wake budget note); §3.1 Reconnect/catch-up behavior; §3.4 getTimeline/budget characterization; §3.5 App Group locking (no flock/POSIX; monotonic preferred). |

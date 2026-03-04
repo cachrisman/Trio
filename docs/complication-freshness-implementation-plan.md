@@ -1,8 +1,8 @@
 # Watch Complication Freshness — Implementation Plan
 
-**Version:** 1.17
+**Version:** 1.18
 **Date:** 2026-03-04
-**Based on:** v1.16; Phase 0.2 observability (Better Stack dashboard, Extract Metrics, setup doc). See changelog.
+**Based on:** v1.17; Phase 1 (doc corrections, no retry after save, forceReload audit). See changelog.
 
 **Preferred order of attack:**
 
@@ -287,7 +287,7 @@ Do NOT use it here. Use reload_requested_at_epoch_seconds for reload request tim
 
 **Minimal acceptance check after running sync:** In the project, for the Trio Watch Complication Extension target: **Debug** — `SWIFT_ACTIVE_COMPILATION_CONDITIONS` contains both `DEBUG` and `WIDGET_EXTENSION`; **Release** — contains `WIDGET_EXTENSION` and does **not** contain `DEBUG`. If both are true, Option A is correctly implemented.
 
-**Phase 0.2 log verification (do immediately after deploy):** Verify that both event types land in Better Stack for the same device. Within 24h of shipping Phase 0.2, run a query that checks for both `complication_reload_requested` (watch app, via `log(...)`) and `complication_get_timeline_called` (complication extension, via `os.Logger`) in the same time window. If `complication_get_timeline_called` is missing or redacted, the complication extension logs may not be ingested or may be privacy-redacted; correlation on reload_id (and reload_requested_at_epoch_seconds as fallback/sanity check) will fail until the pipeline is fixed.
+**Phase 0.2 log verification (do immediately after deploy):** Verify that both event types land in Better Stack for the same device. Within 24h of shipping Phase 0.2, run a query that checks for both `complication_reload_requested` (watch app, via `log(...)`) and `complication_get_timeline_called` (complication extension, via ComplicationLogBuffer file/drain) in the same time window. If `complication_get_timeline_called` is missing or redacted, the complication extension logs may not be ingested or may be privacy-redacted; correlation on reload_id (and reload_requested_at_epoch_seconds as fallback/sanity check) will fail until the pipeline is fixed.
 
 ---
 
@@ -344,7 +344,7 @@ Make only these changes; do not rewrite or reformat.
 
 - **Where:** `TrioComplicationDataStore.swift` — `coalescedReloadOnMain` (~~593); `saveOnMain` call site (~~509–510).
 - **What:** Add `scheduleRetry: Bool = true` to `coalescedReloadOnMain`. Save path passes `false`.
-- **Acceptance:** No "Retry scheduled" log entry after save-triggered reload. Initial reload still fires. Skip log: `"⏭️ Retry skipped: scheduleRetry=false (save path)"`.
+- **Acceptance:** No "Retry scheduled" log entry after save-triggered reload. Initial reload still fires. Logs contain `"⏭️ Retry skipped: scheduleRetry=false (save path)"` when save path triggers reload.
 
 #### Cursor prompt — Phase 1.2
 
@@ -358,7 +358,7 @@ Verify line numbers first: coalescedReloadOnMain ~593, saveOnMain call ~509–51
 
 2. Inside coalescedReloadOnMain, wrap scheduleRetryAfterReloadOnMain:
    guard scheduleRetry else {
-       debugLog("⏭️ Retry skipped: scheduleRetry=false (save path)")
+       log("⏭️ Retry skipped: scheduleRetry=false (save path)")
        return
    }
 
@@ -1091,9 +1091,10 @@ Do not implement. If delivery-delay dominates after Phases 1–4, revisit then.
 | Phase | Date       | Summary |
 | ----- | ---------- | --- |
 | 0.1   | 2026-03-02 | **Complete.** `TrioComplicationDataStore.swift`: In `saveOnMain`, after successful write, emit structured log `event=complication_save_age` with `age_seconds`, `reading_date_epoch_seconds`, `reading_date` (ISO8601). In `reloadTimeline()`, emit `event=complication_reload_age` with same field set (epoch from `lastTS`). Static `ISO8601DateFormatter` reuse; negative age clamped to 0; legacy `reload_snapshot_age_seconds` log line removed. Human-readable "Snapshot saved…" line retained. Join key: `reading_date_epoch_seconds` (Int). |
-| 0.2   | 2026-03-02 | **Complete.** Reload→getTimeline correlation: `ComplicationReloadRecord` + 64-entry ring in App Group UserDefaults (`complication_reload_ring`). Watch app appends before each `reloadTimelines` and logs `event=complication_reload_requested` with `reload_id` (uuidString), `reload_requested_at_epoch_seconds`. Complication extension reads ring in `getTimeline`, logs `event=complication_get_timeline_called` with `most_recent_reload_id`, `latency_seconds`, `reload_requested_at_epoch_seconds` (os.Logger, privacy: .public). Compile-time guard: `#if !WIDGET_EXTENSION` around ring append; sync scripts set per-config `SWIFT_ACTIVE_COMPILATION_CONDITIONS` for Trio Watch Complication Extension (Debug: DEBUG + WIDGET_EXTENSION, Release: WIDGET_EXTENSION only). New file `ComplicationLogBuffer.swift` (in-memory ring for DataStore logs). Join keys: `reload_id` primary; `reload_requested_at_epoch_seconds` fallback/sanity. Post-deploy: verify both event types land in Better Stack within 24h. |
+| 0.2   | 2026-03-02 | **Complete.** Reload→getTimeline correlation: `ComplicationReloadRecord` + 64-entry ring in App Group UserDefaults (`complication_reload_ring`). Watch app appends before each `reloadTimelines` and logs `event=complication_reload_requested` with `reload_id` (uuidString), `reload_requested_at_epoch_seconds`. Complication extension reads ring in `getTimeline`, logs `event=complication_get_timeline_called` with `most_recent_reload_id`, `latency_seconds`, `reload_requested_at_epoch_seconds` — os.Logger removed; routed through ComplicationLogBuffer (file/drain path) so complication extension logs reach Better Stack. Compile-time guard: `#if !WIDGET_EXTENSION` around ring append; sync scripts set per-config `SWIFT_ACTIVE_COMPILATION_CONDITIONS` for Trio Watch Complication Extension (Debug: DEBUG + WIDGET_EXTENSION, Release: WIDGET_EXTENSION only). New file `ComplicationLogBuffer.swift` (in-memory ring for DataStore logs). Join keys: `reload_id` primary; `reload_requested_at_epoch_seconds` fallback/sanity. Post-deploy: verify both event types land in Better Stack within 24h. |
 | 0.2 (shipped) | 2026-03-03 | **Phase 0.2 complete and shipped.** `ComplicationLogBuffer.swift`: hybrid buffer (in-memory ring all targets; file append only when `WIDGET_EXTENSION` / complication target). Sync file write in complication process so write completes before return. Contract: writer only `complication_log.txt`; best-effort delivery; rare corruption possible if truncation races drain. Built and deployed (patch 09). |
 | 0.2 observability | 2026-03-04 | **Phase 0.2 dashboard and setup doc.** Better Stack dashboard ID 689533 "Trio • Complication Freshness (Phase 0.2)": Extract Metrics on Trio source (complication_reload_requested_count, complication_get_timeline_called_count, five latency buckets, complication_latency_seconds with avg/max/quantiles). 14 charts in 3 sections — Volume & Reload Efficiency (reload vs getTimeline line, 60–300s / >300s text, Max Latency, Reload efficiency, counts), Burstiness (reloads per 5‑min bucket line, P95 burstiness, Burst Windows Count, Max burst), Latency health (avg/max/P50/P90/P95 over time, latency buckets per hour, Complication Reload Latency bar). Queries use pre-aggregated columns (no `name` filter); 30‑min buckets for latency line; 1‑h for latency buckets bar. Setup doc `docs/better-stack-complication-dashboard-setup.md`: Step 1 Extract Metrics definitions, Step 2 query patterns, individual-latency note, full dashboard summary with current queries, limitations. |
+| 1.1–1.3 | 2026-03-04 | **Phase 1 complete.** 1.1: snapshot-age-improvements-suggestions.md — §1.1 Bucket 1 scope (WCSession/wake budget note); §3.1 Reconnect/catch-up behavior; §3.4 getTimeline/budget characterization; §3.5 App Group locking (no flock; monotonic preferred). 1.2: TrioComplicationDataStore — coalescedReloadOnMain(minInterval:isRetry:scheduleRetry:), guard skips scheduleRetryAfterReloadOnMain when scheduleRetry=false; save path passes scheduleRetry: false. 1.3: ComplicationDebugView forceReload(scheduleRetry: false) with inline comment; WatchState.forceComplicationUpdate unchanged (already scheduleRetry: false). |
 
 
 ---
@@ -1121,5 +1122,6 @@ Do not implement. If delivery-delay dominates after Phases 1–4, revisit then.
 | 1.15    | 2026-03-02 | Phase 0.2 marked complete. Implementation log: added Phase 0.2 row (ring buffer, compile-time guard, ComplicationLogBuffer, join keys, post-deploy verification). Summary table: 0.2 Cursor-ready set to ✅ Complete. |
 | 1.16    | 2026-03-03 | Implementation log: added 0.2 (shipped) row — ComplicationLogBuffer hybrid ring+file, sync write, contract; Phase 0.2 complete and shipped (patch 09). Header updated to v1.16. |
 | 1.17    | 2026-03-04 | Implementation log: added 0.2 observability row — Better Stack dashboard (ID 689533), Extract Metrics, 14 charts in 3 sections, setup doc `better-stack-complication-dashboard-setup.md`. Header updated to v1.17. |
+| 1.18    | 2026-03-04 | Phase 1 implemented: 1.1 doc corrections in snapshot-age-improvements-suggestions.md (§1.1 Bucket 1, §3.1 Reconnect/catch-up, §3.4 getTimeline/budget, §3.5 App Group locking); 1.2 coalescedReloadOnMain(scheduleRetry:), save path passes false, guard skips retry; 1.3 ComplicationDebugView forceReload(scheduleRetry: false) with comment. Implementation log Phase 1 row added. |
 
 
