@@ -36,6 +36,25 @@ Read first:
    - The worktree state should be the same as before the run (aside from any commits you were asked to make).
    - Use `git stash -u` (include untracked) when the worktree has untracked files you care about (e.g. plan docs in `docs/`).
 
+## Self-Review Protocol
+
+After completing any task that modifies 3 or more files, or involves a refactor,
+rename, architectural change, or patch regeneration, you MUST perform a review
+pass before presenting your result:
+
+1. Re-read every file you modified from top to bottom
+2. Confirm all imports resolve and no references were broken
+3. Confirm the change is complete — no half-finished edits or stale TODOs
+4. Confirm naming is consistent across all affected files
+5. Confirm your changes match the original request — no scope creep, nothing missing
+6. For patch-related changes: confirm the patch still applies cleanly and
+   `scripts/patch-test.sh` would pass (run it if in doubt)
+7. If you find an issue, fix it silently and restart the review from step 1
+8. Only present your result once the review passes cleanly
+
+Never present a result from a multi-file or patch-modifying change without first
+completing this protocol.
+
 ## Untracked files and clean / reset
 
 - **`git clean -fd` (or scripts that run it) removes untracked files.** Procedures that "reset to clean dev" or "test patches from clean state" often run `git reset --hard` and `git clean -fd` in the repo. Any untracked file (e.g. `docs/complication-freshness-implementation-plan.md`) will be **permanently removed** unless it was stashed or committed elsewhere.
