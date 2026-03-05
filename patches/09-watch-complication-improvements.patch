@@ -1,6 +1,6 @@
-From 50be33307fda302555158ac92b1e6cdaba54f8f7 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Wed, 4 Mar 2026 22:12:09 +0100
+From de227a0c45e78e70a5cc85605cc44419f782ee8f Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Thu, 5 Mar 2026 22:34:03 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
@@ -14,13 +14,13 @@ Subject: [PATCH] feat: watch-complication-improvements
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
  Trio Watch Complication/Info.plist            |   2 +
  .../TrioWatchComplication.entitlements        |  10 +
- .../TrioWatchComplication.swift               | 377 ++++++++-
+ .../TrioWatchComplication.swift               | 425 ++++++++-
  .../TrioWatchComplicationPreview.swift        | 124 +++
- Trio Watch Shared/ComplicationLogBuffer.swift | 145 ++--
- .../TrioComplicationDataStore.swift           | 801 ++++++++++++++++++
+ Trio Watch Shared/ComplicationLogBuffer.swift | 145 ++-
+ .../TrioComplicationDataStore.swift           | 851 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
  .../WatchManager/AppleWatchManager.swift      | 205 +++--
- 16 files changed, 2406 insertions(+), 334 deletions(-)
+ 16 files changed, 2504 insertions(+), 334 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -31,7 +31,7 @@ Subject: [PATCH] feat: watch-complication-improvements
 
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
 new file mode 100644
-index 000000000..6707c3b25
+index 000000000..735211cd7
 --- /dev/null
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
 @@ -0,0 +1,31 @@
@@ -51,7 +51,7 @@ index 000000000..6707c3b25
 +    }
 +
 +    func applicationDidBecomeActive() {
-+        Task { await WatchLogger.shared.log("🟢 Watch app became active - requesting fresh data") }
++        Task { await WatchLogger.shared.log("event=watch_app_became_active context=foreground") }
 +        WatchState.shared.noteAppBecameActive()
 +        WatchState.shared.requestWatchStateUpdate()
 +        // Note: forceComplicationUpdate() is now called in finalizePendingData() after fresh data arrives
@@ -1582,10 +1582,10 @@ index 000000000..9a37de423
 +</dict>
 +</plist>
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
-index 411968936..c1d638d06 100644
+index 411968936..14e711a7f 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
 +++ b/Trio Watch Complication/TrioWatchComplication.swift	
-@@ -1,40 +1,210 @@
+@@ -1,40 +1,258 @@
 +import Foundation
  import SwiftUI
  import WidgetKit
@@ -1711,6 +1711,12 @@ index 411968936..c1d638d06 100644
 +        }
 +    }
 +}
++
++private enum ProviderProcessState {
++    static let instanceID = UUID()
++    static var lastSeenGeneration: Int?
++    static var isFirstCall = true
++}
  
  struct TrioWatchComplicationProvider: TimelineProvider {
 +    private let refreshInterval: TimeInterval = 300
@@ -1741,24 +1747,66 @@ index 411968936..c1d638d06 100644
 -        let entry = TrioWatchComplicationEntry(date: Date())
 -        let timeline = Timeline(entries: [entry], policy: .never)
 -        completion(timeline)
-+        // Instrumentation: log so reload→getTimeline correlation can be checked in Better Stack (Phase 0.2).
-+        // Verify both event types (complication_reload_requested from watch app, complication_get_timeline_called here) appear for the same device so joins on reload_id (and reload_requested_at_epoch_seconds as fallback/sanity check) are valid.
++        let store = TrioComplicationDataStore.shared
 +        let nowEpochSeconds = Int(Date().timeIntervalSince1970)
-+        if let newest = TrioComplicationDataStore.shared.newestReloadRecord() {
-+            let latency = max(0, nowEpochSeconds - newest.requestedAtEpochSeconds)
-+            TrioComplicationDataStore.shared.logWidgetGetTimelineInvocation(
-+                mostRecentReloadId: newest.id.uuidString,
-+                latencySeconds: latency,
-+                reloadRequestedAtEpochSeconds: newest.requestedAtEpochSeconds
-+            )
++        let appGroupAvailable = store.isAppGroupAvailable()
++
++        let observedGeneration: Int
++        let generationSource: String
++        if !appGroupAvailable {
++            observedGeneration = -1
++            generationSource = "unavailable"
++        } else if let gen = store.currentReloadGeneration() {
++            observedGeneration = gen
++            generationSource = "set"
 +        } else {
-+            // Literals only; if refactored to interpolate e.g. "none", use privacy: .public.
-+            TrioComplicationDataStore.shared.logWidgetGetTimelineInvocation(
-+                mostRecentReloadId: "none",
-+                latencySeconds: -1,
-+                reloadRequestedAtEpochSeconds: -1
-+            )
++            observedGeneration = 0
++            generationSource = "unset"
 +        }
++
++        let lastReloadEpoch = store.lastReloadRequestEpochSeconds()
++
++        let isRestart = ProviderProcessState.isFirstCall
++        ProviderProcessState.isFirstCall = false
++
++        let generationDelta: Int
++        if !appGroupAvailable {
++            generationDelta = -1
++        } else if let lastSeen = ProviderProcessState.lastSeenGeneration {
++            generationDelta = observedGeneration - lastSeen
++        } else {
++            generationDelta = -1
++        }
++
++        if appGroupAvailable {
++            ProviderProcessState.lastSeenGeneration = observedGeneration
++        }
++
++        let latencyValid: Bool
++        let latencySeconds: Int
++        if let epoch = lastReloadEpoch {
++            let elapsed = nowEpochSeconds - epoch
++            latencyValid = elapsed >= 0 && elapsed <= TrioComplicationDataStore.latencyValidityWindowSeconds
++            latencySeconds = latencyValid ? elapsed : -1
++        } else {
++            latencyValid = false
++            latencySeconds = -1
++        }
++
++        let reloadId = store.newestReloadRecord()?.id.uuidString ?? "none"
++
++        store.logWidgetGetTimelineInvocation(
++            appGroupAvailable: appGroupAvailable,
++            observedGenerationSource: generationSource,
++            observedReloadGeneration: observedGeneration,
++            generationDelta: generationDelta,
++            providerInstanceId: ProviderProcessState.instanceID.uuidString,
++            providerRestart: isRestart,
++            latencyValid: latencyValid,
++            latencySeconds: latencySeconds,
++            reloadRequestedAtEpochSeconds: lastReloadEpoch ?? -1,
++            mostRecentReloadId: reloadId
++        )
 +
 +        let snapshot = loadLatestEntry()
 +        var entries: [TrioWatchComplicationEntry] = []
@@ -1811,7 +1859,7 @@ index 411968936..c1d638d06 100644
          switch widgetFamily {
          case .accessoryCircular:
              TrioAccessoryCircularView(entry: entry)
-@@ -43,48 +213,130 @@ struct TrioWatchComplicationEntryView: View {
+@@ -43,48 +261,130 @@ struct TrioWatchComplicationEntryView: View {
          default:
              Image("ComplicationIcon")
                  .widgetAccentable()
@@ -1959,7 +2007,7 @@ index 411968936..c1d638d06 100644
          .supportedFamilies([
              .accessoryCorner,
              .accessoryCircular
-@@ -92,14 +344,59 @@ struct TrioAccessoryCircularView: View {
+@@ -92,14 +392,59 @@ struct TrioAccessoryCircularView: View {
      }
  }
  
@@ -2369,10 +2417,10 @@ index 469f91f5c..17036ebca 100644
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..13a285469
+index 000000000..659c52faa
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,801 @@
+@@ -0,0 +1,851 @@
 +import Foundation
 +import os
 +import WidgetKit
@@ -2548,6 +2596,9 @@ index 000000000..13a285469
 +    private static let lastReloadKey = "TrioComplication_lastReload"
 +    private static let lastValidTimestampKey = "TrioComplication_lastValidTimestamp"
 +    private static let reloadGenerationTokenKey = "TrioComplication_reloadGenerationToken"
++    private static let reloadGenerationKey = "TrioComplication_reloadGeneration"
++    private static let lastReloadRequestEpochSecondsKey = "TrioComplication_lastReloadRequestEpochSeconds"
++    static let latencyValidityWindowSeconds = 600
 +
 +    // MARK: - Persisted State (shared across processes via UserDefaults in App Group)
 +
@@ -2936,6 +2987,24 @@ index 000000000..13a285469
 +        ComplicationReloadRing.newestRecord(suiteName: appGroupID)
 +    }
 +
++    func currentReloadGeneration() -> Int? {
++        guard let defaults = appGroupDefaults else { return nil }
++        return defaults.object(forKey: Self.reloadGenerationKey) != nil
++            ? defaults.integer(forKey: Self.reloadGenerationKey)
++            : nil
++    }
++
++    func lastReloadRequestEpochSeconds() -> Int? {
++        guard let defaults = appGroupDefaults else { return nil }
++        return defaults.object(forKey: Self.lastReloadRequestEpochSecondsKey) != nil
++            ? defaults.integer(forKey: Self.lastReloadRequestEpochSecondsKey)
++            : nil
++    }
++
++    func isAppGroupAvailable() -> Bool {
++        appGroupDefaults != nil
++    }
++
 +    /// Loads the latest complication snapshot from disk.
 +    /// May be called from any thread. Updates `lastValidTimestamp` as a side-effect (serialized on main
 +    /// when App Group defaults are unavailable to protect in-memory fallback).
@@ -3045,12 +3114,19 @@ index 000000000..13a285469
 +        private func reloadTimeline() {
 +            let requestedAtEpochSeconds = Int(Date().timeIntervalSince1970)
 +            let record = ComplicationReloadRecord(id: UUID(), requestedAtEpochSeconds: requestedAtEpochSeconds)
++            var reloadGeneration: Int = -1
 +            #if !WIDGET_EXTENSION
 +            if let suiteName = appGroupID {
 +                ComplicationReloadRing.append(record, suiteName: suiteName)
 +            }
++            if let defaults = appGroupDefaults {
++                let current = defaults.integer(forKey: Self.reloadGenerationKey)
++                reloadGeneration = current + 1
++                defaults.set(reloadGeneration, forKey: Self.reloadGenerationKey)
++                defaults.set(requestedAtEpochSeconds, forKey: Self.lastReloadRequestEpochSecondsKey)
++            }
 +            #endif
-+            log("event=complication_reload_requested reload_id=\(record.id.uuidString) reload_requested_at_epoch_seconds=\(record.requestedAtEpochSeconds)")
++            log("event=complication_reload_requested reload_generation=\(reloadGeneration) reload_requested_at_epoch_seconds=\(record.requestedAtEpochSeconds) reload_id=\(record.id.uuidString)")
 +
 +            if let lastTS = Self.lastValidTimestamp {
 +                log("🔔 reload_snapshot_age_seconds=\(Int(Date().timeIntervalSince(lastTS)))")
@@ -3162,9 +3238,31 @@ index 000000000..13a285469
 +    }
 +
 +#if WIDGET_EXTENSION
-+    /// Log getTimeline invocation for reload→getTimeline correlation (Phase 0.2). Uses shared log path so the event is written to ComplicationLogBuffer / complication_log.txt and can be drained to Better Stack by the watch app. Only compiled in the complication extension; do not call from the watch app.
-+    func logWidgetGetTimelineInvocation(mostRecentReloadId: String, latencySeconds: Int, reloadRequestedAtEpochSeconds: Int) {
-+        log("event=complication_get_timeline_called most_recent_reload_id=\(mostRecentReloadId) latency_seconds=\(latencySeconds) reload_requested_at_epoch_seconds=\(reloadRequestedAtEpochSeconds)")
++    func logWidgetGetTimelineInvocation(
++        appGroupAvailable: Bool,
++        observedGenerationSource: String,
++        observedReloadGeneration: Int,
++        generationDelta: Int,
++        providerInstanceId: String,
++        providerRestart: Bool,
++        latencyValid: Bool,
++        latencySeconds: Int,
++        reloadRequestedAtEpochSeconds: Int,
++        mostRecentReloadId: String
++    ) {
++        log(
++            "event=complication_get_timeline_called"
++            + " app_group_available=\(appGroupAvailable)"
++            + " observed_generation_source=\(observedGenerationSource)"
++            + " observed_reload_generation=\(observedReloadGeneration)"
++            + " generation_delta=\(generationDelta)"
++            + " provider_instance_id=\(providerInstanceId)"
++            + " provider_restart=\(providerRestart)"
++            + " latency_valid=\(latencyValid)"
++            + " latency_seconds=\(latencySeconds)"
++            + " reload_requested_at_epoch_seconds=\(reloadRequestedAtEpochSeconds)"
++            + " most_recent_reload_id=\(mostRecentReloadId)"
++        )
 +    }
 +#endif
 +
