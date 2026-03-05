@@ -122,6 +122,12 @@ private enum TrendSymbolMapper {
     }
 }
 
+private enum ProviderProcessState {
+    static let instanceID = UUID()
+    static var lastSeenGeneration: Int?
+    static var isFirstCall = true
+}
+
 struct TrioWatchComplicationProvider: TimelineProvider {
     private let refreshInterval: TimeInterval = 300
 
@@ -144,24 +150,66 @@ struct TrioWatchComplicationProvider: TimelineProvider {
     }
 
     func getTimeline(in _: Context, completion: @escaping (Timeline<TrioWatchComplicationEntry>) -> Void) {
-        // Instrumentation: log so reload→getTimeline correlation can be checked in Better Stack (Phase 0.2).
-        // Verify both event types (complication_reload_requested from watch app, complication_get_timeline_called here) appear for the same device so joins on reload_id (and reload_requested_at_epoch_seconds as fallback/sanity check) are valid.
+        let store = TrioComplicationDataStore.shared
         let nowEpochSeconds = Int(Date().timeIntervalSince1970)
-        if let newest = TrioComplicationDataStore.shared.newestReloadRecord() {
-            let latency = max(0, nowEpochSeconds - newest.requestedAtEpochSeconds)
-            TrioComplicationDataStore.shared.logWidgetGetTimelineInvocation(
-                mostRecentReloadId: newest.id.uuidString,
-                latencySeconds: latency,
-                reloadRequestedAtEpochSeconds: newest.requestedAtEpochSeconds
-            )
+        let appGroupAvailable = store.isAppGroupAvailable()
+
+        let observedGeneration: Int
+        let generationSource: String
+        if !appGroupAvailable {
+            observedGeneration = -1
+            generationSource = "unavailable"
+        } else if let gen = store.currentReloadGeneration() {
+            observedGeneration = gen
+            generationSource = "set"
         } else {
-            // Literals only; if refactored to interpolate e.g. "none", use privacy: .public.
-            TrioComplicationDataStore.shared.logWidgetGetTimelineInvocation(
-                mostRecentReloadId: "none",
-                latencySeconds: -1,
-                reloadRequestedAtEpochSeconds: -1
-            )
+            observedGeneration = 0
+            generationSource = "unset"
         }
+
+        let lastReloadEpoch = store.lastReloadRequestEpochSeconds()
+
+        let isRestart = ProviderProcessState.isFirstCall
+        ProviderProcessState.isFirstCall = false
+
+        let generationDelta: Int
+        if !appGroupAvailable {
+            generationDelta = -1
+        } else if let lastSeen = ProviderProcessState.lastSeenGeneration {
+            generationDelta = observedGeneration - lastSeen
+        } else {
+            generationDelta = -1
+        }
+
+        if appGroupAvailable {
+            ProviderProcessState.lastSeenGeneration = observedGeneration
+        }
+
+        let latencyValid: Bool
+        let latencySeconds: Int
+        if let epoch = lastReloadEpoch {
+            let elapsed = nowEpochSeconds - epoch
+            latencyValid = elapsed >= 0 && elapsed <= TrioComplicationDataStore.latencyValidityWindowSeconds
+            latencySeconds = latencyValid ? elapsed : -1
+        } else {
+            latencyValid = false
+            latencySeconds = -1
+        }
+
+        let reloadId = store.newestReloadRecord()?.id.uuidString ?? "none"
+
+        store.logWidgetGetTimelineInvocation(
+            appGroupAvailable: appGroupAvailable,
+            observedGenerationSource: generationSource,
+            observedReloadGeneration: observedGeneration,
+            generationDelta: generationDelta,
+            providerInstanceId: ProviderProcessState.instanceID.uuidString,
+            providerRestart: isRestart,
+            latencyValid: latencyValid,
+            latencySeconds: latencySeconds,
+            reloadRequestedAtEpochSeconds: lastReloadEpoch ?? -1,
+            mostRecentReloadId: reloadId
+        )
 
         let snapshot = loadLatestEntry()
         var entries: [TrioWatchComplicationEntry] = []

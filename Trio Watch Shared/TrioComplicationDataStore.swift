@@ -173,6 +173,9 @@ final class TrioComplicationDataStore {
     private static let lastReloadKey = "TrioComplication_lastReload"
     private static let lastValidTimestampKey = "TrioComplication_lastValidTimestamp"
     private static let reloadGenerationTokenKey = "TrioComplication_reloadGenerationToken"
+    private static let reloadGenerationKey = "TrioComplication_reloadGeneration"
+    private static let lastReloadRequestEpochSecondsKey = "TrioComplication_lastReloadRequestEpochSeconds"
+    static let latencyValidityWindowSeconds = 600
 
     /// Reused for structured log fields (reading_date); avoids per-call allocation.
     private static let iso8601Formatter: ISO8601DateFormatter = {
@@ -569,6 +572,24 @@ final class TrioComplicationDataStore {
         ComplicationReloadRing.newestRecord(suiteName: appGroupID)
     }
 
+    func currentReloadGeneration() -> Int? {
+        guard let defaults = appGroupDefaults else { return nil }
+        return defaults.object(forKey: Self.reloadGenerationKey) != nil
+            ? defaults.integer(forKey: Self.reloadGenerationKey)
+            : nil
+    }
+
+    func lastReloadRequestEpochSeconds() -> Int? {
+        guard let defaults = appGroupDefaults else { return nil }
+        return defaults.object(forKey: Self.lastReloadRequestEpochSecondsKey) != nil
+            ? defaults.integer(forKey: Self.lastReloadRequestEpochSecondsKey)
+            : nil
+    }
+
+    func isAppGroupAvailable() -> Bool {
+        appGroupDefaults != nil
+    }
+
     /// Loads the latest complication snapshot from disk.
     /// May be called from any thread. Updates `lastValidTimestamp` as a side-effect (serialized on main
     /// when App Group defaults are unavailable to protect in-memory fallback).
@@ -678,12 +699,19 @@ final class TrioComplicationDataStore {
         private func reloadTimeline() {
             let requestedAtEpochSeconds = Int(Date().timeIntervalSince1970)
             let record = ComplicationReloadRecord(id: UUID(), requestedAtEpochSeconds: requestedAtEpochSeconds)
+            var reloadGeneration: Int = -1
             #if !WIDGET_EXTENSION
             if let suiteName = appGroupID {
                 ComplicationReloadRing.append(record, suiteName: suiteName)
             }
+            if let defaults = appGroupDefaults {
+                let current = defaults.integer(forKey: Self.reloadGenerationKey)
+                reloadGeneration = current + 1
+                defaults.set(reloadGeneration, forKey: Self.reloadGenerationKey)
+                defaults.set(requestedAtEpochSeconds, forKey: Self.lastReloadRequestEpochSecondsKey)
+            }
             #endif
-            log("event=complication_reload_requested reload_id=\(record.id.uuidString) reload_requested_at_epoch_seconds=\(record.requestedAtEpochSeconds)")
+            log("event=complication_reload_requested reload_generation=\(reloadGeneration) reload_requested_at_epoch_seconds=\(record.requestedAtEpochSeconds) reload_id=\(record.id.uuidString)")
 
             if let lastTS = Self.lastValidTimestamp {
                 let ageSec = max(0, Int(Date().timeIntervalSince(lastTS)))
@@ -796,9 +824,31 @@ final class TrioComplicationDataStore {
     }
 
 #if WIDGET_EXTENSION
-    /// Log getTimeline invocation for reload→getTimeline correlation (Phase 0.2). Uses shared log path so the event is written to ComplicationLogBuffer / complication_log.txt and can be drained to Better Stack by the watch app. Only compiled in the complication extension; do not call from the watch app.
-    func logWidgetGetTimelineInvocation(mostRecentReloadId: String, latencySeconds: Int, reloadRequestedAtEpochSeconds: Int) {
-        log("event=complication_get_timeline_called most_recent_reload_id=\(mostRecentReloadId) latency_seconds=\(latencySeconds) reload_requested_at_epoch_seconds=\(reloadRequestedAtEpochSeconds)")
+    func logWidgetGetTimelineInvocation(
+        appGroupAvailable: Bool,
+        observedGenerationSource: String,
+        observedReloadGeneration: Int,
+        generationDelta: Int,
+        providerInstanceId: String,
+        providerRestart: Bool,
+        latencyValid: Bool,
+        latencySeconds: Int,
+        reloadRequestedAtEpochSeconds: Int,
+        mostRecentReloadId: String
+    ) {
+        log(
+            "event=complication_get_timeline_called"
+            + " app_group_available=\(appGroupAvailable)"
+            + " observed_generation_source=\(observedGenerationSource)"
+            + " observed_reload_generation=\(observedReloadGeneration)"
+            + " generation_delta=\(generationDelta)"
+            + " provider_instance_id=\(providerInstanceId)"
+            + " provider_restart=\(providerRestart)"
+            + " latency_valid=\(latencyValid)"
+            + " latency_seconds=\(latencySeconds)"
+            + " reload_requested_at_epoch_seconds=\(reloadRequestedAtEpochSeconds)"
+            + " most_recent_reload_id=\(mostRecentReloadId)"
+        )
     }
 #endif
 

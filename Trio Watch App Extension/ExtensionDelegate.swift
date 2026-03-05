@@ -14,7 +14,7 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func applicationDidBecomeActive() {
-        Task { await WatchLogger.shared.log("🟢 Watch app became active - requesting fresh data") }
+        Task { await WatchLogger.shared.log("event=watch_app_became_active context=foreground") }
         WatchState.shared.noteAppBecameActive()
         WatchState.shared.requestWatchStateUpdate()
         // Note: forceComplicationUpdate() is now called in finalizePendingData() after fresh data arrives
