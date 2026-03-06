@@ -1,12 +1,12 @@
-From de227a0c45e78e70a5cc85605cc44419f782ee8f Mon Sep 17 00:00:00 2001
+From abc90e3711d4d3ff54134a681871bd06919fbb3d Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Thu, 5 Mar 2026 22:34:03 +0100
+Date: Fri, 6 Mar 2026 16:53:03 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
  .../ExtensionDelegate.swift                   |  31 +
  Trio Watch App Extension/TrioWatchApp.swift   |   2 +
- .../Views/ComplicationDebugView.swift         | 373 ++++++++
+ .../Views/ComplicationDebugView.swift         | 420 +++++++++
  .../Views/TrioMainWatchView.swift             |  55 +-
  .../WatchState+Requests.swift                 |  19 +
  Trio Watch App Extension/WatchState.swift     | 561 ++++++++----
@@ -17,10 +17,10 @@ Subject: [PATCH] feat: watch-complication-improvements
  .../TrioWatchComplication.swift               | 425 ++++++++-
  .../TrioWatchComplicationPreview.swift        | 124 +++
  Trio Watch Shared/ComplicationLogBuffer.swift | 145 ++-
- .../TrioComplicationDataStore.swift           | 851 ++++++++++++++++++
+ .../TrioComplicationDataStore.swift           | 862 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
  .../WatchManager/AppleWatchManager.swift      | 205 +++--
- 16 files changed, 2504 insertions(+), 334 deletions(-)
+ 16 files changed, 2562 insertions(+), 334 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -82,10 +82,10 @@ index ccc8911ca..3b86e2547 100644
      init() {
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
 new file mode 100644
-index 000000000..6a7f9a21f
+index 000000000..b84d0fda0
 --- /dev/null
 +++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,420 @@
 +import SwiftUI
 +import WatchKit
 +
@@ -367,6 +367,53 @@ index 000000000..6a7f9a21f
 +            }
 +            .buttonStyle(.bordered)
 +            .tint(.gray)
++
++            Button {
++                runBurstSaveTest()
++            } label: {
++                HStack {
++                    Image(systemName: "burst.fill")
++                    Text("Burst Save x14")
++                }
++                .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.bordered)
++            .tint(.purple)
++        }
++    }
++
++    /// Phase 2.1: Triggers 14 rapid save() calls to validate coalescing and burst_window_id logging.
++    /// Uses the same code path as real updates; snapshots have increasing readingDate so each passes dedup.
++    private func runBurstSaveTest() {
++        let base = snapshot ?? TrioComplicationSnapshot(
++            glucose: "99",
++            trend: "Flat",
++            delta: "+0",
++            readingDate: Date(),
++            date: Date(),
++            state: nil,
++            glucoseColor: nil
++        )
++        Task {
++            let now = Date()
++            await WatchLogger.shared.log("🧪 Burst Save Test START count=14", force: true)
++            for index in 1...14 {
++                let readingDate = now.addingTimeInterval(-(14 - Double(index)))
++                let testSnapshot = TrioComplicationSnapshot(
++                    glucose: base.glucose,
++                    trend: base.trend,
++                    delta: base.delta,
++                    readingDate: readingDate,
++                    date: now,
++                    state: base.state,
++                    glucoseColor: base.glucoseColor
++                )
++                dataStore.save(testSnapshot, triggerReload: true, minInterval: 5)
++            }
++            await WatchLogger.shared.log("🧪 Burst Save Test END count=14", force: true)
++            await MainActor.run {
++                showConfirmation(message: "🧪 Burst Save x14 sent — check logs")
++            }
 +        }
 +    }
 +
@@ -2417,10 +2464,10 @@ index 469f91f5c..17036ebca 100644
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..659c52faa
+index 000000000..122e7f5a8
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,851 @@
+@@ -0,0 +1,862 @@
 +import Foundation
 +import os
 +import WidgetKit
@@ -2685,6 +2732,11 @@ index 000000000..659c52faa
 +    private var inMemorySavedSnapshot: TrioComplicationSnapshot?
 +    /// Remaining cold-start seeding attempts (hydrates inMemorySavedSnapshot from disk)
 +    private var seedAttemptsRemaining = 2
++
++    /// Burst window ID — increments each time a reload is triggered (Phase 2.1). In-memory only.
++    private var burstWindowId = 0
++    /// Number of reload calls debounced in the current burst window; reset to 0 when a reload fires (Phase 2.1).
++    private var reloadSuppressionCount = 0
 +
 +    /// Thread-safe one-time flags for logging (accessed from multiple threads via latestSnapshot).
 +    private static let flagLock = OSAllocatedUnfairLock(initialState: (appGroupUnavailable: false, diagnostics: false))
@@ -3068,14 +3120,20 @@ index 000000000..659c52faa
 +        let elapsed = now.timeIntervalSince(lastReload)
 +
 +        if elapsed < minInterval {
-+            log("⏳ Reload DEBOUNCED: \(Int(elapsed))s elapsed (min: \(Int(minInterval))s)")
++            reloadSuppressionCount += 1
++            let elapsedStr = String(format: "%.3f", elapsed)
++            let minStr = String(format: "%.3f", minInterval)
++            log("⏳ Reload DEBOUNCED burst_window_id=\(burstWindowId) suppressed=\(reloadSuppressionCount) elapsed=\(elapsedStr)s min=\(minStr)s")
 +            return
 +        }
 +
 +        cancelPendingRetryOnMain(reason: "superseded by new reload")
 +        Self.reloadGenerationToken = UUID().uuidString
 +
-+        log("🔄 Reload TRIGGERED: \(Int(elapsed))s since last reload\(isRetry ? " (retry)" : "")")
++        let elapsedStr = String(format: "%.3f", elapsed)
++        log("🔄 Reload TRIGGERED burst_window_id=\(burstWindowId) suppressed=\(reloadSuppressionCount) elapsed=\(elapsedStr)s since last reload\(isRetry ? " (retry)" : "")")
++        burstWindowId += 1
++        reloadSuppressionCount = 0
 +        lastReload = now
 +        reloadTimeline()
 +
