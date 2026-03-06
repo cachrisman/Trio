@@ -668,10 +668,10 @@ final class TrioComplicationDataStore {
         cancelPendingRetryOnMain(reason: "superseded by new reload")
         Self.reloadGenerationToken = UUID().uuidString
 
-        let elapsedStr = String(format: "%.3f", elapsed)
-        log("🔄 Reload TRIGGERED burst_window_id=\(burstWindowId) suppressed=\(reloadSuppressionCount) elapsed=\(elapsedStr)s since last reload\(isRetry ? " (retry)" : "")")
         burstWindowId += 1
         reloadSuppressionCount = 0
+        let elapsedStr = String(format: "%.3f", elapsed)
+        log("🔄 Reload TRIGGERED burst_window_id=\(burstWindowId) suppressed=\(reloadSuppressionCount) elapsed=\(elapsedStr)s since last reload\(isRetry ? " (retry)" : "")")
         lastReload = now
         reloadTimeline()
 
