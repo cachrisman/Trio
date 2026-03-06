@@ -279,6 +279,52 @@ struct ComplicationDebugView: View {
             }
             .buttonStyle(.bordered)
             .tint(.gray)
+
+            Button {
+                runBurstSaveTest()
+            } label: {
+                HStack {
+                    Image(systemName: "burst.fill")
+                    Text("Burst Save x14")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.purple)
+        }
+    }
+
+    /// Phase 2.1: Triggers 14 rapid save() calls to validate coalescing and burst_window_id logging.
+    /// Uses the same code path as real updates; snapshots have increasing readingDate so each passes dedup.
+    private func runBurstSaveTest() {
+        let base = snapshot ?? TrioComplicationSnapshot(
+            glucose: "99",
+            trend: "Flat",
+            delta: "+0",
+            readingDate: Date(),
+            date: Date(),
+            state: nil,
+            glucoseColor: nil
+        )
+        Task {
+            let now = Date()
+            await WatchLogger.shared.log("🧪 Burst Save Test START count=14")
+            for index in 1...14 {
+                let readingDate = now.addingTimeInterval(-(14 - Double(index)))
+                let testSnapshot = TrioComplicationSnapshot(
+                    glucose: base.glucose,
+                    trend: base.trend,
+                    delta: base.delta,
+                    readingDate: readingDate,
+                    date: now,
+                    state: base.state,
+                    glucoseColor: base.glucoseColor
+                )
+                dataStore.save(testSnapshot, triggerReload: true, minInterval: 5)
+            }
+            await MainActor.run {
+                showConfirmation(message: "🧪 Burst Save x14 sent — check logs")
+            }
         }
     }
 
