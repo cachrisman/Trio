@@ -270,6 +270,11 @@ final class TrioComplicationDataStore {
     /// Remaining cold-start seeding attempts (hydrates inMemorySavedSnapshot from disk)
     private var seedAttemptsRemaining = 2
 
+    /// Burst window ID — increments each time a reload is triggered (Phase 2.1). In-memory only.
+    private var burstWindowId = 0
+    /// Number of reload calls debounced in the current burst window; reset to 0 when a reload fires (Phase 2.1).
+    private var reloadSuppressionCount = 0
+
     /// Thread-safe one-time flags for logging (accessed from multiple threads via latestSnapshot).
     private static let flagLock = OSAllocatedUnfairLock(initialState: (appGroupUnavailable: false, diagnostics: false))
 
@@ -653,14 +658,20 @@ final class TrioComplicationDataStore {
         let elapsed = now.timeIntervalSince(lastReload)
 
         if elapsed < minInterval {
-            log("⏳ Reload DEBOUNCED: \(Int(elapsed))s elapsed (min: \(Int(minInterval))s)")
+            reloadSuppressionCount += 1
+            let elapsedStr = String(format: "%.3f", elapsed)
+            let minStr = String(format: "%.3f", minInterval)
+            log("⏳ Reload DEBOUNCED burst_window_id=\(burstWindowId) suppressed=\(reloadSuppressionCount) elapsed=\(elapsedStr)s min=\(minStr)s")
             return
         }
 
         cancelPendingRetryOnMain(reason: "superseded by new reload")
         Self.reloadGenerationToken = UUID().uuidString
 
-        log("🔄 Reload TRIGGERED: \(Int(elapsed))s since last reload\(isRetry ? " (retry)" : "")")
+        let elapsedStr = String(format: "%.3f", elapsed)
+        log("🔄 Reload TRIGGERED burst_window_id=\(burstWindowId) suppressed=\(reloadSuppressionCount) elapsed=\(elapsedStr)s since last reload\(isRetry ? " (retry)" : "")")
+        burstWindowId += 1
+        reloadSuppressionCount = 0
         lastReload = now
         reloadTimeline()
 
