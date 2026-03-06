@@ -1,8 +1,8 @@
 # Watch Complication Freshness — Implementation Plan
 
-**Version:** 1.18
-**Date:** 2026-03-04
-**Based on:** v1.17; Phase 1 (doc corrections, no retry after save, forceReload audit). See changelog.
+**Version:** 1.19
+**Date:** 2026-03-05
+**Based on:** v1.18; Phase 0.2 causality metrics extension (generation/delta, latency validity, provider restart, App Group availability). See changelog.
 
 **Preferred order of attack:**
 
@@ -288,6 +288,8 @@ Do NOT use it here. Use reload_requested_at_epoch_seconds for reload request tim
 **Minimal acceptance check after running sync:** In the project, for the Trio Watch Complication Extension target: **Debug** — `SWIFT_ACTIVE_COMPILATION_CONDITIONS` contains both `DEBUG` and `WIDGET_EXTENSION`; **Release** — contains `WIDGET_EXTENSION` and does **not** contain `DEBUG`. If both are true, Option A is correctly implemented.
 
 **Phase 0.2 log verification (do immediately after deploy):** Verify that both event types land in Better Stack for the same device. Within 24h of shipping Phase 0.2, run a query that checks for both `complication_reload_requested` (watch app, via `log(...)`) and `complication_get_timeline_called` (complication extension, via ComplicationLogBuffer file/drain) in the same time window. If `complication_get_timeline_called` is missing or redacted, the complication extension logs may not be ingested or may be privacy-redacted; correlation on reload_id (and reload_requested_at_epoch_seconds as fallback/sanity check) will fail until the pipeline is fixed.
+
+**Phase 0.2 causality metrics extension (v1.19):** Phase 0.2 was extended with causality metrics documented in `docs/phase-0.2-causality-metrics-implementation-plan.md`. This adds: (a) `reload_generation` counter (App Group UserDefaults, watch-app-only writer) and `observed_reload_generation` / `generation_delta` on the provider side for reload→getTimeline match-rate measurement; (b) `latency_valid` boolean gate with a 600s validity window to exclude stale/sentinel latency values from metrics; (c) `provider_instance_id` and `provider_restart` for extension process lifecycle tracking; (d) `app_group_available` and `observed_generation_source` for App Group failure disambiguation. Eight Better Stack extraction rules and six dashboard panels (in "Causality Metrics (Phase 0.2)" section of dashboard 689533) provide generation delta distribution, gated latency percentiles, reload-association ratio, and provider restart rate. See the causality metrics plan for full specs, sentinel conventions, and acceptance criteria.
 
 ---
 
@@ -1005,7 +1007,7 @@ Review: TrioComplicationSnapshot init and all call sites.
 
 ## Phase 4: Observability and SLA
 
-**Gate:** None. Doc-only. Parallel with Phases 2–3. **Phase 4.2 requires Phase 0.2** (reload→getTimeline correlation); if Phase 0.2 is not implemented, skip 4.2 or adapt the baseline wording so it does not assume reload-request correlation data exists.
+**Gate:** None. Doc-only. Parallel with Phases 2–3. **Phase 4.2 requires Phase 0.2** (reload→getTimeline correlation); Phase 0.2 is now complete including the causality metrics extension, so the baseline data exists.
 
 ### 4.1 Declare CGM cadence and tie SLAs
 
@@ -1040,7 +1042,11 @@ Add under "Complementary metric — reload requested vs timeline updated":
 - WidgetKit coalesces; do not expect 1:1.
 - Signal of exhaustion: persistent large divergence from your baseline.
 - A persistent gap of >50% vs baseline warrants investigation.
-- Do not interpret first-day or post-update metrics as evidence of exhaustion."
+- Do not interpret first-day or post-update metrics as evidence of exhaustion.
+- Phase 0.2 causality metrics now provide direct reload→getTimeline match-rate
+  via the 'Reload-Association Ratio' dashboard panel (generation_delta buckets)
+  and latency distribution via 'Valid Latency Percentiles'. Use these as the
+  primary baseline data source rather than raw log correlation."
 ```
 
 ---
@@ -1051,7 +1057,7 @@ Add under "Complementary metric — reload requested vs timeline updated":
 | Phase   | Content                                                                                                   | Gate                                               | Cursor-ready? |
 | ------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------- | --------------------- |
 | 0.1     | Structured logging with `reading_date_epoch` Int join key (CGM reading only)                              | None — do first                                    | ✅ Yes |
-| 0.2     | Ring-buffer reload→getTimeline correlation (`reload_requested_at_epoch`)                                  | Estimate effort; optional                          | ✅ Complete |
+| 0.2     | Ring-buffer reload→getTimeline correlation (`reload_requested_at_epoch`) + causality metrics extension (generation/delta, latency validity, provider restart, App Group availability) | Estimate effort; optional                          | ✅ Complete (incl. causality metrics) |
 | 1.1     | Doc corrections                                                                                           | None                                               | ✅ Yes |
 | 1.2     | No retry after save-triggered reload                                                                      | Phase 0.1 in place                                 | ✅ Yes |
 | 1.3     | forceReload call-site audit                                                                               | Phase 1.2 done                                     | ✅ Yes |
@@ -1076,7 +1082,7 @@ Do not implement. If delivery-delay dominates after Phases 1–4, revisit then.
 ## Remaining open items
 
 - **TrioComplicationSnapshot field names:** Verify `state` and `glucoseColor` property names before Phase 3.0. Update fingerprint and `shouldUpdate` field sets to match. They must be identical.
-- **App Group suite name:** Insert into Phase 3.0 and 0.2 Cursor prompts.
+- **App Group suite name:** Insert into Phase 3.0 Cursor prompt. (Phase 0.2 causality metrics already resolved this — using `cachedAppGroupDefaults` / `resolveAppGroupDefaultsOnce()`.)
 - **Line number verification:** Verify all approximate line numbers before running any prompt.
 - **Phase 2.2 structured fields:** Pipeline supports structured fields (see "Log pipeline (Better Stack)" above). To get event/window_id/task_type as first-class keys: extend 06-cloud-logging (parse from watch message + add to CloudLogEvent encoder whitelist). Otherwise use message-embed fallback and document it.
 - **Phase 2.2 log analysis (Option A gate):** After Phase 2.2 has been in production ≥3 days, run the BetterStack MCP query defined in Phase 2.2. If any trigger criterion is met (late delivery, missing save after task, or persistent post-reconnect staleness), file a follow-on task for Option A using the trigger evidence as the spec.
@@ -1094,6 +1100,7 @@ Do not implement. If delivery-delay dominates after Phases 1–4, revisit then.
 | 0.2   | 2026-03-02 | **Complete.** Reload→getTimeline correlation: `ComplicationReloadRecord` + 64-entry ring in App Group UserDefaults (`complication_reload_ring`). Watch app appends before each `reloadTimelines` and logs `event=complication_reload_requested` with `reload_id` (uuidString), `reload_requested_at_epoch_seconds`. Complication extension reads ring in `getTimeline`, logs `event=complication_get_timeline_called` with `most_recent_reload_id`, `latency_seconds`, `reload_requested_at_epoch_seconds` — os.Logger removed; routed through ComplicationLogBuffer (file/drain path) so complication extension logs reach Better Stack. Compile-time guard: `#if !WIDGET_EXTENSION` around ring append; sync scripts set per-config `SWIFT_ACTIVE_COMPILATION_CONDITIONS` for Trio Watch Complication Extension (Debug: DEBUG + WIDGET_EXTENSION, Release: WIDGET_EXTENSION only). New file `ComplicationLogBuffer.swift` (in-memory ring for DataStore logs). Join keys: `reload_id` primary; `reload_requested_at_epoch_seconds` fallback/sanity. Post-deploy: verify both event types land in Better Stack within 24h. |
 | 0.2 (shipped) | 2026-03-03 | **Phase 0.2 complete and shipped.** `ComplicationLogBuffer.swift`: hybrid buffer (in-memory ring all targets; file append only when `WIDGET_EXTENSION` / complication target). Sync file write in complication process so write completes before return. Contract: writer only `complication_log.txt`; best-effort delivery; rare corruption possible if truncation races drain. Built and deployed (patch 09). |
 | 0.2 observability | 2026-03-04 | **Phase 0.2 dashboard and setup doc.** Better Stack dashboard ID 689533 "Trio • Complication Freshness (Phase 0.2)": Extract Metrics on Trio source (complication_reload_requested_count, complication_get_timeline_called_count, five latency buckets, complication_latency_seconds with avg/max/quantiles). 14 charts in 3 sections — Volume & Reload Efficiency (reload vs getTimeline line, 60–300s / >300s text, Max Latency, Reload efficiency, counts), Burstiness (reloads per 5‑min bucket line, P95 burstiness, Burst Windows Count, Max burst), Latency health (avg/max/P50/P90/P95 over time, latency buckets per hour, Complication Reload Latency bar). Queries use pre-aggregated columns (no `name` filter); 30‑min buckets for latency line; 1‑h for latency buckets bar. Setup doc `docs/better-stack-complication-dashboard-setup.md`: Step 1 Extract Metrics definitions, Step 2 query patterns, individual-latency note, full dashboard summary with current queries, limitations. |
+| 0.2 causality | 2026-03-05 | **Phase 0.2 causality metrics extension complete.** Code: `reload_generation` counter + `lastReloadRequestEpochSeconds` in App Group UserDefaults (writer: watch app); `ProviderProcessState` (instanceID, lastSeenGeneration, isFirstCall) + three-way App Group branch (unavailable/unset/set) in complication provider `getTimeline`; `logWidgetGetTimelineInvocation` expanded with `appGroupAvailable`, `observedGenerationSource`, `providerInstanceID`, `providerRestart`, `observedReloadGeneration`, `generationDelta`, `latencyValid` fields; `latencyValidityWindowSeconds = 600`. Better Stack: 8 extraction rules (generation_delta, provider_restart, latency_valid, latency_seconds_valid + 4 generation_delta buckets). Dashboard 689533: 6 new panels in "Causality Metrics (Phase 0.2)" section (Generation Delta Distribution, Valid Latency Percentiles, Max Valid Latency, Valid Latency Events, Reload-Association Ratio, Provider Restart Rate). Patch 09 regenerated, validated, and build-verified. See `docs/phase-0.2-causality-metrics-implementation-plan.md` for full specs. |
 | 1.1–1.3 | 2026-03-04 | **Phase 1 complete.** 1.1: snapshot-age-improvements-suggestions.md — §1.1 Bucket 1 scope (WCSession/wake budget note); §3.1 Reconnect/catch-up behavior; §3.4 getTimeline/budget characterization; §3.5 App Group locking (no flock; monotonic preferred). 1.2: TrioComplicationDataStore — coalescedReloadOnMain(minInterval:isRetry:scheduleRetry:), guard skips scheduleRetryAfterReloadOnMain when scheduleRetry=false; save path passes scheduleRetry: false. 1.3: ComplicationDebugView forceReload(scheduleRetry: false) with inline comment; WatchState.forceComplicationUpdate unchanged (already scheduleRetry: false). |
 
 
@@ -1123,5 +1130,6 @@ Do not implement. If delivery-delay dominates after Phases 1–4, revisit then.
 | 1.16    | 2026-03-03 | Implementation log: added 0.2 (shipped) row — ComplicationLogBuffer hybrid ring+file, sync write, contract; Phase 0.2 complete and shipped (patch 09). Header updated to v1.16. |
 | 1.17    | 2026-03-04 | Implementation log: added 0.2 observability row — Better Stack dashboard (ID 689533), Extract Metrics, 14 charts in 3 sections, setup doc `better-stack-complication-dashboard-setup.md`. Header updated to v1.17. |
 | 1.18    | 2026-03-04 | Phase 1 implemented: 1.1 doc corrections in snapshot-age-improvements-suggestions.md (§1.1 Bucket 1, §3.1 Reconnect/catch-up, §3.4 getTimeline/budget, §3.5 App Group locking); 1.2 coalescedReloadOnMain(scheduleRetry:), save path passes false, guard skips retry; 1.3 ComplicationDebugView forceReload(scheduleRetry: false) with comment. Implementation log Phase 1 row added. |
+| 1.19    | 2026-03-05 | Phase 0.2 causality metrics extension cross-referenced: (a) Phase 0.2 section — added paragraph describing causality metrics extension with pointer to `phase-0.2-causality-metrics-implementation-plan.md`; (b) summary table — Phase 0.2 status updated to "✅ Complete (incl. causality metrics)"; (c) Phase 4.2 gate note updated (Phase 0.2 now complete; baseline data exists); Phase 4.2 prompt extended with guidance to use Reload-Association Ratio and Valid Latency Percentiles panels as primary baseline source; (d) remaining open items — App Group suite name note updated (resolved in causality metrics, only Phase 3.0 remains); (e) implementation log — added "0.2 causality" row with code changes, extraction rules (8), dashboard panels (6), patch status. |
 
 

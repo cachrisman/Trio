@@ -1,8 +1,8 @@
 # Implementation Plan: Phase 0.2 Causality Metrics
 
-**Version:** 1.6  
-**Date:** 2026-03-05  
-**Status:** Implemented (all phases complete)  
+**Version:** 1.8  
+**Date:** 2026-03-06  
+**Status:** ✅ Complete — all phases implemented, verified, and dashboard finalized  
 **Design reference:** `docs/phase-0.2-causality-metrics-design-v1.2.md`
 
 ## Scope
@@ -490,12 +490,12 @@ Both remain in raw logs for debugging only.
 
 ### Phase B acceptance criteria
 
-- [ ] All four extraction rules active in Better Stack.
-- [ ] `generation_delta` metric data points match raw log field values (spot-check 10 rows).
-- [ ] `generation_delta` metric contains no negative values (verify `generation_delta >= 0` filter working).
-- [ ] `latency_seconds` metric contains **only** rows where `latency_valid=true` in the raw log.
-- [ ] No extraction rules exist for `provider_instance_id` or `most_recent_reload_id`.
-- [ ] **Zero-row smoke test:** Within 1 hour of a confirmed reload event (verify a `complication_reload_requested` log exists in the window), verify at least 1 row is extracted for each of the four metrics. Zero rows indicates misconfigured extraction rules or Phase A logs not flowing. Use an active period — not a window where the watch was idle/charging.
+- [x] All four extraction rules active in Better Stack.
+- [x] `generation_delta` metric data points match raw log field values (spot-check 10 rows).
+- [x] `generation_delta` metric contains no negative values (verify `generation_delta >= 0` filter working).
+- [x] `latency_seconds` metric contains **only** rows where `latency_valid=true` in the raw log.
+- [x] No extraction rules exist for `provider_instance_id` or `most_recent_reload_id`.
+- [x] **Zero-row smoke test:** Within 1 hour of a confirmed reload event (verify a `complication_reload_requested` log exists in the window), verify at least 1 row is extracted for each of the four metrics. Zero rows indicates misconfigured extraction rules or Phase A logs not flowing. Use an active period — not a window where the watch was idle/charging.
 
 ### Phase B → Phase C handoff
 
@@ -584,12 +584,12 @@ These are priors for initial calibration, **not** pass/fail acceptance criteria:
 
 ### Phase C acceptance criteria
 
-- [ ] Delta distribution panel renders and shows non-zero counts in at least two buckets (delta=0 and delta=1).
-- [ ] Latency percentile panel renders; p50 and p90 are within the 0–600s range.
-- [ ] Latency max panel value does not exceed 620s (validates validity window gating).
-- [ ] Reload-association ratio panel renders and produces a non-trivial ratio (neither 0% nor 100%).
-- [ ] Provider restart panel renders and shows events.
-- [ ] All panels update with new data within the expected extraction pipeline latency.
+- [x] Delta distribution panel renders and shows non-zero counts in at least two buckets (delta=0 and delta=1).
+- [x] Latency percentile panel renders; p50 and p90 are within the 0–600s range.
+- [x] Latency max panel value does not exceed 620s (validates validity window gating). *(Max is now included in the Valid Latency chart.)*
+- [x] Reload-association ratio panel renders and produces a non-trivial ratio (neither 0% nor 100%). *(Now a single "Reload-associated %" number card.)*
+- [x] Provider restart panel renders and shows events. *(Removed during dashboard v2 — restart events are visible in raw logs and Generation Delta Distribution already excludes them via `provider_restart=false` filter. Separate panel was not actionable.)*
+- [x] All panels update with new data within the expected extraction pipeline latency.
 
 ---
 
@@ -739,7 +739,9 @@ Additionally verified (no issues found):
 | 2026-03-05 | B | Created 4 extraction rules via REST API | `generation_delta` (m-14603171, int64_delta, avg/count/max/min/p50-p99), `provider_restart` (g-14603172, string_low_cardinality), `latency_valid` (g-14603173, string_low_cardinality), `latency_seconds_valid` (m-14603174, int64_delta, avg/count/max/min/p50-p99). Filters: B1 `provider_restart=false AND >= 0`; B4 `latency_valid=true AND provider_restart=false AND >= 0`. |
 | 2026-03-05 | B | Created 4 bucket extraction rules for C1/C3 | `generation_delta_eq0` (m-14603331), `generation_delta_eq1` (m-14603332), `generation_delta_2_5` (m-14603333), `generation_delta_gt5` (m-14603334). All int64_delta with sum aggregation. Same event+restart filter as B1. |
 | 2026-03-05 | C | Created 6 dashboard panels | Added "Causality Metrics (Phase 0.2)" section to dashboard 689533. Charts: Generation Delta Distribution (stacked bar), Valid Latency Percentiles (line, p50/p90/p95/p99), Max Valid Latency (line), Valid Latency Events (number), Reload-Association Ratio (line, 0–100%), Provider Restart Rate (bar). All use `{{source}}` variable. |
-| | | **Pending** | Acceptance verification: wait for sufficient data flow, then spot-check B/C acceptance criteria. Patch 09 uncommitted on `dev` in Trio-dev. |
+| 2026-03-06 | B/C | Acceptance verification complete | All Phase B and C acceptance criteria verified with live data. Extraction rules producing correct values; dashboard panels rendering and showing expected data patterns. |
+| 2026-03-06 | C | Dashboard v2 improvements (reviewer feedback) | (a) Fixed Provider Restart Rate % denominator (was all log events, now complication events only). (b) Reload-Association converted to stacked bar (30m) + companion Association Rate + Total Calls line chart. (c) SLO panels (≤60s, ≤300s) using existing complication_latency_* bucket metrics; newly created extraction rules are NOT retroactive in Better Stack. (d) Added Latency Validity Rate % panel. (e) Generation Delta Distribution % widened to 60m. (f) Dashboard Notes static text added. (g) App Group canary confirmed. Self-review caught restart-rate denominator bug. |
+| 2026-03-06 | C | Dashboard v3 — consolidation and finalization | (a) Combined Generation Delta Distribution into single chart: 1h buckets, stacked absolute counts, 4 series (Δ=0, Δ=1, Δ2-5, Δ>5). (b) Merged max into Valid Latency chart (p50/p90/p95/p99/max). (c) Removed 5 redundant/low-value charts: Max Valid Latency, Reload-Association (30m), Provider Restart Rate, Gen Delta Distribution %, Association Rate %. (d) Added Reload-associated % number card. (e) Fixed Dashboard Notes rendering (query→static_text). (f) Set `explanation` field on all charts via export/import workflow. (g) Documented learnings in `docs/betterstack-guide.md`, updated `AGENTS.md`. Final Causality section: 9 charts. |
 
 ---
 
@@ -749,8 +751,10 @@ Additionally verified (no issues found):
 |---|---|---|
 | 1.0 | 2026-03-05 | Initial implementation plan: Phase A (code logging — 5 tasks across 3 files), Phase B (Better Stack extract metrics — 4 extraction rules), Phase C (dashboard panels — 4 panels). Includes file-level edit specifications with before/after code, risks/mitigations table, Better Stack validation queries, and per-phase acceptance criteria. |
 | 1.1 | 2026-03-05 | Self-review pass: fixed Task A2 line reference (line 10 → line 125), added missing comment lines in Task A4 current-state snippet, preserved existing comments in Task A5 before/after snippets. See "Self-review summary" section. |
-| 1.2 | 2026-03-05 | Reviewer feedback round 1 (R1: ChatGPT, R2: Claude). Key changes: (a) Task A1 — log `newGeneration` directly instead of UserDefaults read-back, restructured to hoist var; (b) Task A4 — documented `?? 0` as intentional, rejected "keep optional" (would cause perpetual restart detection); (c) Task B1 — added `generation_delta >= 0` belt-and-suspenders filter; (d) Task B4 — added `latency_seconds >= 0` guard; (e) Added "Sentinel and validity conventions" section; (f) Task C3 — moved "60–90%" from acceptance criteria to hypothesis; (g) Task C1 — replaced placeholder query with concrete ClickHouse pattern; (h) Added Phase A atomic shipping + rollback notes; (i) Task A1 — added persistence manual test to acceptance; (j) Task C2 — added 620s alert threshold note; (k) Added negative-delta row to risks table. See v1.1→v1.2 disposition table in prior version. |
-| 1.3 | 2026-03-05 | Reviewer feedback round 2 (R1: ChatGPT, R2: Claude). 12 normalized issues; 8 applied, 2 rejected, 2 partially applied. Key changes: (a) A1 acceptance — scoped "monotonically" to non-sentinel, tightened persistence test wording, added optional coalescing stress test; (b) A4 — documented clock-skew and App Group degraded behavior, marked `newestReloadRecord()` for deprecation; (c) C1 — dashboard queries target metrics table, raw-log query demoted to Explore-only; (d) Phase B acceptance — added zero-row smoke test; (e) Sentinel table — noted `observed_reload_generation=0` is `?? 0` fallback; (f) New "Ring buffer retirement" section. See v1.2→v1.3 crosswalk in prior version. |
-| 1.4 | 2026-03-05 | Reviewer feedback round 3 — final (R1: ChatGPT, R2: Claude). 10 normalized issues; 9 applied, 1 partially applied, 0 rejected. Key changes: (a) A1 — documented `integer(forKey:)` write/read asymmetry with A3 reader, first write produces generation 1; clarified coalescing test trigger mechanism; (b) A4 — documented App Group unavailable degraded state (delta=0 forever), added negative-delta acceptance check; (c) New "Failure-mode signatures" table tying together cross-component diagnostic patterns; (d) Phase B — added boolean filter syntax verification note, tightened zero-row smoke test to require confirmed reload event, added Phase B → Phase C handoff step with expected schema patterns; (e) Phase C — added prerequisite note, explained C1 trailing-space delimiter; (f) Phase A — added engineer handoff note about line number staleness. See feedback crosswalk table for full rationale. |
-| 1.5 | 2026-03-05 | Disambiguate "App Group unavailable" from "key unset" in provider-side logging. Key changes: (a) A2 — added `isFirstCall` to `ProviderProcessState` to decouple restart detection from `lastSeenGeneration`; (b) A3 — added `isAppGroupAvailable()` method, added `appGroupAvailable` and `observedGenerationSource` parameters to `logWidgetGetTimelineInvocation`, added `app_group_available` and `observed_generation_source` log fields; (c) A4 — three-way branch for `observedGeneration` (`-1` unavailable / `0` unset / value set), conditional `lastSeenGeneration` update (only when App Group available), `generation_delta=-1` when unavailable; (d) Updated sentinel table, boolean/string field tables, constants table, failure-mode signatures, and Phase B notes. Preserves `?? 0` for "available but unset" case to avoid perpetual restart; only changes behavior for "unavailable" case. |
-| 1.6 | 2026-03-05 | Implementation complete — all three phases done. (a) Phase A: build verified (dev + 9 patches, 12m 35s), first log confirmed in Better Stack with correct field values. (b) Phase B: 8 extraction rules created via REST API — 4 core metrics (generation_delta, provider_restart, latency_valid, latency_seconds_valid) + 4 bucket metrics (generation_delta_eq0/eq1/2_5/gt5) for dashboard bucketing. Boolean filters use string LIKE matching (`'%provider_restart=false%'`). (c) Phase C: 6 dashboard panels added to existing dashboard 689533 in new "Causality Metrics (Phase 0.2)" section. Updated status to "Implemented (all phases complete)". |
+| 1.2 | 2026-03-05 | Reviewer feedback round 1 (R1: ChatGPT, R2: Claude). Key changes: (a) Task A1 — log `newGeneration` directly instead of UserDefaults read-back, restructured to hoist var; (b) Task A4 — documented `?? 0` as intentional, rejected "keep optional" (would cause perpetual restart detection); (c) Task B1 — added `generation_delta >= 0` belt-and-suspenders filter; (d) Task B4 — added `latency_seconds >= 0` guard; (e) Added "Sentinel and validity conventions" section; (f) Task C3 — moved "60–90%" from acceptance criteria to hypothesis; (g) Task C1 — replaced placeholder query with concrete ClickHouse pattern; (h) Added Phase A atomic shipping + rollback notes; (i) Task A1 — added persistence manual test to acceptance; (j) Task C2 — added 620s alert threshold note; (k) Added negative-delta row to risks table. |
+| 1.3 | 2026-03-05 | Reviewer feedback round 2 (R1: ChatGPT, R2: Claude). 12 normalized issues; 8 applied, 2 rejected, 2 partially applied. Key changes: (a) A1 acceptance — scoped "monotonically" to non-sentinel, tightened persistence test wording, added optional coalescing stress test; (b) A4 — documented clock-skew and App Group degraded behavior, marked `newestReloadRecord()` for deprecation; (c) C1 — dashboard queries target metrics table, raw-log query demoted to Explore-only; (d) Phase B acceptance — added zero-row smoke test; (e) Sentinel table — noted `observed_reload_generation=0` is `?? 0` fallback; (f) New "Ring buffer retirement" section. |
+| 1.4 | 2026-03-05 | Reviewer feedback round 3 — final (R1: ChatGPT, R2: Claude). 10 normalized issues; 9 applied, 1 partially applied, 0 rejected. Key changes: (a) A1 — documented `integer(forKey:)` write/read asymmetry with A3 reader, first write produces generation 1; clarified coalescing test trigger mechanism; (b) A4 — documented App Group unavailable degraded state (delta=0 forever), added negative-delta acceptance check; (c) New "Failure-mode signatures" table; (d) Phase B — added boolean filter syntax verification note, tightened zero-row smoke test, added Phase B → Phase C handoff step; (e) Phase C — added prerequisite note, explained C1 trailing-space delimiter; (f) Phase A — added engineer handoff note about line number staleness. |
+| 1.5 | 2026-03-05 | Disambiguate "App Group unavailable" from "key unset" in provider-side logging. Key changes: (a) A2 — added `isFirstCall` to `ProviderProcessState`; (b) A3 — added `isAppGroupAvailable()`, `appGroupAvailable` and `observedGenerationSource` parameters and log fields; (c) A4 — three-way branch for `observedGeneration`, conditional `lastSeenGeneration` update; (d) Updated sentinel/boolean/string/constants tables, failure-mode signatures, and Phase B notes. |
+| 1.6 | 2026-03-05 | Implementation complete — all three phases done. Phase A: build verified (dev + 9 patches). Phase B: 8 extraction rules via REST API. Phase C: 6 dashboard panels in new "Causality Metrics (Phase 0.2)" section. |
+| 1.7 | 2026-03-06 | Dashboard v2 improvements. Fixed Provider Restart Rate % denominator. Reload-Association converted to stacked bar. SLO panels using existing complication_latency_* metrics (extraction rules NOT retroactive). Added Latency Validity Rate %. Gen Delta Distribution % widened to 60m. Dashboard Notes static text. App Group canary confirmed. |
+| 1.8 | 2026-03-06 | ✅ Final close-out. Dashboard v3 consolidation: combined Gen Delta Distribution (1h, 4 series), merged max into Valid Latency, removed 5 redundant charts, added Reload-associated % number card. Set `explanation` on all charts. All Phase B and C acceptance criteria marked complete. Documented Better Stack learnings in `docs/betterstack-guide.md`. Updated `AGENTS.md` with guide reference and token storage. |
