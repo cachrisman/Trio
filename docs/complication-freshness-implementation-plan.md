@@ -1,8 +1,8 @@
 # Watch Complication Freshness — Implementation Plan
 
-**Version:** 1.21
+**Version:** 1.22
 **Date:** 2026-03-06
-**Based on:** v1.20; Phase 2.2 BetterStack MCP prompt: structured-field default, window_id pairing, correlation guidance. See changelog.
+**Based on:** v1.21; Phase 2.2 fast-path completing log. See changelog.
 
 **Preferred order of attack:**
 
@@ -1237,5 +1237,6 @@ Do not implement. If delivery-delay dominates after Phases 1–4, revisit then.
 | 1.19    | 2026-03-05 | Phase 0.2 causality metrics extension cross-referenced: (a) Phase 0.2 section — added paragraph describing causality metrics extension with pointer to `phase-0.2-causality-metrics-implementation-plan.md`; (b) summary table — Phase 0.2 status updated to "✅ Complete (incl. causality metrics)"; (c) Phase 4.2 gate note updated (Phase 0.2 now complete; baseline data exists); Phase 4.2 prompt extended with guidance to use Reload-Association Ratio and Valid Latency Percentiles panels as primary baseline source; (d) remaining open items — App Group suite name note updated (resolved in causality metrics, only Phase 3.0 remains); (e) implementation log — added "0.2 causality" row with code changes, extraction rules (8), dashboard panels (6), patch status. |
 | 1.20    | 2026-03-06 | Phase 2.1 burst_window_id semantics: treat burstWindowId as active debounce window; on TRIGGER path advance window and reset suppression before logging so TRIGGERED and all DEBOUNCED in the same burst share the same burst_window_id (deterministic acceptance). No behavior or timing changes. |
 | 1.21    | 2026-03-06 | Phase 2.2 BetterStack MCP query prompt: (1) structured-field filtering (JSONExtract event/task_type/window_id) as default; message LIKE only in explicit Fallback sections. (2) Step 2: renamed unmatched→hour_bucket_delta with note on hour-boundary straddling; added optional window_id-based pairing query (received with no completing for same window_id within 60s). (3) Step 3: return dt, event, task_type, window_id, message; correlate received→completing→save_age by window_id + ~10s. (4) Step 4: window-safe (window_id + 60s) as preferred when window_id available; time-only heuristic only when window_id missing, with false-match warning. |
+| 1.22    | 2026-03-06 | Phase 2.2: Added `path=fast` completing log on the quiet-window/finalizePendingData path (Path A) and `path=timeout` token on the 5s safety timeout path (Path B). Initial deploy showed only received+did_receive_user_info with no completing; tasks were always completed via the fast path before the 5s timeout fired. New `completed_count` field on both paths. Logging only; no behavior changes. |
 
 
