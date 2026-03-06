@@ -437,7 +437,15 @@ No behavior changes.
 4. No change to when reloads fire or the debounce interval.
 
 5. After deploying, on a REAL DEVICE (not simulator): trigger ≥14 rapid save() calls
-   within 1 second. Confirm in logs:
+   within 1 second to validate coalescing + burst_window_id logging.
+
+   To make this repeatable, wire an existing watch debug UI button (e.g. "Refresh View")
+   to run a "Burst Save x14" action:
+   - On tap, log a clear marker: "🧪 Burst Save Test START count=14"
+   - Then call save() 14 times rapidly (back-to-back or tiny delay, but all within 1s),
+     using the same code path a real update uses.
+
+   Confirm in logs:
    - Exactly 1 TRIGGERED entry with a given burst_window_id within the 5s window.
    - ≥13 DEBOUNCED entries all sharing the same burst_window_id.
    Record test result (log snippet or screenshot) in PR description.
