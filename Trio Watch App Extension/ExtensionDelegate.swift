@@ -26,6 +26,9 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
+        Task {
+            await WatchLogger.shared.log("event=complication_bgtask_forwarding count=\(backgroundTasks.count)")
+        }
         WatchState.shared.handleBackgroundTasks(backgroundTasks)
     }
 }

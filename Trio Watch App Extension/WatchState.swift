@@ -3,6 +3,34 @@ import SwiftUI
 import WatchConnectivity
 import WatchKit
 
+// MARK: - BackgroundTaskWindowCounter (Phase 2.2)
+
+/// In-memory monotonic counter for correlating WKWatchConnectivityRefreshBackgroundTask wake windows with didReceiveUserInfo.
+/// Watch app extension only; used by handleBackgroundTasks and WCSession delegate.
+enum BackgroundTaskWindowCounter {
+    private static let lock = NSLock()
+    private static var lastWindowId = 0
+    private static var lastReceivedAt: Date?
+
+    /// Advance counter, record time, return (windowId, receivedAt). Thread-safe.
+    static func next() -> (windowId: Int, receivedAt: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        lastWindowId += 1
+        let receivedAt = Date()
+        lastReceivedAt = receivedAt
+        return (lastWindowId, receivedAt)
+    }
+
+    /// Current window id only if last received was within 30s; else nil. Thread-safe.
+    static func currentOrNil() -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let at = lastReceivedAt else { return nil }
+        return Date().timeIntervalSince(at) <= 30 ? lastWindowId : nil
+    }
+}
+
 @Observable final class WatchState: NSObject, WCSessionDelegate {
     static let shared = WatchState()
 
@@ -268,6 +296,12 @@ import WatchKit
                 await WatchLogger.shared.log("Invalid snapshot received (missing date)")
             }
             return
+        }
+
+        // Log using already-decoded readingDate (no extra decode); epoch only when we have it.
+        let readingDateEpoch = Int(readingDate.timeIntervalSince1970)
+        Task {
+            await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
         }
 
         let glucose = payload[WatchMessageKeys.currentGlucose] as? String ?? "--"
@@ -741,14 +775,24 @@ import WatchKit
                     refreshTask.setTaskCompletedWithSnapshot(false)
                     scheduleBackgroundRefresh()
                 } else if task is WKWatchConnectivityRefreshBackgroundTask {
+                    let (bgTaskWindowId, receivedAt) = BackgroundTaskWindowCounter.next()
+                    Task {
+                        await WatchLogger.shared.log("event=complication_bgtask_received window_id=\(bgTaskWindowId) task_type=WKWatchConnectivityRefreshBackgroundTask 📡 BGTask received: WKWatchConnectivityRefreshBackgroundTask window_id=\(bgTaskWindowId)")
+                    }
                     // Hold until userInfo processing completes (quiet-window or 5s safety timeout). All access on main.
                     // Multiple tasks in one wake are all stored; multiple didReceiveUserInfo reset the 300ms quiet window; last timer runs, then one finalize and complete all. If handle(_:backgroundTasks:) is delivered after the debounce already fired (userInfo first, then task), the 5s timeout rescues the task.
                     DispatchQueue.main.async { [self] in
                         pendingConnectivityTasks.append(task)
                         let taskToComplete = task
+                        let windowId = bgTaskWindowId
+                        let receivedAtCapture = receivedAt
                         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [self] in
                             if let idx = pendingConnectivityTasks.firstIndex(where: { $0 === taskToComplete }) {
                                 pendingConnectivityTasks.remove(at: idx)
+                                let completionDelayMs = Int(Date().timeIntervalSince(receivedAtCapture) * 1000)
+                                Task {
+                                    await WatchLogger.shared.log("event=complication_bgtask_completing window_id=\(windowId) task_type=WKWatchConnectivityRefreshBackgroundTask completion_delay_ms=\(completionDelayMs) 📡 BGTask completing: WKWatchConnectivityRefreshBackgroundTask window_id=\(windowId)")
+                                }
                                 taskToComplete.setTaskCompletedWithSnapshot(false)
                             }
                         }
