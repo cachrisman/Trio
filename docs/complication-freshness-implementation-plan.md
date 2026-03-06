@@ -1,8 +1,8 @@
 # Watch Complication Freshness — Implementation Plan
 
-**Version:** 1.19
-**Date:** 2026-03-05
-**Based on:** v1.18; Phase 0.2 causality metrics extension (generation/delta, latency validity, provider restart, App Group availability). See changelog.
+**Version:** 1.21
+**Date:** 2026-03-06
+**Based on:** v1.20; Phase 2.2 BetterStack MCP prompt: structured-field default, window_id pairing, correlation guidance. See changelog.
 
 **Preferred order of attack:**
 
@@ -475,42 +475,57 @@ WatchState.handleBackgroundTasks. Add logging there. If ExtensionDelegate forwar
 to WatchState, add a single log line at the ExtensionDelegate entry point too so
 the full call path is visible.
 
-STRUCTURED LOG FIELDS (required): Emit the same structured-field shape as Phase 0.1
-(e.g. event + numeric/window fields in your logging pipeline). Do not rely only on
-free-text in message — that makes MCP SQL brittle when formatting changes. Emit at
-least: event (e.g. "complication_bgtask_received" / "complication_bgtask_completing"),
-window_id (Int), task_type (e.g. "WKWatchConnectivityRefreshBackgroundTask"). Keep
-a human-readable message for logs; queries should filter on the structured fields.
+STRUCTURED LOG FIELDS (required): Emit the same structured-field shape as Phase 0.1.
+Do not rely only on free-text in message. Emit at least:
+- event (e.g. "complication_bgtask_received" / "complication_bgtask_completing")
+- window_id (Int)
+- task_type (String, exactly "WKWatchConnectivityRefreshBackgroundTask")
+Optional numeric field:
+- completion_delay_ms (Int) on completing logs (computed from received->completing)
+
 If the pipeline cannot emit structured JSON fields (only a single message string),
-embed stable key-value tokens in the message, e.g. event=complication_bgtask_received window_id=42 task_type=WKWatchConnectivityRefreshBackgroundTask, and document that approach so queries can parse reliably from message.
+embed stable key-value tokens in the message, e.g.
+event=complication_bgtask_received window_id=42 task_type=WKWatchConnectivityRefreshBackgroundTask
+and keep that format stable.
 
-1. At the point where WKWatchConnectivityRefreshBackgroundTask is matched/received,
+BackgroundTaskWindowCounter:
+- In-memory monotonic counter for next() window ids.
+- Store lastWindowId + lastReceivedAt.
+- currentOrNil() returns lastWindowId only if now - lastReceivedAt <= 30s, else nil.
+
+1) At the point where WKWatchConnectivityRefreshBackgroundTask is matched/received,
    add BEFORE any existing logic:
-   let bgTaskWindowId = BackgroundTaskWindowCounter.next() // in-memory monotonic counter
-   // Structured fields (required): event, window_id, task_type — see log field naming.
-   debugLog with structured fields: event="complication_bgtask_received", window_id=bgTaskWindowId, task_type="WKWatchConnectivityRefreshBackgroundTask", dt=...
-   Optionally also a human-readable line: "📡 BGTask received: WKWatchConnectivityRefreshBackgroundTask window_id=\(bgTaskWindowId) ..."
+   let bgTaskWindowId = BackgroundTaskWindowCounter.next()
+   debugLog with structured fields:
+     event="complication_bgtask_received"
+     window_id=bgTaskWindowId
+     task_type="WKWatchConnectivityRefreshBackgroundTask"
+   Optionally message: "📡 BGTask received: WKWatchConnectivityRefreshBackgroundTask window_id=\(bgTaskWindowId)"
 
-2. Immediately before the existing setTaskCompleted() call (inside the 5s delay
-   block), add:
-   debugLog with structured fields: event="complication_bgtask_completing", window_id=bgTaskWindowId, task_type="WKWatchConnectivityRefreshBackgroundTask", dt=...
-   Optionally also: "📡 BGTask completing: ... window_id=\(bgTaskWindowId) ..."
+2) Immediately before the existing setTaskCompleted() call (inside the existing 5s delay block),
+   add:
+   debugLog with structured fields:
+     event="complication_bgtask_completing"
+     window_id=bgTaskWindowId
+     task_type="WKWatchConnectivityRefreshBackgroundTask"
+     completion_delay_ms=<ms between received and completing for this window>
+   Optionally message: "📡 BGTask completing: WKWatchConnectivityRefreshBackgroundTask window_id=\(bgTaskWindowId)"
 
-3. No other changes. Do not add a hasContentPending loop. Do not change the 5s delay.
+3) No other changes. Do not add a hasContentPending loop. Do not change the 5s delay.
 
-4. In the watch WCSession delegate (didReceiveUserInfo), add a single log line with structured fields where supported: event (e.g. "complication_did_receive_user_info"), window_id, reading_date_epoch (from payload or -1). That includes:
-   - The current bg_task_window_id (if any is "active" within the last 30s) so we can correlate delivery with the wake window.
-   - reading_date_epoch: extract from the decoded complication payload/snapshot when available (CGM reading time only). If the payload is not yet parsed at this log site, omit the field or log -1. Do not log the receive time or any other timestamp as reading_date_epoch — that field is reserved for the CGM reading's date (see log field naming convention).
-   Example (once payload is decoded): debugLog("📥 didReceiveUserInfo window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(epochFromPayload)")
-   If payload not yet available: debugLog("📥 didReceiveUserInfo window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=-1")
-
+4) In the watch WCSession delegate (didReceiveUserInfo), add a single log line.
+   Structured fields where supported:
+     event="complication_did_receive_user_info"
+     window_id=<BackgroundTaskWindowCounter.currentOrNil() ?? -1>
+     reading_date_epoch=<epoch seconds from decoded payload readingDate, else -1>
+   IMPORTANT: Do not do extra decoding/parsing work here solely for logging. If readingDate
+   is not already available at this log site without new work, log reading_date_epoch=-1.
 
 After deploying:
 - Disable BT on iPhone, wait 30s, re-enable BT, do NOT open the watch app.
 - Wait up to 60s.
-- Confirm both "📡 BGTask received" and "📡 BGTask completing" appear in logs.
-- Note the timestamp delta between the two entries.
-- Document result (both lines + delta) in the PR description.
+- Confirm both received and completing logs appear.
+- Document the two lines + completion_delay_ms (or timestamp delta) in the PR description.
 ```
 
 ---
@@ -544,20 +559,23 @@ Call telemetry_create_cloud_connection_tool with team_id=491594 and source_id=16
 If that fails, call telemetry_list_teams_tool and telemetry_list_sources_tool to
 discover the correct IDs, then retry.
 
-Query convention: If Phase 2.2 emits structured fields (event, window_id, task_type),
-prefer filtering by them (e.g. JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_received'
-and JSONExtract(raw,'window_id','Nullable(Int64)')) so queries survive log message changes.
-The examples below show both: (A) structured-field filters when your pipeline stores them in raw,
-and (B) message LIKE fallback for backward compatibility.
+Query convention — structured fields first:
+Use JSONExtract(raw,'event','Nullable(String)'), JSONExtract(raw,'task_type','Nullable(String)'),
+JSONExtract(raw,'window_id','Nullable(Int64)') for filtering whenever your pipeline
+stores these in raw. Use message LIKE only when structured fields are not available
+(see Fallback sections below).
 
 Step 2 — Task receipt volume (last 72 hours, hot + S3):
-Query: how many background task received events have been logged?
+
+Default (structured): filter by event and task_type.
 
 SELECT
     toStartOfHour(dt) AS hour,
-    countIf(JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask received: WKWatchConnectivityRefreshBackgroundTask%') AS received,
-    countIf(JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask completing: WKWatchConnectivityRefreshBackgroundTask%') AS completing,
-    received - completing AS unmatched
+    countIf(JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_received'
+        AND JSONExtract(raw,'task_type','Nullable(String)') = 'WKWatchConnectivityRefreshBackgroundTask') AS received,
+    countIf(JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_completing'
+        AND JSONExtract(raw,'task_type','Nullable(String)') = 'WKWatchConnectivityRefreshBackgroundTask') AS completing,
+    received - completing AS hour_bucket_delta
 FROM (
     SELECT dt, raw FROM remote(t491594_trio_logs)
     WHERE dt > now() - INTERVAL 72 HOUR
@@ -572,20 +590,72 @@ LIMIT 72;
 table: "t491594.trio"
 source_id: 1659391
 
-Expected: received ≈ completing in each hour bucket. Persistent unmatched > 0 means
-tasks are received but not completing within the log window — investigate.
+Note: hour_bucket_delta is not strict pairing — a received and its completing event
+can straddle an hour boundary, so small deltas per bucket are normal. Persistent
+large positive deltas suggest tasks received but not completing in the log window.
+
+Optional — window_id pairing (when window_id is in raw): count received events that
+have no completing event for the same window_id within 60s.
+
+SELECT count(*) AS received_with_no_completing_same_window
+FROM (
+    SELECT
+        JSONExtract(raw,'window_id','Nullable(Int64)') AS wid,
+        dt AS received_dt
+    FROM (
+        SELECT dt, raw FROM remote(t491594_trio_logs)
+        WHERE dt > now() - INTERVAL 72 HOUR
+        AND JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_received'
+        AND JSONExtract(raw,'task_type','Nullable(String)') = 'WKWatchConnectivityRefreshBackgroundTask'
+        UNION ALL
+        SELECT dt, raw FROM s3Cluster(primary, t491594_trio_s3)
+        WHERE _row_type = 1 AND dt > now() - INTERVAL 72 HOUR
+        AND JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_received'
+        AND JSONExtract(raw,'task_type','Nullable(String)') = 'WKWatchConnectivityRefreshBackgroundTask'
+    )
+) AS recv
+WHERE wid IS NOT NULL AND wid > 0
+AND NOT EXISTS (
+    SELECT 1 FROM (
+        SELECT dt, JSONExtract(raw,'window_id','Nullable(Int64)') AS wid2 FROM remote(t491594_trio_logs)
+        WHERE dt > now() - INTERVAL 72 HOUR
+        AND JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_completing'
+        AND JSONExtract(raw,'task_type','Nullable(String)') = 'WKWatchConnectivityRefreshBackgroundTask'
+        UNION ALL
+        SELECT dt, JSONExtract(raw,'window_id','Nullable(Int64)') AS wid2 FROM s3Cluster(primary, t491594_trio_s3)
+        WHERE _row_type = 1 AND dt > now() - INTERVAL 72 HOUR
+        AND JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_completing'
+        AND JSONExtract(raw,'task_type','Nullable(String)') = 'WKWatchConnectivityRefreshBackgroundTask'
+    ) AS comp
+    WHERE wid2 = recv.wid AND comp.dt >= recv.received_dt AND comp.dt <= recv.received_dt + INTERVAL 60 SECOND
+);
+
+table: "t491594.trio"
+source_id: 1659391
+
+Fallback (message only): if event/task_type are not in raw, use
+  countIf(JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask received: WKWatchConnectivityRefreshBackgroundTask%')
+  countIf(JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask completing: WKWatchConnectivityRefreshBackgroundTask%')
+  and alias received - completing AS hour_bucket_delta.
 
 Step 3 — Delivery timing: does data arrive after task completes?
 
+Return columns: dt, event, task_type, window_id, message (if present). Correlate
+received → completing → complication_save_age by (window_id + ~10s time window).
+
+Default (structured):
+
 SELECT
-    JSONExtract(raw, 'message', 'Nullable(String)') AS msg,
-    dt
+    dt,
+    JSONExtract(raw,'event','Nullable(String)') AS event,
+    JSONExtract(raw,'task_type','Nullable(String)') AS task_type,
+    JSONExtract(raw,'window_id','Nullable(Int64)') AS window_id,
+    JSONExtract(raw,'message','Nullable(String)') AS message
 FROM (
     SELECT dt, raw FROM remote(t491594_trio_logs)
     WHERE dt > now() - INTERVAL 72 HOUR
     AND (
-        JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask received%'
-        OR JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask completing%'
+        JSONExtract(raw,'event','Nullable(String)') IN ('complication_bgtask_received','complication_bgtask_completing')
         OR JSONExtract(raw,'message','Nullable(String)') LIKE '%complication_save_age%'
         OR JSONExtract(raw,'message','Nullable(String)') LIKE '%Watch received data%'
     )
@@ -593,8 +663,7 @@ FROM (
     SELECT dt, raw FROM s3Cluster(primary, t491594_trio_s3)
     WHERE _row_type = 1 AND dt > now() - INTERVAL 72 HOUR
     AND (
-        JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask received%'
-        OR JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask completing%'
+        JSONExtract(raw,'event','Nullable(String)') IN ('complication_bgtask_received','complication_bgtask_completing')
         OR JSONExtract(raw,'message','Nullable(String)') LIKE '%complication_save_age%'
         OR JSONExtract(raw,'message','Nullable(String)') LIKE '%Watch received data%'
     )
@@ -605,42 +674,74 @@ LIMIT 500;
 table: "t491594.trio"
 source_id: 1659391
 
-Examine the results for this pattern:
-  - "BGTask completing" at time T
-  - "Watch received data" or "complication_save_age" at time T + Δ where Δ > 0
+Guidance: For each wake, order by dt and look for received → completing → (optional)
+complication_save_age. Pair by window_id when present; use a ~10s time window as
+backstop (window_id can reset on process restart). If any complication_save_age
+occurs AFTER a completing event for the same window_id (or within ~10s), that is
+evidence the 5s window may be too short (Option A trigger).
 
-When possible, correlate by window_id (same window_id on received and completing logs)
-to identify the same reconnect wake; window_id is in-memory and can reset on process
-restart, so also use the ~10-second time window as a backstop. Pairing window_id with
-time ordering is strongest.
-
-If ANY complication_save_age event appears AFTER a BGTask completing event that
-occurred within the same wake (same window_id, or same ~10-second window if window_id
-unavailable), that is evidence the 5s window is too short and Option A should be implemented.
+Fallback: if event is not in raw, filter by message LIKE '%BGTask received%',
+'%BGTask completing%', '%complication_save_age%', '%Watch received data%' and
+return dt, message only.
 
 Step 4 — Missing delivery: received but no save follows
 
-**Interpretation:** Step 4 as written in (4a) is an **approximate heuristic** when you
-cannot correlate by window_id: it counts "task received" and "no complication_save_age
-within 30s" by time only, so a save from a *different* wake can wrongly satisfy the
-EXISTS and undercount. Tighten interpretation (e.g. treat only sustained >30% as
-evidence) or use the window-safe variant (4b) when structured fields (event, window_id)
-are available.
+Prefer window-safe correlation (join by window_id + 60s) when window_id is available.
+Use time-only heuristic only when window_id is missing; it can produce false matches
+(save from a different wake satisfying EXISTS).
 
-(4a) Approximate (time-only) — use when window_id is not in structured log data:
+(4a) Default — window-safe (when window_id in raw): count received events that have
+no complication_save_age in the same window (same window_id, save within 60s of
+received_dt). Requires event/window_id in raw.
 
-SELECT
-    count(*) AS received_with_no_save_within_30s
+SELECT count(*) AS received_with_no_save_same_window
+FROM (
+    SELECT
+        JSONExtract(raw,'window_id','Nullable(Int64)') AS wid,
+        dt AS received_dt
+    FROM (
+        SELECT dt, raw FROM remote(t491594_trio_logs)
+        WHERE dt > now() - INTERVAL 72 HOUR
+        AND JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_received'
+        AND JSONExtract(raw,'task_type','Nullable(String)') = 'WKWatchConnectivityRefreshBackgroundTask'
+        UNION ALL
+        SELECT dt, raw FROM s3Cluster(primary, t491594_trio_s3)
+        WHERE _row_type = 1 AND dt > now() - INTERVAL 72 HOUR
+        AND JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_received'
+        AND JSONExtract(raw,'task_type','Nullable(String)') = 'WKWatchConnectivityRefreshBackgroundTask'
+    )
+) AS recv
+WHERE wid IS NOT NULL AND wid > 0
+AND NOT EXISTS (
+    SELECT 1 FROM (
+        SELECT dt FROM remote(t491594_trio_logs)
+        WHERE dt > now() - INTERVAL 72 HOUR
+        AND JSONExtract(raw,'message','Nullable(String)') LIKE '%complication_save_age%'
+        UNION ALL
+        SELECT dt FROM s3Cluster(primary, t491594_trio_s3)
+        WHERE _row_type = 1 AND dt > now() - INTERVAL 72 HOUR
+        AND JSONExtract(raw,'message','Nullable(String)') LIKE '%complication_save_age%'
+    ) AS saves
+    WHERE saves.dt >= recv.received_dt AND saves.dt <= recv.received_dt + INTERVAL 60 SECOND
+);
+
+(4b) Fallback — time-only (only when window_id missing): count "received" with no
+complication_save_age within 30s by time only. Warning: a save from a different
+wake can wrongly satisfy EXISTS and undercount; treat sustained >20% as evidence.
+
+SELECT count(*) AS received_with_no_save_within_30s
 FROM (
     SELECT dt AS task_received_dt
     FROM (
         SELECT dt, raw FROM remote(t491594_trio_logs)
         WHERE dt > now() - INTERVAL 72 HOUR
-        AND JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask received: WKWatchConnectivityRefreshBackgroundTask%'
+        AND (JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_received'
+             OR JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask received: WKWatchConnectivityRefreshBackgroundTask%')
         UNION ALL
         SELECT dt, raw FROM s3Cluster(primary, t491594_trio_s3)
         WHERE _row_type = 1 AND dt > now() - INTERVAL 72 HOUR
-        AND JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask received: WKWatchConnectivityRefreshBackgroundTask%'
+        AND (JSONExtract(raw,'event','Nullable(String)') = 'complication_bgtask_received'
+             OR JSONExtract(raw,'message','Nullable(String)') LIKE '%BGTask received: WKWatchConnectivityRefreshBackgroundTask%')
     )
 ) AS tasks
 WHERE NOT EXISTS (
@@ -656,16 +757,11 @@ WHERE NOT EXISTS (
     WHERE saves.dt BETWEEN tasks.task_received_dt AND tasks.task_received_dt + INTERVAL 30 SECOND
 );
 
-(4b) Window-safe — when event and window_id are in raw: count receives with no save
-*in the same window_id* within 30s. Join task events to save events by window_id
-(and time window) so saves from other wakes do not satisfy the correlation.
-
 table: "t491594.trio"
 source_id: 1659391
 
-If received_with_no_save_within_30s > 20% of total received (Step 2), treat as
-evidence of dropped content only after considering the heuristic nature of (4a);
-with (4b), the threshold is reliable per wake.
+If received_with_no_save (4a or 4b) > 20% of total received (Step 2), treat as
+evidence of dropped content. (4a) is reliable per wake; (4b) is heuristic.
 
 Step 5 — Summarize findings:
 
@@ -1139,5 +1235,7 @@ Do not implement. If delivery-delay dominates after Phases 1–4, revisit then.
 | 1.17    | 2026-03-04 | Implementation log: added 0.2 observability row — Better Stack dashboard (ID 689533), Extract Metrics, 14 charts in 3 sections, setup doc `better-stack-complication-dashboard-setup.md`. Header updated to v1.17. |
 | 1.18    | 2026-03-04 | Phase 1 implemented: 1.1 doc corrections in snapshot-age-improvements-suggestions.md (§1.1 Bucket 1, §3.1 Reconnect/catch-up, §3.4 getTimeline/budget, §3.5 App Group locking); 1.2 coalescedReloadOnMain(scheduleRetry:), save path passes false, guard skips retry; 1.3 ComplicationDebugView forceReload(scheduleRetry: false) with comment. Implementation log Phase 1 row added. |
 | 1.19    | 2026-03-05 | Phase 0.2 causality metrics extension cross-referenced: (a) Phase 0.2 section — added paragraph describing causality metrics extension with pointer to `phase-0.2-causality-metrics-implementation-plan.md`; (b) summary table — Phase 0.2 status updated to "✅ Complete (incl. causality metrics)"; (c) Phase 4.2 gate note updated (Phase 0.2 now complete; baseline data exists); Phase 4.2 prompt extended with guidance to use Reload-Association Ratio and Valid Latency Percentiles panels as primary baseline source; (d) remaining open items — App Group suite name note updated (resolved in causality metrics, only Phase 3.0 remains); (e) implementation log — added "0.2 causality" row with code changes, extraction rules (8), dashboard panels (6), patch status. |
+| 1.20    | 2026-03-06 | Phase 2.1 burst_window_id semantics: treat burstWindowId as active debounce window; on TRIGGER path advance window and reset suppression before logging so TRIGGERED and all DEBOUNCED in the same burst share the same burst_window_id (deterministic acceptance). No behavior or timing changes. |
+| 1.21    | 2026-03-06 | Phase 2.2 BetterStack MCP query prompt: (1) structured-field filtering (JSONExtract event/task_type/window_id) as default; message LIKE only in explicit Fallback sections. (2) Step 2: renamed unmatched→hour_bucket_delta with note on hour-boundary straddling; added optional window_id-based pairing query (received with no completing for same window_id within 60s). (3) Step 3: return dt, event, task_type, window_id, message; correlate received→completing→save_age by window_id + ~10s. (4) Step 4: window-safe (window_id + 60s) as preferred when window_id available; time-only heuristic only when window_id missing, with false-match warning. |
 
 
