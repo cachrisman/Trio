@@ -341,6 +341,10 @@ enum BackgroundTaskWindowCounter {
                 finalizeWorkItem?.cancel()
                 let work = DispatchWorkItem { [self] in
                     finalizePendingData()
+                    let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+                    Task {
+                        await WatchLogger.shared.log("event=complication_bgtask_completing path=fast window_id=\(wid) task_type=WKWatchConnectivityRefreshBackgroundTask completed_count=\(pendingConnectivityTasks.count) ⚡️ BGTask completing (fast) window_id=\(wid) count=\(pendingConnectivityTasks.count)")
+                    }
                     for t in pendingConnectivityTasks {
                         t.setTaskCompletedWithSnapshot(false)
                     }
@@ -807,7 +811,7 @@ enum BackgroundTaskWindowCounter {
                                 pendingConnectivityTasks.remove(at: idx)
                                 let completionDelayMs = Int(Date().timeIntervalSince(receivedAtCapture) * 1000)
                                 Task {
-                                    await WatchLogger.shared.log("event=complication_bgtask_completing window_id=\(windowId) task_type=WKWatchConnectivityRefreshBackgroundTask completion_delay_ms=\(completionDelayMs) 📡 BGTask completing: WKWatchConnectivityRefreshBackgroundTask window_id=\(windowId)")
+                                    await WatchLogger.shared.log("event=complication_bgtask_completing path=timeout window_id=\(windowId) task_type=WKWatchConnectivityRefreshBackgroundTask completion_delay_ms=\(completionDelayMs) completed_count=1 📡 BGTask completing (timeout) window_id=\(windowId)")
                                 }
                                 taskToComplete.setTaskCompletedWithSnapshot(false)
                             }
