@@ -308,7 +308,7 @@ struct ComplicationDebugView: View {
         )
         Task {
             let now = Date()
-            await WatchLogger.shared.log("🧪 Burst Save Test START count=14")
+            await WatchLogger.shared.log("🧪 Burst Save Test START count=14", force: true)
             for index in 1...14 {
                 let readingDate = now.addingTimeInterval(-(14 - Double(index)))
                 let testSnapshot = TrioComplicationSnapshot(
@@ -322,6 +322,7 @@ struct ComplicationDebugView: View {
                 )
                 dataStore.save(testSnapshot, triggerReload: true, minInterval: 5)
             }
+            await WatchLogger.shared.log("🧪 Burst Save Test END count=14", force: true)
             await MainActor.run {
                 showConfirmation(message: "🧪 Burst Save x14 sent — check logs")
             }
