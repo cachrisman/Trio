@@ -234,9 +234,11 @@ After syncing, re-run the patch validation.
 
 ## Better Stack MCP Usage
 
-Agents use the Better Stack MCP server (`user-better-stack`) to query Trio and Nightscout logs via ClickHouse SQL. **The MCP must be configured with a valid Better Stack Team API token** in Cursor’s MCP settings. If `telemetry_list_teams_tool` returns "No teams available" or `telemetry_query` returns 401 / "Failed to obtain ClickHouse credentials", the token is missing or invalid — the user must add or refresh it in the Better Stack MCP config. See [Better Stack API token docs](https://betterstack.com/docs/logs/api/getting-started/#obtaining-a-logtail-api-token).
+**Read first:** `docs/betterstack-guide.md` — comprehensive guide covering metrics extraction API, dashboard import/export, MCP tool capabilities and limitations, and query patterns.
 
-**Never log, echo, persist, or summarize credentials** returned by `telemetry_create_cloud_connection_tool`.
+Agents use the Better Stack MCP server (`user-better-stack`) to query Trio and Nightscout logs via ClickHouse SQL. For direct REST API calls (metrics creation, dashboard import), the API token is stored in `.trio-env` as `BETTERSTACK_API_TOKEN`. The same token is configured in Cursor’s MCP settings. If `telemetry_list_teams_tool` returns "No teams available" or `telemetry_query` returns 401 / "Failed to obtain ClickHouse credentials", the token is missing or invalid — the user must add or refresh it in the Better Stack MCP config and/or `.trio-env`. See [Better Stack API token docs](https://betterstack.com/docs/logs/api/getting-started/#obtaining-a-logtail-api-token).
+
+**Never log, echo, persist, or summarize credentials** returned by `telemetry_create_cloud_connection_tool` or from `.trio-env`.
 
 ### How agents should search logs (do this every time)
 
