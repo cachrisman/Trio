@@ -317,6 +317,10 @@ enum BackgroundTaskWindowCounter {
 
         DispatchQueue.main.async { [self] in
             if pendingConnectivityTasks.isEmpty {
+                let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+                Task {
+                    await WatchLogger.shared.log("event=complication_userinfo_no_pending_tasks window_id=\(wid) reading_date_epoch=\(readingDateEpoch) note=race_or_foreground")
+                }
                 scheduleUIUpdate(with: payload)
             } else {
                 pendingData.merge(payload) { _, new in new }
@@ -326,13 +330,20 @@ enum BackgroundTaskWindowCounter {
                 let work = DispatchWorkItem { [self] in
                     finalizePendingData()
                     let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+                    let pendingCount = pendingConnectivityTasks.count
                     Task {
-                        await WatchLogger.shared.log("event=complication_bgtask_completing path=fast window_id=\(wid) task_type=WKWatchConnectivityRefreshBackgroundTask completed_count=\(pendingConnectivityTasks.count) ⚡️ BGTask completing (fast) window_id=\(wid) count=\(pendingConnectivityTasks.count)")
+                        await WatchLogger.shared.log("event=complication_finalize_begin window_id=\(wid) pending_count=\(pendingCount)")
+                    }
+                    Task {
+                        await WatchLogger.shared.log("event=complication_bgtask_completing path=fast window_id=\(wid) task_type=WKWatchConnectivityRefreshBackgroundTask completed_count=\(pendingCount) ⚡️ BGTask completing (fast) window_id=\(wid) count=\(pendingCount)")
                     }
                     for t in pendingConnectivityTasks {
                         t.setTaskCompletedWithSnapshot(false)
                     }
                     pendingConnectivityTasks.removeAll()
+                    Task {
+                        await WatchLogger.shared.log("event=complication_finalize_end window_id=\(wid) cleared_count=\(pendingCount)")
+                    }
                 }
                 quietWindowWorkItem = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
@@ -787,6 +798,10 @@ enum BackgroundTaskWindowCounter {
                     // Multiple tasks in one wake are all stored; multiple didReceiveUserInfo reset the 300ms quiet window; last timer runs, then one finalize and complete all. If handle(_:backgroundTasks:) is delivered after the debounce already fired (userInfo first, then task), the 5s timeout rescues the task.
                     DispatchQueue.main.async { [self] in
                         pendingConnectivityTasks.append(task)
+                        let pendingCount = pendingConnectivityTasks.count
+                        Task {
+                            await WatchLogger.shared.log("event=complication_bgtask_enqueued window_id=\(bgTaskWindowId) task_type=WKWatchConnectivityRefreshBackgroundTask pending_count=\(pendingCount)")
+                        }
                         let taskToComplete = task
                         let windowId = bgTaskWindowId
                         let receivedAtCapture = receivedAt
