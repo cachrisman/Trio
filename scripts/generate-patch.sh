@@ -39,8 +39,9 @@
 #       Spaces and special characters are converted to dashes.
 #       Default: prompts interactively or uses source branch name.
 #
-#   -a, --all-files
+#   --all-files
 #       Include all changed files in the patch (skip file selection prompt).
+#       Must be specified explicitly (not implied by -n).
 #
 #   -f, --files <selection>
 #       [Interactive mode] Specify files by number (e.g., "1 3 5-7" or "all").
@@ -54,7 +55,7 @@
 #
 #   --exclude-files <paths>
 #       Comma-separated list of file paths/patterns to exclude from the patch.
-#       Applied after --include-files or -a. Supports glob patterns.
+#       Applied after --include-files or --all-files. Supports glob patterns.
 #       Example: --exclude-files "*.md,*.json,*Test*"
 #
 #   -w, --include-worktree
@@ -73,7 +74,8 @@
 #
 #   -n, --non-interactive
 #       Run in fully non-interactive mode. Uses defaults for any
-#       unspecified options. Equivalent to: -a -W -y
+#       unspecified options. Sets -W (no worktree changes) and -y (auto-confirm).
+#       Requires one of: --all-files, --include-files, or --exclude-files.
 #
 #   -h, --help
 #       Show this help message and exit.
@@ -83,10 +85,10 @@
 #   ./generate-patch.sh
 #
 #   # Generate patch from feature branch to dev, include all files
-#   ./generate-patch.sh -s feature/my-feature -t dev -a -d "my-feature"
+#   ./generate-patch.sh -s feature/my-feature -t dev --all-files -d "my-feature"
 #
-#   # Fully non-interactive with custom description
-#   ./generate-patch.sh -n -d "fix-watch-crash"
+#   # Fully non-interactive with custom description (all files)
+#   ./generate-patch.sh -n --all-files -d "fix-watch-crash"
 #
 #   # Include uncommitted changes, auto-confirm overwrites
 #   ./generate-patch.sh -w -y -d "wip-changes"
@@ -179,7 +181,7 @@ while [[ $# -gt 0 ]]; do
             FLAG_DESCRIPTION="$2"
             shift 2
             ;;
-        -a|--all-files)
+        --all-files)
             FLAG_ALL_FILES=true
             shift
             ;;
@@ -213,7 +215,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         -n|--non-interactive)
             FLAG_NON_INTERACTIVE=true
-            FLAG_ALL_FILES=true
             FLAG_INCLUDE_WORKTREE="false"
             FLAG_YES=true
             shift
@@ -410,6 +411,27 @@ should_include_path() {
     
     return 0
 }
+
+#===============================================================================
+# Validate: non-interactive mode requires explicit file selection
+#===============================================================================
+
+if [ "$FLAG_NON_INTERACTIVE" = true ] && [ "$FLAG_ALL_FILES" = false ] \
+    && [ -z "$FLAG_INCLUDE_FILES" ] && [ -z "$FLAG_EXCLUDE_FILES" ]; then
+    print_error "Non-interactive mode (-n) requires explicit file selection."
+    echo "" >&2
+    echo "  Use one of:" >&2
+    echo "    --all-files                Include all changed files" >&2
+    echo "    --include-files <paths>    Include specific files (comma-separated paths/globs)" >&2
+    echo "    --exclude-files <paths>    Exclude specific files (comma-separated paths/globs)" >&2
+    echo "" >&2
+    echo "  Examples:" >&2
+    echo "    ./scripts/generate-patch.sh -n -d \"my-fix\" --all-files" >&2
+    echo "    ./scripts/generate-patch.sh -n -d \"my-fix\" --include-files \"Trio/Sources/Foo.swift\"" >&2
+    echo "    ./scripts/generate-patch.sh -n -d \"my-fix\" --exclude-files \"*.md,*.json\"" >&2
+    echo "" >&2
+    exit 1
+fi
 
 #===============================================================================
 # Main script
@@ -802,7 +824,7 @@ echo ""
 # File selection - three modes:
 # 1. Path-based selection (--include-files/--exclude-files) for non-interactive/AI use
 # 2. Number-based selection (-f "1 3 5-7") for interactive use
-# 3. All files (-a or default in non-interactive mode)
+# 3. All files (--all-files)
 
 want=()
 

@@ -196,7 +196,13 @@ scripts/patch-test.sh
 Run `./scripts/generate-patch.sh` from **Trio-dev** with **`dev`** checked out (see "Run from dev" above). For mid-stack updates, checkout `dev` before running it.
 
 ```bash
-./scripts/generate-patch.sh -n -d "short-description"
+./scripts/generate-patch.sh -n --all-files -d "short-description"
+```
+
+For targeted patches (preferred over `--all-files` when only specific files changed):
+```bash
+./scripts/generate-patch.sh -n -d "short-description" \
+  --include-files "Trio/Sources/Foo.swift,Model/Bar.swift"
 ```
 
 Manual (single commit):
