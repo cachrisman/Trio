@@ -1,4 +1,4 @@
-# AGENTS.md
+# AGENTS.md — v2
 
 Instructions for AI agents working in this repository.
 
@@ -91,6 +91,8 @@ Run these from the **Trio-dev** worktree.
    ```
 
 When **editing** an existing plan or log: switch to `docs`, make your edits, then add/commit/push as above and switch back to `dev`. Only commit when the user asks you to; otherwise summarize the edits and remind them they can commit to `docs` when ready.
+
+**Checkout conflict (untracked files):** When `Trio-dev` is on `dev`, plan docs may appear as **untracked files** in the working tree (e.g. leftover from a previous checkout or a tool that created them). If `git checkout docs` fails with "untracked working tree files would be overwritten by checkout," delete the conflicting untracked copies first (`rm docs/<file>`), then retry the checkout. Do NOT edit plan docs while on `dev` — those are stale untracked copies, not the canonical tracked versions on `docs`.
 
 **Visibility (no extra worktree):** You don’t need a separate docs worktree. In the existing Trio-dev worktree, run `git checkout docs` when you want to view or edit plan docs — the `docs/` folder will show the files from the `docs` branch. When done, run `git checkout dev` to return to code/patches work. The same workspace (Trio + Trio-dev) stays; only the branch in Trio-dev changes. When Trio-dev is on `dev`, those doc files won’t be in the tree (they exist only on `docs`).
 
@@ -191,6 +193,12 @@ When asked to run a build, do the following.
 scripts/patch-test.sh
 ```
 
+### Update an existing patch (mid-stack)
+
+See `docs/feature-branch-workflow-optimization.md` § "Updating an existing patch (mid-stack)".
+
+**Do NOT** use `generate-patch.sh -s feature/<name> -t dev` for mid-stack updates — this compares against raw `dev` and includes ALL differences from every preceding patch, not just the changes for the patch being updated. You must create `tmp/` baseline branches with the preceding patches applied and compare against that baseline.
+
 ### Generate a patch (preferred)
 
 Run `./scripts/generate-patch.sh` from **Trio-dev** with **`dev`** checked out (see "Run from dev" above). For mid-stack updates, checkout `dev` before running it.
@@ -264,6 +272,8 @@ Agents use the Better Stack MCP server (`user-better-stack`) to query Trio and N
 
 ### Query format (Trio logs)
 
+- **ClickHouse CTE syntax**: `WITH alias AS (expr)` does **not** work in this ClickHouse version for scalar expressions. Either inline expressions directly in the SELECT, or use a subquery to define aliases: `SELECT extract(msg, ...) FROM (SELECT dt, JSONExtract(raw, 'message', 'Nullable(String)') AS msg FROM ...) WHERE ...`. This avoids repeated `JSONExtract` calls while keeping the query valid.
+
 - **Hot buffer vs full history**: `remote(t491594_trio_logs)` holds only the **last ~30–40 minutes** of data (hot tier). Querying e.g. “last 40 HOUR” with only `FROM remote(...)` will return only that recent slice, not 40 hours. For **yesterday and today** or any real historical window, include S3:  
   `FROM remote(t491594_trio_logs) WHERE dt >= ... AND dt < ... UNION ALL SELECT ... FROM s3Cluster(primary, t491594_trio_s3) WHERE _row_type = 1 AND dt >= ... AND dt < ...`  
   (same time bounds in both branches). Use `t<team_id>_trio_logs` / `t<team_id>_trio_s3` if you discovered a different team_id.
@@ -306,3 +316,15 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
   - "No anomalies were detected in the logs"
 
 **Goal:** Help the user quickly answer "what happened?" by turning Better Stack logs into clear, time-scoped, non-speculative summaries while maintaining strict safety and privacy boundaries.
+
+---
+
+## Changelog
+
+### v2 (2026-03-07)
+- **Checkout conflict (untracked files):** Added warning to "Tracking plan and design docs" section — when `git checkout docs` fails due to untracked plan docs on `dev`, delete the untracked copies first; do not edit plan docs while on `dev`.
+- **Update an existing patch (mid-stack):** Added to "Common workflows" with explicit warning against using `generate-patch.sh -s feature/<name> -t dev` for mid-stack updates (includes all preceding patches' diffs). Must use `tmp/` baseline branches.
+- **ClickHouse CTE syntax:** Added note to "Query format (Trio logs)" — `WITH alias AS (expr)` does not work; use subqueries or inline expressions.
+
+### v1
+- Initial version (no changelog tracked).

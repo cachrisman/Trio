@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v9 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v10 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -229,6 +229,16 @@ git stash pop
 
 If you use git worktrees (e.g., `Trio` and `Trio-dev` pointing to the same repo), a branch checked out in one worktree **cannot be created or deleted** from the other. The `tmp/` prefix convention avoids conflicts with feature branches checked out in other worktrees.
 
+### Common mistakes (mid-stack updates)
+
+| Mistake | Consequence | Prevention |
+|---------|-------------|------------|
+| Using `-t dev` instead of `-t tmp/<name>-baseline` | Patch contains ALL differences from every preceding patch, not just this patch's changes | Always create `tmp/` baseline with preceding patches applied |
+| Editing `docs/*.md` while on `dev` | Edits go to an untracked copy; lost on branch switch or `git clean` | Plan docs live on `docs` branch — switch to `docs` first |
+| Forgetting to `git checkout dev` before deleting `tmp/` branches | "Cannot delete the branch you're on" error | Step 6 always starts with `git checkout dev` |
+| Using `git commit --amend` on the wrong commit | Folds patch changes into an unrelated commit | Verify `git log -1` shows the expected commit before amending |
+| Running `generate-patch.sh` from the wrong worktree/branch | Script may use stale scripts or wrong baseline | Always run from `Trio-dev` with `dev` checked out |
+
 ---
 
 ### 3) Validate patch application before committing
@@ -420,6 +430,9 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v10
+- **Common mistakes (mid-stack updates):** New table after "Worktree considerations" documenting five frequent agent mistakes during mid-stack patch updates: wrong `-t` target, editing docs on wrong branch, forgetting checkout before branch delete, amending wrong commit, running generate-patch from wrong worktree. Each row has consequence and prevention.
 
 ### v9
 - **Untracked files and clean/reset:** New subsection warning that `git clean` and "clean dev" procedures remove untracked files; instruct to stash with `-u` before such procedures or commit docs to a `docs` branch; reference AGENTS.md "Tracking plan and design docs".
