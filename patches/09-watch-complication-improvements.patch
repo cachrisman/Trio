@@ -1,6 +1,6 @@
-From d1604b88700ae04fc87ab61a3f1ec3899b17de40 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 8 Mar 2026 22:31:06 +0100
+From e33257516576dcab504c0d44efa061ef58611de4 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Sun, 8 Mar 2026 23:38:09 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
@@ -19,8 +19,8 @@ Subject: [PATCH] feat: watch-complication-improvements
  Trio Watch Shared/ComplicationLogBuffer.swift | 145 ++-
  .../TrioComplicationDataStore.swift           | 985 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
- .../WatchManager/AppleWatchManager.swift      | 208 ++--
- 16 files changed, 2763 insertions(+), 336 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 219 ++--
+ 16 files changed, 2773 insertions(+), 337 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -3546,7 +3546,7 @@ index 000000000..9a37de423
 +</dict>
 +</plist>
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 75c3c182b..ce8a40643 100644
+index 75c3c182b..9334db155 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -16,6 +16,8 @@ protocol WatchManager {
@@ -3737,14 +3737,14 @@ index 75c3c182b..ce8a40643 100644
 +
 +        if !session.isPaired {
 +            debug(.watchManager, "⌚️❌ Skipping setupWatchState - No Watch is paired")
-+            return WatchState(date: Date())
-+        }
-+
-+        if !session.isWatchAppInstalled {
-+            debug(.watchManager, "⌚️❌ Skipping setupWatchState - Trio Watch app is not installed")
              return WatchState(date: Date())
          }
  
++        if !session.isWatchAppInstalled {
++            debug(.watchManager, "⌚️❌ Skipping setupWatchState - Trio Watch app is not installed")
++            return WatchState(date: Date())
++        }
++
 +        if !session.isReachable {
 +            debug(
 +                .watchManager,
@@ -3817,17 +3817,37 @@ index 75c3c182b..ce8a40643 100644
              return
          }
  
-@@ -519,7 +581,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -508,6 +570,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         }
+ 
+         let message: [String: Any] = watchStateToDictionary(from: state)
++        let readingEpoch = state.glucoseValues.last.map { Int($0.date.timeIntervalSince1970) } ?? -1
+ 
+         // if session is reachable, it means watch App is in the foreground -> send watchState as message
+         // if session is not reachable, it means it's in background -> send watchState as userInfo
+@@ -516,10 +579,19 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                 debug(.watchManager, "❌ Error sending watch state: \(error)")
+             }
+             WatchStateSnapshot.saveLatestDateToDisk(state.date)
++            debug(.watchManager, "📤 Transferred new WatchState snapshot via=sendMessage reading_date_epoch_seconds=\(readingEpoch)")
          } else {
              WatchStateSnapshot.saveLatestDateToDisk(state.date)
-             session.transferUserInfo([WatchMessageKeys.watchState: message])
+-            session.transferUserInfo([WatchMessageKeys.watchState: message])
 -            debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo")
-+            let readingEpoch = state.glucoseValues.last.map { Int($0.date.timeIntervalSince1970) } ?? -1
-+            debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo reading_date_epoch_seconds=\(readingEpoch)")
++            if session.remainingComplicationUserInfoTransfers > 0 {
++                session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: message])
++                let remaining = session.remainingComplicationUserInfoTransfers
++                let queueDepth = session.outstandingUserInfoTransfers.count
++                debug(.watchManager, "📤 Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
++            } else {
++                session.transferUserInfo([WatchMessageKeys.watchState: message])
++                let queueDepth = session.outstandingUserInfoTransfers.count
++                debug(.watchManager, "📤 Transferred new WatchState snapshot via=userInfo budget_exhausted=true queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
++            }
          }
      }
  
-@@ -551,7 +614,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -551,7 +623,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          debug(.watchManager, "📱 Phone session activated with state: \(activationState.rawValue)")
          debug(.watchManager, "📱 Phone isReachable after activation: \(session.isReachable)")
  
@@ -3839,7 +3859,7 @@ index 75c3c182b..ce8a40643 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -772,9 +838,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -772,9 +847,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              {
                  debug(.watchManager, "📱 Watch requested watch state data update.")
                  guard let self = self else { return }
@@ -3852,7 +3872,7 @@ index 75c3c182b..ce8a40643 100644
                  Task {
                      let state = await self.setupWatchState()
                      await self.sendDataToWatch(state)
-@@ -968,7 +1034,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -968,7 +1043,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          debug(.watchManager, "📱 Phone reachability changed: \(session.isReachable)")
  
          if session.isReachable {
@@ -3864,7 +3884,7 @@ index 75c3c182b..ce8a40643 100644
              Task {
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
-@@ -1449,11 +1518,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1449,11 +1527,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -3878,7 +3898,7 @@ index 75c3c182b..ce8a40643 100644
          }
      }
  
-@@ -1464,12 +1530,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1464,12 +1539,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
