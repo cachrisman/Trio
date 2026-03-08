@@ -833,11 +833,18 @@ if [ -n "$FLAG_INCLUDE_FILES" ] || [ -n "$FLAG_EXCLUDE_FILES" ]; then
     print_info "Using path-based file selection..."
     
     for ((idx=0; idx<FILE_COUNT; idx++)); do
-        # Get the primary path for this entry (first path in the entry)
+        # Check ALL paths for this entry (handles renames: old + new path)
         start=${ENTRY_OFFSETS[$idx]}
-        path="${PATHS_FLAT[$start]}"
-        
-        if should_include_path "$path" "$FLAG_INCLUDE_FILES" "$FLAG_EXCLUDE_FILES"; then
+        len=${ENTRY_LENGTHS[$idx]}
+        matched=false
+        for ((pi=0; pi<len; pi++)); do
+            path="${PATHS_FLAT[$((start + pi))]}"
+            if should_include_path "$path" "$FLAG_INCLUDE_FILES" "$FLAG_EXCLUDE_FILES"; then
+                matched=true
+                break
+            fi
+        done
+        if [ "$matched" = true ]; then
             want+=("$idx")
         fi
     done

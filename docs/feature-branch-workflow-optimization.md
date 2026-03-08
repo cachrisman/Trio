@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v10 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v12 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -194,15 +194,14 @@ git commit --amend -m "feat: <name>"
 git checkout dev
 
 # 4) Regenerate the patch against the baseline (from Trio-dev with dev checked out)
-#    Use -a to include all changed files, or --include-files for explicit list.
+#    Use --include-files with an explicit file list (preferred).
 ./scripts/generate-patch.sh -n \
   -s tmp/<name>-update \
   -t tmp/<name>-baseline \
   -o patches/06-<name>.patch \
-  -a -y
-# Or with explicit file list:
-#   --include-files "path/to/File1.swift,path/to/File2.swift"
+  --include-files "path/to/File1.swift,path/to/File2.swift" -y
 # Note: expand the --include-files list if you touched additional files.
+# Do NOT use -a (--all-files) for mid-stack updates — it may include unintended files.
 
 # 5) Validate the full stack (from Trio-dev; branch can be dev or any)
 ./scripts/patch-test.sh
@@ -229,15 +228,53 @@ git stash pop
 
 If you use git worktrees (e.g., `Trio` and `Trio-dev` pointing to the same repo), a branch checked out in one worktree **cannot be created or deleted** from the other. The `tmp/` prefix convention avoids conflicts with feature branches checked out in other worktrees.
 
+### Automated mid-stack update (preferred)
+
+The manual workflow above is automated by `scripts/mid-stack-update.sh`. Use it
+instead of running the steps by hand:
+
+```bash
+# From Trio-dev worktree, on dev branch
+./scripts/mid-stack-update.sh --patch <NN> --cherry-pick <sha>[,<sha>,...]
+
+# Preview what would happen (no changes)
+./scripts/mid-stack-update.sh --patch <NN> --dry-run
+
+# Explicit feature branch for drift check
+./scripts/mid-stack-update.sh --patch 09 --cherry-pick abc1234 \
+    --feature-branch feature/watch-complication-improvements
+```
+
+The script handles: stash, baseline creation, patch application, cherry-pick,
+squash, file list extraction, `generate-patch.sh` invocation (with
+`--include-files`, against `tmp/<name>-baseline`), `patch-test.sh` validation,
+feature branch drift check, and cleanup. It does NOT commit the updated
+patch — do that after reviewing.
+
+#### Safety guarantees
+
+- **Refuses to run** if the target patch file has uncommitted changes (stash-pop after regeneration would overwrite the new patch).
+- **Aborts in-progress operations** (cherry-pick, am, merge) during cleanup, so `git checkout dev` can always succeed.
+- **Detects leftover tmp branches** checked out in another worktree and prints an actionable error instead of failing cryptically.
+- **Drift check** compares the regenerated patch against the feature branch (auto-detected or via `--feature-branch`). Reports files on the feature branch missing from the patch, excluding files already covered by prior patches. Preserves tmp branches for investigation when drift is found.
+
+#### Limitations
+
+- Renames: `generate-patch.sh`'s include filtering matches both old and new paths of renames, so renames are handled correctly. However, if you use `--include-files` manually and specify only the new path of a renamed file, verify the rename is captured.
+- Overlapping files: files modified by both this patch and prior patches cannot be auto-verified by the drift check — they are flagged for manual review.
+
 ### Common mistakes (mid-stack updates)
 
 | Mistake | Consequence | Prevention |
 |---------|-------------|------------|
-| Using `-t dev` instead of `-t tmp/<name>-baseline` | Patch contains ALL differences from every preceding patch, not just this patch's changes | Always create `tmp/` baseline with preceding patches applied |
+| Using `-t dev` instead of `-t tmp/<name>-baseline` | Patch contains ALL differences from every preceding patch, not just this patch's changes | Use `mid-stack-update.sh` (hardcodes correct target) |
+| Using `-a` instead of `--include-files` | May include unintended files | Use `mid-stack-update.sh` (extracts file list from diff) |
+| Running `generate-patch.sh` from tmp branch | Patch file written to wrong location | Use `mid-stack-update.sh` (switches to dev first) |
+| Comparing feature branch directly against `dev` | 150+ file diff instead of ~16 | Use `mid-stack-update.sh` (only compares update vs baseline) |
+| Forgetting to delete tmp branches | Branch pollution, worktree conflicts | Use `mid-stack-update.sh` (cleanup on exit, including failures) |
+| Omitting a feature branch commit | Silent functionality loss in patch | Use `mid-stack-update.sh` drift check (auto-compares against feature branch) |
+| Uncommitted edits on target patch file | Stash-pop overwrites the regenerated patch | `mid-stack-update.sh` refuses to run if patch file is dirty |
 | Editing `docs/*.md` while on `dev` | Edits go to an untracked copy; lost on branch switch or `git clean` | Plan docs live on `docs` branch — switch to `docs` first |
-| Forgetting to `git checkout dev` before deleting `tmp/` branches | "Cannot delete the branch you're on" error | Step 6 always starts with `git checkout dev` |
-| Using `git commit --amend` on the wrong commit | Folds patch changes into an unrelated commit | Verify `git log -1` shows the expected commit before amending |
-| Running `generate-patch.sh` from the wrong worktree/branch | Script may use stale scripts or wrong baseline | Always run from `Trio-dev` with `dev` checked out |
 
 ---
 
@@ -430,6 +467,15 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v12
+- **`mid-stack-update.sh` v1.2 improvements:** Drift check now uses three-dot diff (`dev...feature`) to compare from merge-base, avoiding false positives when dev has advanced. Missing-files check excludes files belonging to *any* patch in the stack (prior and subsequent), not just prior patches. Cherry-pick conflicts are explicitly aborted at the failure site before cleanup runs. Stash pop failures report the exact stash ref for manual resolution. Duplicate patch prefixes are detected and rejected. Stash identity uses SHA tracking instead of message matching.
+
+### v11
+- **Automated mid-stack update:** Added `scripts/mid-stack-update.sh` as the preferred method for updating existing patches, with full documentation of safety guarantees (dirty-patch refusal, abort-before-checkout, worktree-aware branch cleanup, drift check with prior-patch exclusion, tmp branch preservation on drift).
+- **Common mistakes table:** Expanded from 5 to 8 entries; added: `-a` vs `--include-files`, generate-patch from tmp branch, omitting feature branch commits, uncommitted patch file edits.
+- **Manual workflow example:** Replaced `-a -y` with `--include-files` as the recommended flag for mid-stack `generate-patch.sh` invocations.
+- **Limitations section:** Documented rename handling and overlapping-file drift-check constraints.
 
 ### v10
 - **Common mistakes (mid-stack updates):** New table after "Worktree considerations" documenting five frequent agent mistakes during mid-stack patch updates: wrong `-t` target, editing docs on wrong branch, forgetting checkout before branch delete, amending wrong commit, running generate-patch from wrong worktree. Each row has consequence and prevention.

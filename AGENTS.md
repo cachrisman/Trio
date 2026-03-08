@@ -1,4 +1,4 @@
-# AGENTS.md — v2
+# AGENTS.md — v5
 
 Instructions for AI agents working in this repository.
 
@@ -193,33 +193,42 @@ When asked to run a build, do the following.
 scripts/patch-test.sh
 ```
 
-### Update an existing patch (mid-stack)
+### Generate a NEW patch (appending to the stack)
 
-See `docs/feature-branch-workflow-optimization.md` § "Updating an existing patch (mid-stack)".
+Run from **Trio-dev** with **`dev`** checked out (see "Run from dev" above):
 
-**Do NOT** use `generate-patch.sh -s feature/<name> -t dev` for mid-stack updates — this compares against raw `dev` and includes ALL differences from every preceding patch, not just the changes for the patch being updated. You must create `tmp/` baseline branches with the preceding patches applied and compare against that baseline.
-
-### Generate a patch (preferred)
-
-Run `./scripts/generate-patch.sh` from **Trio-dev** with **`dev`** checked out (see "Run from dev" above). For mid-stack updates, checkout `dev` before running it.
-
-```bash
-./scripts/generate-patch.sh -n --all-files -d "short-description"
-```
-
-For targeted patches (preferred over `--all-files` when only specific files changed):
 ```bash
 ./scripts/generate-patch.sh -n -d "short-description" \
   --include-files "Trio/Sources/Foo.swift,Model/Bar.swift"
 ```
 
-Manual (single commit):
-```bash
-# Steady state (post-cutover): mailbox patch with .patch extension
-git format-patch -1 --stdout HEAD > patches/NN-short-description.patch
-git am --check patches/NN-short-description.patch
+Prefer `--include-files` over `--all-files` when only specific files changed.
 
+### Update an existing patch (mid-stack) — MANDATORY
+
+**You MUST use `mid-stack-update.sh` for all mid-stack patch updates.** Do not
+manually create baseline branches, run `generate-patch.sh` directly, or
+replicate the workflow steps by hand. The manual workflow exists in the docs
+only as a reference for understanding what the script does internally.
+
+```bash
+# From Trio-dev worktree, on dev branch:
+./scripts/mid-stack-update.sh --patch <NN> --cherry-pick <sha>[,<sha>,...]
 ```
+
+If the script fails, **fix the script or report the error** — do not fall back
+to the manual workflow. Common failure causes and fixes:
+- **Dirty patch file:** commit or discard changes to the target patch first.
+- **Branch checked out in other worktree:** switch the other worktree to a
+  different branch.
+- **Cherry-pick conflict:** resolve on the feature branch, then re-run.
+
+See `./scripts/mid-stack-update.sh -h` for all options.
+
+**Do NOT** manually run `generate-patch.sh -s feature/<name> -t dev` for
+mid-stack updates. That compares against raw `dev` and produces a patch
+containing ALL differences from every earlier patch — not just the changes
+for the patch being updated.
 
 ## Upstream sync (local)
 
@@ -320,6 +329,17 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v5 (2026-03-08)
+- **`mid-stack-update.sh` is now MANDATORY** for all mid-stack patch updates. Changed from "PREFERRED" to "MANDATORY" with explicit instruction to fix the script (not fall back to manual) if it fails. Added common failure causes and fixes inline.
+- **Bash 3.2 compatibility fix** in `mid-stack-update.sh` v1.3: replaced `declare -A` (bash 4+ associative arrays) with string-based seen list for macOS compatibility.
+
+### v4 (2026-03-08)
+- **`mid-stack-update.sh` v1.2:** Updated safety feature list — drift check now uses three-dot diff (`dev...feature`) for accurate merge-base comparison, missing-files check excludes files belonging to any patch in the stack (not just prior patches), cherry-pick conflicts are explicitly aborted at the failure site before cleanup, stash pop failures report the exact stash ref for manual resolution.
+
+### v3 (2026-03-08)
+- **`mid-stack-update.sh` as preferred mid-stack workflow:** Replaced ambiguous "Generate a patch / Update an existing patch" sections with split "Generate a NEW patch" and "Update an existing patch (mid-stack) — PREFERRED" entries. The latter documents `mid-stack-update.sh` and its safety features (dirty-patch refusal, abort-before-checkout, worktree branch detection, drift check, tmp branch preservation).
+- **Removed manual `git format-patch` example** from Common workflows — the scripts should always be used instead.
 
 ### v2 (2026-03-07)
 - **Checkout conflict (untracked files):** Added warning to "Tracking plan and design docs" section — when `git checkout docs` fails due to untracked plan docs on `dev`, delete the untracked copies first; do not edit plan docs while on `dev`.
