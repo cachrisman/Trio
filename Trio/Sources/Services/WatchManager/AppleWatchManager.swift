@@ -581,7 +581,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         } else {
             WatchStateSnapshot.saveLatestDateToDisk(state.date)
             session.transferUserInfo([WatchMessageKeys.watchState: message])
-            debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo")
+            let readingEpoch = state.glucoseValues.last.map { Int($0.date.timeIntervalSince1970) } ?? -1
+            debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo reading_date_epoch_seconds=\(readingEpoch)")
         }
     }
 
