@@ -728,8 +728,10 @@ final class TrioComplicationDataStore {
             if let currentTS = Self.lastValidTimestamp, readingDate.timeIntervalSince(currentTS) <= 0 {
                 log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(readingDate) <= \(currentTS))")
             } else if appGroupDefaults == nil {
-                onMain { Self.lastValidTimestamp = readingDate }
-                log("✅ lastValidTimestamp updated: \(readingDate)")
+                onMain {
+                    Self.lastValidTimestamp = readingDate
+                    self.log("✅ lastValidTimestamp updated (main): \(readingDate)")
+                }
             } else {
                 Self.lastValidTimestamp = readingDate
                 log("✅ lastValidTimestamp updated: \(readingDate)")
