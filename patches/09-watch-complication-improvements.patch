@@ -1,26 +1,26 @@
-From e8d46e155a1715ddd2b93038447fcb52092d1df0 Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sun, 8 Mar 2026 13:06:58 +0100
-Subject: [PATCH] feat: tmp-complication-update
+From d1604b88700ae04fc87ab61a3f1ec3899b17de40 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sun, 8 Mar 2026 22:31:06 +0100
+Subject: [PATCH] feat: watch-complication-improvements
 
 ---
  .../ExtensionDelegate.swift                   |  34 +
  Trio Watch App Extension/TrioWatchApp.swift   |   2 +
- .../Views/ComplicationDebugView.swift         | 420 +++++++++
+ .../Views/ComplicationDebugView.swift         | 420 ++++++++
  .../Views/TrioMainWatchView.swift             |  55 +-
  .../WatchState+Requests.swift                 |  19 +
- Trio Watch App Extension/WatchState.swift     | 622 +++++++++----
+ Trio Watch App Extension/WatchState.swift     | 635 ++++++++---
  Trio Watch App/Info.plist                     |  15 +-
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
  Trio Watch Complication/Info.plist            |   2 +
  .../TrioWatchComplication.entitlements        |  10 +
- .../TrioWatchComplication.swift               | 425 ++++++++-
+ .../TrioWatchComplication.swift               | 425 +++++++-
  .../TrioWatchComplicationPreview.swift        | 124 +++
  Trio Watch Shared/ComplicationLogBuffer.swift | 145 ++-
- .../TrioComplicationDataStore.swift           | 871 ++++++++++++++++++
+ .../TrioComplicationDataStore.swift           | 985 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
- .../WatchManager/AppleWatchManager.swift      | 208 +++--
- 16 files changed, 2638 insertions(+), 334 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 208 ++--
+ 16 files changed, 2763 insertions(+), 336 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -653,7 +653,7 @@ index d47a971c9..f53d1ce43 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f4fb33fde..1752cd37f 100644
+index f4fb33fde..a0baae243 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,20 +1,47 @@
@@ -986,48 +986,54 @@ index f4fb33fde..1752cd37f 100644
              }
              DispatchQueue.main.async {
                  self.showSyncingAnimation = false
-@@ -246,98 +284,150 @@ import WatchConnectivity
+@@ -246,98 +284,154 @@ import WatchConnectivity
      }
  
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
 -        guard let snapshot = WatchStateSnapshot(from: userInfo) else {
+-            Task {
+-                await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)
+-            }
+-            return
 +        Task {
 +            await WatchLogger.shared.log("Received userInfo with keys: \(userInfo.keys.joined(separator: ", "))")
-+        }
-+
+         }
+ 
+-        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
 +        let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
-+
+ 
+-        guard snapshot.date > lastProcessed else {
 +        let readingDate = latestGlucoseDate(from: payload) ?? dateValue(from: payload[WatchMessageKeys.date])
 +        guard let readingDate = readingDate else {
              Task {
--                await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)
+-                await WatchLogger.shared.log("⌚️ Ignoring outdated or duplicate WatchState snapshot", force: true)
 +                await WatchLogger.shared.log("Invalid snapshot received (missing date)")
              }
              return
          }
  
--        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
+-        WatchStateSnapshot.saveLatestDateToDisk(snapshot.date)
 +        // Log using already-decoded readingDate (no extra decode); epoch only when we have it.
 +        let readingDateEpoch = Int(readingDate.timeIntervalSince1970)
 +        Task {
 +            await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
 +        }
++
++        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
++        // state is not populated here (defaults to nil) because no call site currently sets it.
++        // If state is ever set during snapshot construction, add it here too — otherwise this
++        // fingerprint will always differ from the saved one, defeating dedup for this path.
++        let tempSnapshot = TrioComplicationSnapshot(
++            glucose: payload[WatchMessageKeys.currentGlucose] as? String ?? "--",
++            trend: payload[WatchMessageKeys.trend] as? String ?? "",
++            delta: payload[WatchMessageKeys.delta] as? String ?? "",
++            readingDate: readingDate,
++            date: Date()
++        )
++        if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
++            return
++        }
  
--        guard snapshot.date > lastProcessed else {
-+        let glucose = payload[WatchMessageKeys.currentGlucose] as? String ?? "--"
-+        if let lastSnapshot = TrioComplicationDataStore.shared.latestSnapshot(),
-+           lastSnapshot.readingDate == readingDate,
-+           lastSnapshot.glucose == glucose
-+        {
-             Task {
--                await WatchLogger.shared.log("⌚️ Ignoring outdated or duplicate WatchState snapshot", force: true)
-+                await WatchLogger.shared.log("Skipping duplicate snapshot at \(readingDate)")
-             }
-             return
-         }
- 
--        WatchStateSnapshot.saveLatestDateToDisk(snapshot.date)
--
 -        DispatchQueue.main.async {
 -            self.scheduleUIUpdate(with: snapshot.payload)
 +        DispatchQueue.main.async { [self] in
@@ -1172,7 +1178,7 @@ index f4fb33fde..1752cd37f 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -348,7 +438,7 @@ import WatchConnectivity
+@@ -348,7 +442,7 @@ import WatchConnectivity
                  }
  
                  Task {
@@ -1181,7 +1187,7 @@ index f4fb33fde..1752cd37f 100644
                  }
  
                  switch ackCode {
-@@ -371,26 +461,29 @@ import WatchConnectivity
+@@ -371,26 +465,29 @@ import WatchConnectivity
                  }
              }
  
@@ -1218,7 +1224,7 @@ index f4fb33fde..1752cd37f 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -399,31 +492,27 @@ import WatchConnectivity
+@@ -399,31 +496,27 @@ import WatchConnectivity
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -1254,7 +1260,7 @@ index f4fb33fde..1752cd37f 100644
              DispatchQueue.main.async {
                  self.showSyncingAnimation = false
              }
-@@ -431,38 +520,34 @@ import WatchConnectivity
+@@ -431,38 +524,34 @@ import WatchConnectivity
          }
  
          Task {
@@ -1301,7 +1307,7 @@ index f4fb33fde..1752cd37f 100644
          if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
              self.currentGlucose = currentGlucose
          }
-@@ -494,29 +579,27 @@ import WatchConnectivity
+@@ -494,29 +583,27 @@ import WatchConnectivity
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
              glucoseValues = glucoseData.compactMap { data in
                  guard let glucose = data["glucose"] as? Double,
@@ -1343,7 +1349,7 @@ index f4fb33fde..1752cd37f 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -537,41 +620,260 @@ import WatchConnectivity
+@@ -537,41 +624,265 @@ import WatchConnectivity
              }
          }
  
@@ -1399,10 +1405,13 @@ index f4fb33fde..1752cd37f 100644
 +                await WatchLogger.shared.log("🔍 Debug: latestGlucoseDate returned: \(latestGlucoseDate(from: message)?.description ?? "nil")")
 +                await WatchLogger.shared.log("🔍 Debug: dateValue from message returned: \(dateValue(from: message[WatchMessageKeys.date])?.description ?? "nil")")
 +                await WatchLogger.shared.log("🔍 Debug: message[WatchMessageKeys.date] = \(message[WatchMessageKeys.date].map { String(describing: $0) } ?? "nil")")
-+            }
+             }
 +            return
-+        }
-+
+         }
+ 
+-        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
+-            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
+-                maxCarbs = decimalValue
 +        let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
 +        let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
 +        let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
@@ -1422,6 +1431,11 @@ index f4fb33fde..1752cd37f 100644
 +            glucoseColor: glucoseColorValue
 +        )
 +
++        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
++        if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: snapshot, handler: "message") {
++            return
++        }
++
 +        TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
 +    }
 +
@@ -1436,26 +1450,36 @@ index f4fb33fde..1752cd37f 100644
 +        else {
 +            Task {
 +                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: invalid glucose '\(currentGlucose)'")
-+            }
+             }
 +            return
-+        }
-+
+         }
+ 
+-        if let maxFatValue = message[WatchMessageKeys.maxFat] {
+-            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
+-                maxFat = decimalValue
 +        if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
 +            guard glucoseValue >= 40 && glucoseValue <= 400 else {
 +                Task {
 +                    await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
 +                }
 +                return
-+            }
-+        }
-+
+             }
+         }
+ 
+-        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
+-            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
+-                maxProtein = decimalValue
 +        guard let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp else {
 +            Task {
 +                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: no valid CGM reading timestamp")
              }
 +            return
-+        }
-+
+         }
+ 
+-        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
+-            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
+-                // limit minimum to 0.05 to avoid dealing with 0.025 increments
+-                self.bolusIncrement = max(decimalValue, 0.05)
 +        let snapshot = TrioComplicationSnapshot(
 +            glucose: currentGlucose,
 +            trend: trend ?? "",
@@ -1467,11 +1491,8 @@ index f4fb33fde..1752cd37f 100644
 +
 +        Task {
 +            await WatchLogger.shared.log("🔄 forceComplicationUpdate: glucose=\(currentGlucose), readingDate=\(effectiveReadingDate)")
-         }
- 
--        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
--            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
--                maxCarbs = decimalValue
++        }
++
 +        TrioComplicationDataStore.shared.save(snapshot, triggerReload: false)
 +        TrioComplicationDataStore.shared.forceReload(scheduleRetry: false)
 +    }
@@ -1497,12 +1518,9 @@ index f4fb33fde..1752cd37f 100644
 +                        await WatchLogger.shared.log("Scheduled background refresh at \(refreshDate)")
 +                    }
 +                }
-             }
-         }
- 
--        if let maxFatValue = message[WatchMessageKeys.maxFat] {
--            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
--                maxFat = decimalValue
++            }
++        }
++
 +        func handleBackgroundTasks(_ tasks: Set<WKRefreshBackgroundTask>) {
 +            Task {
 +                await WatchLogger.shared.log("Handling background tasks: \(tasks.count)")
@@ -1555,31 +1573,24 @@ index f4fb33fde..1752cd37f 100644
 +                } else {
 +                    task.setTaskCompletedWithSnapshot(false)
 +                }
-             }
-         }
++            }
++        }
 +    #endif
- 
--        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
--            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
--                maxProtein = decimalValue
++
 +    func loadFallbackDataFromComplication() {
 +        guard let snapshot = TrioComplicationDataStore.shared.latestSnapshot() else {
 +            DispatchQueue.main.async {
 +                self.showSyncingAnimation = false
              }
 +            return
-         }
- 
--        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
--            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
--                // limit minimum to 0.05 to avoid dealing with 0.025 increments
--                self.bolusIncrement = max(decimalValue, 0.05)
++        }
++
 +        if let lastUpdate = lastWatchStateUpdate,
 +           Date().timeIntervalSince(lastUpdate) <= 15
 +        {
 +            DispatchQueue.main.async {
 +                self.showSyncingAnimation = false
-             }
++            }
 +            return
          }
  
@@ -2529,10 +2540,10 @@ index 469f91f5c..17036ebca 100644
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..f89bf2b99
+index 000000000..f7b04cce8
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,871 @@
+@@ -0,0 +1,985 @@
 +import Foundation
 +import os
 +import WidgetKit
@@ -2551,6 +2562,8 @@ index 000000000..f89bf2b99
 +    let state: String?
 +    let glucoseColor: String?
 +
++    // INVARIANT (Phase 3.4): All display-field sanitization here.
++    // Dedup always compares sanitized values.
 +    init(
 +        glucose rawGlucose: String,
 +        trend rawTrend: String,
@@ -2608,6 +2621,28 @@ index 000000000..f89bf2b99
 +        }
 +
 +        return String(format: "%+.1f", numericValue)
++    }
++}
++
++// Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
++// glucoseColor excluded: see shouldUpdate comment (Phase 3.2) for rationale.
++struct ComplicationSnapshotFingerprint: Codable, Equatable {
++    let readingDateEpoch: Int
++    let glucose: String
++    let trend: String
++    let delta: String
++    let state: String
++}
++
++extension ComplicationSnapshotFingerprint {
++    init(from snapshot: TrioComplicationSnapshot) {
++        readingDateEpoch = Int(snapshot.readingDate.timeIntervalSince1970)
++        glucose = snapshot.glucose
++        trend = snapshot.trend
++        delta = snapshot.delta
++        // Sentinel for nil: state is always optional in the model; sentinel ensures
++        // nil and non-nil are always distinguishable in Equatable comparison.
++        state = snapshot.state ?? "<nil>"
 +    }
 +}
 +
@@ -2710,6 +2745,7 @@ index 000000000..f89bf2b99
 +    private static let reloadGenerationTokenKey = "TrioComplication_reloadGenerationToken"
 +    private static let reloadGenerationKey = "TrioComplication_reloadGeneration"
 +    private static let lastReloadRequestEpochSecondsKey = "TrioComplication_lastReloadRequestEpochSeconds"
++    private static let fingerprintKey = "complication_last_saved_fingerprint"
 +    static let latencyValidityWindowSeconds = 600
 +
 +    /// Reused for structured log fields (reading_date); avoids per-call allocation.
@@ -2723,6 +2759,9 @@ index 000000000..f89bf2b99
 +
 +    /// Last valid glucose reading timestamp - persisted to survive process restarts.
 +    /// Falls back to in-memory storage if appGroupDefaults is unavailable.
++    // Eventually consistent. Monotonic guard reduces but does not eliminate TOCTOU.
++    // Accepted. Do not use NSFileCoordinator (blocks provider) or flock (invalid
++    // cross-process on Darwin). Phase 3.3.
 +    static var lastValidTimestamp: Date? {
 +        get {
 +            if let defaults = shared.appGroupDefaults,
@@ -2779,6 +2818,9 @@ index 000000000..f89bf2b99
 +    }
 +
 +    // MARK: - Private Properties
++
++    // Phase 3.0 — serial queue for fingerprint dedup decisions. Decision-only; save dispatched outside.
++    private let dedupQueue = DispatchQueue(label: "com.trio.complication.dedup", qos: .utility)
 +
 +    private let sharedContainerURLProvider: () -> URL?
 +    private let fileManager: FileManager
@@ -2983,6 +3025,76 @@ index 000000000..f89bf2b99
 +        }
 +    }
 +
++    // MARK: - Phase 3.2 Canonical Comparator
++
++    // Phase 3.2 — canonical comparator. Use shouldUpdate everywhere.
++    // Field set matches ComplicationSnapshotFingerprint (Phase 3.0):
++    // glucose, trend, delta, state.
++    //
++    // glucoseColor excluded: depends on user settings (low/high thresholds,
++    // glucoseColorScheme, glucose target) — not purely computed from glucose.
++    // Safe to exclude because glucoseColor is stable within a single watch state
++    // update cycle; the ±1s window only deduplicates the same CGM reading arriving
++    // via two paths (userInfo + message). A settings change triggers a new cycle
++    // with a new readingDate, which always passes the >1s check.
++    // Must stay excluded from BOTH here and ComplicationSnapshotFingerprint to
++    // preserve the invariant: pre-dispatch never suppresses a payload saveOnMain
++    // would accept.
++    //
++    // 1s tolerance is semantic policy: two readings within 1s with identical
++    // display data are treated as duplicates. Safe for all supported CGMs (minimum
++    // interval: 1 min for Libre 3, 5 min for G6/G7).
++    //
++    // Test cases:
++    //   Same timestamp, same content     → false
++    //   Same timestamp, different glucose → true
++    //   Newer timestamp (>1s)            → true
++    //   Older timestamp (<-1s)           → false
++    func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
++        let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
++        if timeDiff > 1.0  { return true }
++        if timeDiff < -1.0 { return false }
++        return new.glucose != current.glucose
++            || new.trend   != current.trend
++            || new.delta   != current.delta
++            || new.state   != current.state
++    }
++
++    // MARK: - Phase 3.0 Pre-dispatch Dedup
++
++    private func storedFingerprint(defaults: UserDefaults) -> ComplicationSnapshotFingerprint? {
++        guard let data = defaults.data(forKey: Self.fingerprintKey),
++              let fp = try? JSONDecoder().decode(ComplicationSnapshotFingerprint.self, from: data)
++        else { return nil }
++        return fp
++    }
++
++    /// Phase 3.0 — pre-dispatch dedup. Decision-only (no save inside).
++    /// Returns true if the snapshot is a duplicate of the last saved fingerprint and should be skipped.
++    /// Cold-start (no stored fingerprint): always returns false (dispatch).
++    func shouldSkipPreDispatch(for snapshot: TrioComplicationSnapshot, handler: String) -> Bool {
++        let incoming = ComplicationSnapshotFingerprint(from: snapshot)
++        var skip = false
++
++        dedupQueue.sync {
++            guard let defaults = appGroupDefaults else { return }
++            if let stored = storedFingerprint(defaults: defaults), stored == incoming {
++                log(
++                    "⏭️ Pre-dispatch dedup: skipped reading_date_epoch=\(incoming.readingDateEpoch)"
++                    + " via \(handler)"
++                )
++                skip = true
++                return
++            }
++            log(
++                "✅ Pre-dispatch: dispatching reading_date_epoch=\(incoming.readingDateEpoch)"
++                + " via \(handler)"
++            )
++        }
++
++        return skip
++    }
++
 +    // MARK: - Save Methods
 +
 +    func save(
@@ -3039,27 +3151,22 @@ index 000000000..f89bf2b99
 +            }
 +        }
 +
-+        // Dedup + newer-wins guard using in-memory cache (no per-save disk I/O)
++        // saveOnMain invariants (Phase 3.1):
++        // (a) future-skew  (b) cold-start  (c) newer-wins  (d) duplicate skip
++        // Authoritative dedup gate. Phase 3.0 pre-dispatch is optimization only.
 +        if let existing = inMemorySavedSnapshot {
-+            let timeDiff = snapshot.readingDate.timeIntervalSince(existing.readingDate)
-+            if timeDiff < 0.0 {
-+                log("⏭️ Dedup: rejected older snapshot (timeDiff=\(String(format: "%.3f", timeDiff))s)")
-+                return
-+            }
-+            // 1s tolerance is semantic policy: two readings within 1s with identical
-+            // display data are treated as duplicates. Safe for all supported CGMs (minimum
-+            // interval: 1 min for Libre 3, 5 min for G6/G7).
-+            if timeDiff < 1.0, existing.glucose == snapshot.glucose,
-+               existing.trend == snapshot.trend, existing.delta == snapshot.delta,
-+               existing.glucoseColor == snapshot.glucoseColor, existing.state == snapshot.state {
-+                log("⏭️ Dedup: skipped duplicate snapshot at \(snapshot.readingDate)")
++            if !shouldUpdate(new: snapshot, current: existing) {
++                let timeDiff = snapshot.readingDate.timeIntervalSince(existing.readingDate)
++                if timeDiff < -1.0 {
++                    log("⏭️ saveOnMain: rejected older snapshot (timeDiff=\(String(format: "%.3f", timeDiff))s)")
++                } else {
++                    log("⏭️ saveOnMain: duplicate skipped (same reading, same content)")
++                }
 +                return
 +            }
 +        } else if let lastTS = Self.lastValidTimestamp {
-+            // Monotonic fallback: snapshot file was unreadable (seeding exhausted) but
-+            // lastValidTimestamp in UserDefaults records the last known good readingDate.
 +            if snapshot.readingDate.timeIntervalSince(lastTS) < 0.0 {
-+                log("⏭️ Dedup: rejected older snapshot via lastValidTimestamp fallback (readingDate=\(snapshot.readingDate), lastValid=\(lastTS))")
++                log("⏭️ saveOnMain: rejected older snapshot via lastValidTimestamp fallback (readingDate=\(snapshot.readingDate), lastValid=\(lastTS))")
 +                return
 +            }
 +        }
@@ -3091,6 +3198,18 @@ index 000000000..f89bf2b99
 +            try data.write(to: fileURL, options: [.atomic])
 +            self.inMemorySavedSnapshot = snapshot
 +            Self.lastValidTimestamp = snapshot.readingDate
++            log("✅ lastValidTimestamp updated: \(snapshot.readingDate)")
++
++            // Phase 3.0: fingerprint written here and ONLY here.
++            // Not written in didReceiveUserInfo or didReceiveMessage.
++            if let fpData = try? JSONEncoder().encode(ComplicationSnapshotFingerprint(from: snapshot)) {
++                appGroupDefaults?.set(fpData, forKey: Self.fingerprintKey)
++                log(
++                    "✅ Fingerprint written: reading_date_epoch="
++                    + "\(Int(snapshot.readingDate.timeIntervalSince1970))"
++                )
++            }
++
 +            let ageSec = max(0, Int(Date().timeIntervalSince(snapshot.readingDate)))
 +
 +            log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta), snapshot_age_seconds=\(ageSec)")
@@ -3152,10 +3271,16 @@ index 000000000..f89bf2b99
 +            guard !data.isEmpty else { throw NSError(domain: "EmptySnapshot", code: -1) }
 +            let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
 +            let readingDate = snapshot.readingDate
-+            if appGroupDefaults == nil {
-+                onMain { Self.lastValidTimestamp = readingDate }
++            if let currentTS = Self.lastValidTimestamp, readingDate.timeIntervalSince(currentTS) <= 0 {
++                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(readingDate) <= \(currentTS))")
++            } else if appGroupDefaults == nil {
++                onMain {
++                    Self.lastValidTimestamp = readingDate
++                    self.log("✅ lastValidTimestamp updated (main): \(readingDate)")
++                }
 +            } else {
 +                Self.lastValidTimestamp = readingDate
++                log("✅ lastValidTimestamp updated: \(readingDate)")
 +            }
 +            return snapshot
 +        }
