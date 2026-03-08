@@ -76,6 +76,27 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     }
 }
 
+// Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
+struct ComplicationSnapshotFingerprint: Codable, Equatable {
+    let readingDateEpoch: Int
+    let glucose: String
+    let trend: String
+    let delta: String
+    let state: String
+}
+
+extension ComplicationSnapshotFingerprint {
+    init(from snapshot: TrioComplicationSnapshot) {
+        readingDateEpoch = Int(snapshot.readingDate.timeIntervalSince1970)
+        glucose = snapshot.glucose
+        trend = snapshot.trend
+        delta = snapshot.delta
+        // Sentinel for nil: state is always optional in the model; sentinel ensures
+        // nil and non-nil are always distinguishable in Equatable comparison.
+        state = snapshot.state ?? "<nil>"
+    }
+}
+
 /// Record of a complication reload request for instrumentation (WidgetKit budget/coalescing correlation).
 /// requestedAtEpochSeconds is the reload request time, not the CGM reading time. Do not use reading_date_epoch here.
 struct ComplicationReloadRecord: Codable {
@@ -175,6 +196,7 @@ final class TrioComplicationDataStore {
     private static let reloadGenerationTokenKey = "TrioComplication_reloadGenerationToken"
     private static let reloadGenerationKey = "TrioComplication_reloadGeneration"
     private static let lastReloadRequestEpochSecondsKey = "TrioComplication_lastReloadRequestEpochSeconds"
+    private static let fingerprintKey = "complication_last_saved_fingerprint"
     static let latencyValidityWindowSeconds = 600
 
     /// Reused for structured log fields (reading_date); avoids per-call allocation.
@@ -244,6 +266,9 @@ final class TrioComplicationDataStore {
     }
 
     // MARK: - Private Properties
+
+    // Phase 3.0 — serial queue for fingerprint dedup decisions. Decision-only; save dispatched outside.
+    private let dedupQueue = DispatchQueue(label: "com.trio.complication.dedup", qos: .utility)
 
     private let sharedContainerURLProvider: () -> URL?
     private let fileManager: FileManager
@@ -448,6 +473,41 @@ final class TrioComplicationDataStore {
         }
     }
 
+    // MARK: - Phase 3.0 Pre-dispatch Dedup
+
+    private func storedFingerprint(defaults: UserDefaults) -> ComplicationSnapshotFingerprint? {
+        guard let data = defaults.data(forKey: Self.fingerprintKey),
+              let fp = try? JSONDecoder().decode(ComplicationSnapshotFingerprint.self, from: data)
+        else { return nil }
+        return fp
+    }
+
+    /// Phase 3.0 — pre-dispatch dedup. Decision-only (no save inside).
+    /// Returns true if the snapshot is a duplicate of the last saved fingerprint and should be skipped.
+    /// Cold-start (no stored fingerprint): always returns false (dispatch).
+    func shouldSkipPreDispatch(for snapshot: TrioComplicationSnapshot, handler: String) -> Bool {
+        let incoming = ComplicationSnapshotFingerprint(from: snapshot)
+        var skip = false
+
+        dedupQueue.sync {
+            guard let defaults = appGroupDefaults else { return }
+            if let stored = storedFingerprint(defaults: defaults), stored == incoming {
+                log(
+                    "⏭️ Pre-dispatch dedup: skipped reading_date_epoch=\(incoming.readingDateEpoch)"
+                    + " via \(handler)"
+                )
+                skip = true
+                return
+            }
+            log(
+                "✅ Pre-dispatch: dispatching reading_date_epoch=\(incoming.readingDateEpoch)"
+                + " via \(handler)"
+            )
+        }
+
+        return skip
+    }
+
     // MARK: - Save Methods
 
     func save(
@@ -556,6 +616,17 @@ final class TrioComplicationDataStore {
             try data.write(to: fileURL, options: [.atomic])
             self.inMemorySavedSnapshot = snapshot
             Self.lastValidTimestamp = snapshot.readingDate
+
+            // Phase 3.0: fingerprint written here and ONLY here.
+            // Not written in didReceiveUserInfo or didReceiveMessage.
+            if let fpData = try? JSONEncoder().encode(ComplicationSnapshotFingerprint(from: snapshot)) {
+                appGroupDefaults?.set(fpData, forKey: Self.fingerprintKey)
+                log(
+                    "✅ Fingerprint written: reading_date_epoch="
+                    + "\(Int(snapshot.readingDate.timeIntervalSince1970))"
+                )
+            }
+
             let ageSec = max(0, Int(Date().timeIntervalSince(snapshot.readingDate)))
 
             log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta), snapshot_age_seconds=\(ageSec)")
