@@ -16,6 +16,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let state: String?
     let glucoseColor: String?
 
+    // INVARIANT (Phase 3.4): All display-field sanitization here.
+    // Dedup always compares sanitized values.
     init(
         glucose rawGlucose: String,
         trend rawTrend: String,
@@ -211,6 +213,9 @@ final class TrioComplicationDataStore {
 
     /// Last valid glucose reading timestamp - persisted to survive process restarts.
     /// Falls back to in-memory storage if appGroupDefaults is unavailable.
+    // Eventually consistent. Monotonic guard reduces but does not eliminate TOCTOU.
+    // Accepted. Do not use NSFileCoordinator (blocks provider) or flock (invalid
+    // cross-process on Darwin). Phase 3.3.
     static var lastValidTimestamp: Date? {
         get {
             if let defaults = shared.appGroupDefaults,
@@ -647,6 +652,7 @@ final class TrioComplicationDataStore {
             try data.write(to: fileURL, options: [.atomic])
             self.inMemorySavedSnapshot = snapshot
             Self.lastValidTimestamp = snapshot.readingDate
+            log("✅ lastValidTimestamp updated: \(snapshot.readingDate)")
 
             // Phase 3.0: fingerprint written here and ONLY here.
             // Not written in didReceiveUserInfo or didReceiveMessage.
@@ -719,10 +725,14 @@ final class TrioComplicationDataStore {
             guard !data.isEmpty else { throw NSError(domain: "EmptySnapshot", code: -1) }
             let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
             let readingDate = snapshot.readingDate
-            if appGroupDefaults == nil {
+            if let currentTS = Self.lastValidTimestamp, readingDate.timeIntervalSince(currentTS) <= 0 {
+                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(readingDate) <= \(currentTS))")
+            } else if appGroupDefaults == nil {
                 onMain { Self.lastValidTimestamp = readingDate }
+                log("✅ lastValidTimestamp updated: \(readingDate)")
             } else {
                 Self.lastValidTimestamp = readingDate
+                log("✅ lastValidTimestamp updated: \(readingDate)")
             }
             return snapshot
         }
