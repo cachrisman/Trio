@@ -54,6 +54,9 @@ struct CloudLogEvent: Encodable {
         case lineNumber
         case source
         case raw
+        case event
+        case windowId = "window_id"
+        case taskType = "task_type"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -99,5 +102,26 @@ struct CloudLogEvent: Encodable {
                 try container.encode(source, forKey: .source)
             }
         }
+
+        if let value = Self.extractToken(from: message, pattern: #"\bevent=([^ ]+)"#) {
+            try container.encode(value, forKey: .event)
+        }
+        if let value = Self.extractToken(from: message, pattern: #"\bwindow_id=(-?[0-9]+)"#),
+           let intValue = Int(value)
+        {
+            try container.encode(intValue, forKey: .windowId)
+        }
+        if let value = Self.extractToken(from: message, pattern: #"\btask_type=([^ ]+)"#) {
+            try container.encode(value, forKey: .taskType)
+        }
+    }
+
+    private static func extractToken(from string: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: string)
+        else { return nil }
+        return String(string[range])
     }
 }
