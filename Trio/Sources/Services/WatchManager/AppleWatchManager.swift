@@ -570,6 +570,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
 
         let message: [String: Any] = watchStateToDictionary(from: state)
+        let readingEpoch = state.glucoseValues.last.map { Int($0.date.timeIntervalSince1970) } ?? -1
 
         // if session is reachable, it means watch App is in the foreground -> send watchState as message
         // if session is not reachable, it means it's in background -> send watchState as userInfo
@@ -578,11 +579,19 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 debug(.watchManager, "❌ Error sending watch state: \(error)")
             }
             WatchStateSnapshot.saveLatestDateToDisk(state.date)
+            debug(.watchManager, "📤 Transferred new WatchState snapshot via=sendMessage reading_date_epoch_seconds=\(readingEpoch)")
         } else {
             WatchStateSnapshot.saveLatestDateToDisk(state.date)
-            session.transferUserInfo([WatchMessageKeys.watchState: message])
-            let readingEpoch = state.glucoseValues.last.map { Int($0.date.timeIntervalSince1970) } ?? -1
-            debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo reading_date_epoch_seconds=\(readingEpoch)")
+            if session.remainingComplicationUserInfoTransfers > 0 {
+                session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: message])
+                let remaining = session.remainingComplicationUserInfoTransfers
+                let queueDepth = session.outstandingUserInfoTransfers.count
+                debug(.watchManager, "📤 Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
+            } else {
+                session.transferUserInfo([WatchMessageKeys.watchState: message])
+                let queueDepth = session.outstandingUserInfoTransfers.count
+                debug(.watchManager, "📤 Transferred new WatchState snapshot via=userInfo budget_exhausted=true queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
+            }
         }
     }
 
