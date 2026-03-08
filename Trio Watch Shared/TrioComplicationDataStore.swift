@@ -473,6 +473,31 @@ final class TrioComplicationDataStore {
         }
     }
 
+    // MARK: - Phase 3.2 Canonical Comparator
+
+    // Phase 3.2 — canonical comparator. Use shouldUpdate everywhere.
+    // Field set matches ComplicationSnapshotFingerprint (Phase 3.0):
+    // glucose, trend, delta, state. glucoseColor excluded (computed from glucose).
+    //
+    // 1s tolerance is semantic policy: two readings within 1s with identical
+    // display data are treated as duplicates. Safe for all supported CGMs (minimum
+    // interval: 1 min for Libre 3, 5 min for G6/G7).
+    //
+    // Test cases:
+    //   Same timestamp, same content     → false
+    //   Same timestamp, different glucose → true
+    //   Newer timestamp (>1s)            → true
+    //   Older timestamp (<-1s)           → false
+    func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
+        let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
+        if timeDiff > 1.0  { return true }
+        if timeDiff < -1.0 { return false }
+        return new.glucose != current.glucose
+            || new.trend   != current.trend
+            || new.delta   != current.delta
+            || new.state   != current.state
+    }
+
     // MARK: - Phase 3.0 Pre-dispatch Dedup
 
     private func storedFingerprint(defaults: UserDefaults) -> ComplicationSnapshotFingerprint? {
@@ -568,18 +593,13 @@ final class TrioComplicationDataStore {
         // (a) future-skew  (b) cold-start  (c) newer-wins  (d) duplicate skip
         // Authoritative dedup gate. Phase 3.0 pre-dispatch is optimization only.
         if let existing = inMemorySavedSnapshot {
-            let timeDiff = snapshot.readingDate.timeIntervalSince(existing.readingDate)
-            if timeDiff < 0.0 {
-                log("⏭️ saveOnMain: rejected older snapshot (timeDiff=\(String(format: "%.3f", timeDiff))s)")
-                return
-            }
-            // 1s tolerance is semantic policy: two readings within 1s with identical
-            // display data are treated as duplicates. Safe for all supported CGMs (minimum
-            // interval: 1 min for Libre 3, 5 min for G6/G7).
-            if timeDiff < 1.0, existing.glucose == snapshot.glucose,
-               existing.trend == snapshot.trend, existing.delta == snapshot.delta,
-               existing.glucoseColor == snapshot.glucoseColor, existing.state == snapshot.state {
-                log("⏭️ saveOnMain: duplicate skipped (same reading, same content)")
+            if !shouldUpdate(new: snapshot, current: existing) {
+                let timeDiff = snapshot.readingDate.timeIntervalSince(existing.readingDate)
+                if timeDiff < -1.0 {
+                    log("⏭️ saveOnMain: rejected older snapshot (timeDiff=\(String(format: "%.3f", timeDiff))s)")
+                } else {
+                    log("⏭️ saveOnMain: duplicate skipped (same reading, same content)")
+                }
                 return
             }
         } else if let lastTS = Self.lastValidTimestamp {
