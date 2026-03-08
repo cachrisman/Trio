@@ -77,6 +77,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
 }
 
 // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
+// glucoseColor excluded: see shouldUpdate comment (Phase 3.2) for rationale.
 struct ComplicationSnapshotFingerprint: Codable, Equatable {
     let readingDateEpoch: Int
     let glucose: String
@@ -477,7 +478,17 @@ final class TrioComplicationDataStore {
 
     // Phase 3.2 — canonical comparator. Use shouldUpdate everywhere.
     // Field set matches ComplicationSnapshotFingerprint (Phase 3.0):
-    // glucose, trend, delta, state. glucoseColor excluded (computed from glucose).
+    // glucose, trend, delta, state.
+    //
+    // glucoseColor excluded: depends on user settings (low/high thresholds,
+    // glucoseColorScheme, glucose target) — not purely computed from glucose.
+    // Safe to exclude because glucoseColor is stable within a single watch state
+    // update cycle; the ±1s window only deduplicates the same CGM reading arriving
+    // via two paths (userInfo + message). A settings change triggers a new cycle
+    // with a new readingDate, which always passes the >1s check.
+    // Must stay excluded from BOTH here and ComplicationSnapshotFingerprint to
+    // preserve the invariant: pre-dispatch never suppresses a payload saveOnMain
+    // would accept.
     //
     // 1s tolerance is semantic policy: two readings within 1s with identical
     // display data are treated as duplicates. Safe for all supported CGMs (minimum
