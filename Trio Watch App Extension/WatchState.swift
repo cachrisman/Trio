@@ -304,14 +304,18 @@ enum BackgroundTaskWindowCounter {
             await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
         }
 
-        let glucose = payload[WatchMessageKeys.currentGlucose] as? String ?? "--"
-        if let lastSnapshot = TrioComplicationDataStore.shared.latestSnapshot(),
-           lastSnapshot.readingDate == readingDate,
-           lastSnapshot.glucose == glucose
-        {
-            Task {
-                await WatchLogger.shared.log("Skipping duplicate snapshot at \(readingDate)")
-            }
+        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
+        // state is not populated here (defaults to nil) because no call site currently sets it.
+        // If state is ever set during snapshot construction, add it here too — otherwise this
+        // fingerprint will always differ from the saved one, defeating dedup for this path.
+        let tempSnapshot = TrioComplicationSnapshot(
+            glucose: payload[WatchMessageKeys.currentGlucose] as? String ?? "--",
+            trend: payload[WatchMessageKeys.trend] as? String ?? "",
+            delta: payload[WatchMessageKeys.delta] as? String ?? "",
+            readingDate: readingDate,
+            date: Date()
+        )
+        if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
             return
         }
 
@@ -691,6 +695,11 @@ enum BackgroundTaskWindowCounter {
             date: Date(),
             glucoseColor: glucoseColorValue
         )
+
+        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
+        if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: snapshot, handler: "message") {
+            return
+        }
 
         TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
     }
