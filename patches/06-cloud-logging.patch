@@ -1,7 +1,7 @@
-From cb3445cc606c2f997fb3d49c833c6ddd3a6cfd32 Mon Sep 17 00:00:00 2001
+From bd57c78af02f55f2f4c7a0ea5e43c5aab972790f Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Thu, 26 Feb 2026 18:04:18 +0100
-Subject: [PATCH] feat: tmp-cloud-logging-update
+Date: Sun, 8 Mar 2026 16:59:39 +0100
+Subject: [PATCH] feat: cloud-logging
 
 ---
  Trio Watch App Extension/WatchLogger.swift    | 140 ++++++
@@ -14,7 +14,7 @@ Subject: [PATCH] feat: tmp-cloud-logging-update
  .../CloudLogging/BetterStackSettings.swift    |  35 ++
  .../CloudLogEntryAggregator.swift             |  41 ++
  .../CloudLogging/CloudLogLineParsing.swift    | 277 +++++++++++
- .../CloudLogging/CloudLogProvider.swift       | 103 ++++
+ .../CloudLogging/CloudLogProvider.swift       | 127 +++++
  .../CloudLogging/CloudLogUploadService.swift  | 161 +++++++
  .../CloudLogging/CloudLogUploader.swift       | 439 ++++++++++++++++++
  .../Modules/Settings/SettingItems.swift       |  11 +
@@ -22,7 +22,7 @@ Subject: [PATCH] feat: tmp-cloud-logging-update
  .../Settings/View/Subviews/ServicesView.swift |   1 +
  Trio/Sources/Router/Screen.swift              |   3 +
  TrioTests/CloudLogEntryAggregatorTests.swift  |  42 ++
- 18 files changed, 1969 insertions(+), 1 deletion(-)
+ 18 files changed, 1993 insertions(+), 1 deletion(-)
  create mode 100644 Trio Watch Shared/ComplicationLogBuffer.swift
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
@@ -1202,10 +1202,10 @@ index 000000000..9eabb9015
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
 new file mode 100644
-index 000000000..dfa695fcf
+index 000000000..2187a67d9
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,127 @@
 +import Foundation
 +
 +protocol CloudLogProvider {
@@ -1262,6 +1262,9 @@ index 000000000..dfa695fcf
 +        case lineNumber
 +        case source
 +        case raw
++        case event
++        case windowId = "window_id"
++        case taskType = "task_type"
 +    }
 +
 +    func encode(to encoder: Encoder) throws {
@@ -1307,6 +1310,27 @@ index 000000000..dfa695fcf
 +                try container.encode(source, forKey: .source)
 +            }
 +        }
++
++        if let value = Self.extractToken(from: message, pattern: #"\bevent=([^ ]+)"#) {
++            try container.encode(value, forKey: .event)
++        }
++        if let value = Self.extractToken(from: message, pattern: #"\bwindow_id=(-?[0-9]+)"#),
++           let intValue = Int(value)
++        {
++            try container.encode(intValue, forKey: .windowId)
++        }
++        if let value = Self.extractToken(from: message, pattern: #"\btask_type=([^ ]+)"#) {
++            try container.encode(value, forKey: .taskType)
++        }
++    }
++
++    private static func extractToken(from string: String, pattern: String) -> String? {
++        guard let regex = try? NSRegularExpression(pattern: pattern),
++              let match = regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)),
++              match.numberOfRanges > 1,
++              let range = Range(match.range(at: 1), in: string)
++        else { return nil }
++        return String(string[range])
 +    }
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
