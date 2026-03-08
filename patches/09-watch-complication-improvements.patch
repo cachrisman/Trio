@@ -1,7 +1,7 @@
-From 285c01566f75f0ded0dd5b4abf67ac2b8deb6c01 Mon Sep 17 00:00:00 2001
+From e8d46e155a1715ddd2b93038447fcb52092d1df0 Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sat, 7 Mar 2026 21:32:02 +0100
-Subject: [PATCH] feat: watch-complication-freshness
+Date: Sun, 8 Mar 2026 13:06:58 +0100
+Subject: [PATCH] feat: tmp-complication-update
 
 ---
  .../ExtensionDelegate.swift                   |  34 +
@@ -19,8 +19,8 @@ Subject: [PATCH] feat: watch-complication-freshness
  Trio Watch Shared/ComplicationLogBuffer.swift | 145 ++-
  .../TrioComplicationDataStore.swift           | 871 ++++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |  10 +
- .../WatchManager/AppleWatchManager.swift      | 205 +++--
- 16 files changed, 2636 insertions(+), 333 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 208 +++--
+ 16 files changed, 2638 insertions(+), 334 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -3421,7 +3421,7 @@ index 000000000..9a37de423
 +</dict>
 +</plist>
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 75c3c182b..17866e0af 100644
+index 75c3c182b..ce8a40643 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -16,6 +16,8 @@ protocol WatchManager {
@@ -3692,7 +3692,17 @@ index 75c3c182b..17866e0af 100644
              return
          }
  
-@@ -551,7 +613,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -519,7 +581,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         } else {
+             WatchStateSnapshot.saveLatestDateToDisk(state.date)
+             session.transferUserInfo([WatchMessageKeys.watchState: message])
+-            debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo")
++            let readingEpoch = state.glucoseValues.last.map { Int($0.date.timeIntervalSince1970) } ?? -1
++            debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo reading_date_epoch_seconds=\(readingEpoch)")
+         }
+     }
+ 
+@@ -551,7 +614,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          debug(.watchManager, "📱 Phone session activated with state: \(activationState.rawValue)")
          debug(.watchManager, "📱 Phone isReachable after activation: \(session.isReachable)")
  
@@ -3704,7 +3714,7 @@ index 75c3c182b..17866e0af 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -772,9 +837,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -772,9 +838,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              {
                  debug(.watchManager, "📱 Watch requested watch state data update.")
                  guard let self = self else { return }
@@ -3717,7 +3727,7 @@ index 75c3c182b..17866e0af 100644
                  Task {
                      let state = await self.setupWatchState()
                      await self.sendDataToWatch(state)
-@@ -968,7 +1033,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -968,7 +1034,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          debug(.watchManager, "📱 Phone reachability changed: \(session.isReachable)")
  
          if session.isReachable {
@@ -3729,7 +3739,7 @@ index 75c3c182b..17866e0af 100644
              Task {
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
-@@ -1449,11 +1517,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1449,11 +1518,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -3743,7 +3753,7 @@ index 75c3c182b..17866e0af 100644
          }
      }
  
-@@ -1464,12 +1529,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1464,12 +1530,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
