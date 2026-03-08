@@ -564,27 +564,24 @@ final class TrioComplicationDataStore {
             }
         }
 
-        // Dedup + newer-wins guard using in-memory cache (no per-save disk I/O)
+        // saveOnMain invariants (Phase 3.1):
+        // (a) future-skew  (b) cold-start  (c) newer-wins  (d) duplicate skip
+        // Authoritative dedup gate. Phase 3.0 pre-dispatch is optimization only.
         if let existing = inMemorySavedSnapshot {
             let timeDiff = snapshot.readingDate.timeIntervalSince(existing.readingDate)
             if timeDiff < 0.0 {
-                log("⏭️ Dedup: rejected older snapshot (timeDiff=\(String(format: "%.3f", timeDiff))s)")
+                log("⏭️ saveOnMain: rejected older snapshot (timeDiff=\(String(format: "%.3f", timeDiff))s)")
                 return
             }
-            // 1s tolerance is semantic policy: two readings within 1s with identical
-            // display data are treated as duplicates. Safe for all supported CGMs (minimum
-            // interval: 1 min for Libre 3, 5 min for G6/G7).
             if timeDiff < 1.0, existing.glucose == snapshot.glucose,
                existing.trend == snapshot.trend, existing.delta == snapshot.delta,
                existing.glucoseColor == snapshot.glucoseColor, existing.state == snapshot.state {
-                log("⏭️ Dedup: skipped duplicate snapshot at \(snapshot.readingDate)")
+                log("⏭️ saveOnMain: duplicate skipped (same reading, same content)")
                 return
             }
         } else if let lastTS = Self.lastValidTimestamp {
-            // Monotonic fallback: snapshot file was unreadable (seeding exhausted) but
-            // lastValidTimestamp in UserDefaults records the last known good readingDate.
             if snapshot.readingDate.timeIntervalSince(lastTS) < 0.0 {
-                log("⏭️ Dedup: rejected older snapshot via lastValidTimestamp fallback (readingDate=\(snapshot.readingDate), lastValid=\(lastTS))")
+                log("⏭️ saveOnMain: rejected older snapshot via lastValidTimestamp fallback (readingDate=\(snapshot.readingDate), lastValid=\(lastTS))")
                 return
             }
         }
