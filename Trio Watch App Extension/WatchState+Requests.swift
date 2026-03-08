@@ -234,6 +234,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ No session available for state update")
             }
+            loadFallbackDataFromComplication()
             return
         }
 
@@ -242,6 +243,7 @@ extension WatchState {
                 await WatchLogger.shared.log("⌚️ Session not activated. Activating...")
             }
             session.activate()
+            loadFallbackDataFromComplication()
             return
         }
 
@@ -258,11 +260,28 @@ extension WatchState {
                     await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
                     await WatchLogger.shared.flushPersistedLogs()
                 }
+                DispatchQueue.main.async {
+                    self.loadFallbackDataFromComplication()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                        self.requestWatchStateUpdate()
+                    }
+                }
             }
+
+            syncTimeoutWorkItem?.cancel()
+            let timeoutWorkItem = DispatchWorkItem { [weak self] in
+                Task {
+                    await WatchLogger.shared.log("WatchState update timeout - using fallback data")
+                }
+                self?.loadFallbackDataFromComplication()
+            }
+            syncTimeoutWorkItem = timeoutWorkItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30.0, execute: timeoutWorkItem)
         } else {
             Task {
                 await WatchLogger.shared.log("⌚️ Phone not reachable for WatchState update")
             }
+            loadFallbackDataFromComplication()
         }
     }
 }
