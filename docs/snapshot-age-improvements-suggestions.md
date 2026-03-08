@@ -1,7 +1,7 @@
 # Watch Complication snapshot_age_seconds: Improvement Suggestions
 
-**Version:** 1.1  
-**Date:** 2026-03-04  
+**Version:** 1.2  
+**Date:** 2026-03-08  
 **Context:** Follow-up to the patch-application/chat transcript and the complication freshness plan; focuses on improving the `snapshot_age_seconds` metric and reducing perceived complication staleness (e.g. "+8m" recency when the app shows fresher data).
 
 ---
@@ -158,6 +158,31 @@ So: debounce (e.g. 5s) is helping, but every coalesced reload still schedules a 
 
 ---
 
+**Freshness decomposition (empirically derived, 2026-03-08):**
+
+    save_age        ≈ WatchConnectivity queue flush lag
+                      (receive→save ≈ 0s; save_age is almost entirely the time
+                      the data spends queued in WatchConnectivity before the
+                      watch session activates and drains it)
+
+    reload_age      ≈ save_age + save→reload delay
+                      (save→reload ≈ 0s median; bounded by 5s coalescer)
+
+    wrist freshness ≈ reload_age + WidgetKit scheduling latency
+                      (provider latency: p50 ~101s, p90 ~440s; ~32% coalescing rate)
+
+Observed baselines (12h, 2026-03-08, hot+S3):
+
+    save_age:    p50 ~161s,  p90 ~437s
+    reload_age:  p50 ~278s,  p90 ~543s
+    WC reachability: 62–68% of transfers find watch not immediately reachable (active hours)
+
+The dominant controllable lever is WatchConnectivity session activation latency.
+WidgetKit scheduling is the secondary delay and is largely platform-constrained.
+Use Phase 2.3 per-reading join queries to update these baselines after Phase 3 ships.
+
+---
+
 ### 3.5 Harden dedup and out-of-order handling (medium impact)
 
 **Problem:** When the watch receives many queued payloads (e.g. after being unreachable), out-of-order or duplicate deliveries can overwrite newer data or cause duplicate saves (each triggering a reload). Dedup and “newer-wins” must be robust so that (1) we don’t replace newer data with older, and (2) we don’t do redundant saves that increase reload volume and worsen `reload_snapshot_age_seconds`.
@@ -193,3 +218,4 @@ So: debounce (e.g. 5s) is helping, but every coalesced reload still schedules a 
 |---------|------|---------|
 | 1.0 | 2026-02-27 | Initial document: transcript context, Better Stack log evidence, code refs, top 5 suggestions (retry/reload volume; CGM-only recency; timeline recency; snapshot_age_seconds as metric; dedup/out-of-order). |
 | 1.1 | 2026-03-04 | Phase 1.1 doc corrections: §1.1 Bucket 1 scope (WCSession/wake budget note); §3.1 Reconnect/catch-up behavior; §3.4 getTimeline/budget characterization; §3.5 App Group locking (no flock/POSIX; monotonic preferred). |
+| 1.2 | 2026-03-08 | §3.4: Added freshness decomposition formula block (Phase 2.3.4) with empirically derived baselines (save_age, reload_age, WC reachability) and the key insight that WatchConnectivity session activation latency is the dominant controllable lever. |

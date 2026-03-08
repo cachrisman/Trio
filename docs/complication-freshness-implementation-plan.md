@@ -1,15 +1,15 @@
 # Watch Complication Freshness — Implementation Plan
 
-**Version:** 1.25
+**Version:** 1.27
 **Date:** 2026-03-08
-**Based on:** v1.24; Phase 2.3 inserted — cross-platform join key, structured log fields, freshness decomposition dashboard, sleep-gap classifier, Option A gate refinement. Phase 2.2 and earlier marked done. Phase 3 (dedup) renumbered but otherwise unchanged. See changelog.
+**Based on:** v1.26; Phase 2.3 fully complete (all six sub-tasks). See changelog.
 
 **Preferred order of attack:**
 
 1. ✅ Instrument save-age vs reload-age delta + epoch correlation key (baseline — no behavior change). **Done — Phase 0.1/0.2.**
 2. ✅ Ship "no retry after save" + forceReload call-site audit + doc corrections. **Done — Phase 1.**
 3. ✅ Re-measure buckets. **Done — BetterStack analysis 2026-03-08. Key findings: WatchConnectivity queue flush = primary delay (p50 ~38s, p90 ~278s); WidgetKit scheduling = secondary (p50 ~101s, p90 ~440s); phone pipeline is fast (~13s p50 to transfer); receive→save ≈ 0s; save→reload ≈ 0s median.**
-4. **Now: Phase 2.3 — close the cross-platform observability gap and formalize freshness decomposition. No behavior changes. Ship 2.3.1 and 2.3.2 as separate deploys with BetterStack verification between them. 2.3.3–2.3.6 require no build.**
+4. ✅ Phase 2.3 complete. **Done — all six sub-tasks shipped: 2.3.1 (build 128, iOS transfer join key), 2.3.2 (build 129, structured log fields), 2.3.3 (receive_lag dashboard), 2.3.4 (freshness decomposition dashboard + doc formula), 2.3.5 (sleep-gap classifier dashboard + query), 2.3.6 (Option A 4th criterion). No behavior changes.**
 5. Dedup and lastValidTimestamp hardening (ship Phase 3 as a unit). Note: Phase 3 addresses correctness, not the dominant freshness delays (queue flush, WidgetKit); measure it against reload_requested volume and generation association ratio, not save_age.
 6. Observability and SLA documentation (parallel with Phase 3).
 7. Only if delivery-delay still dominates after (4)–(6): revisit background-fetch / transport (Phase 5 placeholder — do not implement now).
@@ -543,6 +543,7 @@ After deploying:
 | `didReceiveUserInfo` fires **after** `"📡 BGTask completing"` for the same background task wake                       | Data arrived after the task already completed — the 5s window was too short                                    | Any occurrence (zero tolerance) |
 | `"📡 BGTask received"` appears but **no** `complication_save_age` or `complication_reload_age` log follows within 30s | Task was received but no save/reload happened — content may have been dropped when the extension suspended     | Persistent (>20% of reconnect events) |
 | Reconnect scenario produces stale complication >10 min even though `"📡 BGTask received"` is logged                   | Background delivery is occurring but Phase 1+3 didn't fix the staleness — points to 5s completion as the cause | Consistent pattern across multiple reconnect events |
+| For the **same `reading_date_epoch_seconds`**: `complication_did_receive_user_info` dt occurs **after** the `complication_bgtask_completing` dt for any window in the same reading's delivery chain | The watch received the data only after the BGTask safety window had already closed — the 5s window was too short for this reading | Any sustained occurrence (>5% of readings over a 7-day window); confirm with per-reading join query from Phase 2.3.4 |
 
 
 **If none of these patterns appear:** The current 5s behavior is sufficient and Option A is unnecessary.
@@ -811,7 +812,7 @@ If Phase 2.2 log entries do not appear after BT reconnect with watch screen off:
 
 ### 2.3.1 Phone transfer log enrichment (cross-platform join key)
 
-**Status: Not started.**
+**Status: Complete.** Deployed in build 128 (2026-03-08). BetterStack verified: `reading_date_epoch_seconds` present on all iOS transfer events, cross-platform epoch join confirmed matching watch-side `reading_date_epoch`.
 
 - **Where:** iOS `AppleWatchManager.swift` — the `"📤 Transferred new WatchState snapshot via userInfo"` log line.
 - **What:** Append `reading_date_epoch_seconds=<Int>` to the existing log message. This must be the CGM reading's timestamp from the WatchState snapshot — not the transfer time (`Date()`). Same field name and semantic as watch-side Phase 0.1 events.
@@ -860,7 +861,7 @@ Verify epoch is non-null and matches the reading shown in currentGlucose for tha
 
 ### 2.3.2 Structured log fields for Phase 2.2 events
 
-**Status: Not started.**
+**Status: Complete.** Deployed in build 129 (2026-03-08). BetterStack verified: `JSONExtract(raw,'event',...)`, `JSONExtract(raw,'window_id',...)`, and `JSONExtract(raw,'task_type',...)` return expected values for complication BGTask events.
 
 - **Where:** `06-cloud-logging` patch — `CloudLogEvent.encode(to:)` and the watch-side log attribute whitelist.
 - **What:** Extend the encoder to parse `event=`, `window_id=`, and `task_type=` tokens from the watch message and emit them as top-level JSON keys in the Better Stack payload. This eliminates the `message LIKE '%event=complication_bgtask_received%'` fallback queries and enables the Step 4b window-safe BetterStack correlations defined in Phase 2.2.
@@ -918,13 +919,13 @@ to top-level JSON fields in the raw payload so JSONExtract(raw,'event',...) work
 
 ### 2.3.3 Receive_lag dashboard panel
 
-**Status: Not started. No build required. Works today with existing `complication_did_receive_user_info` events; full cross-platform version unlocked after 2.3.1.**
+**Status: Complete.** Dashboard 914638 section "End-to-End Freshness Decomposition (Phase 2.3)" contains: Receive Lag p50/p90/max line chart (30-min buckets, chart ID 8801948580), Receive Lag p50 number chart (8799383509), Receive Lag p90 number chart (8799383776).
 
-- **Where:** BetterStack dashboard 689533. New panel in a "End-to-End Freshness Decomposition (Phase 2.3)" section.
+- **Where:** BetterStack dashboard 914638. New panel in a "End-to-End Freshness Decomposition (Phase 2.3)" section.
 - **What:** A named, standing chart for `receive_lag` — the delta between CGM reading time and when the watch receives the data (`complication_did_receive_user_info dt` minus `reading_date_epoch`). This is the most actionable single metric: it captures WatchConnectivity queue flush time per reading and will be the primary signal to watch after any session-activation improvements.
 - **Why distinct from the full decomposition query (2.3.4):** The full join query is run on-demand. This is a standing hourly trend line so you can see receive_lag drift over time without running a manual query.
 - **Baseline to verify against:** p50 ~38s, p90 ~278s (2026-03-08, watch-side 3-way join, n=16 — small sample; this panel will establish the definitive baseline with larger n).
-- **Acceptance:** Panel exists in dashboard 689533 showing receive_lag p50/p90/max per hour. After Phase 2.3.1 deploys, companion phone-side panel added using iOS transfer epoch to get the full phone→watch span.
+- **Acceptance:** Panel exists in dashboard 914638 showing receive_lag p50/p90/max per hour. After Phase 2.3.1 deploys, companion phone-side panel added using iOS transfer epoch to get the full phone→watch span.
 
 #### BetterStack MCP query — Phase 2.3.3 (receive_lag trend)
 
@@ -984,16 +985,16 @@ phone→watch span.
 
 ### 2.3.4 Freshness decomposition: standing query + dashboard panel
 
-**Status: Not started. Requires 2.3.1 data flowing (phone join key). No build required.**
+**Status: Complete.** Dashboard 914638 section "End-to-End Freshness Decomposition (Phase 2.3)" contains per-stage panels: Receive Lag (WC queue flush), Provider Latency (WidgetKit getTimeline), Save Age, Reload Age — all showing p50/p90/max at 30-min granularity. Freshness decomposition formula added to `snapshot-age-improvements-suggestions.md` §3.4 (v1.2).
 
-- **Where:** BetterStack dashboard 689533. A new section "End-to-End Freshness Decomposition (Phase 2.3)."
+- **Where:** BetterStack dashboard 914638. A new section "End-to-End Freshness Decomposition (Phase 2.3)."
 - **What:**
   1. A canonical BetterStack MCP query that computes per-stage p50/p90 for each pipeline segment, joined on `reading_date_epoch_seconds`. Run on-demand or scheduled.
   2. A receive_lag panel: `did_receive_user_info dt - reading_date_epoch` per hour, showing p50/p90/max trend over time.
   3. A sleep-gap classifier panel (see 2.3.4).
 - **Also:** Add the freshness decomposition formula to `snapshot-age-improvements-suggestions.md` §3.4 alongside the SLA targets (Phase 4.1 doc).
 
-#### BetterStack MCP query — Phase 2.3.3 (freshness decomposition, run after 2.3.1 deployed)
+#### BetterStack MCP query — Phase 2.3.4 (freshness decomposition, run after 2.3.1 deployed)
 
 ```
 Use the Better Stack MCP server to compute per-reading end-to-end freshness
@@ -1100,7 +1101,7 @@ WidgetKit scheduling latency (reload_requested → getTimeline) is not in this q
 use the existing complication_get_timeline_called latency_seconds panel for that stage.
 ```
 
-#### Doc update — Phase 2.3.3
+#### Doc update — Phase 2.3.4
 
 ```
 Doc-only change: snapshot-age-improvements-suggestions.md §3.4.
@@ -1135,14 +1136,14 @@ Use Phase 2.3 per-reading join queries to update these baselines after Phase 3 s
 
 ### 2.3.5 Sleep-gap classifier
 
-**Status: Not started. No build required. Can be run any time.**
+**Status: Complete.** Dashboard 914638 chart "Sleep-Gap Classifier (provider-only hours)" (ID 8804994375) shows per-hour getTimeline calls, reload requests, and valid latency events. Sleep gaps appear as hours where only getTimeline has values (others at zero). Verified: 2026-03-08 03:00–04:00 UTC flagged as SLEEP_GAP (overnight, expected). On-demand query also verified (see Phase 2.3.5 query template below).
 
 - **Where:** BetterStack — new dashboard panel or on-demand MCP query.
 - **What:** Detect hourly periods where `complication_get_timeline_called > 0` but `complication_save_age = 0` AND `complication_reload_requested = 0` AND `complication_bgtask_received = 0`. These are provider-only periods: WidgetKit is polling but the watch app is not running, meaning the complication is serving a cached (stale) timeline.
 - **Why:** Distinguishes "platform asleep" (acceptable) from "delivery broken" (actionable). Sleep gaps are expected overnight and produce the worst outliers (e.g. the 3201s max reload_age at 06:25 UTC observed 2026-03-08).
 - **Acceptance:** Query returns one row per detected gap with start time and duration in minutes. Overnight gaps flagged as expected; any gap >30 min outside 01:00–06:00 local time warrants investigation.
 
-#### BetterStack MCP query — Phase 2.3.4 (sleep-gap classifier)
+#### BetterStack MCP query — Phase 2.3.5 (sleep-gap classifier)
 
 ```
 Use the Better Stack MCP server to detect sleep-gap hours for the Trio watch
@@ -1188,7 +1189,7 @@ warrants investigation — it may indicate a delivery failure rather than normal
 
 ### 2.3.6 Tighten Option A gate definition
 
-**Status: Not started. Plan text update only. No build required.**
+**Status: Complete.** Fourth trigger criterion added to the Option A table (§2.2): per-reading epoch join using `reading_date_epoch_seconds` to detect late `didReceiveUserInfo` after `bgtask_completing`. Re-evaluate after 2026-03-15 (2.3.1 +7 days in production).
 
 - **Where:** Phase 2.2 "Option A trigger criteria" table in this document.
 - **What:** Add a fourth trigger criterion that uses per-reading epoch joins (enabled by Phase 2.3.1) rather than time-window heuristics. The existing three criteria remain unchanged.
@@ -1199,7 +1200,7 @@ Update the trigger criteria table by adding this row:
 | --- | --- | --- |
 | For the **same `reading_date_epoch_seconds`**: `complication_did_receive_user_info` dt occurs **after** the `complication_bgtask_completing` dt for any window in the same reading's delivery chain | The watch received the data only after the BGTask safety window had already closed — the 5s window was too short for this reading | Any sustained occurrence (>5% of readings over a 7-day window); confirm with per-reading join query from Phase 2.3.3 |
 
-**Note on current state (2026-03-08):** The Phase 2.3.1 join key is not yet deployed, so this criterion cannot yet be evaluated per-reading. The existing three criteria remain the active gate. Add a plan note: *"Re-evaluate Option A using criterion 4 after Phase 2.3.1 has been in production ≥7 days."*
+**Note on current state (2026-03-08):** Phase 2.3.1 join key deployed (build 128, 2026-03-08). Re-evaluate Option A using criterion 4 after Phase 2.3.1 has been in production ≥7 days (target: 2026-03-15). The existing three criteria remain the active gate until then.
 
 ---
 
@@ -1581,13 +1582,13 @@ Add under "Complementary metric — reload requested vs timeline updated":
 | 1.3     | forceReload call-site audit                                                                               | Phase 1.2 done                                     | ✅ Complete |
 | 2.1     | Wake burst debounce logging + `burst_window_id` + on-device test                                          | None                                               | ✅ Complete |
 | 2.2     | Background delivery logging in `WatchState.handleBackgroundTasks` (Option B — logging only, 5s unchanged) | None                                               | ✅ Complete |
-| 2.2-A   | Option A: `hasContentPending` wait — implement only if BetterStack analysis triggers criteria             | Phase 2.2 logs (min 3 days) + query shows evidence | ⛔ Blocked — criteria not met as of 2026-03-08; re-evaluate after Phase 2.3.1 ≥7 days using criterion 4 |
-| **2.3.1** | **Phone transfer log: add `reading_date_epoch_seconds` to `📤 Transferred via userInfo` (iOS, 1 line)** | **Phase 2.2 complete** | **✅ Yes — deploy separately, verify 24h** |
-| **2.3.2** | **Structured log fields: promote `event`/`window_id`/`task_type` to top-level JSON in cloud logging encoder** | **2.3.1 deployed + verified** | **✅ Yes — deploy separately, verify 24h** |
-| **2.3.3** | **Receive_lag dashboard panel: per-hour p50/p90/max of WC queue flush time. Works today; full cross-platform version after 2.3.1** | **None — can run now** | **✅ Yes — no build needed** |
-| **2.3.4** | **Freshness decomposition: per-reading join query + dashboard panel + doc formula** | **2.3.1 data flowing** | **✅ Yes — no build needed** |
-| **2.3.5** | **Sleep-gap classifier: BetterStack query + dashboard panel** | **None — can run now** | **✅ Yes — no build needed** |
-| **2.3.6** | **Option A gate: add per-reading join criterion (plan text update only)** | **None** | **✅ Yes — no build needed** |
+| 2.2-A   | Option A: `hasContentPending` wait — implement only if BetterStack analysis triggers criteria             | Phase 2.2 logs (min 3 days) + query shows evidence | ⛔ Blocked — criteria not met as of 2026-03-08; re-evaluate ≥2026-03-15 (2.3.1 +7 days) using criterion 4 |
+| **2.3.1** | **Phone transfer log: add `reading_date_epoch_seconds` to `📤 Transferred via userInfo` (iOS, 1 line)** | **Phase 2.2 complete** | **✅ Complete (build 128, 2026-03-08)** |
+| **2.3.2** | **Structured log fields: promote `event`/`window_id`/`task_type` to top-level JSON in cloud logging encoder** | **2.3.1 deployed + verified** | **✅ Complete (build 129, 2026-03-08)** |
+| **2.3.3** | **Receive_lag dashboard panel: per-hour p50/p90/max of WC queue flush time** | **None** | **✅ Complete (dashboard 914638)** |
+| **2.3.4** | **Freshness decomposition: per-reading join query + dashboard panel + doc formula** | **2.3.1 data flowing** | **✅ Complete (dashboard 914638 + doc §3.4)** |
+| **2.3.5** | **Sleep-gap classifier: BetterStack query + dashboard panel** | **None** | **✅ Complete (dashboard 914638 + on-demand query)** |
+| **2.3.6** | **Option A gate: add per-reading join criterion (plan text update only)** | **None** | **✅ Complete (4th criterion added)** |
 | 3.0–3.4 | Dedup hardening — ship as unit. Note: correctness work; not expected to move save_age/reload_age metrics. | None; verify checklist first                       | ✅ Yes |
 | 4.1–4.2 | CGM cadence + SLA + metric interpretation (4.3: freshness decomposition formula now part of Phase 2.3.3) | None; parallel                                     | ✅ Yes |
 
@@ -1606,9 +1607,7 @@ Do not implement. If delivery-delay dominates after Phases 2.3–4, revisit then
 
 ## Remaining open items
 
-- **Phase 2.3.1 (phone join key):** Not yet deployed. Ship as own build; verify `reading_date_epoch_seconds` appears in BetterStack iOS transfer logs within 24h.
-- **Phase 2.3.2 (structured log fields):** Not yet deployed. Ship after 2.3.1 verified; verify `JSONExtract(raw,'event',...)` works for bgtask events within 24h.
-- **Phase 2.3.3/2.3.4/2.3.5/2.3.6 (dashboard + doc + Option A gate):** No build needed; run after 2.3.1 data is flowing.
+- **Phase 2.3 (all sub-tasks):** Complete. Dashboard panels, doc formula, sleep-gap classifier, and Option A gate criterion all done.
 - **Phase 2.2-A (Option A):** Criteria not met as of 2026-03-08. Re-evaluate after Phase 2.3.1 has been in production ≥7 days using the per-reading join criterion (2.3.6). If 3.3% timeout rate increases or new missed-save evidence appears, re-examine.
 - **TrioComplicationSnapshot field names:** Verify `state` and `glucoseColor` property names before Phase 3.0. Update fingerprint and `shouldUpdate` field sets to match. They must be identical.
 - **App Group suite name:** Insert into Phase 3.0 Cursor prompt. (Phase 0.2 causality metrics already resolved this — using `cachedAppGroupDefaults` / `resolveAppGroupDefaultsOnce()`.)
@@ -1626,9 +1625,9 @@ Do not implement. If delivery-delay dominates after Phases 2.3–4, revisit then
 | 0.1   | 2026-03-02 | **Complete.** `TrioComplicationDataStore.swift`: In `saveOnMain`, after successful write, emit structured log `event=complication_save_age` with `age_seconds`, `reading_date_epoch_seconds`, `reading_date` (ISO8601). In `reloadTimeline()`, emit `event=complication_reload_age` with same field set (epoch from `lastTS`). Static `ISO8601DateFormatter` reuse; negative age clamped to 0; legacy `reload_snapshot_age_seconds` log line removed. Human-readable "Snapshot saved…" line retained. Join key: `reading_date_epoch_seconds` (Int). |
 | 0.2   | 2026-03-02 | **Complete.** Reload→getTimeline correlation: `ComplicationReloadRecord` + 64-entry ring in App Group UserDefaults (`complication_reload_ring`). Watch app appends before each `reloadTimelines` and logs `event=complication_reload_requested` with `reload_id` (uuidString), `reload_requested_at_epoch_seconds`. Complication extension reads ring in `getTimeline`, logs `event=complication_get_timeline_called` with `most_recent_reload_id`, `latency_seconds`, `reload_requested_at_epoch_seconds` — os.Logger removed; routed through ComplicationLogBuffer (file/drain path) so complication extension logs reach Better Stack. Compile-time guard: `#if !WIDGET_EXTENSION` around ring append; sync scripts set per-config `SWIFT_ACTIVE_COMPILATION_CONDITIONS` for Trio Watch Complication Extension (Debug: DEBUG + WIDGET_EXTENSION, Release: WIDGET_EXTENSION only). New file `ComplicationLogBuffer.swift` (in-memory ring for DataStore logs). Join keys: `reload_id` primary; `reload_requested_at_epoch_seconds` fallback/sanity. Post-deploy: verify both event types land in Better Stack within 24h. |
 | 0.2 (shipped) | 2026-03-03 | **Phase 0.2 complete and shipped.** `ComplicationLogBuffer.swift`: hybrid buffer (in-memory ring all targets; file append only when `WIDGET_EXTENSION` / complication target). Sync file write in complication process so write completes before return. Contract: writer only `complication_log.txt`; best-effort delivery; rare corruption possible if truncation races drain. Built and deployed (patch 09). |
-| 0.2 observability | 2026-03-04 | **Phase 0.2 dashboard and setup doc.** Better Stack dashboard ID 689533 "Trio • Complication Freshness (Phase 0.2)": Extract Metrics on Trio source (complication_reload_requested_count, complication_get_timeline_called_count, five latency buckets, complication_latency_seconds with avg/max/quantiles). 14 charts in 3 sections — Volume & Reload Efficiency (reload vs getTimeline line, 60–300s / >300s text, Max Latency, Reload efficiency, counts), Burstiness (reloads per 5‑min bucket line, P95 burstiness, Burst Windows Count, Max burst), Latency health (avg/max/P50/P90/P95 over time, latency buckets per hour, Complication Reload Latency bar). Queries use pre-aggregated columns (no `name` filter); 30‑min buckets for latency line; 1‑h for latency buckets bar. Setup doc `docs/better-stack-complication-dashboard-setup.md`: Step 1 Extract Metrics definitions, Step 2 query patterns, individual-latency note, full dashboard summary with current queries, limitations. |
+| 0.2 observability | 2026-03-04 | **Phase 0.2 dashboard and setup doc.** Better Stack dashboard ID 914638 "Trio • Complication Freshness (Phase 0.2)": Extract Metrics on Trio source (complication_reload_requested_count, complication_get_timeline_called_count, five latency buckets, complication_latency_seconds with avg/max/quantiles). 14 charts in 3 sections — Volume & Reload Efficiency (reload vs getTimeline line, 60–300s / >300s text, Max Latency, Reload efficiency, counts), Burstiness (reloads per 5‑min bucket line, P95 burstiness, Burst Windows Count, Max burst), Latency health (avg/max/P50/P90/P95 over time, latency buckets per hour, Complication Reload Latency bar). Queries use pre-aggregated columns (no `name` filter); 30‑min buckets for latency line; 1‑h for latency buckets bar. Setup doc `docs/better-stack-complication-dashboard-setup.md`: Step 1 Extract Metrics definitions, Step 2 query patterns, individual-latency note, full dashboard summary with current queries, limitations. |
 | 1.1–1.3 | 2026-03-04 | **Phase 1 complete.** 1.1: snapshot-age-improvements-suggestions.md — §1.1 Bucket 1 scope (WCSession/wake budget note); §3.1 Reconnect/catch-up behavior; §3.4 getTimeline/budget characterization; §3.5 App Group locking (no flock; monotonic preferred). 1.2: TrioComplicationDataStore — coalescedReloadOnMain(minInterval:isRetry:scheduleRetry:), guard skips scheduleRetryAfterReloadOnMain when scheduleRetry=false; save path passes scheduleRetry: false. 1.3: ComplicationDebugView forceReload(scheduleRetry: false) with inline comment; WatchState.forceComplicationUpdate unchanged (already scheduleRetry: false). |
-| 0.2 causality | 2026-03-05 | **Phase 0.2 causality metrics extension complete.** Code: `reload_generation` counter + `lastReloadRequestEpochSeconds` in App Group UserDefaults (writer: watch app); `ProviderProcessState` (instanceID, lastSeenGeneration, isFirstCall) + three-way App Group branch (unavailable/unset/set) in complication provider `getTimeline`; `logWidgetGetTimelineInvocation` expanded with `appGroupAvailable`, `observedGenerationSource`, `providerInstanceID`, `providerRestart`, `observedReloadGeneration`, `generationDelta`, `latencyValid` fields; `latencyValidityWindowSeconds = 600`. Better Stack: 8 extraction rules (generation_delta, provider_restart, latency_valid, latency_seconds_valid + 4 generation_delta buckets). Dashboard 689533: 6 new panels in "Causality Metrics (Phase 0.2)" section (Generation Delta Distribution, Valid Latency Percentiles, Max Valid Latency, Valid Latency Events, Reload-Association Ratio, Provider Restart Rate). Patch 09 regenerated, validated, and build-verified. See `docs/phase-0.2-causality-metrics-implementation-plan.md` for full specs. |
+| 0.2 causality | 2026-03-05 | **Phase 0.2 causality metrics extension complete.** Code: `reload_generation` counter + `lastReloadRequestEpochSeconds` in App Group UserDefaults (writer: watch app); `ProviderProcessState` (instanceID, lastSeenGeneration, isFirstCall) + three-way App Group branch (unavailable/unset/set) in complication provider `getTimeline`; `logWidgetGetTimelineInvocation` expanded with `appGroupAvailable`, `observedGenerationSource`, `providerInstanceID`, `providerRestart`, `observedReloadGeneration`, `generationDelta`, `latencyValid` fields; `latencyValidityWindowSeconds = 600`. Better Stack: 8 extraction rules (generation_delta, provider_restart, latency_valid, latency_seconds_valid + 4 generation_delta buckets). Dashboard 914638: 6 new panels in "Causality Metrics (Phase 0.2)" section (Generation Delta Distribution, Valid Latency Percentiles, Max Valid Latency, Valid Latency Events, Reload-Association Ratio, Provider Restart Rate). Patch 09 regenerated, validated, and build-verified. See `docs/phase-0.2-causality-metrics-implementation-plan.md` for full specs. |
 | 2.2 diagnostics | 2026-03-07 | **Phase 2.2 enqueue/finalize/race diagnostics.** `WatchState.swift`: (A) `complication_bgtask_enqueued` after `pendingConnectivityTasks.append(task)` with `pending_count`; (B) `complication_userinfo_no_pending_tasks` in `didReceiveUserInfo` when `pendingConnectivityTasks.isEmpty` (distinguishes race vs foreground); (C) `complication_finalize_begin`/`complication_finalize_end` around quiet-window task completion loop with `pending_count`/`cleared_count`; fast-path `completed_count` now uses captured `pendingCount`. Initial deploy (build 124) showed `completed_count=0` on all fast-path completions; one `path=timeout` event (window 85, completion_delay_ms=5298) confirmed safety net works. These diagnostics will reveal whether count=0 is a race (userInfo beats enqueue), early clear (prior finalize), or flush artifact. |
 | 2.2 analysis | 2026-03-07 | **Phase 2.2 BetterStack analysis (72h, hot+S3).** 183 total completions: 177 fast (96.7%), 6 timeout (3.3%). Four timeout windows: build 124 windows 85 (5298ms) and 116 (5252ms) — no userInfo, no enqueued (pre-diagnostic build); build 125 windows 10 (5212ms) and 15 (5136ms) — both show `userinfo_no_pending_tasks` before `bgtask_enqueued`, confirming race (`didReceiveUserInfo` runs before task appended). Race-triggered timeout windows have no `finalize_begin`/`end` because empty-branch calls `scheduleUIUpdate` directly, bypassing quiet-window work item. Healthy fast-path ordering confirmed: forwarding → received → enqueued(pending=1) → userinfo → finalize_begin(pending=1) → completing(fast, count=1) → finalize_end(cleared=1). Build 124 `completed_count=0` resolved: `Task { }` closure evaluated `.count` after `removeAll()` ran synchronously; build 125 captures `pendingCount` before Task. No evidence userInfo arrives after timeout completion — 5s window not too short. Duplicate events (2–4x) are WatchLogger flush duplication. Option A gate: timeout rate 3.3%, but all timeouts still complete; complication data updated via `scheduleUIUpdate` in race path; no missed saves. Recommendation: no immediate need for Option A; continue monitoring. |
 
@@ -1657,7 +1656,7 @@ Do not implement. If delivery-delay dominates after Phases 2.3–4, revisit then
 | 1.14    | 2026-03-02 | Phase 0.2: os.Logger interpolations marked privacy: .public so correlation values are not redacted; explicit "Phase 0.2 log verification (do immediately after deploy)" step added — verify both event types land in Better Stack for same device within 24h. |
 | 1.15    | 2026-03-02 | Phase 0.2 marked complete. Implementation log: added Phase 0.2 row (ring buffer, compile-time guard, ComplicationLogBuffer, join keys, post-deploy verification). Summary table: 0.2 Cursor-ready set to ✅ Complete. |
 | 1.16    | 2026-03-03 | Implementation log: added 0.2 (shipped) row — ComplicationLogBuffer hybrid ring+file, sync write, contract; Phase 0.2 complete and shipped (patch 09). Header updated to v1.16. |
-| 1.17    | 2026-03-04 | Implementation log: added 0.2 observability row — Better Stack dashboard (ID 689533), Extract Metrics, 14 charts in 3 sections, setup doc `better-stack-complication-dashboard-setup.md`. Header updated to v1.17. |
+| 1.17    | 2026-03-04 | Implementation log: added 0.2 observability row — Better Stack dashboard (ID 914638), Extract Metrics, 14 charts in 3 sections, setup doc `better-stack-complication-dashboard-setup.md`. Header updated to v1.17. |
 | 1.18    | 2026-03-04 | Phase 1 implemented: 1.1 doc corrections in snapshot-age-improvements-suggestions.md (§1.1 Bucket 1, §3.1 Reconnect/catch-up, §3.4 getTimeline/budget, §3.5 App Group locking); 1.2 coalescedReloadOnMain(scheduleRetry:), save path passes false, guard skips retry; 1.3 ComplicationDebugView forceReload(scheduleRetry: false) with comment. Implementation log Phase 1 row added. |
 | 1.19    | 2026-03-05 | Phase 0.2 causality metrics extension cross-referenced: (a) Phase 0.2 section — added paragraph describing causality metrics extension with pointer to `phase-0.2-causality-metrics-implementation-plan.md`; (b) summary table — Phase 0.2 status updated to "✅ Complete (incl. causality metrics)"; (c) Phase 4.2 gate note updated (Phase 0.2 now complete; baseline data exists); Phase 4.2 prompt extended with guidance to use Reload-Association Ratio and Valid Latency Percentiles panels as primary baseline source; (d) remaining open items — App Group suite name note updated (resolved in causality metrics, only Phase 3.0 remains); (e) implementation log — added "0.2 causality" row with code changes, extraction rules (8), dashboard panels (6), patch status. |
 | 1.20    | 2026-03-06 | Phase 2.1 burst_window_id semantics: treat burstWindowId as active debounce window; on TRIGGER path advance window and reset suppression before logging so TRIGGERED and all DEBOUNCED in the same burst share the same burst_window_id (deterministic acceptance). No behavior or timing changes. |
@@ -1666,3 +1665,5 @@ Do not implement. If delivery-delay dominates after Phases 2.3–4, revisit then
 | 1.23    | 2026-03-07 | Phase 2.2: Enqueue/finalize/race diagnostics. Three new log events: (A) `complication_bgtask_enqueued` with `pending_count` immediately after task append — reveals enqueue ordering relative to userInfo; (B) `complication_userinfo_no_pending_tasks` when `didReceiveUserInfo` sees empty `pendingConnectivityTasks` — directly confirms race (userInfo before enqueue) or foreground delivery; (C) `complication_finalize_begin`/`complication_finalize_end` with `pending_count`/`cleared_count` — reveals whether quiet-window work item finds tasks to complete. Motivated by build 124 observation: all fast-path completions showed `completed_count=0`; one `path=timeout` (window 85, 5298ms) confirmed safety net works. Implementation log row added. |
 | 1.24    | 2026-03-07 | Phase 2.2 BetterStack analysis: 72h query across hot+S3 (183 completions). Timeout rate 3.3% (6/183). All 4 timeout windows correlate with race condition (`didReceiveUserInfo` before `bgtask_enqueued`). Build 124 `completed_count=0` explained (Task closure captured `.count` after `removeAll()`). No late userInfo after timeout — 5s safety net adequate. Option A gate: no trigger criteria met; continue monitoring. Implementation log row added. |
 | 1.25    | 2026-03-08 | Phase 2.2 and earlier marked done. "Preferred order of attack" updated with empirical baselines. Phase 2.3 inserted (6 sub-tasks): 2.3.1 phone transfer log enrichment (iOS, 1 line, `reading_date_epoch_seconds` on `📤 Transferred via userInfo`); 2.3.2 structured log fields (promote `event`/`window_id`/`task_type` to top-level JSON in cloud logging encoder); 2.3.3 receive_lag standing dashboard panel (WC queue flush time per hour, p50/p90/max, works today); 2.3.4 freshness decomposition full join query + dashboard section + §3.4 doc formula; 2.3.5 sleep-gap classifier (hourly detector for provider-only periods); 2.3.6 Option A gate updated with per-reading join criterion (plan text only). Deployment order: 2.3.1 (code+deploy+verify 24h) → 2.3.2 (code+deploy+verify 24h) → 2.3.3–2.3.6 (no build, parallel). Phase 3 "dedup" renumbered but content unchanged. Phase 5 strengthened with data rationale. Remaining open items reorganized. |
+| 1.26    | 2026-03-08 | Phase 2.3.1 complete (build 128): Added `reading_date_epoch_seconds` to iOS `📤 Transferred new WatchState snapshot via userInfo` log line in `AppleWatchManager.swift`. Uses `state.glucoseValues.last` (sorted ascending by `setupWatchState`) with `-1` sentinel when no reading present. BetterStack verified: epoch non-null and matches watch-side `reading_date_epoch`. Patch 09 updated. Phase 2.3.2 complete (build 129): Promoted `event`, `window_id`, `task_type` message tokens to top-level JSON fields in `CloudLogEvent.encode(to:)` (06-cloud-logging patch). Uses `NSRegularExpression` with `\b` word boundaries and `([^ ]+)` capture groups for robust extraction. Additive only — existing `LIKE`-based queries unchanged. BetterStack verified: `JSONExtract(raw,'event',...)` and `JSONExtract(raw,'window_id',...)` return expected values for complication BGTask events. Remaining open items updated (2.3.1/2.3.2 removed). Summary table and status fields updated. |
+| 1.27    | 2026-03-08 | Phase 2.3 fully complete. 2.3.3: Receive_lag dashboard panel confirmed on dashboard 914638 (chart 8801948580 line + 8799383509/8799383776 number cards). 2.3.4: Freshness decomposition dashboard panels confirmed (Receive Lag, Provider Latency, Save Age, Reload Age at 30-min granularity); freshness decomposition formula block added to `snapshot-age-improvements-suggestions.md` §3.4 (v1.2). 2.3.5: Sleep-gap classifier chart added to dashboard 914638 (chart 8804994375, "Sleep-Gap Classifier (provider-only hours)" — shows getTimeline/reload/latency counts per hour; gaps visible when only getTimeline has values). On-demand query verified: 2026-03-08 03:00–04:00 UTC flagged as SLEEP_GAP (overnight, expected). 2.3.6: Fourth trigger criterion added to Option A table — per-reading epoch join using `reading_date_epoch_seconds` to detect late `didReceiveUserInfo` after `bgtask_completing`; re-evaluate after 2026-03-15 (2.3.1 +7 days). All statuses, summary table, remaining open items, and preferred order of attack updated. |
