@@ -45,6 +45,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private var pendingSendWorkItem: DispatchWorkItem?
     private var coalescerFirstScheduledAt: Date?
 
+    // R1b: queue drain state
+    private var hasPerformedStartupQueueDrain = false
+    private var lastQueueDeepDrainAt: TimeInterval = 0
+
     // Processed payload IDs for deduplication (LRU with TTL)
     private let processedIdsKey = "watchProcessedIds"
     private let processedIdsMaxCount = 100
@@ -472,7 +476,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     // MARK: - Send to Watch
 
     func watchStateToDictionary(from state: WatchState) -> [String: Any] {
-        [
+        var dict: [String: Any] = [
             WatchMessageKeys.date: state.date,
             WatchMessageKeys.currentGlucose: state.currentGlucose ?? "--",
             WatchMessageKeys.currentGlucoseColorString: state.currentGlucoseColorString ?? "#ffffff",
@@ -510,6 +514,81 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             WatchMessageKeys.confirmBolusFaster: state.confirmBolusFaster,
             WatchMessageKeys.units: state.units.rawValue
         ]
+
+        // R1a: Use max(by: date) rather than .first/.last to avoid sorted-order assumption.
+        if let newestReading = state.glucoseValues.max(by: { $0.date < $1.date }) {
+            dict[WatchMessageKeys.readingEpoch] = newestReading.date.timeIntervalSince1970
+        }
+
+        return dict
+    }
+
+    // MARK: - Session Readiness & Queue Management (R1b)
+
+    /// Shared session readiness helper — used by cancelStaleQueuedTransfers and sendDataToWatch.
+    private func sessionIsReadyForTransfer() -> Bool {
+        guard let session = self.session else { return false }
+        return session.activationState == .activated
+            && session.isPaired
+            && session.isWatchAppInstalled
+    }
+
+    /// Cancels stale queued transfers, keeping only the newest transfer within the latest reading epoch.
+    private func cancelStaleQueuedTransfers() {
+        guard sessionIsReadyForTransfer() else {
+            if let session = self.session {
+                debug(
+                    .watchManager,
+                    "🗑️ queue_drain_skipped session_not_ready activation=\(session.activationState.rawValue)"
+                )
+            }
+            return
+        }
+        guard let session = self.session else { return }
+        let allTransfers = session.outstandingUserInfoTransfers
+        guard allTransfers.count > 1 else { return }
+
+        let latestEpoch = allTransfers
+            .compactMap { $0.userInfo[WatchMessageKeys.readingEpoch] as? TimeInterval }
+            .max()
+
+        let transfersToKeep: Set<ObjectIdentifier>
+        if let latest = latestEpoch {
+            let latestEpochTransfers = allTransfers.filter {
+                ($0.userInfo[WatchMessageKeys.readingEpoch] as? TimeInterval) == latest
+            }
+            let keeper = latestEpochTransfers
+                .max(by: {
+                    let a = $0.userInfo[WatchMessageKeys.transferEnqueuedAt] as? TimeInterval ?? 0
+                    let b = $1.userInfo[WatchMessageKeys.transferEnqueuedAt] as? TimeInterval ?? 0
+                    return a < b
+                })
+            transfersToKeep = keeper.map { Set([ObjectIdentifier($0)]) } ?? []
+        } else {
+            transfersToKeep = allTransfers.last.map { Set([ObjectIdentifier($0)]) } ?? []
+        }
+
+        let depthBefore = allTransfers.count
+        let toCancel = allTransfers.filter { !transfersToKeep.contains(ObjectIdentifier($0)) }
+        toCancel.forEach { $0.cancel() }
+
+        let depthAfter = session.outstandingUserInfoTransfers.count
+
+        let keptTransfer = allTransfers.first { transfersToKeep.contains(ObjectIdentifier($0)) }
+        let keptEpoch = keptTransfer?.userInfo[WatchMessageKeys.readingEpoch] as? TimeInterval ?? 0
+        let keptEnqueuedAt = keptTransfer?.userInfo[WatchMessageKeys.transferEnqueuedAt] as? TimeInterval ?? 0
+
+        debug(
+            .watchManager,
+            "🗑️ queue_drain cancel_requested=\(toCancel.count) depth_before=\(depthBefore) depth_after=\(depthAfter) kept_epoch=\(Int(keptEpoch)) kept_enqueued_at=\(Int(keptEnqueuedAt))"
+        )
+
+        if depthAfter > 5 {
+            debug(
+                .watchManager,
+                "⚠️ queue_drain_incomplete depth_after=\(depthAfter) cancel_requested=\(toCancel.count) — session may not have shrunk yet; advisory only"
+            )
+        }
     }
 
     /// Coalesces multiple publisher-driven WatchState updates into a single send.
@@ -569,11 +648,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             return
         }
 
-        let message: [String: Any] = watchStateToDictionary(from: state)
-        let readingEpoch = state.glucoseValues.last.map { Int($0.date.timeIntervalSince1970) } ?? -1
+        var message: [String: Any] = watchStateToDictionary(from: state)
+        let readingEpoch = state.glucoseValues.max(by: { $0.date < $1.date })
+            .map { Int($0.date.timeIntervalSince1970) } ?? -1
 
-        // if session is reachable, it means watch App is in the foreground -> send watchState as message
-        // if session is not reachable, it means it's in background -> send watchState as userInfo
+        // R1a: stamp enqueue time immediately before transfer calls
+        message[WatchMessageKeys.transferEnqueuedAt] = Date().timeIntervalSince1970
+
         if session.isReachable {
             session.sendMessage([WatchMessageKeys.watchState: message], replyHandler: nil) { error in
                 debug(.watchManager, "❌ Error sending watch state: \(error)")
@@ -588,9 +669,23 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 let queueDepth = session.outstandingUserInfoTransfers.count
                 debug(.watchManager, "📤 Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
             } else {
+                // R1b: cancel stale items before enqueuing a new fallback transfer
+                cancelStaleQueuedTransfers()
                 session.transferUserInfo([WatchMessageKeys.watchState: message])
                 let queueDepth = session.outstandingUserInfoTransfers.count
                 debug(.watchManager, "📤 Transferred new WatchState snapshot via=userInfo budget_exhausted=true queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
+            }
+
+            // R1b: queue-deep observation — drain if queue is suspiciously deep even when budget is OK.
+            // Handles pre-deployment frozen queues that the activation drain missed.
+            let queueDeepCooldown: TimeInterval = 60
+            if sessionIsReadyForTransfer() {
+                let queueDepthNow = session.outstandingUserInfoTransfers.count
+                if queueDepthNow > 5, (Date().timeIntervalSince1970 - lastQueueDeepDrainAt) > queueDeepCooldown {
+                    debug(.watchManager, "🧹 queue_deep_drain triggered depth=\(queueDepthNow)")
+                    lastQueueDeepDrainAt = Date().timeIntervalSince1970
+                    cancelStaleQueuedTransfers()
+                }
             }
         }
     }
@@ -622,6 +717,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
         debug(.watchManager, "📱 Phone session activated with state: \(activationState.rawValue)")
         debug(.watchManager, "📱 Phone isReachable after activation: \(session.isReachable)")
+
+        // R1b: one-time startup drain of the frozen transfer queue
+        if !hasPerformedStartupQueueDrain {
+            hasPerformedStartupQueueDrain = true
+            cancelStaleQueuedTransfers()
+        }
 
         DispatchQueue.main.async {
             self.pendingSendWorkItem?.cancel()
