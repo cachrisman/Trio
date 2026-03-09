@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.3)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.4)
 #
 # DESCRIPTION:
 #   Automates the mid-stack patch update workflow documented in
@@ -126,6 +126,20 @@ print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
 print_step()    { step_num=$((step_num + 1)); echo -e "\n${BOLD}[Step ${step_num}]${NC} $1"; }
 
 die() { print_error "$1"; exit 1; }
+
+# Infrastructure paths: committed directly to dev, never shipped via patches.
+# The drift check uses this to suppress false-positive "missing file" warnings
+# for files the feature branch touches but that don't belong in any patch.
+is_infra_path() {
+    case "$1" in
+        patches/*|scripts/*|ci/*|.github/*|fastlane/*|build/*|docs/*|.cursor/*)
+            return 0 ;;
+        AGENTS.md|.trio-env)
+            return 0 ;;
+        *)
+            return 1 ;;
+    esac
+}
 
 #===============================================================================
 # Argument parsing
@@ -684,6 +698,7 @@ fi
 #===============================================================================
 
 DRIFT_DETECTED=false
+INFRA_SKIP_FILES=()
 
 if [ -n "$FEATURE_BRANCH" ]; then
     print_step "Verify patch completeness against $FEATURE_BRANCH"
@@ -749,6 +764,11 @@ if [ -n "$FEATURE_BRANCH" ]; then
         if echo "$OTHER_PATCH_FILES_SORTED" | grep -qxF "$ff"; then
             continue
         fi
+        # Infrastructure files are committed directly to dev, never via patches
+        if is_infra_path "$ff"; then
+            INFRA_SKIP_FILES+=("$ff")
+            continue
+        fi
         MISSING_FILES+=("$ff")
     done < "$FEATURE_FILES_TMP"
     rm -f "$FEATURE_FILES_TMP"
@@ -775,6 +795,14 @@ if [ -n "$FEATURE_BRANCH" ]; then
         print_info "If they belong in this patch, add them via --extra-files or cherry-pick the missing commit."
         for f in "${MISSING_FILES[@]}"; do
             echo "    ⚠ $f"
+        done
+        echo ""
+    fi
+
+    if [ ${#INFRA_SKIP_FILES[@]} -gt 0 ]; then
+        print_info "Skipped ${#INFRA_SKIP_FILES[@]} infrastructure file(s) from drift check (not shipped via patches):"
+        for f in "${INFRA_SKIP_FILES[@]}"; do
+            echo "    ℹ $f"
         done
         echo ""
     fi
@@ -870,7 +898,11 @@ if [ "$DID_STASH" = true ] && [ -n "$STASH_SHA" ]; then
     DID_STASH=false
 fi
 
-print_success "Temporary branches cleaned up"
+if [ "$DRIFT_DETECTED" = true ]; then
+    print_info "Cleanup complete (tmp branches preserved for drift investigation)"
+else
+    print_success "Cleanup complete (tmp branches deleted)"
+fi
 
 #===============================================================================
 # Summary
@@ -883,8 +915,15 @@ echo "  Updated patch:     $PATCH_BASENAME"
 echo "  Cherry-picked:     ${#CHERRY_PICK_SHAS[@]} commit(s)"
 echo "  Files in patch:    ${#DIFF_FILES[@]}"
 echo "  Stack validation:  $([ "$SKIP_TEST" = true ] && echo "SKIPPED" || echo "PASSED")"
+echo "  Cleanup:           $([ "$DRIFT_DETECTED" = true ] && echo "BRANCHES PRESERVED (drift investigation)" || echo "COMPLETE (tmp branches deleted)")"
 if [ -n "$FEATURE_BRANCH" ]; then
-    echo "  Drift check:       $([ "$DRIFT_DETECTED" = true ] && echo "⚠ DRIFT DETECTED — review warnings above" || echo "CLEAN")"
+    if [ "$DRIFT_DETECTED" = true ]; then
+        echo "  Drift check:       ⚠ DRIFT DETECTED — review warnings above"
+    elif [ ${#INFRA_SKIP_FILES[@]} -gt 0 ]; then
+        echo "  Drift check:       CLEAN (${#INFRA_SKIP_FILES[@]} infra file(s) excluded)"
+    else
+        echo "  Drift check:       CLEAN"
+    fi
 else
     echo "  Drift check:       SKIPPED (no feature branch specified)"
 fi

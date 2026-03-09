@@ -1,8 +1,8 @@
 # mid-stack-update.sh — Proposal & Review Package
 
-**Version:** 1.0
-**Date:** 2026-03-08
-**Status:** Proposal (pending review)
+**Version:** 1.2
+**Date:** 2026-03-09
+**Status:** Implemented (script at v1.4)
 
 ---
 
@@ -14,6 +14,7 @@
 4. [Proposed Changes to AGENTS.md](#4-proposed-changes-to-agentsmd)
 5. [Proposed Changes to feature-branch-workflow-optimization.md](#5-proposed-changes-to-feature-branch-workflow-optimizationmd)
 6. [Red Team Review Prompt](#6-red-team-review-prompt)
+7. [Implementation Log](#7-implementation-log)
 
 ---
 
@@ -108,7 +109,7 @@ Feature branch has commits A, B, C, D. The patch was generated from A and B. A m
 
 The drift check runs after patch regeneration and validation (step 9), before cleanup. It requires knowing the feature branch — either auto-detected from the patch name (e.g., patch `09-watch-complication-improvements` → `feature/watch-complication-improvements`) or explicitly via `--feature-branch`.
 
-**Check 1 — Missing files.** Diffs the feature branch against `dev` to get every file the feature branch modifies. If any of those files aren't in the patch, it warns. This catches the case where a commit introduced a new file that never made it into the patch.
+**Check 1 — Missing files.** Diffs the feature branch against `dev` (three-dot, from merge-base) to get every file the feature branch modifies. Files already covered by other patches in the stack are excluded. Infrastructure files (paths matching `patches/`, `scripts/`, `ci/`, `.github/`, `fastlane/`, `build/`, `docs/`, `.cursor/`, `AGENTS.md`, `.trio-env`) are excluded — these are committed directly to `dev`, never via patches. Remaining files not in the patch trigger a warning. This catches the case where a commit introduced a new file that never made it into the patch.
 
 **Check 2 — Content drift.** For each file in the patch that is **not** also modified by a prior patch (01..N-1), it compares the file content on the `tmp/<name>-update` branch against the feature branch. Since neither prior patches nor the feature branch have modified these files from `dev`, the only changes in both come from this patch/feature respectively. If they differ, it means the patch is missing some feature branch changes for that file.
 
@@ -126,6 +127,7 @@ The drift check runs after patch regeneration and validation (step 9), before cl
 - Files modified by both this patch AND prior patches cannot be auto-verified (flagged for manual review)
 - The auto-detection heuristic (`feature/<patch-description>`) may not match all naming conventions
 - Drift in overlapping files requires manual `git diff` inspection
+- Infrastructure path exclusion is pattern-based; if app code is placed in an infra directory (unlikely), it would be silently skipped
 
 ---
 
@@ -359,7 +361,61 @@ For each section (A-G), provide:
 
 ---
 
+## 7. Implementation Log
+
+Tracks what was implemented, when, and why. Each entry corresponds to a script version.
+
+### Script v1.0 (2026-03-08)
+- Initial implementation of `scripts/mid-stack-update.sh`
+- Core workflow: stash → baseline → update → cherry-pick → squash → regenerate → validate → drift check → cleanup
+- Drift check with missing-files and content-drift detection
+- Auto-detect feature branch from patch name
+
+### Script v1.1 (2026-03-08)
+First red-team review (findings A-G). Fixes applied:
+- **(A)** `generate-patch.sh`: fixed rename handling in `--include-files` filter to check both old and new paths
+- **(B)** Cherry-pick conflict: `cleanup()` now defensively runs `git cherry-pick --abort`, `git am --abort`, `git merge --abort` before `git checkout dev`
+- **(C)** Drift check missing-files: now excludes files covered by prior patches (`PRIOR_PATCH_FILES_SORTED`)
+- **(D)** Drift preservation: `cleanup()` checks `${DRIFT_DETECTED:-false}` immediately to preserve tmp branches on Ctrl-C
+- **(E)** Stash-pop safety: refuses to run if target patch file has uncommitted changes
+- **(F)** Tmp branch cleanup: detects branches stuck in other worktrees with actionable error messages
+- **(G)** Documentation: AGENTS.md and workflow doc updated with script behavior and common mistakes table
+
+### Script v1.2 (2026-03-08)
+Second red-team review. Fixes applied:
+- Duplicate patch prefix rejection (aligned with `patch-test.sh` `collect_patches`)
+- SHA-based stash tracking (`STASH_SHA`) instead of message-based matching
+- Cherry-pick conflict message updated to reflect auto-abort behavior
+- Three-dot diff (`dev...$FEATURE_BRANCH`) for more accurate drift check
+- Missing-files check now excludes files from ALL other patches (N+1..end), not just prior (01..N-1)
+- Bash 3.2 compatibility: replaced `declare -A` with string-based seen list
+
+### Script v1.3 (2026-03-08)
+- Cleanup trap stash-pop error handling aligned with success-path messaging (two-line actionable warning)
+
+### Script v1.4 (2026-03-09)
+Infrastructure file drift noise elimination. Triggered by observing consistent agent behavior: every `mid-stack-update.sh` run flagged `AGENTS.md`, `scripts/generate-patch.sh`, and `patches/09-*.patch` as "missing from patch," causing `DRIFT_DETECTED=true`, which prevented auto-cleanup of tmp branches. Agents had to manually delete branches after every run.
+
+**Root cause:** Feature branches accumulate infrastructure file commits (agents modify AGENTS.md, scripts, etc. as part of their workflow). These files are committed directly to `dev` and never belong in patches, but the drift check had no concept of "infrastructure vs app code."
+
+**Changes:**
+- Added `is_infra_path()` function — bash 3.2-compatible `case` matcher for paths never shipped via patches: `patches/`, `scripts/`, `ci/`, `.github/`, `fastlane/`, `build/`, `docs/`, `.cursor/`, `AGENTS.md`, `.trio-env`
+- Missing-files loop now diverts infra files to `INFRA_SKIP_FILES` instead of `MISSING_FILES` — they no longer set `DRIFT_DETECTED=true`
+- New reporting block lists skipped infra files as informational (`ℹ`) instead of warnings (`⚠`)
+- Cleanup message is now conditional: "tmp branches deleted" vs "tmp branches preserved for drift investigation"
+- Summary section adds `Cleanup:` status line and shows infra exclusion count in drift check result (e.g., `CLEAN (3 infra file(s) excluded)`)
+
+**Effect:** Clean runs with only infrastructure drift now auto-cleanup tmp branches and report `CLEAN` instead of `DRIFT DETECTED`. Real app-code drift still triggers preservation and warnings.
+
+---
+
 ## Changelog
+
+### v1.2 (2026-03-09)
+- Added implementation log (section 7) tracking all script versions v1.0–v1.4
+- Updated drift check description to reflect v1.4 infrastructure path exclusion and three-dot diff
+- Added infrastructure path exclusion limitation note
+- Updated status to "Implemented (script at v1.4)"
 
 ### v1.1 (2026-03-08)
 - **Red team review implemented:** All proposed documentation changes and code fixes from findings A-G have been applied to the actual files (scripts/mid-stack-update.sh, scripts/generate-patch.sh, AGENTS.md v3, feature-branch-workflow-optimization.md v11). This document now serves as the historical record of the proposal and review.
