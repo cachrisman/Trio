@@ -1,5 +1,5 @@
 # Cursor Round 2: Audit Results + Implementation Guide
-**Version:** 1.2 | **Date:** 2026-03-09
+**Version:** 1.3 | **Date:** 2026-03-09
 **Prerequisite:** `complication-freshness-remediation-plan.md` v1.17 — all prompts resolved, plan is implementation-ready
 
 ---
@@ -26,7 +26,7 @@ Ship in this exact sequence. Each step is a PR unless noted. Do not rearrange.
 
 ---
 
-### Step 1 — PR: R1a + R1b + R5e
+### Step 1 — PR: R1a + R1b + R5e — COMPLETED (build 132, 2026-03-09)
 
 **Files:** `WatchMessageKeys.swift`, `AppleWatchManager.swift`, BetterStack (alert config)
 
@@ -69,12 +69,12 @@ Call sites (see plan §R1b for full pseudocode):
 
 **R5e — BetterStack alert:** Create alert on query: `budget_exhausted=true AND via=userInfo > 5 in 30 min`. Warning severity. (SQL in plan §R5e.)
 
-> ## 🛑 STOP — Code Review + Build/Deploy
-> Before proceeding to Step 2:
-> 1. **Code review** this PR — verify `cancelStaleQueuedTransfers` logic, `sessionIsReadyForTransfer` guards, and that `readingEpoch` uses `max(by: date)` not `.first`
-> 2. **Build and deploy** to device
-> 3. **Observe 24h BetterStack data** — confirm `queue_depth` p95 < 5
-> 4. If `queue_drain_incomplete depth_after > 5` warnings appear in logs, investigate before proceeding — do not treat as advisory at this stage
+> ## ✅ GATE PASSED (build 132, 2026-03-09)
+> - Code reviewed: `cancelStaleQueuedTransfers` logic, `sessionIsReadyForTransfer` guards, `readingEpoch` uses `max(by: date)` — all verified
+> - Build 132 deployed to TestFlight
+> - BetterStack confirmed: queue drained from 45 to 1 in first pass (`cancel_requested=44`), steady-state `queue_depth=2`
+> - R5e alert configured in BetterStack UI
+> - Observing 24h before Step 2
 
 ---
 

@@ -1,7 +1,7 @@
 # Trio watchOS Complication — Freshness Remediation Plan
 
-**Version:** 1.17 | **Date:** 2026-03-09
-**Status:** ✅ Implementation-ready — all Cursor audit prompts resolved, all open questions closed, Cursor plan-review bugs fixed
+**Version:** 1.18 | **Date:** 2026-03-09
+**Status:** 🚧 In progress — Step 1 (R1a + R1b + R5e) deployed as build 132; observing 24h before Step 2
 **Source data:** BetterStack source_id=1659391, build 131, 2026-03-08/09
 **Input documents:**
 - Next-Steps Report (AI/BetterStack analysis, 2026-03-09)
@@ -1492,3 +1492,27 @@ The `// (2) save must happen BEFORE forceWidgetReloadIfStale()` comment in the `
 **Non-critical notes acknowledged, not acted on:**
 - `max(by:)` on 288 values is O(n) — negligible for this call frequency; no change.
 - R2d skew bucket thresholds are intentionally heuristic; documented as such.
+
+---
+
+## Implementation Log
+
+### Build 132 — Step 1: R1a + R1b + R5e (2026-03-09)
+
+**Commit:** `917777267` on `feature/watch-complication-improvements`
+**Patch:** `09-watch-complication-improvements.patch` regenerated via `mid-stack-update.sh --patch 09`
+**Build:** 132 (v0.6.0) — deployed to TestFlight, 17m 58s total
+
+**R1a — Reading epoch keys:** Confirmed working. BetterStack logs show `reading_epoch` and `transfer_enqueued_at` present in watch-side payload merge at 21:25:54 UTC.
+
+**R1b — Stale queue drain:** Confirmed working.
+- 21:23:53 UTC: Startup drain attempted, `queue_drain_skipped session_not_ready activation=2` — `isPaired` or `isWatchAppInstalled` was momentarily false during app launch.
+- 21:27:45 UTC: Queue drain fired successfully via budget-exhausted call site: `cancel_requested=44 depth_before=45 depth_after=1 kept_epoch=0 kept_enqueued_at=0`. All queued items were pre-R1a (no epoch data); FIFO fallback kept last item.
+- 21:27:54 UTC: Follow-up drain: `cancel_requested=1 depth_before=2 depth_after=1` — new transfer enqueued between drains, immediately cleaned.
+- 21:30:57 UTC: Steady state: `queue_depth=2` (down from 46-48 pre-deploy).
+
+**R5e — BetterStack alert:** Configured manually in BetterStack UI. Warning severity.
+
+**Observation:** The startup drain in `session(_:activationDidCompleteWith:)` was skipped due to session readiness timing, but the budget-exhausted drain in `sendDataToWatch` caught it on the next transfer cycle. The queue-deep observation path (>5 items, 60s cooldown) was not needed — the budget-exhausted drain handled the entire frozen queue.
+
+**Next gate:** Observe 24h to confirm `queue_depth` p95 < 5 before proceeding to Step 2.
