@@ -44,6 +44,10 @@ enum WatchMessageKeys {
     static let overridePresets = "overridePresets"
     static let tempTargetPresets = "tempTargetPresets"
 
+    // Transfer Metadata Keys
+    static let readingEpoch = "reading_epoch"
+    static let transferEnqueuedAt = "transfer_enqueued_at"
+
     // Limits and Settings Keys
     static let maxBolus = "maxBolus"
     static let maxCarbs = "maxCarbs"
