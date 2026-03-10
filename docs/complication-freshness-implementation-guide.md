@@ -1,6 +1,6 @@
 # Cursor Round 2: Audit Results + Implementation Guide
-**Version:** 1.3 | **Date:** 2026-03-09
-**Prerequisite:** `complication-freshness-remediation-plan.md` v1.17 — all prompts resolved, plan is implementation-ready
+**Version:** 1.4 | **Date:** 2026-03-10
+**Prerequisite:** `complication-freshness-remediation-plan.md` v1.19 — all prompts resolved, plan is implementation-ready
 
 ---
 
@@ -78,7 +78,7 @@ Call sites (see plan §R1b for full pseudocode):
 
 ---
 
-### Step 2 — PR: R2a + R3
+### Step 2 — PR: R2a + R3 — COMPLETED (build 133, 2026-03-10)
 
 **Files:** `AppleWatchManager.swift`, `WatchMessageKeys.swift`, `Trio Watch App Extension/WatchState.swift` (R3 watch side)
 
@@ -99,12 +99,12 @@ Call sites (see plan §R1b for full pseudocode):
 - Inline comment on `WatchMessageKeys.date`: `⚠️ BUILD TIME, not CGM reading time`
 - Use `complicationMessage` for all complication budget paths; `fullMessage` for `sendMessage`
 
-> ## 🛑 STOP — Code Review + Build/Deploy
-> Before proceeding to Step 3:
-> 1. **Code review** this PR — verify `complicationMessage` is built unconditionally (not gated), `sendMessage` fires regardless of `readingEpochPresent`, and `complicationEligibleSources` is defined only once
-> 2. **Build and deploy** to device
-> 3. **Collect 24h coalescer attribution data** — examine `coalescer_fired sources=` logs to identify which sources are causing multi-C readings
-> 4. This attribution data determines whether Step 3 alone resolves the issue or whether R2d (Step 4) is needed
+> ## ✅ GATE PASSED (build 133, 2026-03-10)
+> - Code reviewed: `complicationMessage` built unconditionally from 7-key allowlist, `sendMessage` fires regardless of `readingEpochPresent`, `complicationEligibleSources` defined once
+> - Post-review fixes applied: queue-deep drain moved outside reachability branches, `outstandingUserInfoTransfers.count` read inside `sessionIsReadyForTransfer()` guard, watch-side fallback warning log added, drain log includes paired/installed
+> - Build 133 deployed to TestFlight
+> - BetterStack confirmed: coalescer attribution logging working (trigger/fire with source tags), complication payload reduced to 7 keys (~200B), no missing-key warnings, queue depth steady at 1-2
+> - Observing 24h coalescer attribution data before Step 3
 
 ---
 
@@ -248,3 +248,17 @@ private func cancelStaleQueuedTransfers()           // uses sessionIsReadyForTra
 | `readingDate` | `TrioComplicationSnapshot`, `TrioWatchComplicationEntry` | CGM reading time; `date` is creation/display time |
 | `TrioComplicationDataStore.complicationKind` | `TrioComplicationDataStore.swift` line 147 | = `"TrioWatchComplication"` — use constant |
 | `session(_:didReceiveApplicationContext:)` | Add to `WatchState.swift` after line ~403 | Under `// MARK: - WCSessionDelegate` |
+
+---
+
+## Changelog
+
+### v1.4 — 2026-03-10
+- **Step 2 COMPLETED:** Marked Step 2 (R2a + R3) as completed with build 133 gate-passed block. Documented post-review fixes (queue-deep drain placement, count guard, fallback warning, drain log detail).
+- **Prerequisite reference:** Updated to remediation plan v1.19.
+
+### v1.3 — 2026-03-09
+- **Step 1 COMPLETED:** Marked Step 1 (R1a + R1b + R5e) as completed with build 132 gate-passed block. Documented BetterStack verification results.
+
+### v1.2 — 2026-03-09
+- Initial version with all 6 implementation steps.

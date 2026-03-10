@@ -1,7 +1,7 @@
 # Trio watchOS Complication — Freshness Remediation Plan
 
-**Version:** 1.18 | **Date:** 2026-03-09
-**Status:** 🚧 In progress — Step 1 (R1a + R1b + R5e) deployed as build 132; observing 24h before Step 2
+**Version:** 1.19 | **Date:** 2026-03-10
+**Status:** 🚧 In progress — Step 2 (R2a + R3) deployed as build 133; observing 24h before Step 3
 **Source data:** BetterStack source_id=1659391, build 131, 2026-03-08/09
 **Input documents:**
 - Next-Steps Report (AI/BetterStack analysis, 2026-03-09)
@@ -1168,6 +1168,20 @@ This gives `timeline_entry_epoch` and `snapshot_age` at timeline-build time — 
 
 ## Changelog
 
+### v1.19 — 2026-03-10 | Step 2 deployment (build 133)
+
+- **Status updated:** Step 2 (R2a + R3) deployed as build 133; observing 24h before Step 3.
+- **Implementation Log:** Added Build 133 entry documenting R2a coalescer attribution and R3 complication payload allowlist deployment, with BetterStack verification results.
+
+---
+
+### v1.18 — 2026-03-09 | Step 1 deployment (build 132)
+
+- **Status updated:** Step 1 (R1a + R1b + R5e) deployed as build 132; observing 24h before Step 2.
+- **Implementation Log section added:** Build 132 entry documenting R1a reading epoch keys, R1b stale queue drain, and R5e BetterStack alert deployment, with BetterStack verification results.
+
+---
+
 ### v1.3 — 2026-03-09 | ChatGPT critique #2 of Remediation Plan
 
 **Critical bug fix:**
@@ -1516,3 +1530,32 @@ The `// (2) save must happen BEFORE forceWidgetReloadIfStale()` comment in the `
 **Observation:** The startup drain in `session(_:activationDidCompleteWith:)` was skipped due to session readiness timing, but the budget-exhausted drain in `sendDataToWatch` caught it on the next transfer cycle. The queue-deep observation path (>5 items, 60s cooldown) was not needed — the budget-exhausted drain handled the entire frozen queue.
 
 **Next gate:** Observe 24h to confirm `queue_depth` p95 < 5 before proceeding to Step 2.
+
+---
+
+### Build 133 — Step 2: R2a + R3 (2026-03-10)
+
+**Commits:** `a69955c06` (Step 1 fix: paired/installed drain log + comment), `4bb1018f3` (R2a + R3) on `feature/watch-complication-improvements`
+**Patch:** `09-watch-complication-improvements.patch` regenerated via `mid-stack-update.sh --patch 09 --cherry-pick a69955c06,4bb1018f3`
+**Build:** 133 (v0.6.0) — deployed to TestFlight, 16m 14s total
+
+**R2a — Coalescer attribution:** Confirmed working. BetterStack logs show:
+- `coalescer_trigger` events with source tags: `glucoseStored` (eligible=true), `orefDetermination`, `iobUpdate` (eligible=false).
+- `coalescer_fired` events with full attribution: `trigger_count=7 sources=glucoseStored,glucoseStored,glucoseStored,orefDetermination,iobUpdate,orefDetermination,orefDetermination last_eligible_at=1773138464`.
+- Typical pattern: 3 glucoseStored triggers + 3-4 orefDetermination/iobUpdate triggers per 5-minute cycle, coalesced into a single fire.
+
+**R3 — Complication payload allowlist:** Confirmed working.
+- Watch-side `saveComplicationSnapshot` receives exactly the 7 allowlisted keys: `transfer_enqueued_at, currentGlucoseColorString, currentGlucose, delta, reading_epoch, trend, date`.
+- No `complication_payload missing key` warnings — all 7 keys present in every transfer.
+- No `complication_transfer_skipped` events — `readingEpoch` is always present (R1a keys established in build 132).
+- Payload reduced from ~19KB (full message) to ~200 bytes (allowlist only) for complication transfers.
+
+**R1b — Queue health (continued):** Queue depth steady at 1-2, consistent with build 132 baseline. `queue_drain` events still firing normally: `cancel_requested=1 depth_before=2 depth_after=1`.
+
+**Bug fixes included in this build (post-Step-1 review):**
+- Queue-deep drain block moved outside reachability branches (runs after all transfer paths).
+- `session.outstandingUserInfoTransfers.count` read moved inside `sessionIsReadyForTransfer()` guard.
+- Watch-side `saveComplicationSnapshot` logs warning when falling back to build-time date (readingEpoch missing).
+- `queue_drain_skipped` log now includes `paired=` and `installed=` detail.
+
+**Next gate:** Observe 24h coalescer attribution data to determine whether Step 3 (R2b dispatch gate) alone resolves redundant transfers, or whether Step 4 (R2d source-eligible send mode) is also needed.
