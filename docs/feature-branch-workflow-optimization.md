@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v12 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v13 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -263,6 +263,35 @@ patch — do that after reviewing.
 - Renames: `generate-patch.sh`'s include filtering matches both old and new paths of renames, so renames are handled correctly. However, if you use `--include-files` manually and specify only the new path of a renamed file, verify the rename is captured.
 - Overlapping files: files modified by both this patch and prior patches cannot be auto-verified by the drift check — they are flagged for manual review.
 
+#### Troubleshooting cherry-pick conflicts
+
+When `mid-stack-update.sh` reports a cherry-pick conflict at Step 5, do not
+bypass the script. The conflict means the patched state (baseline + current
+patch applied via `git am`) diverges from the cherry-pick commit's expected
+parent state. Diagnose as follows:
+
+1. **Identify the failing commit's parent.** If cherry-picking commit C, its
+   parent is the commit just before C on the feature branch
+   (`git log --oneline feature/<name>` to find it).
+
+2. **Compare the conflicting file in both states:**
+   - Parent state: `git show <parent-sha>:<path/to/file>`
+   - Patched state: read the relevant hunks from the committed patch file
+     (`git show HEAD:patches/NN-<name>.patch`) and trace what lines the
+     `git am` application would produce.
+
+3. **Look for context-line mismatches.** Common causes:
+   - **Missing intermediate commits:** Commit B (between the last incorporated
+     commit and the one being cherry-picked) was committed to the feature
+     branch but never cherry-picked into the patch. The cherry-pick's diff
+     references B's lines, which don't exist in the patched state.
+   - **3-way merge artifacts:** A prior `mid-stack-update` resolved a hunk
+     differently than the direct commit history, producing slightly different
+     text (e.g., different comments or whitespace).
+
+4. **Fix:** Include all missing intermediate commits in `--cherry-pick`,
+   ordered chronologically (earliest first). Re-run the script.
+
 ### Common mistakes (mid-stack updates)
 
 | Mistake | Consequence | Prevention |
@@ -274,6 +303,7 @@ patch — do that after reviewing.
 | Forgetting to delete tmp branches | Branch pollution, worktree conflicts | Use `mid-stack-update.sh` (cleanup on exit, including failures) |
 | Omitting a feature branch commit | Silent functionality loss in patch | Use `mid-stack-update.sh` drift check (auto-compares against feature branch) |
 | Uncommitted edits on target patch file | Stash-pop overwrites the regenerated patch | `mid-stack-update.sh` refuses to run if patch file is dirty |
+| Cherry-pick conflict triggers manual workaround | Bypasses script safety checks; may produce a patch with subtle state divergence from the feature branch | Diagnose: compare parent commit state vs patched state; usually caused by missing intermediate commits — include them in `--cherry-pick` (see "Troubleshooting cherry-pick conflicts") |
 | Editing `docs/*.md` while on `dev` | Edits go to an untracked copy; lost on branch switch or `git clean` | Plan docs live on `docs` branch — switch to `docs` first |
 
 ---
@@ -467,6 +497,10 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v13
+- **Troubleshooting cherry-pick conflicts:** New subsection under "Automated mid-stack update" documenting how to diagnose cherry-pick failures in `mid-stack-update.sh`. Root cause is almost always missing intermediate commits on the feature branch that were never incorporated into the patch. Includes a 4-step diagnostic procedure (identify parent, compare states, find mismatches, include missing commits).
+- **Common mistakes table:** Added row for "Cherry-pick conflict triggers manual workaround" — agents must diagnose and fix the `--cherry-pick` input, not bypass the script.
 
 ### v12
 - **`mid-stack-update.sh` v1.2 improvements:** Drift check now uses three-dot diff (`dev...feature`) to compare from merge-base, avoiding false positives when dev has advanced. Missing-files check excludes files belonging to *any* patch in the stack (prior and subsequent), not just prior patches. Cherry-pick conflicts are explicitly aborted at the failure site before cleanup runs. Stash pop failures report the exact stash ref for manual resolution. Duplicate patch prefixes are detected and rejected. Stash identity uses SHA tracking instead of message matching.

@@ -1,4 +1,4 @@
-# AGENTS.md — v5
+# AGENTS.md — v6
 
 Instructions for AI agents working in this repository.
 
@@ -221,7 +221,19 @@ to the manual workflow. Common failure causes and fixes:
 - **Dirty patch file:** commit or discard changes to the target patch first.
 - **Branch checked out in other worktree:** switch the other worktree to a
   different branch.
-- **Cherry-pick conflict:** resolve on the feature branch, then re-run.
+- **Cherry-pick conflict:** Do NOT fall back to manual patch generation.
+  Diagnose the root cause before retrying:
+  1. The most common cause is **missing intermediate commits**. If the commit
+     being cherry-picked has parent B, but B was never incorporated into the
+     patch, the cherry-pick fails because its context lines reference B's
+     state while the patched state reflects an earlier version. Compare the
+     file at the parent commit (`git show <parent>:<file>`) against the
+     patched state to confirm the divergence.
+  2. Fix by including all missing commits in `--cherry-pick`:
+     `./scripts/mid-stack-update.sh --patch <NN> --cherry-pick <missing>,<new>`
+     Commits are applied in the order listed, so put earlier commits first.
+  3. Re-run the script. Do not manually create baseline branches or generate
+     patches by hand as a workaround unless explicitly told to do so.
 
 See `./scripts/mid-stack-update.sh -h` for all options.
 
@@ -329,6 +341,9 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v6 (2026-03-10)
+- **Cherry-pick conflict diagnosis:** Expanded the cherry-pick conflict bullet under "Update an existing patch (mid-stack)" from a one-liner ("resolve on the feature branch") to a 3-step diagnostic procedure. Root cause is almost always missing intermediate commits — commits on the feature branch that were never cherry-picked into the patch, causing context-line mismatches. Agents must diagnose the divergence and include missing commits in `--cherry-pick`, not fall back to manual workarounds.
 
 ### v5 (2026-03-08)
 - **`mid-stack-update.sh` is now MANDATORY** for all mid-stack patch updates. Changed from "PREFERRED" to "MANDATORY" with explicit instruction to fix the script (not fall back to manual) if it fails. Added common failure causes and fixes inline.
