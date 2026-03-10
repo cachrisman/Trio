@@ -666,13 +666,20 @@ enum BackgroundTaskWindowCounter {
             await WatchLogger.shared.log("📸 saveComplicationSnapshot called with keys: \(message.keys.joined(separator: ", "))")
         }
 
-        let readingDate = latestGlucoseDate(from: message) ?? dateValue(from: message[WatchMessageKeys.date])
-        guard let readingDate = readingDate else {
+        // R3: prefer top-level readingEpoch (R1a) over deriving from glucoseValues array
+        let readingDate: Date
+        if let epoch = message[WatchMessageKeys.readingEpoch] as? TimeInterval {
+            readingDate = Date(timeIntervalSince1970: epoch)
+        } else if let latestDate = latestGlucoseDate(from: message) {
+            readingDate = latestDate
+        } else if let fallbackDate = dateValue(from: message[WatchMessageKeys.date]) {
+            Task {
+                await WatchLogger.shared.log("⚠️ saveComplicationSnapshot: readingEpoch missing; falling back to build-time date — complication freshness unreliable")
+            }
+            readingDate = fallbackDate
+        } else {
             Task {
                 await WatchLogger.shared.log("📸 saveComplicationSnapshot SKIPPED: no valid readingDate")
-                await WatchLogger.shared.log("🔍 Debug: latestGlucoseDate returned: \(latestGlucoseDate(from: message)?.description ?? "nil")")
-                await WatchLogger.shared.log("🔍 Debug: dateValue from message returned: \(dateValue(from: message[WatchMessageKeys.date])?.description ?? "nil")")
-                await WatchLogger.shared.log("🔍 Debug: message[WatchMessageKeys.date] = \(message[WatchMessageKeys.date].map { String(describing: $0) } ?? "nil")")
             }
             return
         }
