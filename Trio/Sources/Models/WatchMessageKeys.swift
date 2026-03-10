@@ -1,6 +1,6 @@
 enum WatchMessageKeys {
     // Request/Response Keys
-    static let date = "date"
+    static let date = "date" // ⚠️ BUILD TIME, not CGM reading time — use readingEpoch for CGM timestamp
     static let units = "units"
     static let requestWatchUpdate = "requestWatchUpdate"
     static let watchState = "watchState"

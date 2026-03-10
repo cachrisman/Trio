@@ -49,6 +49,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private var hasPerformedStartupQueueDrain = false
     private var lastQueueDeepDrainAt: TimeInterval = 0
 
+    // R2a: coalescer attribution
+    private var coalescerTriggerCount = 0
+    private var coalescerSources: [String] = []
+    private var lastEligibleSourceAt: TimeInterval = 0
+    private let complicationEligibleSources: Set<String> = ["glucoseStored", "glucoseUpdate"]
+
     // Processed payload IDs for deduplication (LRU with TTL)
     private let processedIdsKey = "watchProcessedIds"
     private let processedIdsMaxCount = 100
@@ -86,14 +92,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         glucoseStorage.updatePublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.scheduleWatchStateUpdate()
+                self?.scheduleWatchStateUpdate(source: "glucoseUpdate")
             }
             .store(in: &subscriptions)
 
         iobService.iobPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.scheduleWatchStateUpdate()
+                self?.scheduleWatchStateUpdate(source: "iobUpdate")
             }
             .store(in: &subscriptions)
 
@@ -104,14 +110,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         coreDataPublisher?.filteredByEntityName("OrefDetermination")
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.scheduleWatchStateUpdate()
+                self?.scheduleWatchStateUpdate(source: "orefDetermination")
             }.store(in: &subscriptions)
 
         // Due to the Batch insert this only is used for observing Deletion of Glucose entries
         coreDataPublisher?.filteredByEntityName("GlucoseStored")
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.scheduleWatchStateUpdate()
+                self?.scheduleWatchStateUpdate(source: "glucoseStored")
             }.store(in: &subscriptions)
 
         coreDataPublisher?.filteredByEntityName("PumpEventStored").sink { [weak self] _ in
@@ -124,13 +130,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         coreDataPublisher?.filteredByEntityName("OverrideStored")
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.scheduleWatchStateUpdate()
+                self?.scheduleWatchStateUpdate(source: "overrideStored")
             }.store(in: &subscriptions)
 
         coreDataPublisher?.filteredByEntityName("TempTargetStored")
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.scheduleWatchStateUpdate()
+                self?.scheduleWatchStateUpdate(source: "tempTargetStored")
             }.store(in: &subscriptions)
     }
 
@@ -595,9 +601,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     /// Coalesces multiple publisher-driven WatchState updates into a single send.
     /// Uses a 2s trailing debounce with 5s max-wait cap. Main-thread confined.
-    private func scheduleWatchStateUpdate() {
+    private func scheduleWatchStateUpdate(source: String = "unknown") {
         assert(Thread.isMainThread, "scheduleWatchStateUpdate must be called on main queue")
         guard let session = self.session, session.isPaired, session.isWatchAppInstalled else { return }
+
+        coalescerTriggerCount += 1
+        coalescerSources.append(source)
+        if complicationEligibleSources.contains(source) {
+            lastEligibleSourceAt = Date().timeIntervalSince1970
+        }
+        debug(.watchManager, "⏱️ coalescer_trigger source=\(source) eligible=\(complicationEligibleSources.contains(source)) pending=\(pendingSendWorkItem != nil)")
 
         let now = Date()
         if coalescerFirstScheduledAt == nil {
@@ -611,10 +624,34 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
+
+            let sourcesSnapshot = self.coalescerSources
+            let triggerCountSnapshot = self.coalescerTriggerCount
+            let lastEligibleSnapshot = self.lastEligibleSourceAt
+
+            let windowStartEpoch: TimeInterval?
+            if let scheduled = self.coalescerFirstScheduledAt {
+                windowStartEpoch = scheduled.timeIntervalSince1970
+            } else {
+                windowStartEpoch = nil
+                debug(.watchManager, "⚠️ coalescer_window_start_nil — invariant violated; mode will use eligible-source fallback")
+            }
+
+            self.coalescerTriggerCount = 0
+            self.coalescerSources = []
+            self.lastEligibleSourceAt = 0
             self.coalescerFirstScheduledAt = nil
+
+            debug(.watchManager, "📡 coalescer_fired trigger_count=\(triggerCountSnapshot) sources=\(sourcesSnapshot.joined(separator: ",")) last_eligible_at=\(Int(lastEligibleSnapshot))")
+
             Task {
                 let state = await self.setupWatchState()
-                await self.sendDataToWatch(state)
+                await self.sendDataToWatch(
+                    state,
+                    sourcesSnapshot: sourcesSnapshot,
+                    lastEligibleSourceAt: lastEligibleSnapshot,
+                    windowStartEpoch: windowStartEpoch
+                )
             }
         }
         pendingSendWorkItem = workItem
@@ -622,8 +659,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     }
 
     /// Sends the state of type WatchState to the connected Watch
-    /// - Parameter state: Current WatchState containing glucose data to be sent
-    @MainActor func sendDataToWatch(_ state: WatchState) async {
+    /// - Parameters:
+    ///   - state: Current WatchState containing glucose data to be sent
+    ///   - sourcesSnapshot: Coalescer source tags from this window (empty for non-coalescer call sites)
+    ///   - lastEligibleSourceAt: Epoch of last complication-eligible source in this window
+    ///   - windowStartEpoch: Epoch when the coalescer window opened (nil if not from coalescer)
+    @MainActor func sendDataToWatch(
+        _ state: WatchState,
+        sourcesSnapshot: [String] = [],
+        lastEligibleSourceAt: TimeInterval = 0,
+        windowStartEpoch: TimeInterval? = nil
+    ) async {
         guard let session = session else { return }
 
         guard session.isPaired else {
@@ -650,44 +696,79 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             return
         }
 
-        var message: [String: Any] = watchStateToDictionary(from: state)
+        var fullMessage: [String: Any] = watchStateToDictionary(from: state)
         let readingEpoch = state.glucoseValues.max(by: { $0.date < $1.date })
             .map { Int($0.date.timeIntervalSince1970) } ?? -1
 
         // R1a: stamp enqueue time immediately before transfer calls
-        message[WatchMessageKeys.transferEnqueuedAt] = Date().timeIntervalSince1970
+        fullMessage[WatchMessageKeys.transferEnqueuedAt] = Date().timeIntervalSince1970
 
+        // R3: Build complication payload from explicit allowlist.
+        // Uses safe if-let inserts to avoid Optional-as-Any bridging issues.
+        var complicationMessage: [String: Any] = [:]
+        let complicationAllowlist: [(String, String)] = [
+            (WatchMessageKeys.currentGlucose, "currentGlucose"),
+            (WatchMessageKeys.currentGlucoseColorString, "currentGlucoseColorString"),
+            (WatchMessageKeys.trend, "trend"),
+            (WatchMessageKeys.delta, "delta"),
+            (WatchMessageKeys.readingEpoch, "readingEpoch"),
+            (WatchMessageKeys.transferEnqueuedAt, "transferEnqueuedAt"),
+            (WatchMessageKeys.date, "date"),
+        ]
+        for (key, name) in complicationAllowlist {
+            if let value = fullMessage[key] {
+                complicationMessage[key] = value
+            } else {
+                if key == WatchMessageKeys.readingEpoch {
+                    debug(.watchManager, "⚠️ complication_payload missing key=\(name) — load-bearing field absent")
+                } else {
+                    debug(.watchManager, "complication_payload missing key=\(name) — non-load-bearing, continuing")
+                }
+            }
+        }
+
+        let readingEpochPresent = complicationMessage[WatchMessageKeys.readingEpoch] != nil
+        if !readingEpochPresent {
+            debug(.watchManager, "⚠️ complication_transfer_skipped missing readingEpoch — R1a may not have shipped; sendMessage still firing")
+        }
+
+        WatchStateSnapshot.saveLatestDateToDisk(state.date)
+
+        // sendMessage (budget-free watch UI path) — always fires with fullMessage
         if session.isReachable {
-            session.sendMessage([WatchMessageKeys.watchState: message], replyHandler: nil) { error in
+            session.sendMessage([WatchMessageKeys.watchState: fullMessage], replyHandler: nil) { error in
                 debug(.watchManager, "❌ Error sending watch state: \(error)")
             }
-            WatchStateSnapshot.saveLatestDateToDisk(state.date)
             debug(.watchManager, "📤 Transferred new WatchState snapshot via=sendMessage reading_date_epoch_seconds=\(readingEpoch)")
-        } else {
-            WatchStateSnapshot.saveLatestDateToDisk(state.date)
+        }
+
+        // Complication transfer paths — gated on readingEpoch presence, use complicationMessage
+        if !session.isReachable, readingEpochPresent {
             if session.remainingComplicationUserInfoTransfers > 0 {
-                session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: message])
+                session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: complicationMessage])
                 let remaining = session.remainingComplicationUserInfoTransfers
                 let queueDepth = session.outstandingUserInfoTransfers.count
                 debug(.watchManager, "📤 Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
             } else {
                 // R1b: cancel stale items before enqueuing a new fallback transfer
                 cancelStaleQueuedTransfers()
-                session.transferUserInfo([WatchMessageKeys.watchState: message])
+                session.transferUserInfo([WatchMessageKeys.watchState: complicationMessage])
                 let queueDepth = session.outstandingUserInfoTransfers.count
                 debug(.watchManager, "📤 Transferred new WatchState snapshot via=userInfo budget_exhausted=true queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
             }
+        }
 
-            // R1b: queue-deep observation — drain if queue is suspiciously deep regardless of budget state.
-            // Catches frozen queues even when budget is OK (e.g., activation drain missed, or weird state).
-            let queueDeepCooldown: TimeInterval = 60
-            if sessionIsReadyForTransfer() {
-                let queueDepthNow = session.outstandingUserInfoTransfers.count
-                if queueDepthNow > 5, (Date().timeIntervalSince1970 - lastQueueDeepDrainAt) > queueDeepCooldown {
-                    debug(.watchManager, "🧹 queue_deep_drain triggered depth=\(queueDepthNow)")
-                    lastQueueDeepDrainAt = Date().timeIntervalSince1970
-                    cancelStaleQueuedTransfers()
-                }
+        // R1b: queue-deep observation — runs after all transfer paths regardless of reachability.
+        // sessionIsReadyForTransfer() and cooldown are sufficient guards.
+        let queueDeepCooldown: TimeInterval = 60
+        if sessionIsReadyForTransfer() {
+            let queueDepthNow = session.outstandingUserInfoTransfers.count
+            if queueDepthNow > 5,
+               (Date().timeIntervalSince1970 - lastQueueDeepDrainAt) > queueDeepCooldown
+            {
+                debug(.watchManager, "🧹 queue_deep_drain triggered depth=\(queueDepthNow)")
+                lastQueueDeepDrainAt = Date().timeIntervalSince1970
+                cancelStaleQueuedTransfers()
             }
         }
     }
@@ -1641,7 +1722,7 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
     // to update maxBolus
     func pumpSettingsDidChange(_: PumpSettings) {
         DispatchQueue.main.async {
-            self.scheduleWatchStateUpdate()
+            self.scheduleWatchStateUpdate(source: "pumpSettings")
         }
     }
 
@@ -1653,7 +1734,7 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
         highGlucose = settingsManager.settings.high
 
         DispatchQueue.main.async {
-            self.scheduleWatchStateUpdate()
+            self.scheduleWatchStateUpdate(source: "settingsChanged")
         }
     }
 }
