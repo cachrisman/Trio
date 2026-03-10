@@ -539,7 +539,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             if let session = self.session {
                 debug(
                     .watchManager,
-                    "🗑️ queue_drain_skipped session_not_ready activation=\(session.activationState.rawValue)"
+                    "🗑️ queue_drain_skipped session_not_ready activation=\(session.activationState.rawValue) paired=\(session.isPaired) installed=\(session.isWatchAppInstalled)"
                 )
             }
             return
@@ -676,8 +676,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 debug(.watchManager, "📤 Transferred new WatchState snapshot via=userInfo budget_exhausted=true queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
             }
 
-            // R1b: queue-deep observation — drain if queue is suspiciously deep even when budget is OK.
-            // Handles pre-deployment frozen queues that the activation drain missed.
+            // R1b: queue-deep observation — drain if queue is suspiciously deep regardless of budget state.
+            // Catches frozen queues even when budget is OK (e.g., activation drain missed, or weird state).
             let queueDeepCooldown: TimeInterval = 60
             if sessionIsReadyForTransfer() {
                 let queueDepthNow = session.outstandingUserInfoTransfers.count
