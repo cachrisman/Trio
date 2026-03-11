@@ -529,23 +529,21 @@ final class TrioComplicationDataStore {
     func shouldSkipPreDispatch(for snapshot: TrioComplicationSnapshot, handler: String) -> Bool {
         let incoming = ComplicationSnapshotFingerprint(from: snapshot)
         var skip = false
+        var messageToLog: String?
 
         dedupQueue.sync {
             guard let defaults = appGroupDefaults else { return }
             if let stored = storedFingerprint(defaults: defaults), stored == incoming {
-                log(
-                    "⏭️ Pre-dispatch dedup: skipped reading_date_epoch=\(incoming.readingDateEpoch)"
-                    + " via \(handler)"
-                )
+                messageToLog = "⏭️ Pre-dispatch dedup: skipped reading_date_epoch=\(incoming.readingDateEpoch)" + " via \(handler)"
                 skip = true
                 return
             }
-            log(
-                "✅ Pre-dispatch: dispatching reading_date_epoch=\(incoming.readingDateEpoch)"
-                + " via \(handler)"
-            )
+            messageToLog = "✅ Pre-dispatch: dispatching reading_date_epoch=\(incoming.readingDateEpoch)" + " via \(handler)"
         }
 
+        if let message = messageToLog {
+            log(message)
+        }
         return skip
     }
 

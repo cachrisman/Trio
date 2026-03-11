@@ -178,17 +178,22 @@ actor WatchLogger {
         }
     }
 
-    private static func batteryLogContext() -> String {
-        let device = WKInterfaceDevice.current()
-        device.isBatteryMonitoringEnabled = true
+    // Battery context: enable monitoring once per process; all reads on MainActor.
+    private static var hasEnabledBatteryMonitoring = false
 
+    @MainActor
+    private static func batteryContextOnMain() -> String {
+        let device = WKInterfaceDevice.current()
+        if !hasEnabledBatteryMonitoring {
+            hasEnabledBatteryMonitoring = true
+            device.isBatteryMonitoringEnabled = true
+        }
         let levelText: String
         if device.batteryLevel >= 0 {
             levelText = String(Int((device.batteryLevel * 100).rounded()))
         } else {
             levelText = "unknown"
         }
-
         let stateText: String
         switch device.batteryState {
         case .unknown:
@@ -202,8 +207,34 @@ actor WatchLogger {
         @unknown default:
             stateText = "unknown_default"
         }
-
         return "battery_level_percent=\(levelText) battery_state=\(stateText)"
+    }
+
+    private var lastBatteryContext = "battery_level_percent=unknown battery_state=unknown"
+    private var lastBatteryRefreshEpoch: TimeInterval = 0
+    private var batteryRefreshTask: Task<String, Never>?
+
+    private func batteryContextCached(now: TimeInterval = Date().timeIntervalSince1970) async -> String {
+        if now - lastBatteryRefreshEpoch < 60 {
+            return lastBatteryContext
+        }
+        if let existing = batteryRefreshTask {
+            let result = await existing.value
+            let currentNow = Date().timeIntervalSince1970
+            if currentNow - lastBatteryRefreshEpoch >= 60 {
+                lastBatteryContext = result
+                lastBatteryRefreshEpoch = currentNow
+            }
+            return result
+        }
+        let task = Task { await MainActor.run { Self.batteryContextOnMain() } }
+        batteryRefreshTask = task
+        defer { batteryRefreshTask = nil }
+
+        let result = await task.value
+        lastBatteryContext = result
+        lastBatteryRefreshEpoch = Date().timeIntervalSince1970
+        return result
     }
 
     // MARK: - Timer
@@ -228,7 +259,7 @@ actor WatchLogger {
     ) async {
         let shortFile = (file as NSString).lastPathComponent
         let timestamp = Self.dateFormatter.string(from: Date())
-        let batteryContext = Self.batteryLogContext()
+        let batteryContext = await batteryContextCached()
         let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message) \(batteryContext)"
 
         logs.append(entry)
