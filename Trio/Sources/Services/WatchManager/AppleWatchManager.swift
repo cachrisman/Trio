@@ -61,6 +61,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         set { appGroupIDCandidate().value.flatMap { UserDefaults(suiteName: $0) }?.set(newValue, forKey: "lastDispatchedGateKey") }
     }
 
+    // Step 3b: complication-age stale-first gate threshold (seconds)
+    private static let complicationAgeGateThresholdSeconds: TimeInterval = 600
+
     // Processed payload IDs for deduplication (LRU with TTL)
     private let processedIdsKey = "watchProcessedIds"
     private let processedIdsMaxCount = 100
@@ -614,6 +617,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         return "\(epoch)|\(display)"
     }
 
+    /// Step 3b: Complication age in seconds from App Group key (written by watch-side store).
+    /// Returns .infinity if suite/defaults unavailable or key missing (allows first transfer).
+    private func currentComplicationAgeSeconds() -> TimeInterval {
+        guard let suiteName = appGroupIDCandidate().value,
+              let defaults = UserDefaults(suiteName: suiteName) else { return .infinity }
+        let lastValid = defaults.object(forKey: "TrioComplication_lastValidTimestamp") as? Date
+        if lastValid == nil { return .infinity }
+        return max(0, Date().timeIntervalSince(lastValid!))
+    }
+
     /// Coalesces multiple publisher-driven WatchState updates into a single send.
     /// Uses a 2s trailing debounce with 5s max-wait cap. Main-thread confined.
     private func scheduleWatchStateUpdate(source: String = "unknown") {
@@ -754,8 +767,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         // transfer is actually enqueued (not on sendMessage-only paths).
         let gateKey = computeDispatchGateKey(state: state)
         let isDuplicateDispatch = gateKey == lastDispatchedGateKey
-        if isDuplicateDispatch {
-            debug(.watchManager, "⏭️ complication_transfer_gate_skipped duplicate gate_key=\(gateKey)")
+        // Only log duplicate skip when we're in conditions where a complication transfer would otherwise be considered
+        // (avoids implying "duplicate blocked us" when we wouldn't have tried due to reachable / missing epoch).
+        if isDuplicateDispatch, !session.isReachable, readingEpochPresent {
+            debug(.watchManager, "⏭️ complication_transfer_gate_skipped skip_reason=duplicate_gate gate_key=\(gateKey) reading_date_epoch_seconds=\(readingEpoch)")
         }
 
         // sendMessage (budget-free watch UI path) — always fires with fullMessage
@@ -772,15 +787,25 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         // updated for free and the complication is not visible. This is intentional budget
         // conservation, not an API limitation — transferCurrentComplicationUserInfo works
         // regardless of reachability.
+        // Step 3b: age gate applies ONLY when remaining > 0; budget-exhausted fallback has no age gate.
+        // Complication age is computed only when we might spend budget (remaining > 0) to avoid unnecessary App Group reads.
         if !session.isReachable, readingEpochPresent, !isDuplicateDispatch {
             if session.remainingComplicationUserInfoTransfers > 0 {
-                session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: complicationMessage])
-                lastDispatchedGateKey = gateKey
-                let remaining = session.remainingComplicationUserInfoTransfers
-                let queueDepth = session.outstandingUserInfoTransfers.count
-                debug(.watchManager, "📤 Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
+                let complicationAgeSeconds = currentComplicationAgeSeconds()
+                let ageGatePassed = complicationAgeSeconds > Self.complicationAgeGateThresholdSeconds
+                // Apply age gate — only transfer when complication is stale (age > T).
+                if ageGatePassed {
+                    session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: complicationMessage])
+                    lastDispatchedGateKey = gateKey
+                    let remaining = session.remainingComplicationUserInfoTransfers
+                    let queueDepth = session.outstandingUserInfoTransfers.count
+                    debug(.watchManager, "📤 Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch) complication_age_seconds=\(Int(complicationAgeSeconds)) complication_age_gate_threshold_seconds=\(Int(Self.complicationAgeGateThresholdSeconds))")
+                } else {
+                    // Do not touch lastDispatchedGateKey — we did not enqueue a complication transfer.
+                    debug(.watchManager, "⏭️ complication_transfer_age_gate_skipped skip_reason=age_gate age_seconds=\(Int(complicationAgeSeconds)) threshold_seconds=\(Int(Self.complicationAgeGateThresholdSeconds)) gate_key=\(gateKey) reading_date_epoch_seconds=\(readingEpoch)")
+                }
             } else {
-                // R1b: cancel stale items before enqueuing a new fallback transfer
+                // Budget exhausted — fallback path: no age gate; still subject to duplicate gate above.
                 cancelStaleQueuedTransfers()
                 session.transferUserInfo([WatchMessageKeys.watchState: complicationMessage])
                 lastDispatchedGateKey = gateKey
