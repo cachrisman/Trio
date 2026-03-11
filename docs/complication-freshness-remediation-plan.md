@@ -1,7 +1,7 @@
 # Trio watchOS Complication — Freshness Remediation Plan
 
-**Version:** 1.19 | **Date:** 2026-03-10
-**Status:** 🚧 In progress — Step 2 (R2a + R3) deployed as build 133; observing 24h before Step 3
+**Version:** 1.20 | **Date:** 2026-03-11
+**Status:** 🚧 In progress — Step 3 (R2b dispatch gate) implemented; pending build + deploy
 **Source data:** BetterStack source_id=1659391, build 131, 2026-03-08/09
 **Input documents:**
 - Next-Steps Report (AI/BetterStack analysis, 2026-03-09)
@@ -1168,6 +1168,15 @@ This gives `timeline_entry_epoch` and `snapshot_age` at timeline-build time — 
 
 ## Changelog
 
+### v1.20 — 2026-03-11 | Step 3 implementation + code review feedback (R2b)
+
+- **Status:** Updated to Step 3 in progress.
+- **Implementation log:** Added Build 134 section documenting R2b dispatch gate implementation.
+- **Code review Round 1 (Claude):** 6 points evaluated; 1 fix (activation-clear for budget-cycle concern).
+- **Code review Round 2 (ChatGPT):** Critical bug found — gate key was advanced on sendMessage-only paths, suppressing complication transfers on foreground→background transition. Fix: moved gate key write inside complication transfer block.
+
+---
+
 ### v1.19 — 2026-03-10 | Step 2 deployment (build 133)
 
 - **Status updated:** Step 2 (R2a + R3) deployed as build 133; observing 24h before Step 3.
@@ -1559,3 +1568,37 @@ The `// (2) save must happen BEFORE forceWidgetReloadIfStale()` comment in the `
 - `queue_drain_skipped` log now includes `paired=` and `installed=` detail.
 
 **Next gate:** Observe 24h coalescer attribution data to determine whether Step 3 (R2b dispatch gate) alone resolves redundant transfers, or whether Step 4 (R2d source-eligible send mode) is also needed.
+
+---
+
+### Build 134 — Step 3: R2b dispatch gate (2026-03-11)
+
+**Commits:** `db760857b` (R2b dispatch gate) on `feature/watch-complication-improvements`; activation-clear fix pending commit
+**Patch:** `09-watch-complication-improvements.patch` regenerated via `mid-stack-update.sh --patch 09 --cherry-pick db760857b`
+**Build:** Pending
+
+**R2b — Per-reading-epoch dispatch gate:** Implemented.
+- `lastDispatchedGateKey`: App Group-backed computed property using `appGroupIDCandidate()` (same helper used for generation counter diagnostics — known-good pattern).
+- `computeDispatchGateKey(state:)`: Builds gate key as `"(epoch)|(currentGlucose)|(trend)|(delta)"` using `max(by: date)` for epoch (matching R1a). All fields are `String?` on `WatchState` — no locale sensitivity risk.
+- Gate logic in `sendDataToWatch`: computed after `saveLatestDateToDisk`, before `sendMessage`. `sendMessage` always fires. Complication transfer gated on both `readingEpochPresent` and `!isDuplicateDispatch`. Logs `complication_transfer_gate_skipped` with gate key when duplicate detected.
+
+**Code review feedback — Round 1 (Claude, 6 points evaluated):**
+
+1. **`appGroupIDCandidate()` safety** — Confirmed: same helper used elsewhere in `AppleWatchManager` (line 192, generation counter). Falls back to `""` if nil (gate passes everything through). **No change needed.**
+2. **Gate key write on non-duplicate only** — Confirmed correct: `lastDispatchedGateKey` only written when `!isDuplicateDispatch`. **No change needed.** (But see Round 2 #1 — this turned out to be in the wrong location.)
+3. **Locale sensitivity risk on gate key fields** — Non-issue: `currentGlucose`, `trend`, `delta` are all `String?` on `WatchState` (pre-formatted). Epoch uses `String(Int(...))` (locale-safe). **No change needed.**
+4. **Budget cycle reset — gate doesn't clear on new cycle** — Gate key persists in App Group UserDefaults indefinitely. After a budget cycle reset (~2.5h), if glucose hasn't changed, the first transfer of the new cycle would be suppressed. **Fix applied:** Added `lastDispatchedGateKey = ""` in `session(_:activationDidCompleteWith:)` so the first post-launch transfer always fires.
+5. **`sendMessage` always fires** — Confirmed correct: gate only affects `transferCurrentComplicationUserInfo` and `transferUserInfo` paths. **No change needed.**
+6. **Log noise from gate-skip on reachable/missing-epoch paths** — `isDuplicateDispatch` log fires even when complication transfer would have been suppressed by other conditions. Acceptable for debugging. **No change needed.**
+
+**Code review feedback — Round 2 (ChatGPT, critical bug found):**
+
+1. **🚨 Gate key advanced on sendMessage-only (reachable) path** — `lastDispatchedGateKey = gateKey` was written unconditionally before the reachability check. When the watch is in foreground (`isReachable == true`), `sendMessage` fires but no complication transfer occurs — yet the gate key is consumed. When the watch later goes to background for the same reading, the gate sees "duplicate" and suppresses the complication transfer. This directly undermines freshness during the foreground→background transition that users actually hit. **Fix applied:** Moved `lastDispatchedGateKey = gateKey` to immediately after each actual enqueue call (`transferCurrentComplicationUserInfo` and `transferUserInfo`), so the persisted key truly means "we successfully attempted a complication transfer." Gate key computation and duplicate check remain unconditional for logging/debugging. Placement after (not before) the enqueue is a defensive measure — if a future refactor adds an early return in the block, the gate key won't be prematurely consumed.
+2. **Activation clear is a blunt instrument** — Clearing the gate on every activation effectively resets persistence across restarts. Accepted tradeoff: the gate's primary value is preventing duplicate transfers *within a session*, not across restarts. A TTL-based approach could be added later if needed.
+3. **Suite instability** — `appGroupIDCandidate()` returns a deterministic value from Info.plist or bundle ID. Won't change between calls in the same app lifecycle. Non-issue.
+4. **Gate key write placement: after enqueue, not top of block** — Reinforced that the write should be immediately after the actual `transferCurrentComplicationUserInfo` / `transferUserInfo` call, not at the top of the conditional block. This ensures the persisted key reflects an actual transfer attempt, making the code robust against future refactors that might add early returns.
+5. **`!isReachable` gate on complication transfers** — Questioned whether gating complication transfers on `!session.isReachable` is intentional. **Confirmed as deliberate budget conservation:** when the watch app is foregrounded (`isReachable == true`), `sendMessage` updates the watch UI for free and the complication is not visible to the user. Firing `transferCurrentComplicationUserInfo` would waste budget on invisible updates. `transferCurrentComplicationUserInfo` works regardless of reachability (not an API limitation), but calling it only when not reachable is the correct design choice. Added explicit code comment documenting this rationale.
+
+**Observation:** The Round 2 bug (#1) was the most critical finding across both reviews. The failure mode (foreground `sendMessage` consumes the gate, suppressing the first background complication transfer for the same reading) would have been triggered on every foreground→background transition where the reading hadn't changed — a common real-world scenario.
+
+**Next gate:** Build + deploy, then observe 48h BetterStack data for `complication_transfer_gate_skipped` frequency and avg C/reading.

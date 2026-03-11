@@ -1,6 +1,6 @@
 # Cursor Round 2: Audit Results + Implementation Guide
-**Version:** 1.4 | **Date:** 2026-03-10
-**Prerequisite:** `complication-freshness-remediation-plan.md` v1.19 — all prompts resolved, plan is implementation-ready
+**Version:** 1.5 | **Date:** 2026-03-11
+**Prerequisite:** `complication-freshness-remediation-plan.md` v1.20 — all prompts resolved, plan is implementation-ready
 
 ---
 
@@ -118,13 +118,14 @@ Add `lastDispatchedGateKey` backed by App Group `UserDefaults`.
 Gate key = `"\(epoch)|\(currentGlucose)|\(trend)|\(delta)"` — use `max(by: date)` for epoch, matching R1a.
 Gate skips complication transfer only — `sendMessage` always fires regardless. Log `complication_transfer_gate_skipped`.
 
+**Design note:** Complication transfers are gated on `!session.isReachable` — this is intentional budget conservation, not an API limitation. When the watch app is foregrounded (`isReachable`), `sendMessage` updates the UI for free and the complication is not visible. `transferCurrentComplicationUserInfo` works regardless of reachability, but calling it only when not reachable avoids wasting the 50/day budget on invisible updates.
+
 BetterStack validation query must filter `transfer_path IN ('complication', 'userInfo')` — not `attempted = true`.
 
-> ## 🛑 STOP — Code Review + Build/Deploy
-> Before proceeding:
-> 1. **Code review** this PR — verify gate is scoped to complication transfer only (not `sendMessage`), and `computeDispatchGateKey` uses `max(by: date)`
-> 2. **Build and deploy** to device
-> 3. **Observe 48h BetterStack data:**
+> ## ✅ CODE REVIEW PASSED — pending build/deploy
+> - **Round 1 (Claude):** 6 points evaluated; 1 fix applied (`lastDispatchedGateKey = ""` in activation handler for budget-cycle reset); 4 confirmed correct; 1 accepted as cosmetic (log noise)
+> - **Round 2 (ChatGPT): critical bug found + placement refinement** — `lastDispatchedGateKey` was written before the reachability check, so a sendMessage-only (reachable) path consumed the gate and suppressed the first background complication transfer for the same reading. **Fix:** moved gate key write to immediately after each actual enqueue call (`transferCurrentComplicationUserInfo` / `transferUserInfo`), not just inside the block — defensive against future early returns
+> - Pending: build + deploy, then observe 48h BetterStack data
 >    - If avg C ≤ 1.3 → R2d is optional; proceed directly to Step 5
 >    - If avg C > 1.3 → proceed to Step 4 (R2d)
 
@@ -231,12 +232,14 @@ This validates that WidgetKit is actually advancing the timeline, not just that 
 | `coalescerSources` | `[String]` | `[]` | R2a: reset after each coalescer fire |
 | `lastEligibleSourceAt` | `TimeInterval` | `0` | R2a/R2d: set when eligible source triggers; reset after fire |
 | `complicationEligibleSources` | `Set<String>` | `["glucoseStored","glucoseUpdate"]` | R2a/R2d: defined in Step 2, used in Step 4 |
+| `lastDispatchedGateKey` | `String` (App Group computed) | `""` | R2b: gate key for dedup; cleared on activation |
 
 ## Quick Reference: New Shared Helpers (add to `AppleWatchManager.swift`)
 
 ```swift
 private func sessionIsReadyForTransfer() -> Bool   // define first
 private func cancelStaleQueuedTransfers()           // uses sessionIsReadyForTransfer()
+private func computeDispatchGateKey(state:) -> String  // R2b: gate key from WatchState fields
 ```
 
 `sessionIsReadyForTransfer()` must be defined before `cancelStaleQueuedTransfers()` and before the R2d transfer block.
@@ -252,6 +255,11 @@ private func cancelStaleQueuedTransfers()           // uses sessionIsReadyForTra
 ---
 
 ## Changelog
+
+### v1.5 — 2026-03-11
+- **Step 3 CODE REVIEW PASSED:** Documented R2b dispatch gate implementation. Two review rounds: Claude (6 points, 1 fix — activation clear) and ChatGPT (critical bug — gate key write moved inside complication transfer block to prevent sendMessage-only paths from suppressing background transfers).
+- **Quick Reference:** Added `lastDispatchedGateKey` property and `computeDispatchGateKey` helper.
+- **Prerequisite reference:** Updated to remediation plan v1.20.
 
 ### v1.4 — 2026-03-10
 - **Step 2 COMPLETED:** Marked Step 2 (R2a + R3) as completed with build 133 gate-passed block. Documented post-review fixes (queue-deep drain placement, count guard, fallback warning, drain log detail).
