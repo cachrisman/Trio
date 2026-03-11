@@ -55,6 +55,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private var lastEligibleSourceAt: TimeInterval = 0
     private let complicationEligibleSources: Set<String> = ["glucoseStored", "glucoseUpdate"]
 
+    // R2b: per-reading-epoch dispatch gate (App Group-backed to survive restarts)
+    private var lastDispatchedGateKey: String {
+        get { appGroupIDCandidate().value.flatMap { UserDefaults(suiteName: $0)?.string(forKey: "lastDispatchedGateKey") } ?? "" }
+        set { appGroupIDCandidate().value.flatMap { UserDefaults(suiteName: $0) }?.set(newValue, forKey: "lastDispatchedGateKey") }
+    }
+
     // Processed payload IDs for deduplication (LRU with TTL)
     private let processedIdsKey = "watchProcessedIds"
     private let processedIdsMaxCount = 100
@@ -599,6 +605,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
     }
 
+    /// R2b: Builds a gate key from the complication-visible fields of a WatchState.
+    /// Matches the watch-side ComplicationSnapshotFingerprint for consistent dual-layer dedup.
+    private func computeDispatchGateKey(state: WatchState) -> String {
+        let epoch = state.glucoseValues.max(by: { $0.date < $1.date })
+            .map { String(Int($0.date.timeIntervalSince1970)) } ?? "nil"
+        let display = "\(state.currentGlucose ?? "nil")|\(state.trend ?? "nil")|\(state.delta ?? "nil")"
+        return "\(epoch)|\(display)"
+    }
+
     /// Coalesces multiple publisher-driven WatchState updates into a single send.
     /// Uses a 2s trailing debounce with 5s max-wait cap. Main-thread confined.
     private func scheduleWatchStateUpdate(source: String = "unknown") {
@@ -734,6 +749,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
         WatchStateSnapshot.saveLatestDateToDisk(state.date)
 
+        // R2b: per-reading-epoch dispatch gate — suppresses duplicate complication transfers only.
+        // Gate key is computed unconditionally for logging, but only persisted when a complication
+        // transfer is actually enqueued (not on sendMessage-only paths).
+        let gateKey = computeDispatchGateKey(state: state)
+        let isDuplicateDispatch = gateKey == lastDispatchedGateKey
+        if isDuplicateDispatch {
+            debug(.watchManager, "⏭️ complication_transfer_gate_skipped duplicate gate_key=\(gateKey)")
+        }
+
         // sendMessage (budget-free watch UI path) — always fires with fullMessage
         if session.isReachable {
             session.sendMessage([WatchMessageKeys.watchState: fullMessage], replyHandler: nil) { error in
@@ -742,10 +766,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             debug(.watchManager, "📤 Transferred new WatchState snapshot via=sendMessage reading_date_epoch_seconds=\(readingEpoch)")
         }
 
-        // Complication transfer paths — gated on readingEpoch presence, use complicationMessage
-        if !session.isReachable, readingEpochPresent {
+        // Complication transfer paths — gated on readingEpoch presence AND dispatch gate.
+        // We only enqueue budget-consuming complication transfers when the watch app is not
+        // reachable (i.e., not foregrounded). When reachable, sendMessage keeps the watch UI
+        // updated for free and the complication is not visible. This is intentional budget
+        // conservation, not an API limitation — transferCurrentComplicationUserInfo works
+        // regardless of reachability.
+        if !session.isReachable, readingEpochPresent, !isDuplicateDispatch {
             if session.remainingComplicationUserInfoTransfers > 0 {
                 session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: complicationMessage])
+                lastDispatchedGateKey = gateKey
                 let remaining = session.remainingComplicationUserInfoTransfers
                 let queueDepth = session.outstandingUserInfoTransfers.count
                 debug(.watchManager, "📤 Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
@@ -753,6 +783,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 // R1b: cancel stale items before enqueuing a new fallback transfer
                 cancelStaleQueuedTransfers()
                 session.transferUserInfo([WatchMessageKeys.watchState: complicationMessage])
+                lastDispatchedGateKey = gateKey
                 let queueDepth = session.outstandingUserInfoTransfers.count
                 debug(.watchManager, "📤 Transferred new WatchState snapshot via=userInfo budget_exhausted=true queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)")
             }
@@ -800,6 +831,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
         debug(.watchManager, "📱 Phone session activated with state: \(activationState.rawValue)")
         debug(.watchManager, "📱 Phone isReachable after activation: \(session.isReachable)")
+
+        // R2b: clear dispatch gate on activation so the first post-launch transfer always fires
+        lastDispatchedGateKey = ""
 
         // R1b: one-time startup drain of the frozen transfer queue
         if !hasPerformedStartupQueueDrain {
