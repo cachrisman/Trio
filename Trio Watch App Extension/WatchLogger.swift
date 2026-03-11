@@ -1,4 +1,5 @@
 import Foundation
+import WatchKit
 import WatchConnectivity
 
 actor WatchLogger {
@@ -32,6 +33,34 @@ actor WatchLogger {
         return formatter
     }
 
+    private static func batteryLogContext() -> String {
+        let device = WKInterfaceDevice.current()
+        device.isBatteryMonitoringEnabled = true
+
+        let levelText: String
+        if device.batteryLevel >= 0 {
+            levelText = String(Int((device.batteryLevel * 100).rounded()))
+        } else {
+            levelText = "unknown"
+        }
+
+        let stateText: String
+        switch device.batteryState {
+        case .unknown:
+            stateText = "unknown"
+        case .unplugged:
+            stateText = "unplugged"
+        case .charging:
+            stateText = "charging"
+        case .full:
+            stateText = "full"
+        @unknown default:
+            stateText = "unknown_default"
+        }
+
+        return "battery_level_percent=\(levelText) battery_state=\(stateText)"
+    }
+
     private func startFlushTimer() async {
         timerTask = Task {
             while true {
@@ -50,7 +79,8 @@ actor WatchLogger {
     ) async {
         let shortFile = (file as NSString).lastPathComponent
         let timestamp = dateFormatter.string(from: Date())
-        let entry = "[\(timestamp)] [\(shortFile):\(line)] \(function) → \(message)"
+        let batteryContext = Self.batteryLogContext()
+        let entry = "[\(timestamp)] [\(shortFile):\(line)] \(function) → \(message) \(batteryContext)"
 
         logs.append(entry)
         if logs.count > maxEntries {
