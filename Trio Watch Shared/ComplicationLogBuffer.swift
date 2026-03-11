@@ -1,4 +1,7 @@
 import Foundation
+#if os(watchOS)
+import WatchKit
+#endif
 
 /// Hybrid log buffer: in-memory ring (all targets) + optional App Group file (complication only, WIDGET_EXTENSION).
 /// Used by TrioComplicationDataStore.log(). Watch App drains the file and forwards to Better Stack.
@@ -81,10 +84,43 @@ enum ComplicationLogBuffer {
     #if WIDGET_EXTENSION
     // MARK: - File append (complication target only; same format/path/truncation as 06)
 
+    private static func batteryLogContext() -> String {
+        #if os(watchOS)
+        let device = WKInterfaceDevice.current()
+        device.isBatteryMonitoringEnabled = true
+
+        let levelText: String
+        if device.batteryLevel >= 0 {
+            levelText = String(Int((device.batteryLevel * 100).rounded()))
+        } else {
+            levelText = "unknown"
+        }
+
+        let stateText: String
+        switch device.batteryState {
+        case .unknown:
+            stateText = "unknown"
+        case .unplugged:
+            stateText = "unplugged"
+        case .charging:
+            stateText = "charging"
+        case .full:
+            stateText = "full"
+        @unknown default:
+            stateText = "unknown_default"
+        }
+
+        return "battery_level_percent=\(levelText) battery_state=\(stateText)"
+        #else
+        return "battery_level_percent=unsupported battery_state=unsupported"
+        #endif
+    }
+
     private static func appendToFile(message: String, file: String, line: Int, function: String) {
         let shortFile = (file as NSString).lastPathComponent
         let timestamp = dateFormatter.string(from: Date())
-        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message)\n"
+        let batteryContext = batteryLogContext()
+        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message) \(batteryContext)\n"
 
         guard let logURL = logFileURL() else {
             NSLog("[ComplicationLogBuffer] %@", String(entry.dropLast()))
