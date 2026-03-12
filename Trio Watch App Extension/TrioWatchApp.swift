@@ -6,6 +6,10 @@ import UserNotifications
 
     init() {
         WatchNotificationHandler.shared.configure()
+        Task {
+            let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+            await WatchLogger.shared.log("[DEPLOY] event=watch_app_launch platform=watchos build=\(build)", force: true)
+        }
     }
 
     var body: some Scene {

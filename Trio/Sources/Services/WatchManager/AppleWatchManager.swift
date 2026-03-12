@@ -731,6 +731,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             }
         }
 
+        // Send durable confirmation for drain file cleanup on the watch
+        if type == "watchLogs" {
+            let confirm: [String: Any] = ["type": "watchLogConfirm", "payloadIds": [payloadId]]
+            session.transferUserInfo(confirm)
+        }
+
         // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
         let ack: [String: Any] = [
             "type": "ack",
@@ -744,11 +750,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             // Check if this is an envelope message
             if let type = message["type"] as? String,
                let payloadId = message["payloadId"] as? String {
-                // This is an envelope message but no replyHandler - handle it
+                if self?.isProcessed(payloadId) == true { return }
+                self?.recordProcessed(payloadId)
+
                 if type == "watchLogs" {
                     if let logData = message["data"] as? String {
                         SimpleLogReporter.appendToWatchLog(logData)
                     }
+                    let confirm: [String: Any] = ["type": "watchLogConfirm", "payloadIds": [payloadId]]
+                    self?.session?.transferUserInfo(confirm)
                 } else if type == "watchError" {
                     if let errorData = message["data"] as? [String: Any] {
                         self?.handleWatchError(errorData)
@@ -916,6 +926,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 if let logData = userInfo["data"] as? String {
                     SimpleLogReporter.appendToWatchLog(logData)
                 }
+                let confirm: [String: Any] = ["type": "watchLogConfirm", "payloadIds": [payloadId]]
+                session?.transferUserInfo(confirm)
             } else if type == "watchError" {
                 if let errorData = userInfo["data"] as? [String: Any] {
                     handleWatchError(errorData)
