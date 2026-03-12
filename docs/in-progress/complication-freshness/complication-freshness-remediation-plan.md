@@ -1,7 +1,7 @@
 # Trio watchOS Complication — Freshness Remediation Plan
 
-**Version:** 1.20 | **Date:** 2026-03-11
-**Status:** 🚧 In progress — Step 3 (R2b dispatch gate) implemented; pending build + deploy
+**Version:** 1.23 | **Date:** 2026-03-11
+**Status:** ✅ Step 3 (R2b) deployed as build 134; observing 48h; Step 3b (complication-age gate) added to sequence (not implemented yet)
 **Source data:** BetterStack source_id=1659391, build 131, 2026-03-08/09
 **Input documents:**
 - Next-Steps Report (AI/BetterStack analysis, 2026-03-09)
@@ -408,6 +408,80 @@ if session.isReachable {
 > **Gate design:** Keying on `(epoch, currentGlucose, trend, delta)` rather than epoch alone means a non-glucose state change (IOB, override) that shares an epoch still dispatches via `sendMessage` (preserving watch UI freshness) while the complication transfer is correctly suppressed. This mirrors `ComplicationSnapshotFingerprint` (FP-Phase 3.0), creating a consistent dual-layer dedup: iOS-side gate (R2b) reduces complication transfers upstream; watch-side `saveOnMain` (FP-Phase 3.1) catches any that get through.
 
 > **R2b ceiling — be honest:** The `(epoch, displayFields)` gate will not prevent the "early-nil then late-computed" double-send pattern, where the first coalescer fire has `trend=nil/delta=nil` and the second has real values. Both have different gate keys and both will transfer. This means R2b alone likely plateaus around 1.3–1.8x rather than ~1.0x. The validation target (`avg C ≤ 1.3`) reflects this. If the plateau is above 1.3x after 48h, R2d (authoritative-source gating) is the correct structural fix — not further tuning of the gate key.
+
+### Step 3b — Complication-age stale-first budget gate
+
+**Priority:** P1 — HIGH | **Effort:** ~2 hrs | **Sequence:** After Step 3 (R2b), before Step 4 (R2d)
+**Files:** `AppleWatchManager.swift`
+
+#### Problem
+
+Without a staleness gate, every coalescer fire that passes the R2b duplicate gate can consume complication budget even when the complication is already showing fresh data (e.g. from a recent `sendMessage` or prior transfer). Budget then drains in the first 2–2.5 hours after the daily reset. Preserving budget for moments when the complication is actually stale improves both time-to-exhaustion and user-visible freshness during exhaustion windows.
+
+#### Approach
+
+Gate **only** the budget-consuming path (`transferCurrentComplicationUserInfo`) on “current complication age &gt; T”. Do not gate `sendMessage`: that path is budget-free and keeps the watch app UI fresh; gating it would stale the UI for no benefit. The fallback `transferUserInfo` path (when budget is exhausted) remains unchanged — still allowed when not duplicate, so the queue continues to receive one representative transfer per reading during exhaustion.
+
+- **Complication age on iOS:** In the helper (see code sketch), use this exact pattern: `guard let suiteName = appGroupIDCandidate().value, let defaults = UserDefaults(suiteName: suiteName) else { return .infinity }`; then `let lastValid = defaults.object(forKey: "TrioComplication_lastValidTimestamp") as? Date`; `if lastValid == nil { return .infinity }`; else `return max(0, Date().timeIntervalSince(lastValid!))`. Same key as `TrioComplicationDataStore.lastValidTimestamp` (watch).
+- **Threshold:** T = 600 seconds (10 minutes) as initial value. Data-driven from BetterStack (48h window): reload_age proxy p90 ≈ 10.3m; counts per day for staleness &gt;10m ≈ 79/day, &gt;12m ≈ 40/day, &gt;15m ≈ 14/day. T=10m targets the worst staleness while leaving room to tune (e.g. 12m if budget still drains too fast, 8m if budget remains high and staleness is acceptable).
+- **Placement:** In `sendDataToWatch`, compute `complicationAgeSeconds` after `fullMessage`/`complicationMessage` are built and before the complication transfer decision. Use a helper so the read and clamp are in one place.
+
+- **lastDispatchedGateKey rule:** `lastDispatchedGateKey` is ONLY set when a complication transfer is actually enqueued (after `transferCurrentComplicationUserInfo` OR after `transferUserInfo` fallback). Do NOT set it on sendMessage-only paths. Do NOT set it when the age gate fails. Do not reintroduce the Step 3 foreground→background suppression bug.
+
+#### Code sketch
+
+```swift
+// Private helper — no Watch Shared import; use UserDefaults with suite only.
+private static let complicationAgeGateThresholdSeconds: TimeInterval = 600
+
+private func currentComplicationAgeSeconds() -> TimeInterval {
+    guard let suiteName = appGroupIDCandidate().value, let defaults = UserDefaults(suiteName: suiteName) else { return .infinity }
+    let lastValid = defaults.object(forKey: "TrioComplication_lastValidTimestamp") as? Date
+    if lastValid == nil { return .infinity }
+    return max(0, Date().timeIntervalSince(lastValid!))
+}
+
+// In sendDataToWatch(), after building complicationMessage and gateKey, before the complication transfer block:
+let complicationAgeSeconds = currentComplicationAgeSeconds()
+let ageGatePassed = complicationAgeSeconds > Self.complicationAgeGateThresholdSeconds
+
+// Complication transfer block: only apply age gate when we would SPEND budget (remaining > 0).
+// When budget is exhausted, userInfo fallback is allowed regardless of age (duplicate gate only).
+if !session.isReachable, readingEpochPresent, !isDuplicateDispatch {
+    if session.remainingComplicationUserInfoTransfers > 0 {
+        // Budget available — gate on age so we only spend when complication is stale.
+        if ageGatePassed {
+            session.transferCurrentComplicationUserInfo(...)
+            lastDispatchedGateKey = gateKey  // lastDispatchedGateKey ONLY set when complication transfer actually enqueued; do not set on sendMessage-only or when age gate fails (do not reintroduce Step 3 foreground→background suppression bug)
+            // log: include complication_age_seconds=\(Int(complicationAgeSeconds)) complication_age_gate_threshold_seconds=\(Int(Self.complicationAgeGateThresholdSeconds))
+        } else {
+            // Do not touch lastDispatchedGateKey — we did not enqueue a complication transfer.
+            debug(.watchManager, "⏭️ complication_transfer_age_gate_skipped skip_reason=age_gate age_seconds=\(Int(complicationAgeSeconds)) threshold_seconds=\(Int(Self.complicationAgeGateThresholdSeconds)) gate_key=\(gateKey)")
+        }
+    } else {
+        // Budget exhausted — fallback path: no age gate; still subject to duplicate gate above.
+        cancelStaleQueuedTransfers()
+        session.transferUserInfo([WatchMessageKeys.watchState: complicationMessage])
+        lastDispatchedGateKey = gateKey
+        // existing userInfo fallback logging
+    }
+}
+// sendMessage always fires regardless — do not gate.
+```
+
+**Skip-log taxonomy (BetterStack):** Three queryable categories. Step 3b age-gate skip: `skip_reason=age_gate`. R2b duplicate skip: document as `skip_reason=duplicate_gate` (even if the current log line doesn’t include the literal yet). Missing readingEpoch: its own case. Queries can filter by: age_gate, duplicate_gate, missing readingEpoch.
+
+#### Validation
+
+| Metric | Signal | Pass threshold | Falsified if |
+|---|---|---|---|
+| Budget spread | Daily complication transfers / remaining budget over time | Budget no longer drains in first 2–3h after reset; some budget remains into afternoon | Budget still exhausted within 3h of reset |
+| Staleness | `complication_reload_age` / (future) `timeline_built snapshot_age` | Fewer events with age &gt;15m; p90 age stable or improved | Increase in &gt;15m outliers |
+| Gate behavior | `complication_transfer_age_gate_skipped` count; transfer logs with `complication_age_seconds` | Age gate applies ONLY to transferCurrentComplicationUserInfo (budget-consuming); NOT sendMessage, NOT userInfo fallback. Transfers when age &gt; T; skips when age ≤ T. Budget not exhausted in first 2–3h after reset. | Transfers when age &lt; threshold; no age-gate skips when fresh; or budget still exhausted in 3h |
+
+#### Sequence
+
+Step 3b is implemented and deployed **after** Step 3 (R2b) and **before** Step 4 (R2d). The 48h observation after Step 3 can include Step 3b in the same build, or Step 3b can ship as a follow-on PR after R2b data is collected.
 
 ### R2c — Settings publisher debounce tuning ⚠️ Deprioritized
 
@@ -1015,6 +1089,8 @@ R3         (allowlist complication msg,  ← parallel with R2a; no dependency
 
 R2b  (epoch+fingerprint dispatch gate)               ← ship; observe 48h
 
+Step 3b  (complication-age stale-first gate; T=600s) ← ship after R2b; observe 48h
+
         ↓ if avg C ≤ 1.3 after 48h → R2c (optional, low priority)
         ↓ if avg C > 1.3 after 48h → R2d (pipeline split)
 
@@ -1039,6 +1115,7 @@ Run 24 hours after each phase ships:
 | R1 | Stale delivery burst | `didReceiveUserInfo` rate/hr | < 15/hr | Unchanged |
 | R2 | Transfers/reading | C count per `reading_date_epoch_seconds` | avg C ≤ 1.3 | avg > 1.5 |
 | R2 | Budget drain rate | complication transfers/hr | < 15/hr | Drain > 18/hr |
+| Step 3b | Budget spread | complication transfers vs. time since reset; `complication_transfer_age_gate_skipped` (skip_reason=age_gate); see also skip_reason=duplicate_gate, missing readingEpoch | Budget not exhausted in first 2–3h; skips when age ≤ T | Budget still exhausted in 3h; no age-gate skips when fresh |
 | R3 | Payload size | `payload_bytes` in transfer logs | < 500 bytes | > 5 KB |
 | R4 | Freshness during exhaustion | `save_age` where `budget_exhausted=true` | p90 < 300s | Unchanged |
 | R5a | Publisher attribution | `coalescer_fired sources=` | No non-glucose source > 30% of multi-C readings | — |
@@ -1167,6 +1244,31 @@ This gives `timeline_entry_epoch` and `snapshot_age` at timeline-build time — 
 ---
 
 ## Changelog
+
+### v1.23 — 2026-03-11 | Nit-only consistency pass
+
+- Version bump only; no behavioral changes. Aligns with implementation guide v1.8 and Cursor plan reference. Validation Protocol Step 3b row: added skip_reason=age_gate (and duplicate_gate, missing readingEpoch) for queryability. Newline at EOF.
+
+---
+
+### v1.22 — 2026-03-11 | Nit consistency cleanup (Step 3b)
+
+- **Helper:** Step 3b helper guidance made identical in remediation plan and implementation guide: exact 4-step pattern (guard suite/defaults → return .infinity; let lastValid; if lastValid == nil return .infinity; else return max(0, …)).
+- **lastDispatchedGateKey rule:** Stated explicitly in all three docs: only set when complication transfer actually enqueued (transferCurrentComplicationUserInfo or transferUserInfo); not on sendMessage-only; not when age gate fails; do not reintroduce Step 3 foreground→background suppression bug.
+- **Skip-log taxonomy:** Three queryable categories documented consistently: skip_reason=age_gate (Step 3b), skip_reason=duplicate_gate (R2b), missing readingEpoch.
+- **Validation/STOP:** Step 3b STOP block (guide) now explicitly states age gate applies ONLY to transferCurrentComplicationUserInfo, NOT sendMessage and NOT userInfo fallback. Remediation validation table Gate behavior row aligned.
+
+---
+
+### v1.21 — 2026-03-11 | Step 3b — Complication-age stale-first budget gate
+
+- **New step:** Step 3b (Complication-age stale-first budget gate) added to the implementation sequence, after Step 3 (R2b) and before Step 4 (R2d).
+- **Behavior:** Gate use of `transferCurrentComplicationUserInfo` on current complication age &gt; T (600s initial). Complication age is computed on iOS by reading App Group key `TrioComplication_lastValidTimestamp` (written by watch-side store). If missing, treat age as very large so first transfer is allowed. `sendMessage` and budget-exhausted `transferUserInfo` fallback are not gated.
+- **Rationale:** Preserve 50/day budget for moments when the complication is actually stale; avoid burning budget when complication is already fresh (e.g. from sendMessage or prior transfer).
+- **Data-driven threshold:** T = 10 minutes from BetterStack 48h analysis: reload_age proxy p90 ≈ 10.3m; &gt;10m ≈ 79/day, &gt;12m ≈ 40/day, &gt;15m ≈ 14/day. Validation targets and falsifiers documented; Implementation Sequence updated to insert Step 3b.
+- **Sketch and status (same release):** Code sketch corrected to explicit branching — age gate applies only when `remainingComplicationUserInfoTransfers > 0`; when budget is exhausted, userInfo fallback runs regardless of age (duplicate gate only). Skip log includes `skip_reason=age_gate` for BetterStack. Status line updated: Step 3 (R2b) deployed as build 134; observing 48h; Step 3b added (not implemented yet).
+
+---
 
 ### v1.20 — 2026-03-11 | Step 3 implementation + code review feedback (R2b)
 
