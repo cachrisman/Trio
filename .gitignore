@@ -86,3 +86,4 @@ ConfigOverride.xcconfig
 .sync_baseline.json
 ci/
 UserData/
+.cursor/plans/

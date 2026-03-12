@@ -1,12 +1,11 @@
-# AGENTS.md — v7
+# AGENTS.md — v8
 
 Instructions for AI agents working in this repository.
 
 This repo is a personal fork that maintains a patch stack in `./patches/` applied on top of upstream `dev`. Agents should optimize for repeatable patch application and safe builds.
 
 Read first:
-- `docs/feature-branch-workflow-optimization.md`
-- `docs/feature-branch-workflow-optimization-patch-migration.md` (only during migration/cutover work)
+- `docs/process/feature-branch-workflow-optimization.md`
 
 ## Non-negotiable safety rules
 
@@ -57,44 +56,20 @@ completing this protocol.
 
 ## Untracked files and clean / reset
 
-- **`git clean -fd` (or scripts that run it) removes untracked files.** Procedures that "reset to clean dev" or "test patches from clean state" often run `git reset --hard` and `git clean -fd` in the repo. Any untracked file (e.g. `docs/complication-freshness-implementation-plan.md`) will be **permanently removed** unless it was stashed or committed elsewhere.
-- **Before running patch-test or any workflow that might clean the worktree:** Stash untracked files with `git stash -u -m "WIP untracked before clean"` so they can be restored with `git stash pop` afterward. Alternatively, commit plan/design docs to a docs branch (see "Tracking plan and design docs" below).
-- **Mid-stack patch update:** Step 0 in `docs/feature-branch-workflow-optimization.md` uses `git stash -u`; after step 6 (cleanup), run `git stash pop` to restore stashed changes including untracked files.
+- **`git clean -fd` (or scripts that run it) removes untracked files.** Procedures that "reset to clean dev" or "test patches from clean state" often run `git reset --hard` and `git clean -fd` in the repo. Any untracked file (e.g. `docs/in-progress/<initiative>/02-implementation-plan.md`) will be **permanently removed** unless it was stashed or committed elsewhere.
+- **Before running patch-test or any workflow that might clean the worktree:** Stash untracked files with `git stash -u -m "WIP untracked before clean"` so they can be restored with `git stash pop` afterward.
+- **Mid-stack patch update:** Step 0 in `docs/process/feature-branch-workflow-optimization.md` uses `git stash -u`; after step 6 (cleanup), run `git stash pop` to restore stashed changes including untracked files.
 
-## Tracking plan and design docs (dedicated `docs` branch)
+## Tracking docs on `dev` (docs are committed with completed patch work)
 
-Plan and design docs (implementation plans, effectiveness analyses, implementation logs) live on the **`docs`** branch so `dev` stays code- and patch-focused. Do not merge `docs` into `dev`.
+Plan/design docs and prompts live in `docs/` on the **`dev`** branch. During active work, docs may be edited freely and kept uncommitted as WIP, but they must be **committed alongside the final patch(es)** when a feature is completed.
 
-### How to add or update docs on the `docs` branch
+### Rules of thumb
 
-Run these from the **Trio-dev** worktree.
-
-1. **Create the branch once** (if it doesn’t exist):
-   ```bash
-   git fetch origin docs 2>/dev/null || true
-   git checkout -b docs dev   # only if branch doesn't exist yet
-   # If it already exists remotely: git checkout docs && git pull origin docs
-   ```
-
-2. **Add and commit** the doc file(s) you added or changed (e.g. under `docs/`):
-   ```bash
-   git checkout docs
-   git add docs/complication-freshness-implementation-plan.md docs/complication-fix-a-b-effectiveness-analysis.md   # or the paths you changed
-   git status   # confirm what will be committed
-   git commit -m "docs: update implementation plan (v1.15)"   # or a short description
-   git push origin docs
-   ```
-
-3. **Switch back** to `dev` (or your previous branch) for code work:
-   ```bash
-   git checkout dev
-   ```
-
-When **editing** an existing plan or log: switch to `docs`, make your edits, then add/commit/push as above and switch back to `dev`. Only commit when the user asks you to; otherwise summarize the edits and remind them they can commit to `docs` when ready.
-
-**Checkout conflict (untracked files):** When `Trio-dev` is on `dev`, plan docs may appear as **untracked files** in the working tree (e.g. leftover from a previous checkout or a tool that created them). If `git checkout docs` fails with "untracked working tree files would be overwritten by checkout," delete the conflicting untracked copies first (`rm docs/<file>`), then retry the checkout. Do NOT edit plan docs while on `dev` — those are stale untracked copies, not the canonical tracked versions on `docs`.
-
-**Visibility (no extra worktree):** You don’t need a separate docs worktree. In the existing Trio-dev worktree, run `git checkout docs` when you want to view or edit plan docs — the `docs/` folder will show the files from the `docs` branch. When done, run `git checkout dev` to return to code/patches work. The same workspace (Trio + Trio-dev) stays; only the branch in Trio-dev changes. When Trio-dev is on `dev`, those doc files won’t be in the tree (they exist only on `docs`).
+- **WIP is fine uncommitted**, but protect it from clean/reset workflows (stash untracked + tracked changes as needed).
+- **When the feature is complete:** commit the docs update in the same completion set as the patch change:
+  - Either one commit that includes both docs + patch updates, or two adjacent commits (docs + patch) pushed together.
+- **Docs should reflect reality** at completion time: final plan, implementation log, effectiveness analysis (if applicable), and any important decisions/tradeoffs.
 
 ## Non-negotiable rules for working with patches
 
@@ -124,7 +99,7 @@ These commands **must** be run from the **Trio-dev** worktree with **`dev`** che
 - `ci/local-build.sh --base-branch dev` (and variants: `--build-only`, etc.)
 - `./scripts/generate-patch.sh` whenever it writes into `./patches/` (new or updated patch)
 
-Use `-s` / `-t` to specify source and target branches; the important part is that the worktree is on `dev` when the script runs. For mid-stack patch updates, run `git checkout dev` in Trio-dev before invoking `generate-patch.sh` (see `docs/feature-branch-workflow-optimization.md`).
+Use `-s` / `-t` to specify source and target branches; the important part is that the worktree is on `dev` when the script runs. For mid-stack patch updates, run `git checkout dev` in Trio-dev before invoking `generate-patch.sh` (see `docs/process/feature-branch-workflow-optimization.md`).
 
 ## `git am --3way` for overlapping patches
 
@@ -183,7 +158,7 @@ When asked to run a build, do the following.
 - **Investigate immediately:** Read the relevant part of the log (e.g. around failure messages, ❌ markers, or "error:" / "ARCHIVE FAILED") to identify the cause.
 - **Propose a fix** and, if the fix is **relatively minor** (e.g. a clear typo, one-file change, or small logic fix):
   - Implement the fix on the appropriate branch **in the Trio worktree** (feature branch or, for patch-stack builds, the branch that the patch was generated from).
-  - Regenerate the patch using `./scripts/generate-patch.sh` (see "Common workflows" and `docs/feature-branch-workflow-optimization.md`).
+  - Regenerate the patch using `./scripts/generate-patch.sh` (see "Common workflows" and `docs/process/feature-branch-workflow-optimization.md`).
   - Run `scripts/patch-test.sh` to validate the patch stack.
   - If patch test passes, start a **new** build in the background and again give the user a `tail -f` command for the new log.
 - If the fix is not minor (e.g. architectural or multi-file), report the findings and proposed fix to the user and do not automatically implement or start a new build unless asked.
@@ -274,7 +249,7 @@ After syncing, re-run the patch validation.
 
 ## Better Stack MCP Usage
 
-**Read first:** `docs/betterstack-guide.md` — comprehensive guide covering metrics extraction API, dashboard import/export, MCP tool capabilities and limitations, and query patterns.
+**Read first:** `docs/process/betterstack-guide.md` — comprehensive guide covering metrics extraction API, dashboard import/export, MCP tool capabilities and limitations, and query patterns.
 
 Agents use the Better Stack MCP server (`user-better-stack`) to query Trio and Nightscout logs via ClickHouse SQL. For direct REST API calls (metrics creation, dashboard import), the API token is stored in `.trio-env` as `BETTERSTACK_API_TOKEN`. The same token is configured in Cursor’s MCP settings. If `telemetry_list_teams_tool` returns "No teams available" or `telemetry_query` returns 401 / "Failed to obtain ClickHouse credentials", the token is missing or invalid — the user must add or refresh it in the Better Stack MCP config and/or `.trio-env`. See [Better Stack API token docs](https://betterstack.com/docs/logs/api/getting-started/#obtaining-a-logtail-api-token).
 
@@ -346,6 +321,11 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v8 (2026-03-12)
+- **Docs on `dev`; docs branch removed:** Plan/design docs and prompts now live in `docs/` on the `dev` branch and are committed with completed patch work. Removed the dedicated "Tracking plan and design docs (dedicated `docs` branch)" section and replaced it with "Tracking docs on `dev`" and rules of thumb (WIP uncommitted OK; commit docs with patch at completion; docs reflect reality at completion).
+- **Doc paths updated:** "Read first" and all cross-references now point to `docs/process/feature-branch-workflow-optimization.md`, `docs/completed/feature-branch-workflow-optimization-patch-migration.md`, and `docs/process/betterstack-guide.md`. Mid-stack bullet in "Untracked files and clean / reset" updated to reference the process path.
+- **Untracked-files example:** Example untracked path updated to `docs/in-progress/<initiative>/02-implementation-plan.md` to align with current docs layout (see `docs/README.md`).
 
 ### v7 (2026-03-12)
 - **`mid-stack-update.sh` v1.5 — `--from-feature-branch`:** When the patch baseline and feature branch have diverged (e.g. merge into feature, then amend), use `--from-feature-branch` with `--feature-branch` to regenerate the patch from the current feature branch state instead of apply + cherry-pick. Documented in "Update an existing patch (mid-stack)" and script help.

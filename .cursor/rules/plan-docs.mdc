@@ -1,0 +1,13 @@
+---
+description: Guidelines for creating and managing implementation plans and design documents.
+alwaysApply: true
+---
+
+# Plan and Design Document Placement
+
+When asked to create an implementation plan, design document, or any planning artifact:
+
+1. Write the document to `docs/in-progress/<feature>/` (e.g., `docs/in-progress/complication-freshness/complication-freshness-remediation-plan.md`).
+2. Do NOT use Cursor's built-in plan tool to create `.cursor/plans/` files. Those are ephemeral IDE artifacts and are gitignored.
+3. When implementing from an existing plan, reference the canonical doc in `docs/in-progress/` via `@` rather than duplicating it into a Cursor plan.
+4. Use `TodoWrite` for in-session progress tracking instead of plan-file checkboxes.
