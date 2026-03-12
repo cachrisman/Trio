@@ -176,6 +176,14 @@ import WatchConnectivity
 
     /// Handles incoming messages from the paired iPhone when Phone is in the foreground
     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
+        // Handle batchAck for drain file cleanup
+        if let type = message["type"] as? String, type == "batchAck",
+           let ackIds = message["ackIds"] as? [String]
+        {
+            Task { await WatchLogger.shared.deleteFilesForPayloadIds(ackIds) }
+            return
+        }
+
         Task {
             await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
         }
@@ -246,6 +254,14 @@ import WatchConnectivity
     }
 
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        // Handle watchLogConfirm for drain file cleanup
+        if let type = userInfo["type"] as? String, type == "watchLogConfirm",
+           let payloadIds = userInfo["payloadIds"] as? [String]
+        {
+            Task { await WatchLogger.shared.deleteFilesForPayloadIds(payloadIds) }
+            return
+        }
+
         guard let snapshot = WatchStateSnapshot(from: userInfo) else {
             Task {
                 await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)

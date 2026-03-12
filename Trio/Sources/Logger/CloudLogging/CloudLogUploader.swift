@@ -146,6 +146,7 @@ actor CloudLogUploader {
                 if let m = parsed.method { attrs["method"] = m }
                 if let ln = parsed.lineNumber { attrs["lineNumber"] = ln }
                 if let s = parsed.source { attrs["source"] = s }
+                if let b = parsed.build { attrs["build"] = b }
                 let msg = truncateMessage(parsed.message)
                 return CloudLogEvent(message: msg, dt: parsed.dt, attributes: attrs, raw: entry)
             } else {

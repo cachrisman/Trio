@@ -13,6 +13,8 @@ enum ComplicationLogBuffer {
     private static let queue = DispatchQueue(label: "ComplicationLogBuffer.queue")
     private static var hasLoggedAppGroupUnavailable = false
 
+    private static let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
@@ -30,7 +32,7 @@ enum ComplicationLogBuffer {
         queue.async {
             let shortFile = (file as NSString).lastPathComponent
             let timestamp = dateFormatter.string(from: Date())
-            let entry = "[\(timestamp)] [\(shortFile):\(line)] \(function) → \(message)\n"
+            let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message)\n"
 
             guard let logURL = logFileURL() else {
                 NSLog("[ComplicationLogBuffer] %@", String(entry.dropLast()))

@@ -146,6 +146,15 @@ final class CloudLogUploadService {
         timer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
             self?.uploadNow()
         }
+
+        // Detect build change and flush immediately so backlogged lines carry the old build
+        let lastKnownBuildKey = "cloudLogUploadService.lastKnownBuild"
+        let currentBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        let lastKnownBuild = UserDefaults.standard.string(forKey: lastKnownBuildKey)
+        if lastKnownBuild != currentBuild {
+            uploadNow()
+            UserDefaults.standard.set(currentBuild, forKey: lastKnownBuildKey)
+        }
     }
 
     private func stop() {

@@ -15,23 +15,34 @@ struct CloudParsedLogLine {
     let lineNumber: String?
     /// Identifies the log source for BetterStack filtering (e.g. "complication").
     let source: String?
+    /// Build number embedded at write time, or nil for old-format lines.
+    var build: String? = nil
 }
 
 enum CloudLogLineParser {
     // iPhone format:
-    // <TIMESTAMP> [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>: <message>
+    // <TIMESTAMP> [b:<BUILD>] [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>: <message>
+    // (the [b:BUILD] token is optional for backward compatibility)
     static func parseIOS(_ entry: String) -> CloudParsedLogLine? {
         let trimmedEntry = entry.trimmingCharacters(in: .newlines)
         guard !trimmedEntry.isEmpty else { return nil }
 
         let lines = trimmedEntry.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let header = lines.first ?? trimmedEntry
+        var header = lines.first ?? trimmedEntry
         let continuation = lines.dropFirst().joined(separator: "\n")
 
         // Timestamp = first token
         let tokens = header.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
         let rawTs = tokens.first.map(String.init)
         let dt = rawTs.flatMap(normalizeTimestamp)
+
+        // Extract optional [b:BUILD] token and strip from header before category parsing
+        var extractedBuild: String?
+        if let buildRange = header.range(of: #"\[b:([^\]]+)\]"#, options: .regularExpression) {
+            let token = String(header[buildRange])
+            extractedBuild = token.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).replacingOccurrences(of: "b:", with: "")
+            header = header.replacingCharacters(in: buildRange, with: "").replacingOccurrences(of: "  ", with: " ")
+        }
 
         // Category = first [...] after timestamp
         var category: String?
@@ -81,7 +92,7 @@ enum CloudLogLineParser {
         guard let levelMatch = header.range(of: levelRegex, options: .regularExpression) else {
             // If we can't confidently parse, still return the original line as message.
             let msg = continuation.isEmpty ? header : "\(header)\n\(continuation)"
-            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg, file: file, method: method, lineNumber: lineNumber, source: nil)
+            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg, file: file, method: method, lineNumber: lineNumber, source: nil, build: extractedBuild)
         }
 
         // Extract the actual level token and normalize
@@ -116,18 +127,20 @@ enum CloudLogLineParser {
             file: file,
             method: method,
             lineNumber: lineNumber,
-            source: nil
+            source: nil,
+            build: extractedBuild
         )
     }
 
     // Watch format:
-    // [<TIMESTAMP>] [<File.swift>:<line>] <function>() → <message>
+    // [<TIMESTAMP>] [b:<BUILD>] [<File.swift>:<line>] <function>() → <message>
+    // (the [b:BUILD] token is optional for backward compatibility)
     static func parseWatch(_ entry: String) -> CloudParsedLogLine? {
         let trimmedEntry = entry.trimmingCharacters(in: .newlines)
         guard !trimmedEntry.isEmpty else { return nil }
 
         let lines = trimmedEntry.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let header = lines.first ?? trimmedEntry
+        var header = lines.first ?? trimmedEntry
         let continuation = lines.dropFirst().joined(separator: "\n")
 
         // Timestamp = first [...] token
@@ -136,6 +149,14 @@ enum CloudLogLineParser {
             let bracketed = String(header[tsRange])
             let raw = bracketed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
             dt = normalizeTimestamp(raw)
+        }
+
+        // Extract optional [b:BUILD] token and strip it from the header before further parsing
+        var extractedBuild: String?
+        if let buildRange = header.range(of: #"\[b:([^\]]+)\]"#, options: .regularExpression) {
+            let token = String(header[buildRange])
+            extractedBuild = token.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).replacingOccurrences(of: "b:", with: "")
+            header = header.replacingCharacters(in: buildRange, with: "").replacingOccurrences(of: "  ", with: " ")
         }
 
         // Category = filename from "[File.swift:line]" (without .swift extension)
@@ -201,7 +222,7 @@ enum CloudLogLineParser {
 
         let source: String? = (file == "ComplicationLogBuffer.swift" || file == "TrioComplicationDataStore.swift") ? "complication" : nil
 
-        return CloudParsedLogLine(dt: dt, category: category, level: finalLevel, message: fullMessage, file: file, method: method, lineNumber: lineNumber, source: source)
+        return CloudParsedLogLine(dt: dt, category: category, level: finalLevel, message: fullMessage, file: file, method: method, lineNumber: lineNumber, source: source, build: extractedBuild)
     }
 
     /// Normalizes "yyyy-MM-dd'T'HH:mm:ssZ" like "...+0100" into "...+01:00" if possible.

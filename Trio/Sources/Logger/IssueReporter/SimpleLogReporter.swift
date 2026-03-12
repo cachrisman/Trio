@@ -3,6 +3,7 @@ import SwiftDate
 
 final class SimpleLogReporter: IssueReporter {
     private let fileManager = FileManager.default
+    private let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
 
     private var dateFormatter: DateFormatter {
         let dateFormatter = DateFormatter()
@@ -42,7 +43,7 @@ final class SimpleLogReporter: IssueReporter {
             }
         }
 
-        let logEntry = "\(dateFormatter.string(from: now)) [\(category)] \(file.file) - \(function) - \(line) - \(message)\n"
+        let logEntry = "\(dateFormatter.string(from: now)) [b:\(build)] [\(category)] \(file.file) - \(function) - \(line) - \(message)\n"
         let data = logEntry.data(using: .utf8)!
         try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
     }

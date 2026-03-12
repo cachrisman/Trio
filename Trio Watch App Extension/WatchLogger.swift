@@ -4,6 +4,7 @@ import WatchConnectivity
 actor WatchLogger {
     static let shared = WatchLogger()
 
+    private let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
     private var logs: [String] = []
     private let maxEntries = 500
     private let flushInterval: TimeInterval = 3 * 60
@@ -12,13 +13,14 @@ actor WatchLogger {
 
     // Size caps
     private let logSizeCap = 16 * 1024 // 16 KB
-    private let maxPerPayloadFiles = 20
-    private let maxFileAge: TimeInterval = 7 * 24 * 60 * 60 // 7 days
+    private let maxPerPayloadFiles = 10
+    private let maxFileAge: TimeInterval = 48 * 60 * 60 // 48 hours
 
     private let session = WCSession.default
     private var timerTask: Task<Void, Never>?
 
     private let pendingPayloadsKey = "watchLoggerPendingPayloads"
+    private let lastKnownBuildKey = "watchLogger.lastKnownBuild"
 
     private init() {
         Task {
@@ -50,7 +52,7 @@ actor WatchLogger {
     ) async {
         let shortFile = (file as NSString).lastPathComponent
         let timestamp = dateFormatter.string(from: Date())
-        let entry = "[\(timestamp)] [\(shortFile):\(line)] \(function) → \(message)"
+        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message)"
 
         logs.append(entry)
         if logs.count > maxEntries {
@@ -171,6 +173,12 @@ actor WatchLogger {
     }
 
     func flushPersistedLogs() async {
+        let lastKnownBuild = UserDefaults.standard.string(forKey: lastKnownBuildKey)
+        if lastKnownBuild != build {
+            UserDefaults.standard.set(build, forKey: lastKnownBuildKey)
+            await log("[UPGRADE] build changed from \(lastKnownBuild ?? "nil") to \(build)", force: true)
+        }
+
         await drainComplicationLogs()
 
         let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -353,11 +361,10 @@ actor WatchLogger {
 
         pendingPayloads.append(record)
 
-        // Clean up old records (older than 7 days)
         let now = Date().timeIntervalSince1970
         pendingPayloads = pendingPayloads.filter { record in
             if let createdAt = record["createdAtEpoch"] as? TimeInterval {
-                return (now - createdAt) < (7 * 24 * 60 * 60)
+                return (now - createdAt) < maxFileAge
             }
             return true
         }
@@ -377,6 +384,38 @@ actor WatchLogger {
     /// Gets all pending payload records.
     func getPendingPayloads() async -> [[String: Any]] {
         return UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
+    }
+
+    // MARK: - Drain File Cleanup
+
+    /// Deletes drain files and pending payload records for the given payloadIds.
+    /// Idempotent: tolerates missing files, duplicate calls, and overlap between batchAck and watchLogConfirm.
+    func deleteFilesForPayloadIds(_ ids: [String]) async {
+        let fm = FileManager.default
+        let pendingPayloads = await getPendingPayloads()
+        let pendingByPayloadId = Dictionary(
+            pendingPayloads.compactMap { record -> (String, String)? in
+                guard let pid = record["payloadId"] as? String,
+                      let path = record["filePath"] as? String else { return nil }
+                return (pid, path)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let logsDir = ComplicationLogBuffer.sharedContainerURL()?.appendingPathComponent("logs", isDirectory: true)
+
+        for id in ids {
+            if let filePath = pendingByPayloadId[id] {
+                try? fm.removeItem(atPath: filePath)
+            }
+            await removePendingPayload(id)
+
+            if let logsDir {
+                let drainFile = logsDir.appendingPathComponent("complication_log.drain.\(id).txt")
+                try? fm.removeItem(at: drainFile)
+            }
+        }
+
+        await log("⌚️ Cleaned up \(ids.count) payload(s)")
     }
 
     // MARK: - Complication Log Drain
