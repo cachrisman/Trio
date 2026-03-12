@@ -1,4 +1,4 @@
-# AGENTS.md — v6
+# AGENTS.md — v7
 
 Instructions for AI agents working in this repository.
 
@@ -234,6 +234,11 @@ to the manual workflow. Common failure causes and fixes:
      Commits are applied in the order listed, so put earlier commits first.
   3. Re-run the script. Do not manually create baseline branches or generate
      patches by hand as a workaround unless explicitly told to do so.
+- **Patch baseline diverged (merge/rebase/amend on feature branch):** If the
+  feature branch was merged into or rebased/amended so the patch no longer
+  matches, cherry-pick will conflict. Use `--from-feature-branch` with
+  `--feature-branch <branch>` to regenerate the patch from the current feature
+  branch state; no rebase required.
 
 See `./scripts/mid-stack-update.sh -h` for all options.
 
@@ -341,6 +346,9 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v7 (2026-03-12)
+- **`mid-stack-update.sh` v1.5 — `--from-feature-branch`:** When the patch baseline and feature branch have diverged (e.g. merge into feature, then amend), use `--from-feature-branch` with `--feature-branch` to regenerate the patch from the current feature branch state instead of apply + cherry-pick. Documented in "Update an existing patch (mid-stack)" and script help.
 
 ### v6 (2026-03-10)
 - **Cherry-pick conflict diagnosis:** Expanded the cherry-pick conflict bullet under "Update an existing patch (mid-stack)" from a one-liner ("resolve on the feature branch") to a 3-step diagnostic procedure. Root cause is almost always missing intermediate commits — commits on the feature branch that were never cherry-picked into the patch, causing context-line mismatches. Agents must diagnose the divergence and include missing commits in `--cherry-pick`, not fall back to manual workarounds.

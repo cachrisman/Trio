@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.4)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.5)
+#
+# CHANGELOG:
+#   v1.5  Add --from-feature-branch: build update from feature branch tree
+#         (checkout/delete patch-scope files) instead of apply patch + cherry-pick.
+#         Use when patch baseline and feature branch have diverged (merge, rebase, amend).
+#   v1.4  (previous)
 #
 # DESCRIPTION:
 #   Automates the mid-stack patch update workflow documented in
@@ -55,6 +61,14 @@
 #       If not specified, the script tries feature/<patch-description> as
 #       a default. Use --no-drift-check to skip entirely.
 #
+#   --from-feature-branch
+#       Build the update branch from the current state of the feature branch
+#       (checkout or delete patch-scope files) instead of applying the current
+#       patch and cherry-picking. Use when the patch baseline and feature branch
+#       have diverged (e.g. merge into feature, then rebase/amend). Requires
+#       --feature-branch or auto-detect. Ignores --cherry-pick. New files on the
+#       feature branch that belong in this patch must be added via --extra-files.
+#
 #   --no-drift-check
 #       Skip the feature branch drift check entirely.
 #
@@ -85,6 +99,10 @@
 #   # Include extra files not in the current patch
 #   ./scripts/mid-stack-update.sh --patch 09 --cherry-pick abc1234 \
 #       --extra-files "Trio/NewFile.swift,Trio/AnotherNew.swift"
+#
+#   # Regenerate from current feature branch (no cherry-pick) after merge/amend
+#   ./scripts/mid-stack-update.sh --patch 09 --from-feature-branch \
+#       --feature-branch feature/watch-complication-improvements
 #
 # REQUIREMENTS:
 #   - Must be run from the Trio-dev worktree
@@ -149,6 +167,7 @@ PATCH_NUM=""
 CHERRY_PICKS=""
 EXTRA_FILES=""
 FEATURE_BRANCH=""
+FROM_FEATURE_BRANCH=false
 NO_DRIFT_CHECK=false
 DRY_RUN=false
 SKIP_TEST=false
@@ -179,6 +198,10 @@ while [[ $# -gt 0 ]]; do
             FEATURE_BRANCH="$2"
             shift 2
             ;;
+        --from-feature-branch)
+            FROM_FEATURE_BRANCH=true
+            shift
+            ;;
         --no-drift-check)
             NO_DRIFT_CHECK=true
             shift
@@ -205,8 +228,8 @@ done
 # Normalize patch number to 2 digits
 PATCH_NUM=$(printf '%02d' "$((10#$PATCH_NUM))")
 
-if [ "$DRY_RUN" = false ] && [ -z "$CHERRY_PICKS" ]; then
-    die "Missing required --cherry-pick <sha>. Use --dry-run to preview without changes."
+if [ "$DRY_RUN" = false ] && [ -z "$CHERRY_PICKS" ] && [ "$FROM_FEATURE_BRANCH" = false ]; then
+    die "Missing required --cherry-pick <sha>. Use --dry-run to preview without changes, or --from-feature-branch to regenerate from feature branch state."
 fi
 
 #===============================================================================
@@ -336,8 +359,8 @@ if [ -n "$EXTRA_FILES" ]; then
     done
 fi
 
-# Resolve feature branch for drift check
-if [ "$NO_DRIFT_CHECK" = true ]; then
+# Resolve feature branch for drift check (and for --from-feature-branch)
+if [ "$NO_DRIFT_CHECK" = true ] && [ "$FROM_FEATURE_BRANCH" = false ]; then
     FEATURE_BRANCH=""
     print_info "Drift check: disabled (--no-drift-check)"
 elif [ -z "$FEATURE_BRANCH" ]; then
@@ -347,6 +370,9 @@ elif [ -z "$FEATURE_BRANCH" ]; then
         FEATURE_BRANCH="$candidate"
         print_info "Drift check: auto-detected feature branch '$FEATURE_BRANCH'"
     else
+        if [ "$FROM_FEATURE_BRANCH" = true ]; then
+            die "When using --from-feature-branch, a feature branch is required. Specify --feature-branch <branch> or ensure branch '$candidate' exists."
+        fi
         print_info "Drift check: no feature branch found (tried '$candidate'). Use --feature-branch to specify."
     fi
 else
@@ -361,6 +387,10 @@ else
     fi
 fi
 
+if [ "$FROM_FEATURE_BRANCH" = true ] && [ -n "$CHERRY_PICKS" ]; then
+    print_info "Ignoring --cherry-pick when using --from-feature-branch."
+fi
+
 #===============================================================================
 # Dry run: show plan and exit
 #===============================================================================
@@ -373,23 +403,32 @@ if [ "$DRY_RUN" = true ]; then
     echo "Baseline patches:   ${#BASELINE_PATCHES[@]} (01 through $(printf '%02d' $((10#$PATCH_NUM - 1))))"
     echo "Cherry-pick SHAs:   ${CHERRY_PICKS:-<none>}"
     echo "Extra files:        ${EXTRA_FILES:-<none>}"
+    if [ "$FROM_FEATURE_BRANCH" = true ]; then
+        echo "Mode:               --from-feature-branch (feature branch: ${FEATURE_BRANCH:-<required>})"
+    fi
     echo ""
     echo "Planned steps:"
     echo "  1. Stash uncommitted changes (if any)"
     echo "  2. Create tmp/${PATCH_DESC}-baseline from dev + patches 01-$(printf '%02d' $((10#$PATCH_NUM - 1)))"
-    echo "  3. Create tmp/${PATCH_DESC}-update from baseline + $PATCH_BASENAME"
-    if [ "${#CHERRY_PICK_SHAS[@]}" -gt 0 ]; then
-        echo "  4. Cherry-pick ${#CHERRY_PICK_SHAS[@]} commit(s) and squash"
+    if [ "$FROM_FEATURE_BRANCH" = true ]; then
+        echo "  3. Create tmp/${PATCH_DESC}-update from baseline; checkout/delete patch-scope files from $FEATURE_BRANCH; single commit"
+        echo "  4. git checkout dev"
+        echo "  5. generate-patch.sh -n -s tmp/${PATCH_DESC}-update -t tmp/${PATCH_DESC}-baseline \\"
+    else
+        echo "  3. Create tmp/${PATCH_DESC}-update from baseline + $PATCH_BASENAME"
+        if [ "${#CHERRY_PICK_SHAS[@]}" -gt 0 ]; then
+            echo "  4. Cherry-pick ${#CHERRY_PICK_SHAS[@]} commit(s) and squash"
+        fi
+        echo "  5. git checkout dev"
+        echo "  6. generate-patch.sh -n -s tmp/${PATCH_DESC}-update -t tmp/${PATCH_DESC}-baseline \\"
     fi
-    echo "  5. git checkout dev"
-    echo "  6. generate-patch.sh -n -s tmp/${PATCH_DESC}-update -t tmp/${PATCH_DESC}-baseline \\"
     extra_count=${#EXTRA_FILE_LIST[@]}
     echo "       -o patches/$PATCH_BASENAME --include-files <${#EXISTING_FILES[@]}+${extra_count} files> -y"
-    echo "  7. patch-test.sh"
+    echo "  $([ "$FROM_FEATURE_BRANCH" = true ] && echo "6" || echo "7"). patch-test.sh"
     if [ -n "$FEATURE_BRANCH" ]; then
-        echo "  8. Drift check: compare patch files against $FEATURE_BRANCH"
+        echo "  $([ "$FROM_FEATURE_BRANCH" = true ] && echo "7" || echo "8"). Drift check: compare patch files against $FEATURE_BRANCH"
     fi
-    echo "  9. Cleanup tmp branches, pop stash"
+    echo "  $([ "$FROM_FEATURE_BRANCH" = true ] && echo "8" || echo "9"). Cleanup tmp branches, pop stash"
     echo ""
     echo "Include-files list (${#EXISTING_FILES[@]} from patch + ${extra_count} extra):"
     for f in "${EXISTING_FILES[@]}"; do echo "    $f"; done
@@ -538,49 +577,81 @@ else
 fi
 
 #===============================================================================
-# Step 3: Create update branch (baseline + current patch + cherry-picks)
+# Step 3: Create update branch (baseline + current patch + cherry-picks, OR from feature branch)
 #===============================================================================
 
 print_step "Create update branch: $UPDATE_BRANCH"
 
 git checkout -b "$UPDATE_BRANCH" "$BASELINE_BRANCH" || die "Failed to create $UPDATE_BRANCH"
 
-# Apply the current patch
-if ! git am --3way --keep-cr --whitespace=nowarn "$PATCH_FILE" 2>/dev/null; then
-    git am --abort 2>/dev/null || true
-    die "Failed to apply current patch: $PATCH_BASENAME
+if [ "$FROM_FEATURE_BRANCH" = true ]; then
+    # Build update from current feature branch state for patch-scope files only
+    # Use EXTRA_FILE_LIST (already parsed); ensure defined when --extra-files wasn't passed
+    [ -z "${EXTRA_FILE_LIST+set}" ] && EXTRA_FILE_LIST=()
+    PATCH_SCOPE_FILES=("${EXISTING_FILES[@]}")
+    for ef in "${EXTRA_FILE_LIST[@]}"; do
+        ef_trimmed=$(echo "$ef" | tr -d '[:space:]')
+        [ -n "$ef_trimmed" ] && PATCH_SCOPE_FILES+=("$ef_trimmed")
+    done
+    print_info "Syncing ${#PATCH_SCOPE_FILES[@]} file(s) from $FEATURE_BRANCH (checkout or delete)"
+    for f in "${PATCH_SCOPE_FILES[@]}"; do
+        [ -n "$f" ] || continue
+        if git show "$FEATURE_BRANCH:$f" >/dev/null 2>&1; then
+            git checkout "$FEATURE_BRANCH" -- "$f" 2>/dev/null || die "Failed to checkout $FEATURE_BRANCH -- $f"
+            echo "    ✓ $f (checkout)"
+        else
+            if [ -f "$f" ] || git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+                git rm -f "$f" 2>/dev/null || true
+                echo "    ✓ $f (removed — deleted on feature branch)"
+            fi
+        fi
+    done
+    if git diff --staged --quiet 2>/dev/null && git diff --quiet 2>/dev/null; then
+        die "No changes: patch-scope files already match $FEATURE_BRANCH. Nothing to regenerate."
+    else
+        git add -A 2>/dev/null || true
+        git commit -m "feat: $PATCH_DESC" || die "Failed to commit from-feature-branch state"
+        print_success "Committed current state of patch-scope files from $FEATURE_BRANCH"
+    fi
+else
+    # Apply the current patch
+    if ! git am --3way --keep-cr --whitespace=nowarn "$PATCH_FILE" 2>/dev/null; then
+        git am --abort 2>/dev/null || true
+        die "Failed to apply current patch: $PATCH_BASENAME
   The patch may need regeneration against the current baseline."
-fi
-print_success "Applied current patch: $PATCH_BASENAME"
+    fi
+    print_success "Applied current patch: $PATCH_BASENAME"
 
-#===============================================================================
-# Step 4: Cherry-pick new commits
-#===============================================================================
+    #===============================================================================
+    # Step 4: Cherry-pick new commits
+    #===============================================================================
 
-print_step "Cherry-pick ${#CHERRY_PICK_SHAS[@]} commit(s)"
+    print_step "Cherry-pick ${#CHERRY_PICK_SHAS[@]} commit(s)"
 
-for sha in "${CHERRY_PICK_SHAS[@]}"; do
-    sha_trimmed=$(echo "$sha" | tr -d '[:space:]')
-    short=$(git log -1 --format='%h %s' "$sha_trimmed" 2>/dev/null || echo "$sha_trimmed")
+    for sha in "${CHERRY_PICK_SHAS[@]}"; do
+        sha_trimmed=$(echo "$sha" | tr -d '[:space:]')
+        short=$(git log -1 --format='%h %s' "$sha_trimmed" 2>/dev/null || echo "$sha_trimmed")
 
-    if ! git cherry-pick "$sha_trimmed" 2>/dev/null; then
-        # Capture conflict info before aborting
-        conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null | sed 's/^/    /')
-        git cherry-pick --abort 2>/dev/null || true
-        if [ -n "$conflict_files" ]; then
-            die "Cherry-pick conflict on: $short
+        if ! git cherry-pick "$sha_trimmed" 2>/dev/null; then
+            # Capture conflict info before aborting
+            conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null | sed 's/^/    /')
+            git cherry-pick --abort 2>/dev/null || true
+            if [ -n "$conflict_files" ]; then
+                die "Cherry-pick conflict on: $short
   Conflicting files:
 $conflict_files
   The cherry-pick has been aborted and tmp branches cleaned up.
-  Resolve the conflict interactively on the feature branch, then re-run."
-        else
-            die "Failed to cherry-pick: $short"
+  Resolve the conflict interactively on the feature branch, then re-run.
+  If the feature branch was merged or rebased/amended and no longer matches the patch baseline, re-run with --from-feature-branch and --feature-branch <branch> to regenerate the patch from the current feature branch state."
+            else
+                die "Failed to cherry-pick: $short"
+            fi
         fi
-    fi
-    echo "    ✓ $short"
-done
+        echo "    ✓ $short"
+    done
 
-print_success "Cherry-picked ${#CHERRY_PICK_SHAS[@]} commit(s)"
+    print_success "Cherry-picked ${#CHERRY_PICK_SHAS[@]} commit(s)"
+fi
 
 #===============================================================================
 # Step 5: Squash into single commit
@@ -615,6 +686,10 @@ while IFS= read -r f; do
 done < <(git diff --name-only "$BASELINE_BRANCH".."$UPDATE_BRANCH" | sort -u)
 
 # Add extra files if specified (dedup against diff files)
+# EXTRA_FILE_LIST may be unset when --from-feature-branch was used without --extra-files
+set +u
+[ -z "${EXTRA_FILE_LIST+set}" ] && EXTRA_FILE_LIST=()
+set -u
 if [ ${#EXTRA_FILE_LIST[@]} -gt 0 ]; then
     for ef in "${EXTRA_FILE_LIST[@]}"; do
         ef_trimmed=$(echo "$ef" | tr -d '[:space:]')
@@ -912,7 +987,11 @@ echo ""
 echo -e "${BOLD}=== Mid-stack update complete ===${NC}"
 echo ""
 echo "  Updated patch:     $PATCH_BASENAME"
-echo "  Cherry-picked:     ${#CHERRY_PICK_SHAS[@]} commit(s)"
+if [ "$FROM_FEATURE_BRANCH" = true ]; then
+    echo "  Source:            feature branch ($FEATURE_BRANCH)"
+else
+    echo "  Cherry-picked:     ${#CHERRY_PICK_SHAS[@]} commit(s)"
+fi
 echo "  Files in patch:    ${#DIFF_FILES[@]}"
 echo "  Stack validation:  $([ "$SKIP_TEST" = true ] && echo "SKIPPED" || echo "PASSED")"
 echo "  Cleanup:           $([ "$DRIFT_DETECTED" = true ] && echo "BRANCHES PRESERVED (drift investigation)" || echo "COMPLETE (tmp branches deleted)")"
