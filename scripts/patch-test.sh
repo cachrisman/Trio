@@ -1,4 +1,14 @@
 #!/bin/bash
+#
+# patch-test.sh — Validate the full patch stack applies cleanly (v1.1)
+#
+# CHANGELOG:
+#   v1.1  Commit copied patches in test worktree before git am so dirty
+#         baseline patches don't cause "local changes would be overwritten"
+#         errors. Fail loudly if the sync commit fails instead of masking
+#         with || true.
+#   v1.0  Initial version.
+#
 # Removed set -e - we handle errors manually
 
 print_usage() {
@@ -177,6 +187,16 @@ while IFS= read -r p; do
   cp "$p" "$TEST_WORKTREE/patches/$(basename "$p")"
 done < "$PATCH_LIST_FILE"
 rm -f "$PATCH_LIST_FILE"
+
+# Commit copied patches so the worktree is clean before git am --3way.
+# When baseline patches have uncommitted modifications in the source repo,
+# the copy creates dirty files in the tracked patches/ directory, which
+# causes git am --3way to refuse ("local changes would be overwritten").
+(cd "$TEST_WORKTREE" && git add patches/ 2>/dev/null && \
+  git commit -m "sync patches for test" --no-verify --allow-empty 2>/dev/null) || {
+  echo "Failed to commit synced patches into test worktree"
+  exit 1
+}
 
 # Test in worktree
 cd "$TEST_WORKTREE" || {
