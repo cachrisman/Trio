@@ -178,6 +178,13 @@ while IFS= read -r p; do
 done < "$PATCH_LIST_FILE"
 rm -f "$PATCH_LIST_FILE"
 
+# Commit copied patches so the worktree is clean before git am --3way.
+# When baseline patches have uncommitted modifications in the source repo,
+# the copy creates dirty files in the tracked patches/ directory, which
+# causes git am --3way to refuse ("local changes would be overwritten").
+(cd "$TEST_WORKTREE" && git add patches/ 2>/dev/null && \
+  git commit -m "sync patches for test" --no-verify --allow-empty 2>/dev/null) || true
+
 # Test in worktree
 cd "$TEST_WORKTREE" || {
   echo "Failed to cd to worktree"
