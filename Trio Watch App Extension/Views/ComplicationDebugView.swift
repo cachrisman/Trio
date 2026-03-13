@@ -7,6 +7,13 @@ struct ComplicationDebugView: View {
     @State private var confirmationMessage = ""
     @State private var refreshTrigger = UUID()
 
+    @State private var watchLogCount: Int = 0
+    @State private var watchLogBytes: UInt64 = 0
+    @State private var drainCount: Int = 0
+    @State private var drainBytes: UInt64 = 0
+    @State private var pendingCount: Int = 0
+    @State private var isLoadingLogFiles: Bool = false
+
     private let dataStore = TrioComplicationDataStore.shared
 
     var body: some View {
@@ -18,20 +25,29 @@ struct ComplicationDebugView: View {
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 2: Reload Status
+                // SECTION 2: Log Files
+                sectionHeader("LOG FILES")
+                logFilesView
+
+                Divider().padding(.vertical, 4)
+
+                // SECTION 3: Reload Status
                 sectionHeader("RELOAD STATUS")
                 reloadStatusView
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 3: Actions
+                // SECTION 4: Actions
                 sectionHeader("ACTIONS")
                 actionsView
             }
             .padding(.horizontal, 8)
         }
         .navigationTitle("Debug")
-        .onAppear { loadSnapshot() }
+        .onAppear {
+            loadSnapshot()
+            loadLogFileStats()
+        }
         .overlay(confirmationOverlay)
         .id(refreshTrigger)
     }
@@ -226,6 +242,103 @@ struct ComplicationDebugView: View {
         .font(.caption)
     }
 
+    // MARK: - Log Files Section
+
+    private var logFilesView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Watch Logs:")
+                Spacer()
+                Text("\(watchLogCount) files, \(formatBytes(watchLogBytes))")
+                    .foregroundColor(.secondary)
+            }
+            HStack {
+                Text("Drain Files:")
+                Spacer()
+                Text("\(drainCount) files, \(formatBytes(drainBytes))")
+                    .foregroundColor(.secondary)
+            }
+            HStack {
+                Text("Pending:")
+                Spacer()
+                Text("\(pendingCount)")
+                    .foregroundColor(pendingCount > 0 ? .yellow : .secondary)
+            }
+        }
+        .font(.caption)
+    }
+
+    private func loadLogFileStats() {
+        guard !isLoadingLogFiles else { return }
+        isLoadingLogFiles = true
+        Task {
+            let fileManager = FileManager.default
+            var wlCount = 0
+            var wlBytes: UInt64 = 0
+            var dcCount = 0
+            var dcBytes: UInt64 = 0
+
+            let logDir = fileManager.urls(
+                for: .documentDirectory, in: .userDomainMask
+            ).first?.appendingPathComponent("logs", isDirectory: true)
+
+            if let logDir, let files = try? fileManager.contentsOfDirectory(
+                at: logDir, includingPropertiesForKeys: [.fileSizeKey]
+            ) {
+                for file in files
+                    where file.lastPathComponent.hasPrefix("watch_log_")
+                    && file.lastPathComponent.hasSuffix(".txt")
+                    && file.lastPathComponent != "watch_log_daily.txt" {
+                    wlCount += 1
+                    if let attrs = try? fileManager.attributesOfItem(
+                        atPath: file.path
+                    ), let size = attrs[.size] as? UInt64 {
+                        wlBytes += size
+                    }
+                }
+            }
+
+            if let containerURL = ComplicationLogBuffer
+                .sharedContainerURL() {
+                let drainsDir = containerURL.appendingPathComponent(
+                    "logs", isDirectory: true
+                )
+                if let files = try? fileManager.contentsOfDirectory(
+                    at: drainsDir, includingPropertiesForKeys: [.fileSizeKey]
+                ) {
+                    for file in files
+                        where file.lastPathComponent
+                        .hasPrefix("complication_log.drain.")
+                        && file.lastPathComponent.hasSuffix(".txt") {
+                        dcCount += 1
+                        if let attrs = try? fileManager.attributesOfItem(
+                            atPath: file.path
+                        ), let size = attrs[.size] as? UInt64 {
+                            dcBytes += size
+                        }
+                    }
+                }
+            }
+
+            let pCount = await WatchLogger.shared
+                .getPendingPayloads().count
+
+            await MainActor.run {
+                watchLogCount = wlCount
+                watchLogBytes = wlBytes
+                drainCount = dcCount
+                drainBytes = dcBytes
+                pendingCount = pCount
+                isLoadingLogFiles = false
+            }
+        }
+    }
+
+    private func formatBytes(_ bytes: UInt64) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        return "\(bytes / 1024) KB"
+    }
+
     // MARK: - Actions Section
 
     private var actionsView: some View {
@@ -268,6 +381,7 @@ struct ComplicationDebugView: View {
 
             Button {
                 loadSnapshot()
+                loadLogFileStats()
                 refreshTrigger = UUID()
                 showConfirmation(message: "🔄 Refreshed")
             } label: {
@@ -279,6 +393,7 @@ struct ComplicationDebugView: View {
             }
             .buttonStyle(.bordered)
             .tint(.gray)
+            .disabled(isLoadingLogFiles)
 
             Button {
                 runBurstSaveTest()
