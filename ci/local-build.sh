@@ -1122,21 +1122,28 @@ elif [[ -d "$PATCHES_DIR" ]]; then
   | awk -v dir="$PATCHES_DIR" '{ print dir "/" $2 }' > "$PATCH_LIST_FILE"
 
   if [[ -s "$PATCH_LIST_FILE" ]]; then
-    echo "[build] Found patches to apply. Listing patches:"
+    echo "[build] Found patches to apply:"
+    echo ""
+    printf "  %-45s  %-12s  %s\n" "PATCH" "SHA256" "FROM"
+    printf "  %-45s  %-12s  %s\n" "-----" "------" "----"
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
-      ls -l "$p" 2>/dev/null || true
+      _pname="$(basename "$p")"
+      _phash="$(shasum -a 256 "$p" 2>/dev/null | cut -c1-12)"
+      _pfrom="$(head -1 "$p" 2>/dev/null | sed 's/^From \([a-f0-9]*\).*/\1/' | cut -c1-12)"
+      printf "  %-45s  %-12s  %s\n" "$_pname" "$_phash" "$_pfrom"
     done < "$PATCH_LIST_FILE"
+    echo ""
 
     pre_patch_head="$(git -C "$BUILD_DIR" rev-parse HEAD 2>/dev/null || true)"
 
-    # Apply patches one at a time (patches may depend on previous patches)
-    # Worktree is always fresh, so no skip logic needed
     while IFS= read -r patch; do
       [[ -n "$patch" ]] || continue
-      echo "[build] Applying patch: $patch"
+      _pname="$(basename "$patch")"
+      _phash="$(shasum -a 256 "$patch" 2>/dev/null | cut -c1-12)"
+      echo "[build] Applying: $_pname (sha256:$_phash)"
       if git am --3way --keep-cr --whitespace=nowarn "$patch" >/dev/null 2>&1; then
-        echo "[build] ✅ Successfully applied patch: $patch"
+        echo "[build] ✅ Applied: $_pname"
       else
         echo "[build] ❌ Failed to apply patch: $patch"
         git am --abort >/dev/null 2>&1 || true
@@ -1335,12 +1342,23 @@ elif [[ -n "${GYM_OUTPUT_DIR:-}" && -f "$GYM_OUTPUT_DIR/Trio.ipa" ]]; then
   ipa_path_for_release="$GYM_OUTPUT_DIR/Trio.ipa"
 fi
 
+# Determine dSYM path for record-release.sh
+# Only check BUILD_DIR and GYM_OUTPUT_DIR (not ROOT_DIR, which may have a stale dSYM from a previous --build-only run)
+dsym_path_for_release=""
+if [[ -f "$BUILD_DIR/Trio.app.dSYM.zip" ]]; then
+  dsym_path_for_release="$BUILD_DIR/Trio.app.dSYM.zip"
+elif [[ -n "${GYM_OUTPUT_DIR:-}" && -f "$GYM_OUTPUT_DIR/Trio.app.dSYM.zip" ]]; then
+  dsym_path_for_release="$GYM_OUTPUT_DIR/Trio.app.dSYM.zip"
+elif [[ -n "${GYM_OUTPUT_DIR:-}" && -f "$GYM_OUTPUT_DIR/Trio.dSYM.zip" ]]; then
+  dsym_path_for_release="$GYM_OUTPUT_DIR/Trio.dSYM.zip"
+fi
+
 if [[ -n "$ipa_path_for_release" ]]; then
   # Ensure we're in the build directory (where patches are applied)
   cd "$BUILD_DIR"
   
   # Run record-release.sh (it will handle errors internally)
-  if IPA_PATH="$ipa_path_for_release" "$ROOT_DIR/scripts/record-release.sh"; then
+  if IPA_PATH="$ipa_path_for_release" DSYM_PATH="$dsym_path_for_release" "$ROOT_DIR/scripts/record-release.sh"; then
     echo "[build] Release recorded successfully."
   else
     echo "[build] WARNING: Release recording failed, but build/upload succeeded."

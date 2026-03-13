@@ -4,9 +4,12 @@ set -euo pipefail
 # record-release.sh
 # Creates/updates GitHub Release for shipped builds (after TestFlight upload)
 #
-# Version: 1.2.0
+# Version: 1.3.0
 #
 # Changelog:
+#   1.3.0 - Upload dSYM zip to both public and private GitHub releases
+#         - Add DSYM_PATH env var and auto-detection via find_dsym_path()
+#         - dSYM upload is best-effort (warns but does not fail if missing)
 #   1.2.0 - Add private backup release in cachrisman/trio-builds-private
 #         - Creates/updates draft release with same tag/title/body as public release
 #         - Uploads manifest JSON and IPA file as assets
@@ -23,12 +26,13 @@ Records a shipped build by:
   - Generating manifest JSON
   - Creating/updating Git tag
   - Creating/updating GitHub Release (public)
-  - Uploading manifest as release asset
-  - Creating/updating private backup release (draft) with manifest and IPA assets
+  - Uploading manifest and dSYM as release assets
+  - Creating/updating private backup release (draft) with manifest, IPA, and dSYM assets
 
 Environment variables:
   GH_PAT                      - GitHub Personal Access Token (required)
   IPA_PATH                    - Path to built IPA (auto-detected if not set)
+  DSYM_PATH                   - Path to dSYM zip (auto-detected if not set; optional)
   GITHUB_REPOSITORY           - Repository in owner/name format (auto-detected in CI)
   TRIO_BUILDS_PRIVATE_REPO    - Private backup repository (default: cachrisman/trio-builds-private)
 USAGE
@@ -226,6 +230,39 @@ find_ipa_path() {
 
   echo "ERROR: IPA not found. Set IPA_PATH or ensure Trio.ipa exists in expected location" >&2
   exit 1
+}
+
+# Find dSYM zip path (best-effort; returns empty string if not found)
+find_dsym_path() {
+  if [[ -n "${DSYM_PATH:-}" ]]; then
+    if [[ -f "$DSYM_PATH" ]]; then
+      echo "$DSYM_PATH"
+    else
+      echo "WARNING: DSYM_PATH set but file not found: $DSYM_PATH" >&2
+    fi
+    return
+  fi
+
+  local candidates=(
+    "Trio.app.dSYM.zip"
+    "build/output/Trio.app.dSYM.zip"
+    "build/output/Trio.dSYM.zip"
+    "artifacts/Trio.app.dSYM.zip"
+    "build/artifacts/Trio.app.dSYM.zip"
+    "$(pwd)/Trio.app.dSYM.zip"
+    "$(pwd)/build/output/Trio.app.dSYM.zip"
+    "$(pwd)/artifacts/Trio.app.dSYM.zip"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      echo "$candidate"
+      return
+    fi
+  done
+
+  # Not found — this is non-fatal
+  echo ""
 }
 
 # Get patch metadata (same format as capture-build-details.sh)
@@ -442,7 +479,7 @@ $stage_summary
   echo "$body"
 }
 
-# Create/update private backup release (draft) with manifest and IPA assets
+# Create/update private backup release (draft) with manifest, IPA, and dSYM assets
 record_private_backup_release() {
   local private_repo="$1"
   local tag="$2"
@@ -450,6 +487,7 @@ record_private_backup_release() {
   local body="$4"
   local manifest_path="$5"
   local ipa_path="$6"
+  local dsym_path="${7:-}"
 
   echo "[record-release] Creating/updating private backup release (draft)..."
 
@@ -482,12 +520,16 @@ record_private_backup_release() {
     fi
   fi
 
-  # Upload manifest and IPA as assets (replace if exists)
-  echo "[record-release] Uploading manifest and IPA to private backup release..."
+  # Build asset list: manifest + IPA + optional dSYM
+  local assets=("$manifest_path" "$ipa_path")
+  if [[ -n "$dsym_path" && -f "$dsym_path" ]]; then
+    assets+=("$dsym_path")
+  fi
+
+  echo "[record-release] Uploading assets to private backup release..."
   if ! gh release upload "$tag" \
     --repo "$private_repo" \
-    "$manifest_path" \
-    "$ipa_path" \
+    "${assets[@]}" \
     --clobber \
     >/dev/null 2>&1; then
     echo "ERROR: Failed to upload assets to private backup release" >&2
@@ -519,6 +561,14 @@ main() {
   local ipa_path
   ipa_path="$(find_ipa_path)"
   echo "[record-release] IPA path: $ipa_path"
+
+  local dsym_path
+  dsym_path="$(find_dsym_path)"
+  if [[ -n "$dsym_path" ]]; then
+    echo "[record-release] dSYM path: $dsym_path"
+  else
+    echo "[record-release] WARNING: dSYM zip not found — release will not include debug symbols"
+  fi
 
   local version_build
   version_build="$(extract_ipa_info "$ipa_path")"
@@ -681,20 +731,25 @@ PYTHON_EOF
     }
   fi
 
-  # Upload manifest as asset (replace if exists)
-  echo "[record-release] Uploading manifest as release asset..."
+  # Build public release asset list: manifest + optional dSYM
+  local public_assets=("$manifest_path")
+  if [[ -n "$dsym_path" && -f "$dsym_path" ]]; then
+    public_assets+=("$dsym_path")
+  fi
+
+  echo "[record-release] Uploading release assets..."
   gh release upload "$tag" \
     --repo "$repo_info" \
-    "$manifest_path" \
+    "${public_assets[@]}" \
     --clobber \
     >/dev/null 2>&1 || {
-    echo "WARNING: Failed to upload manifest asset" >&2
+    echo "WARNING: Failed to upload release assets" >&2
   }
 
-  # Create/update private backup release (draft) with manifest and IPA
+  # Create/update private backup release (draft) with manifest, IPA, and dSYM
   local private_repo="${TRIO_BUILDS_PRIVATE_REPO:-cachrisman/trio-builds-private}"
   local private_release_url
-  private_release_url="$(record_private_backup_release "$private_repo" "$tag" "$release_title" "$release_body" "$manifest_path" "$ipa_path")"
+  private_release_url="$(record_private_backup_release "$private_repo" "$tag" "$release_title" "$release_body" "$manifest_path" "$ipa_path" "$dsym_path")"
 
   # Print release URLs
   local release_url
