@@ -1,6 +1,6 @@
 # Cursor Round 2: Audit Results + Implementation Guide
-**Version:** 1.9 | **Date:** 2026-03-11
-**Prerequisite:** `complication-freshness-remediation-plan.md` v1.23 — all prompts resolved, plan is implementation-ready
+**Version:** 1.11 | **Date:** 2026-03-13
+**Prerequisite:** `complication-freshness-remediation-plan.md` v1.25 — all prompts resolved, plan is implementation-ready
 
 ---
 
@@ -159,11 +159,11 @@ BetterStack validation query must filter `transfer_path IN ('complication', 'use
 
 **Design note:** We gate only the budget-consuming path so that the 50/day budget is spent when the complication is actually stale. `sendMessage` always fires to keep the watch app UI fresh and has no budget cost.
 
-> ## 🛑 STOP — Build/Deploy + Observe 48h
-> 1. **Code review** this PR — verify helper (exact 4-step pattern); no Watch Shared import. Age gate applies ONLY to `transferCurrentComplicationUserInfo` (budget-consuming), NOT to sendMessage and NOT to userInfo fallback.
-> 2. **Build and deploy** to device
-> 3. **Observe 48h:** Track daily budget use (remaining budget should not drain in first 2–3h after reset); track `complication_transfer_age_gate_skipped` and confirm transfers happen when `complication_age_seconds` > 600. Compare by reset window (e.g. first 4h after reset vs rest of day) since the goal is “don’t burn 50 by breakfast.”
-> 4. **Tuning:** If budget still drains too fast → consider increasing threshold to 12m (720s). If budget remains high and staleness remains acceptable → optionally try 8m (480s).
+> ## ✅ CODE REVIEW PASSED; Step 3b deployed (builds 137-138)
+> - **Code verified:** `currentComplicationAgeSeconds()` uses exact 4-step pattern (guard suite/defaults → .infinity; lastValid; if nil return .infinity; max(0, …)); no Watch Shared import. Constant `complicationAgeGateThresholdSeconds = 600`. Age gate applied only when `remaining > 0`; budget-exhausted fallback has no age gate. `lastDispatchedGateKey` set only on actual enqueue (transferCurrentComplicationUserInfo or transferUserInfo); not set on age-gate skip or sendMessage-only.
+> - **Log taxonomy:** Age-gate skip logs `skip_reason=age_gate` with `age_seconds`, `threshold_seconds`, `gate_key`, `reading_date_epoch_seconds`. Success logs include `complication_age_seconds`, `complication_age_gate_threshold_seconds`.
+> - **Deployed:** Step 3b included in builds 137-138 (alongside cloud logging pipeline fixes). Builds 137-138 also fix the build-mislabeling problem in `CloudLogUploader` — avg C per-build queries are now reliable. See `docs/completed/logging-fixes/`.
+> - **Observation:** 48h window starts from build 137 deploy (2026-03-12). Run avg C query ~2026-03-15. If avg C <= 1.3 → skip Step 4, proceed to Step 5. If avg C > 1.3 → proceed to Step 4 (R2d).
 
 ---
 
@@ -294,6 +294,17 @@ private func currentComplicationAgeSeconds() -> TimeInterval  // Step 3b: from A
 ---
 
 ## Changelog
+
+### v1.11 — 2026-03-13 | Logging fixes context for Step 4 gate
+
+- **Step 3b:** Updated gate-passed block from "implemented" to "deployed (builds 137-138)". Added deployment note referencing cloud logging pipeline fixes and their impact on avg C measurement reliability.
+- **Step 4 gating:** Added observation window note — 48h starts from build 137 deploy (2026-03-12); run avg C query ~2026-03-15.
+- **Prerequisite:** Updated to remediation plan v1.25.
+
+### v1.10 — 2026-03-12 | Step 3b completion
+
+- **Step 3b:** Marked implemented; STOP block replaced with gate-passed block. Code verification summary (helper pattern, constant, branching, lastDispatchedGateKey rule, log taxonomy) and next step (observe 48h, then Step 4/5) documented.
+- **Prerequisite:** Updated to remediation plan v1.24.
 
 ### v1.9 — 2026-03-11 | Step 3b implementation review
 

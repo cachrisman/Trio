@@ -12,10 +12,10 @@ todos:
     content: "Step 3: R2b — Per-reading-epoch dispatch gate"
     status: completed
   - id: step3b
-    content: "Step 3b: Complication-age stale-first budget gate (T=600s)"
-    status: pending
+    content: "Step 3b: Complication-age stale-first budget gate (T=600s) — deployed builds 137-138; observing 48h from 2026-03-12"
+    status: completed
   - id: step4
-    content: "Step 4: R2d — Source-eligible send mode (conditional on Step 3 data: only if avg C > 1.3)"
+    content: "Step 4: R2d — Source-eligible send mode (conditional: only if avg C > 1.3 in build 137+ data; query ~2026-03-15)"
     status: pending
   - id: step5
     content: "Step 5: R4 — App Group safety net (applicationContext)"
@@ -28,7 +28,7 @@ isProject: false
 
 # Complication Freshness Remediation — Implementation Plan
 
-Based on [complication-freshness-implementation-guide.md](docs/complication-freshness-implementation-guide.md) Part 2, referencing [complication-freshness-remediation-plan.md](docs/complication-freshness-remediation-plan.md) v1.23 for full pseudocode.
+Based on [complication-freshness-implementation-guide.md](docs/complication-freshness-implementation-guide.md) Part 2, referencing [complication-freshness-remediation-plan.md](docs/complication-freshness-remediation-plan.md) v1.25 for full pseudocode.
 
 **Worktree layout:**
 
@@ -134,11 +134,13 @@ Stash safety: `mid-stack-update.sh` runs `git stash -u` internally and pops on e
 
 **Gate:** Code review, build/deploy, observe 48h — budget no longer drains in first 2–3h after reset; age gate applies ONLY to transferCurrentComplicationUserInfo (not sendMessage, not userInfo fallback); `complication_transfer_age_gate_skipped` present when appropriate.
 
+**Current status (2026-03-13):** Deployed in builds 137-138 (alongside cloud logging pipeline fixes). The logging fixes (`docs/completed/logging-fixes/`) resolve the build-mislabeling problem in `CloudLogUploader` — avg C per-build queries are now reliable for the first time. The 48h observation window starts from build 137 deploy (2026-03-12). Run avg C decision-gate query ~2026-03-15 using build >= 137 data only.
+
 ---
 
 ## Step 4 — R2d: Source-Eligible Send Mode (conditional on Step 3 data)
 
-**Only implement if avg C > 1.3 after Step 3.**
+**Only implement if avg C > 1.3 after Step 3 (query build >= 137 data ~2026-03-15).**
 
 **Files modified:**
 

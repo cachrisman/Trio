@@ -1,7 +1,7 @@
 # Trio watchOS Complication — Freshness Remediation Plan
 
-**Version:** 1.23 | **Date:** 2026-03-11
-**Status:** ✅ Step 3 (R2b) deployed as build 134; observing 48h; Step 3b (complication-age gate) added to sequence (not implemented yet)
+**Version:** 1.25 | **Date:** 2026-03-13
+**Status:** ✅ Step 3b deployed (builds 137-138 include Step 3b + logging pipeline fixes); observing 48h from build 137 deploy (2026-03-12) before Step 4 decision gate
 **Source data:** BetterStack source_id=1659391, build 131, 2026-03-08/09
 **Input documents:**
 - Next-Steps Report (AI/BetterStack analysis, 2026-03-09)
@@ -482,6 +482,10 @@ if !session.isReachable, readingEpochPresent, !isDuplicateDispatch {
 #### Sequence
 
 Step 3b is implemented and deployed **after** Step 3 (R2b) and **before** Step 4 (R2d). The 48h observation after Step 3 can include Step 3b in the same build, or Step 3b can ship as a follow-on PR after R2b data is collected.
+
+**Implementation status (2026-03-12):** Step 3b code complete in `AppleWatchManager.swift`. Verified: `currentComplicationAgeSeconds()` (exact 4-step pattern, no Watch Shared import), `complicationAgeGateThresholdSeconds = 600`, age gate applied only when `remaining > 0`; budget-exhausted fallback ungated; `lastDispatchedGateKey` set only on actual enqueue; skip/success logs include `skip_reason=age_gate`, `reading_date_epoch_seconds`, `complication_age_seconds`. Observe 48h (budget spread, age-gate skip volume) before Step 4.
+
+**Logging pipeline fixes (2026-03-13):** Builds 137-138 deployed with cloud logging pipeline fixes (see `docs/completed/logging-fixes/`). These fixes are directly relevant to the Step 4 decision gate because they resolve the build-mislabeling problem that made avg C per-build measurements unreliable. Before build 137, `CloudLogUploader` stamped all events with the phone's `Bundle.main` build at upload time — backlogged watch/complication logs (up to 7 days old) were attributed to the wrong build. Key fixes: `[b:BUILD]` embedded in every log line at write time; drain retention reduced from 7d to 48h; upgrade-time flush on both watch and phone; drain file ACK gap fixed via `transferUserInfo`-based confirmation pathway. The reliable observation window for the Step 4 avg C gate starts from build 137 deployment (2026-03-12).
 
 ### R2c — Settings publisher debounce tuning ⚠️ Deprioritized
 
@@ -1245,6 +1249,22 @@ This gives `timeline_entry_epoch` and `snapshot_age` at timeline-build time — 
 
 ## Changelog
 
+### v1.25 — 2026-03-13 | Logging fixes context for Step 4 gate
+
+- **Status:** Updated to reflect builds 137-138 deployment with cloud logging pipeline fixes. Step 3b is now deployed and observable with accurate build attribution.
+- **Step 3b section:** Added "Logging pipeline fixes" paragraph documenting the build-mislabeling fix and its impact on avg C measurement reliability. The 48h observation window for the Step 4 decision gate effectively starts from build 137 deployment (2026-03-12), since prior data had inaccurate build attribution.
+- **Step 4 gating criteria:** avg C query must filter to build >= 137 with `dt` after build 137 deploy time. The `[b:BUILD]` token embedded in log lines by builds 137+ ensures accurate per-build attribution.
+- **Cross-reference:** Logging fixes design doc, implementation plan, and cursor plan at `docs/completed/logging-fixes/`.
+
+---
+
+### v1.24 — 2026-03-12 | Step 3b completion
+
+- **Status:** Step 3b (complication-age stale-first budget gate) marked implemented; code review complete. Status line updated: Step 3b code complete; observe 48h before Step 4.
+- **Step 3b section:** Added "Implementation status" paragraph documenting code verification (helper pattern, constant, branching, lastDispatchedGateKey rule, log taxonomy) and next step (observe 48h).
+
+---
+
 ### v1.23 — 2026-03-11 | Nit-only consistency pass
 
 - Version bump only; no behavioral changes. Aligns with implementation guide v1.8 and Cursor plan reference. Validation Protocol Step 3b row: added skip_reason=age_gate (and duplicate_gate, missing readingEpoch) for queryability. Newline at EOF.
@@ -1704,3 +1724,23 @@ The `// (2) save must happen BEFORE forceWidgetReloadIfStale()` comment in the `
 **Observation:** The Round 2 bug (#1) was the most critical finding across both reviews. The failure mode (foreground `sendMessage` consumes the gate, suppressing the first background complication transfer for the same reading) would have been triggered on every foreground→background transition where the reading hadn't changed — a common real-world scenario.
 
 **Next gate:** Build + deploy, then observe 48h BetterStack data for `complication_transfer_gate_skipped` frequency and avg C/reading.
+
+---
+
+### Builds 137-138 — Cloud logging pipeline fixes (2026-03-12/13)
+
+**Scope:** Logging pipeline fixes — not a complication-freshness step, but directly impacts Step 4 decision gate.
+**Design doc:** `docs/completed/logging-fixes/logging-fixes-design-doc.md` v1.11
+**Implementation plan:** `docs/completed/logging-fixes/logging-fixes-implementation-plan.md` v1.14
+**Patches:** `06-cloud-logging.patch` and `09-watch-complication-improvements.patch` regenerated via `mid-stack-update.sh --from-feature-branch`
+
+**Build 137 (Phase 1, 2026-03-12):** Embed `[b:BUILD]` in all log lines, parser/uploader extraction, retention reduction (7d→48h, 20→10 files), upgrade-time flush on both watch and phone, app launch sentinels, drain file ACK fix (`batchAck` dispatch in WatchState + `transferUserInfo`-based confirmation).
+
+**Build 138 (Phase 2, 2026-03-13):** Cleanup observability (`[CLEANUP]` tags on all 7 deletion sites, `[INVENTORY]` daily health check, inline metrics with cached counts, retention summaries), `DateFormatter` caching in SimpleLogReporter and WatchLogger, watch debug view LOG FILES section, `flushToPhone` crash-safety fix (write-before-send durability).
+
+**Impact on complication-freshness observation:**
+- Before build 137, avg C per build was unreliable: `CloudLogUploader.buildCommonAttributes()` stamped `build` from `Bundle.main` at upload time. Backlogged watch logs (drain files up to 7 days old, pending payloads) were attributed to the uploading build, not the originating build. This was discovered when build 136 avg C data included events from March 10-11 with `dt` predating deployment.
+- Build 137+ embeds the true build in each log line at write time. `parseWatch()` and `parseIOS()` extract it; `CloudLogUploader` uses parsed build when present, falls back to `Bundle.main` for old-format lines.
+- The Step 4 decision gate (avg C > 1.3?) should query build >= 137 data only. Earlier builds have contaminated build attribution.
+
+**Next gate:** Observe 48h from build 137 deployment (2026-03-12). Run avg C query ~2026-03-15. If avg C <= 1.3: skip Step 4, proceed to Step 5 (R4). If avg C > 1.3: implement Step 4 (R2d).

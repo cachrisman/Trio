@@ -1,12 +1,12 @@
-From 55ba8a52fa98cd7a62f8a98b0cd234054dd32d9d Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Thu, 12 Mar 2026 16:54:36 +0100
+From 54ea8676e1924a07680223b6f44a5289194eaae4 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Fri, 13 Mar 2026 15:58:52 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
  .../ExtensionDelegate.swift                   |  34 +
  Trio Watch App Extension/TrioWatchApp.swift   |   2 +
- .../Views/ComplicationDebugView.swift         | 420 ++++++++
+ .../Views/ComplicationDebugView.swift         | 535 ++++++++++
  .../Views/TrioMainWatchView.swift             |  55 +-
  .../WatchState+Requests.swift                 |  19 +
  Trio Watch App Extension/WatchState.swift     | 642 +++++++++---
@@ -21,7 +21,7 @@ Subject: [PATCH] feat: watch-complication-improvements
  Trio/Resources/TrioWatch.entitlements         |  10 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   6 +-
  .../WatchManager/AppleWatchManager.swift      | 480 +++++++--
- 17 files changed, 3175 insertions(+), 343 deletions(-)
+ 17 files changed, 3289 insertions(+), 344 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -86,10 +86,10 @@ index ccc8911ca..3b86e2547 100644
      init() {
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
 new file mode 100644
-index 000000000..b84d0fda0
+index 000000000..e04997f68
 --- /dev/null
 +++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,535 @@
 +import SwiftUI
 +import WatchKit
 +
@@ -98,6 +98,13 @@ index 000000000..b84d0fda0
 +    @State private var showConfirmation = false
 +    @State private var confirmationMessage = ""
 +    @State private var refreshTrigger = UUID()
++
++    @State private var watchLogCount: Int = 0
++    @State private var watchLogBytes: UInt64 = 0
++    @State private var drainCount: Int = 0
++    @State private var drainBytes: UInt64 = 0
++    @State private var pendingCount: Int = 0
++    @State private var isLoadingLogFiles: Bool = false
 +
 +    private let dataStore = TrioComplicationDataStore.shared
 +
@@ -110,20 +117,29 @@ index 000000000..b84d0fda0
 +
 +                Divider().padding(.vertical, 4)
 +
-+                // SECTION 2: Reload Status
++                // SECTION 2: Log Files
++                sectionHeader("LOG FILES")
++                logFilesView
++
++                Divider().padding(.vertical, 4)
++
++                // SECTION 3: Reload Status
 +                sectionHeader("RELOAD STATUS")
 +                reloadStatusView
 +
 +                Divider().padding(.vertical, 4)
 +
-+                // SECTION 3: Actions
++                // SECTION 4: Actions
 +                sectionHeader("ACTIONS")
 +                actionsView
 +            }
 +            .padding(.horizontal, 8)
 +        }
 +        .navigationTitle("Debug")
-+        .onAppear { loadSnapshot() }
++        .onAppear {
++            loadSnapshot()
++            loadLogFileStats()
++        }
 +        .overlay(confirmationOverlay)
 +        .id(refreshTrigger)
 +    }
@@ -318,6 +334,103 @@ index 000000000..b84d0fda0
 +        .font(.caption)
 +    }
 +
++    // MARK: - Log Files Section
++
++    private var logFilesView: some View {
++        VStack(alignment: .leading, spacing: 4) {
++            HStack {
++                Text("Watch Logs:")
++                Spacer()
++                Text("\(watchLogCount) files, \(formatBytes(watchLogBytes))")
++                    .foregroundColor(.secondary)
++            }
++            HStack {
++                Text("Drain Files:")
++                Spacer()
++                Text("\(drainCount) files, \(formatBytes(drainBytes))")
++                    .foregroundColor(.secondary)
++            }
++            HStack {
++                Text("Pending:")
++                Spacer()
++                Text("\(pendingCount)")
++                    .foregroundColor(pendingCount > 0 ? .yellow : .secondary)
++            }
++        }
++        .font(.caption)
++    }
++
++    private func loadLogFileStats() {
++        guard !isLoadingLogFiles else { return }
++        isLoadingLogFiles = true
++        Task {
++            let fileManager = FileManager.default
++            var wlCount = 0
++            var wlBytes: UInt64 = 0
++            var dcCount = 0
++            var dcBytes: UInt64 = 0
++
++            let logDir = fileManager.urls(
++                for: .documentDirectory, in: .userDomainMask
++            ).first?.appendingPathComponent("logs", isDirectory: true)
++
++            if let logDir, let files = try? fileManager.contentsOfDirectory(
++                at: logDir, includingPropertiesForKeys: [.fileSizeKey]
++            ) {
++                for file in files
++                    where file.lastPathComponent.hasPrefix("watch_log_")
++                    && file.lastPathComponent.hasSuffix(".txt")
++                    && file.lastPathComponent != "watch_log_daily.txt" {
++                    wlCount += 1
++                    if let attrs = try? fileManager.attributesOfItem(
++                        atPath: file.path
++                    ), let size = attrs[.size] as? UInt64 {
++                        wlBytes += size
++                    }
++                }
++            }
++
++            if let containerURL = ComplicationLogBuffer
++                .sharedContainerURL() {
++                let drainsDir = containerURL.appendingPathComponent(
++                    "logs", isDirectory: true
++                )
++                if let files = try? fileManager.contentsOfDirectory(
++                    at: drainsDir, includingPropertiesForKeys: [.fileSizeKey]
++                ) {
++                    for file in files
++                        where file.lastPathComponent
++                        .hasPrefix("complication_log.drain.")
++                        && file.lastPathComponent.hasSuffix(".txt") {
++                        dcCount += 1
++                        if let attrs = try? fileManager.attributesOfItem(
++                            atPath: file.path
++                        ), let size = attrs[.size] as? UInt64 {
++                            dcBytes += size
++                        }
++                    }
++                }
++            }
++
++            let pCount = await WatchLogger.shared
++                .getPendingPayloads().count
++
++            await MainActor.run {
++                watchLogCount = wlCount
++                watchLogBytes = wlBytes
++                drainCount = dcCount
++                drainBytes = dcBytes
++                pendingCount = pCount
++                isLoadingLogFiles = false
++            }
++        }
++    }
++
++    private func formatBytes(_ bytes: UInt64) -> String {
++        if bytes < 1024 { return "\(bytes) B" }
++        return "\(bytes / 1024) KB"
++    }
++
 +    // MARK: - Actions Section
 +
 +    private var actionsView: some View {
@@ -360,6 +473,7 @@ index 000000000..b84d0fda0
 +
 +            Button {
 +                loadSnapshot()
++                loadLogFileStats()
 +                refreshTrigger = UUID()
 +                showConfirmation(message: "🔄 Refreshed")
 +            } label: {
@@ -371,6 +485,7 @@ index 000000000..b84d0fda0
 +            }
 +            .buttonStyle(.bordered)
 +            .tint(.gray)
++            .disabled(isLoadingLogFiles)
 +
 +            Button {
 +                runBurstSaveTest()
@@ -2337,10 +2452,10 @@ index 000000000..e4bce5153
 +    }
 +#endif
 diff --git a/Trio Watch Shared/ComplicationLogBuffer.swift b/Trio Watch Shared/ComplicationLogBuffer.swift
-index 469f91f5c..528bbee31 100644
+index 31b8ea095..528bbee31 100644
 --- a/Trio Watch Shared/ComplicationLogBuffer.swift	
 +++ b/Trio Watch Shared/ComplicationLogBuffer.swift	
-@@ -1,78 +1,270 @@
+@@ -1,19 +1,113 @@
  import Foundation
 +#if os(watchOS)
 +import WatchKit
@@ -2416,6 +2531,7 @@ index 469f91f5c..528bbee31 100644
 +    #if WIDGET_EXTENSION
      private static var hasLoggedAppGroupUnavailable = false
  
+-    private static let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
 +    #if os(watchOS)
 +    private static var hasEnabledBatteryMonitoring = false
 +
@@ -2455,10 +2571,10 @@ index 469f91f5c..528bbee31 100644
 +    #endif
 +    #endif
 +    private static var hasLoggedFileAppendStatus = false
-+
+ 
      private static let dateFormatter: DateFormatter = {
          let formatter = DateFormatter()
-         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+@@ -21,60 +115,156 @@ enum ComplicationLogBuffer {
          return formatter
      }()
  
@@ -2475,7 +2591,7 @@ index 469f91f5c..528bbee31 100644
 -        queue.async {
 -            let shortFile = (file as NSString).lastPathComponent
 -            let timestamp = dateFormatter.string(from: Date())
--            let entry = "[\(timestamp)] [\(shortFile):\(line)] \(function) → \(message)\n"
+-            let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message)\n"
 -
 -            guard let logURL = logFileURL() else {
 -                NSLog("[ComplicationLogBuffer] %@", String(entry.dropLast()))
@@ -2650,7 +2766,7 @@ index 469f91f5c..528bbee31 100644
      private static func truncateKeepingNewest(at url: URL) {
          guard let data = try? Data(contentsOf: url),
                let content = String(data: data, encoding: .utf8) else { return }
-@@ -93,9 +285,9 @@ enum ComplicationLogBuffer {
+@@ -95,9 +285,9 @@ enum ComplicationLogBuffer {
          let newContent = marker + keptLines.map { $0 + "\n" }.joined()
          try? newContent.write(to: url, atomically: true, encoding: .utf8)
      }
@@ -2662,7 +2778,7 @@ index 469f91f5c..528bbee31 100644
      /// Returns the log file URL in the App Group container, or nil if unavailable.
      static func logFileURL() -> URL? {
          guard let containerURL = sharedContainerURL() else { return nil }
-@@ -104,7 +296,7 @@ enum ComplicationLogBuffer {
+@@ -106,7 +296,7 @@ enum ComplicationLogBuffer {
              .appendingPathComponent(logFileName, isDirectory: false)
      }
  
@@ -2671,7 +2787,7 @@ index 469f91f5c..528bbee31 100644
      static func sharedContainerURL() -> URL? {
          var bundle: Bundle = .main
          let classBundle = Bundle(for: _BundleAnchor.self)
-@@ -116,8 +308,7 @@ enum ComplicationLogBuffer {
+@@ -118,8 +308,7 @@ enum ComplicationLogBuffer {
          return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
      }
  
@@ -2681,7 +2797,7 @@ index 469f91f5c..528bbee31 100644
      private static func appGroupID(forTeamID teamID: String) -> String {
          "group.org.nightscout.\(teamID).trio.trio-app-group"
      }
-@@ -151,4 +342,4 @@ enum ComplicationLogBuffer {
+@@ -153,4 +342,4 @@ enum ComplicationLogBuffer {
  }
  
  /// Anchor class for Bundle(for:) lookup since the enum has no instances.
