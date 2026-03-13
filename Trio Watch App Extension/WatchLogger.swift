@@ -21,6 +21,12 @@ actor WatchLogger {
 
     private let pendingPayloadsKey = "watchLoggerPendingPayloads"
     private let lastKnownBuildKey = "watchLogger.lastKnownBuild"
+    private let lastInventoryKey = "WatchLogger.lastInventoryTimestamp"
+
+    // E3: Inline metrics cache (10s TTL)
+    private var cachedWatchLogFiles: Int = 0
+    private var cachedDrainFiles: Int = 0
+    private var cachedCountsTimestamp: Date = .distantPast
 
     private init() {
         Task {
@@ -28,11 +34,74 @@ actor WatchLogger {
         }
     }
 
-    private var dateFormatter: DateFormatter {
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
         return formatter
+    }()
+
+    // MARK: - File-removal helpers
+
+    struct RemoveResult {
+        let outcome: String // "deleted" | "missing" | "error"
+        let error: String? // nil → result=ok
+        var succeeded: Bool { error == nil }
     }
+
+    static func removeFileTracked(at url: URL) -> RemoveResult {
+        do {
+            try FileManager.default.removeItem(at: url)
+            return RemoveResult(outcome: "deleted", error: nil)
+        } catch {
+            let nsErr = error as NSError
+            if nsErr.domain == NSCocoaErrorDomain && nsErr.code == 4 {
+                return RemoveResult(outcome: "missing", error: nil)
+            }
+            return RemoveResult(
+                outcome: "error",
+                error: sanitizeError(error)
+            )
+        }
+    }
+
+    static func removeFileTracked(atPath path: String) -> RemoveResult {
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            return RemoveResult(outcome: "deleted", error: nil)
+        } catch {
+            let nsErr = error as NSError
+            if nsErr.domain == NSCocoaErrorDomain && nsErr.code == 4 {
+                return RemoveResult(outcome: "missing", error: nil)
+            }
+            return RemoveResult(
+                outcome: "error",
+                error: sanitizeError(error)
+            )
+        }
+    }
+
+    /// Best-effort removal: true = gone (deleted or already absent),
+    /// false = unexpected error.
+    static func removeFileQuietly(at url: URL) -> Bool {
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        } catch {
+            let nsErr = error as NSError
+            return nsErr.domain == NSCocoaErrorDomain && nsErr.code == 4
+        }
+    }
+
+    static func sanitizeError(_ error: Error) -> String {
+        let nsErr = error as NSError
+        let raw = "\(nsErr.domain)_\(nsErr.code)"
+        let sanitized = raw
+            .replacingOccurrences(of: " ", with: "_")
+            .filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
+        return String(sanitized.prefix(50))
+    }
+
+    // MARK: - Timer
 
     private func startFlushTimer() async {
         timerTask = Task {
@@ -43,6 +112,8 @@ actor WatchLogger {
         }
     }
 
+    // MARK: - Logging
+
     func log(
         _ message: String,
         force: Bool = false,
@@ -51,7 +122,7 @@ actor WatchLogger {
         line: Int = #line
     ) async {
         let shortFile = (file as NSString).lastPathComponent
-        let timestamp = dateFormatter.string(from: Date())
+        let timestamp = Self.dateFormatter.string(from: Date())
         let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message)"
 
         logs.append(entry)
@@ -61,7 +132,6 @@ actor WatchLogger {
 
         print(entry)
 
-        // Also append to daily log for local debugging
         await appendToDailyLog(entry)
 
         await flushIfNeeded(force: force)
@@ -69,10 +139,13 @@ actor WatchLogger {
 
     /// Appends text to the daily local debug log (never sent to phone).
     func appendToDailyLog(_ text: String) async {
-        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("logs", isDirectory: true)
+        let logDir = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask
+        ).first!.appendingPathComponent("logs", isDirectory: true)
 
-        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            at: logDir, withIntermediateDirectories: true
+        )
 
         let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
         let logEntry = text + "\n"
@@ -88,9 +161,13 @@ actor WatchLogger {
         }
     }
 
+    // MARK: - Flush
+
     func flushIfNeeded(force: Bool = false) async {
         let now = Date()
-        let shouldFlush = force || now.timeIntervalSince(lastFlush) >= flushInterval || logs.count >= flushSizeThreshold
+        let shouldFlush = force
+            || now.timeIntervalSince(lastFlush) >= flushInterval
+            || logs.count >= flushSizeThreshold
 
         if shouldFlush {
             await flushToPhone()
@@ -98,259 +175,363 @@ actor WatchLogger {
     }
 
     private func flushToPhone() async {
-        guard !logs.isEmpty else {
-            return
-        }
+        guard !logs.isEmpty else { return }
 
-        // Capture logsToSend BEFORE sending
+        updateCachedCountsIfStale()
+        await logFileInventory()
+
         var logsToSend = logs.joined(separator: "\n")
 
-        // Truncate to size cap
         if logsToSend.utf8.count > logSizeCap {
-            let cappedData = logsToSend.data(using: .utf8)?.prefix(logSizeCap) ?? Data()
-            logsToSend = String(data: cappedData, encoding: .utf8) ?? String(logsToSend.prefix(logSizeCap))
+            let cappedData = logsToSend.data(using: .utf8)?.prefix(logSizeCap)
+                ?? Data()
+            logsToSend = String(data: cappedData, encoding: .utf8)
+                ?? String(logsToSend.prefix(logSizeCap))
         }
 
-        // Generate payloadId
         let payloadId = UUID().uuidString
 
-        // Write to per-payload file BEFORE sending
-        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("logs", isDirectory: true)
-        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+        let logDir = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask
+        ).first!.appendingPathComponent("logs", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: logDir, withIntermediateDirectories: true
+        )
 
-        let perPayloadFile = logDir.appendingPathComponent("watch_log_\(payloadId).txt")
+        let perPayloadFile = logDir.appendingPathComponent(
+            "watch_log_\(payloadId).txt"
+        )
         if let data = logsToSend.data(using: .utf8) {
             try? data.write(to: perPayloadFile)
         }
 
-        // Clear in-memory logs ONLY after file write
         logs.removeAll()
         lastFlush = Date()
 
-        // Create envelope
         let envelope: [String: Any] = [
             "type": "watchLogs",
             "payloadId": payloadId,
             "data": logsToSend
         ]
 
-        // Do NOT activate session - WatchState owns activation
         if session.isReachable && session.activationState == .activated {
-            // Use sendMessage with replyHandler for immediate ACK
             let filePath = perPayloadFile.path
+            await storePendingPayload(
+                payloadId: payloadId,
+                type: "watchLogs",
+                filePath: filePath
+            )
             session.sendMessage(
                 envelope,
                 replyHandler: { reply in
                     Task {
-                        // Check if ACK received
                         if let ackType = reply["type"] as? String,
                            ackType == "ack",
-                           let ackPayloadId = reply["payloadId"] as? String,
-                           ackPayloadId == payloadId {
-                            // ACK received - delete file
-                            try? FileManager.default.removeItem(at: perPayloadFile)
-                            await WatchLogger.shared.removePendingPayload(payloadId)
-                            await WatchLogger.shared.log("⌚️ Logs ACK received from phone for payloadId: \(payloadId)")
+                           let ackId = reply["payloadId"] as? String,
+                           ackId == payloadId {
+                            let res = WatchLogger.removeFileTracked(
+                                at: perPayloadFile
+                            )
+                            if res.succeeded {
+                                await WatchLogger.shared
+                                    .removePendingPayload(payloadId)
+                            }
+                            await WatchLogger.shared
+                                .logCleanup(
+                                    path: "ack_reply", flow: "flush",
+                                    artifact: "watch_log",
+                                    payloadId: payloadId,
+                                    result: res
+                                )
                         }
                     }
                 },
                 errorHandler: { error in
                     Task {
-                        await WatchLogger.shared.log("⌚️ Failed to send logs to phone: \(error.localizedDescription)")
-                        // Keep file, mark as pending for retry
-                        await WatchLogger.shared.storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
+                        await WatchLogger.shared.log(
+                            "⌚️ Failed to send logs: "
+                                + error.localizedDescription
+                        )
                     }
                 }
             )
         } else {
-            // Not reachable - persist locally and mark as pending
-            await storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: perPayloadFile.path)
-            // Optionally use transferUserInfo for background delivery
+            await storePendingPayload(
+                payloadId: payloadId,
+                type: "watchLogs",
+                filePath: perPayloadFile.path
+            )
             _ = session.transferUserInfo(envelope)
-            await log("⌚️ Logs queued for background delivery to phone (payloadId: \(payloadId))")
+            await log(
+                "⌚️ Logs queued for background delivery"
+                    + " (payloadId: \(payloadId))"
+                    + " watch_log_files=\(cachedWatchLogFiles)"
+                    + " drain_files=\(cachedDrainFiles)"
+            )
         }
     }
 
+    // MARK: - Persisted log flush + retention
+
     func flushPersistedLogs() async {
-        let lastKnownBuild = UserDefaults.standard.string(forKey: lastKnownBuildKey)
+        let lastKnownBuild = UserDefaults.standard.string(
+            forKey: lastKnownBuildKey
+        )
         if lastKnownBuild != build {
             UserDefaults.standard.set(build, forKey: lastKnownBuildKey)
-            await log("[UPGRADE] build changed from \(lastKnownBuild ?? "nil") to \(build)", force: true)
+            await log(
+                "[UPGRADE] build changed"
+                    + " from \(lastKnownBuild ?? "nil") to \(build)",
+                force: true
+            )
         }
+
+        updateCachedCountsIfStale()
+        await logFileInventory()
 
         await drainComplicationLogs()
 
-        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("logs", isDirectory: true)
+        let logDir = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask
+        ).first!.appendingPathComponent("logs", isDirectory: true)
 
-        // Scan for per-payload log files
-        guard let files = try? FileManager.default.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]) else {
-            return
-        }
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: logDir,
+            includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]
+        ) else { return }
 
         let perPayloadFiles = files.filter { file in
-            file.lastPathComponent.hasPrefix("watch_log_") &&
-            file.lastPathComponent.hasSuffix(".txt") &&
-            file.lastPathComponent != "watch_log_daily.txt"
+            file.lastPathComponent.hasPrefix("watch_log_")
+                && file.lastPathComponent.hasSuffix(".txt")
+                && file.lastPathComponent != "watch_log_daily.txt"
         }
 
-        // Apply retention caps
+        let validFiles = await applyWatchLogRetention(
+            perPayloadFiles: perPayloadFiles
+        )
+
+        guard session.isReachable,
+              session.activationState == .activated else { return }
+
+        let pendingPayloads = await getPendingPayloads()
+        let pendingIds = pendingPayloads.compactMap {
+            $0["payloadId"] as? String
+        }
+
+        if !pendingIds.isEmpty {
+            let queryEnvelope: [String: Any] = [
+                "type": "queryAcks",
+                "pendingIds": pendingIds
+            ]
+            session.sendMessage(
+                queryEnvelope,
+                replyHandler: { reply in
+                    Task {
+                        if let t = reply["type"] as? String,
+                           t == "batchAck",
+                           let ackIds = reply["ackIds"] as? [String] {
+                            var errCount = 0
+                            for ackId in ackIds {
+                                let path = logDir.appendingPathComponent(
+                                    "watch_log_\(ackId).txt"
+                                )
+                                if WatchLogger.removeFileQuietly(at: path) {
+                                    await WatchLogger.shared
+                                        .removePendingPayload(ackId)
+                                } else {
+                                    errCount += 1
+                                }
+                            }
+                            if !ackIds.isEmpty {
+                                let result = errCount > 0 ? "err" : "ok"
+                                await WatchLogger.shared.log(
+                                    "⌚️ [CLEANUP] path=query_acks"
+                                        + " artifact=watch_log"
+                                        + " count=\(ackIds.count)"
+                                        + " result=\(result)"
+                                )
+                            }
+                            await WatchLogger.shared
+                                .resendPendingPayloads()
+                        }
+                    }
+                },
+                errorHandler: { error in
+                    Task {
+                        await WatchLogger.shared.log(
+                            "⌚️ Failed to query ACKs: "
+                                + error.localizedDescription
+                        )
+                        await WatchLogger.shared.resendPendingPayloads()
+                    }
+                }
+            )
+        } else {
+            await resendPendingPayloads()
+        }
+    }
+
+    /// Deletes age-expired and excess watch_log files, emits a
+    /// [CLEANUP] retention summary when any files are removed.
+    /// Returns the surviving file list.
+    private func applyWatchLogRetention(
+        perPayloadFiles: [URL]
+    ) async -> [URL] {
         let now = Date()
         var validFiles: [URL] = []
-        var filesToDelete: [URL] = []
+        var expiredFiles: [URL] = []
+        var oldestDeletedAge: TimeInterval = 0
 
         for file in perPayloadFiles {
-            // Check age
-            if let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
-               let creationDate = attributes[.creationDate] as? Date {
-                let age = now.timeIntervalSince(creationDate)
+            if let attrs = try? FileManager.default.attributesOfItem(
+                atPath: file.path
+            ),
+                let created = attrs[.creationDate] as? Date {
+                let age = now.timeIntervalSince(created)
                 if age > maxFileAge {
-                    filesToDelete.append(file)
+                    expiredFiles.append(file)
+                    oldestDeletedAge = max(oldestDeletedAge, age)
                     continue
                 }
             }
             validFiles.append(file)
         }
 
-        // Delete old files
-        for file in filesToDelete {
-            try? FileManager.default.removeItem(at: file)
-        }
+        var deletedCount = 0
+        var errCount = 0
 
-        // Enforce max files (keep most recent)
-        if validFiles.count > maxPerPayloadFiles {
-            // Sort by creation date, keep most recent
-            let sortedFiles = validFiles.sorted { file1, file2 in
-                let date1 = ((try? FileManager.default.attributesOfItem(atPath: file1.path))?[.creationDate] as? Date) ?? Date.distantPast
-                let date2 = ((try? FileManager.default.attributesOfItem(atPath: file2.path))?[.creationDate] as? Date) ?? Date.distantPast
-                return date1 > date2
-            }
-            let filesToRemove = sortedFiles.suffix(validFiles.count - maxPerPayloadFiles)
-            for file in filesToRemove {
-                try? FileManager.default.removeItem(at: file)
-            }
-            validFiles = Array(sortedFiles.prefix(maxPerPayloadFiles))
-        }
-
-        // If reachable, query ACKs first, then resend remaining files
-        if session.isReachable && session.activationState == .activated {
-            // 1. Query ACKs for pending payloads
-            let pendingPayloads = await getPendingPayloads()
-            let pendingIds = pendingPayloads.compactMap { $0["payloadId"] as? String }
-
-            if !pendingIds.isEmpty {
-                let queryEnvelope: [String: Any] = [
-                    "type": "queryAcks",
-                    "pendingIds": pendingIds
-                ]
-
-                session.sendMessage(
-                    queryEnvelope,
-                    replyHandler: { reply in
-                        Task {
-                            // Handle batchAck response
-                            if let batchAckType = reply["type"] as? String,
-                               batchAckType == "batchAck",
-                               let ackIds = reply["ackIds"] as? [String] {
-                                // Delete acknowledged files
-                                for ackId in ackIds {
-                                    let filePath = logDir.appendingPathComponent("watch_log_\(ackId).txt")
-                                    try? FileManager.default.removeItem(at: filePath)
-                                    await WatchLogger.shared.removePendingPayload(ackId)
-                                }
-                                // Resend remaining files
-                                await WatchLogger.shared.resendPendingPayloads()
-                            }
-                        }
-                    },
-                    errorHandler: { error in
-                        Task {
-                            await WatchLogger.shared.log("⌚️ Failed to query ACKs: \(error.localizedDescription)")
-                            // Still try to resend
-                            await WatchLogger.shared.resendPendingPayloads()
-                        }
-                    }
-                )
+        for file in expiredFiles {
+            if Self.removeFileQuietly(at: file) {
+                deletedCount += 1
             } else {
-                // No pending payloads, just resend any remaining files
-                await resendPendingPayloads()
+                errCount += 1
             }
-        } else {
-            // Not reachable - do NOT delete files, optionally use transferUserInfo
-            // Files will be resent when reachable
         }
+
+        if validFiles.count > maxPerPayloadFiles {
+            let sorted = validFiles.sorted { f1, f2 in
+                let d1 = ((try? FileManager.default.attributesOfItem(
+                    atPath: f1.path
+                ))?[.creationDate] as? Date) ?? .distantPast
+                let d2 = ((try? FileManager.default.attributesOfItem(
+                    atPath: f2.path
+                ))?[.creationDate] as? Date) ?? .distantPast
+                return d1 > d2
+            }
+            let excess = sorted.suffix(
+                validFiles.count - maxPerPayloadFiles
+            )
+            for file in excess {
+                if let attrs = try? FileManager.default.attributesOfItem(
+                    atPath: file.path
+                ),
+                    let created = attrs[.creationDate] as? Date {
+                    oldestDeletedAge = max(
+                        oldestDeletedAge, now.timeIntervalSince(created)
+                    )
+                }
+                if Self.removeFileQuietly(at: file) {
+                    deletedCount += 1
+                } else {
+                    errCount += 1
+                }
+            }
+            validFiles = Array(sorted.prefix(maxPerPayloadFiles))
+        }
+
+        if deletedCount > 0 || errCount > 0 {
+            let hours = Int(oldestDeletedAge / 3600)
+            let result = errCount > 0 ? "err" : "ok"
+            await log(
+                "⌚️ [CLEANUP] path=retention artifact=watch_log"
+                    + " deleted=\(deletedCount)"
+                    + " remaining=\(validFiles.count)"
+                    + " oldest_age_hours=\(hours)"
+                    + " result=\(result)"
+            )
+        }
+
+        return validFiles
     }
 
-    /// Resends pending payload files using sendMessage (not transferUserInfo) when reachable.
-    func resendPendingPayloads() async {
-        guard session.isReachable && session.activationState == .activated else {
-            return
-        }
+    // MARK: - Resend pending payloads
 
-        // Get pending payloads
+    func resendPendingPayloads() async {
+        guard session.isReachable,
+              session.activationState == .activated else { return }
+
         let pendingPayloads = await getPendingPayloads()
 
-        for pendingRecord in pendingPayloads {
-            guard let payloadId = pendingRecord["payloadId"] as? String,
-                  let type = pendingRecord["type"] as? String,
+        for record in pendingPayloads {
+            guard let payloadId = record["payloadId"] as? String,
+                  let type = record["type"] as? String,
                   type == "watchLogs",
-                  let filePath = pendingRecord["filePath"] as? String else {
-                continue
-            }
+                  let filePath = record["filePath"] as? String
+            else { continue }
 
             let fileURL = URL(fileURLWithPath: filePath)
 
-            // Read file
             guard let data = try? Data(contentsOf: fileURL),
                   let logString = String(data: data, encoding: .utf8),
-                  !logString.isEmpty else {
-                // File doesn't exist or is empty - remove from pending
+                  !logString.isEmpty
+            else {
                 await removePendingPayload(payloadId)
                 continue
             }
 
-            // Create envelope
             let envelope: [String: Any] = [
                 "type": "watchLogs",
                 "payloadId": payloadId,
                 "data": logString
             ]
 
-            // Resend using sendMessage (not transferUserInfo) to get immediate ACK
             session.sendMessage(
                 envelope,
                 replyHandler: { reply in
                     Task {
-                        // Check if ACK received
                         if let ackType = reply["type"] as? String,
                            ackType == "ack",
-                           let ackPayloadId = reply["payloadId"] as? String,
-                           ackPayloadId == payloadId {
-                            // ACK received - delete file
-                            try? FileManager.default.removeItem(at: fileURL)
-                            await WatchLogger.shared.removePendingPayload(payloadId)
-                            await WatchLogger.shared.log("⌚️ Resent logs ACK received for payloadId: \(payloadId)")
+                           let ackId = reply["payloadId"] as? String,
+                           ackId == payloadId {
+                            let res = WatchLogger.removeFileTracked(
+                                at: fileURL
+                            )
+                            if res.succeeded {
+                                await WatchLogger.shared
+                                    .removePendingPayload(payloadId)
+                            }
+                            await WatchLogger.shared
+                                .logCleanup(
+                                    path: "ack_reply", flow: "resend",
+                                    artifact: "watch_log",
+                                    payloadId: payloadId,
+                                    result: res
+                                )
                         }
                     }
                 },
                 errorHandler: { error in
                     Task {
-                        await WatchLogger.shared.log("⌚️ Failed to resend logs for payloadId \(payloadId): \(error.localizedDescription)")
-                        // Keep file for next retry
+                        await WatchLogger.shared.log(
+                            "⌚️ Failed to resend for \(payloadId): "
+                                + error.localizedDescription
+                        )
                     }
                 }
             )
         }
     }
 
-    /// Stores a pending payload record for later ACK matching.
-    /// Upserts by payloadId so retries with a stable ID don't create duplicate records.
-    func storePendingPayload(payloadId: String, type: String, filePath: String) async {
-        var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
+    // MARK: - Pending payload storage
 
-        // Remove existing record with same payloadId (upsert)
-        pendingPayloads.removeAll { $0["payloadId"] as? String == payloadId }
+    func storePendingPayload(
+        payloadId: String, type: String, filePath: String
+    ) async {
+        var pending = UserDefaults.standard.array(
+            forKey: pendingPayloadsKey
+        ) as? [[String: Any]] ?? []
+
+        pending.removeAll { $0["payloadId"] as? String == payloadId }
 
         let record: [String: Any] = [
             "payloadId": payloadId,
@@ -358,118 +539,157 @@ actor WatchLogger {
             "filePath": filePath,
             "createdAtEpoch": Date().timeIntervalSince1970
         ]
-
-        pendingPayloads.append(record)
+        pending.append(record)
 
         let now = Date().timeIntervalSince1970
-        pendingPayloads = pendingPayloads.filter { record in
-            if let createdAt = record["createdAtEpoch"] as? TimeInterval {
-                return (now - createdAt) < maxFileAge
+        pending = pending.filter { rec in
+            if let t = rec["createdAtEpoch"] as? TimeInterval {
+                return (now - t) < maxFileAge
             }
             return true
         }
 
-        UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
+        UserDefaults.standard.set(pending, forKey: pendingPayloadsKey)
     }
 
-    /// Removes a pending payload record after ACK.
     func removePendingPayload(_ payloadId: String) async {
-        var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
-        pendingPayloads.removeAll { record in
-            record["payloadId"] as? String == payloadId
-        }
-        UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
+        var pending = UserDefaults.standard.array(
+            forKey: pendingPayloadsKey
+        ) as? [[String: Any]] ?? []
+        pending.removeAll { $0["payloadId"] as? String == payloadId }
+        UserDefaults.standard.set(pending, forKey: pendingPayloadsKey)
     }
 
-    /// Gets all pending payload records.
     func getPendingPayloads() async -> [[String: Any]] {
-        return UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
+        UserDefaults.standard.array(
+            forKey: pendingPayloadsKey
+        ) as? [[String: Any]] ?? []
     }
 
     // MARK: - Drain File Cleanup
 
-    /// Deletes drain files and pending payload records for the given payloadIds.
-    /// Idempotent: tolerates missing files, duplicate calls, and overlap between batchAck and watchLogConfirm.
+    /// Deletes drain files and pending payload records for the given
+    /// payloadIds. Idempotent: tolerates missing files, duplicate calls,
+    /// and overlap between batchAck and watchLogConfirm.
+    /// Emits per-artifact-type [CLEANUP] events.
     func deleteFilesForPayloadIds(_ ids: [String]) async {
-        let fm = FileManager.default
         let pendingPayloads = await getPendingPayloads()
         let pendingByPayloadId = Dictionary(
-            pendingPayloads.compactMap { record -> (String, String)? in
-                guard let pid = record["payloadId"] as? String,
-                      let path = record["filePath"] as? String else { return nil }
+            pendingPayloads.compactMap { rec -> (String, String)? in
+                guard let pid = rec["payloadId"] as? String,
+                      let path = rec["filePath"] as? String
+                else { return nil }
                 return (pid, path)
             },
             uniquingKeysWith: { first, _ in first }
         )
-        let logsDir = ComplicationLogBuffer.sharedContainerURL()?.appendingPathComponent("logs", isDirectory: true)
+        let logsDir = ComplicationLogBuffer.sharedContainerURL()?
+            .appendingPathComponent("logs", isDirectory: true)
+
+        var watchLogOk = 0, watchLogErr = 0
+        var pendingRecordCount = 0
+        var drainOk = 0, drainErr = 0
 
         for id in ids {
+            var watchLogFailed = false
             if let filePath = pendingByPayloadId[id] {
-                try? fm.removeItem(atPath: filePath)
+                let res = Self.removeFileTracked(atPath: filePath)
+                if res.succeeded {
+                    watchLogOk += 1
+                } else {
+                    watchLogErr += 1
+                    watchLogFailed = true
+                }
             }
-            await removePendingPayload(id)
+
+            if !watchLogFailed {
+                await removePendingPayload(id)
+                pendingRecordCount += 1
+            }
 
             if let logsDir {
-                let drainFile = logsDir.appendingPathComponent("complication_log.drain.\(id).txt")
-                try? fm.removeItem(at: drainFile)
+                let drainFile = logsDir.appendingPathComponent(
+                    "complication_log.drain.\(id).txt"
+                )
+                let res = Self.removeFileTracked(at: drainFile)
+                if res.succeeded { drainOk += 1 }
+                else { drainErr += 1 }
             }
         }
 
-        await log("⌚️ Cleaned up \(ids.count) payload(s)")
+        let sampleIds = ids.prefix(3).joined(separator: "|")
+        if watchLogOk + watchLogErr > 0 {
+            let result = watchLogErr > 0 ? "err" : "ok"
+            await log(
+                "⌚️ [CLEANUP] path=confirm artifact=watch_log"
+                    + " count=\(watchLogOk + watchLogErr)"
+                    + " sample_ids=\(sampleIds)"
+                    + " result=\(result)"
+            )
+        }
+        if pendingRecordCount > 0 {
+            await log(
+                "⌚️ [CLEANUP] path=confirm"
+                    + " artifact=pending_record"
+                    + " count=\(pendingRecordCount) result=ok"
+            )
+        }
+        if drainOk + drainErr > 0 {
+            let result = drainErr > 0 ? "err" : "ok"
+            await log(
+                "⌚️ [CLEANUP] path=confirm artifact=drain"
+                    + " count=\(drainOk + drainErr)"
+                    + " result=\(result)"
+            )
+        }
     }
 
     // MARK: - Complication Log Drain
 
-    /// Drains the Complication log buffer from App Group storage.
-    /// Retries orphan drain files first, then atomically renames the current log and sends it.
     private func drainComplicationLogs() async {
-        guard let containerURL = ComplicationLogBuffer.sharedContainerURL() else { return }
+        guard let containerURL = ComplicationLogBuffer
+            .sharedContainerURL() else { return }
 
-        let logsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
-        let fm = FileManager.default
+        let logsDir = containerURL.appendingPathComponent(
+            "logs", isDirectory: true
+        )
+        let fileManager = FileManager.default
 
-        guard let allFiles = try? fm.contentsOfDirectory(at: logsDir, includingPropertiesForKeys: [.creationDateKey]) else {
-            return
-        }
+        guard let allFiles = try? fileManager.contentsOfDirectory(
+            at: logsDir, includingPropertiesForKeys: [.creationDateKey]
+        ) else { return }
 
-        // Drain files from previous runs, sorted oldest-first
         var drainFiles = allFiles
-            .filter { $0.lastPathComponent.hasPrefix("complication_log.drain.") && $0.lastPathComponent.hasSuffix(".txt") }
+            .filter {
+                $0.lastPathComponent.hasPrefix("complication_log.drain.")
+                    && $0.lastPathComponent.hasSuffix(".txt")
+            }
             .sorted { url1, url2 in
-                let d1 = (try? url1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-                let d2 = (try? url2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                let d1 = (try? url1.resourceValues(
+                    forKeys: [.creationDateKey]
+                ).creationDate) ?? .distantPast
+                let d2 = (try? url2.resourceValues(
+                    forKeys: [.creationDateKey]
+                ).creationDate) ?? .distantPast
                 return d1 < d2
             }
 
-        // Retention: delete drain files older than 7 days, cap at 20
-        let now = Date()
-        drainFiles = drainFiles.filter { file in
-            if let created = (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate),
-               now.timeIntervalSince(created) > maxFileAge
-            {
-                try? fm.removeItem(at: file)
-                return false
-            }
-            return true
-        }
-        if drainFiles.count > maxPerPayloadFiles {
-            let excess = drainFiles.prefix(drainFiles.count - maxPerPayloadFiles)
-            for file in excess { try? fm.removeItem(at: file) }
-            drainFiles = Array(drainFiles.suffix(maxPerPayloadFiles))
-        }
+        drainFiles = await applyDrainRetention(
+            drainFiles: drainFiles
+        )
 
-        // Retry orphan drain files
         for drainFile in drainFiles {
             await sendLogContentFromFile(fileURL: drainFile)
         }
 
-        // Atomic rename: complication_log.txt -> complication_log.drain.<uuid>.txt
         let logFile = logsDir.appendingPathComponent("complication_log.txt")
-        guard fm.fileExists(atPath: logFile.path) else { return }
+        guard fileManager.fileExists(atPath: logFile.path) else { return }
 
-        let drainURL = logsDir.appendingPathComponent("complication_log.drain.\(UUID().uuidString).txt")
+        let drainURL = logsDir.appendingPathComponent(
+            "complication_log.drain.\(UUID().uuidString).txt"
+        )
         do {
-            try fm.moveItem(at: logFile, to: drainURL)
+            try fileManager.moveItem(at: logFile, to: drainURL)
         } catch {
             return
         }
@@ -477,8 +697,69 @@ actor WatchLogger {
         await sendLogContentFromFile(fileURL: drainURL)
     }
 
-    /// Extracts a stable payloadId from a drain filename, e.g.
-    /// `complication_log.drain.<UUID>.txt` -> `<UUID>`. Falls back to a new UUID.
+    /// Deletes drain files exceeding maxFileAge or maxPerPayloadFiles,
+    /// emits [CLEANUP] retention summary. Returns surviving files.
+    private func applyDrainRetention(
+        drainFiles: [URL]
+    ) async -> [URL] {
+        let now = Date()
+        var deletedCount = 0
+        var errCount = 0
+        var oldestDeletedAge: TimeInterval = 0
+
+        var remaining = drainFiles.filter { file in
+            guard let created = (try? file.resourceValues(
+                forKeys: [.creationDateKey]
+            ).creationDate),
+                now.timeIntervalSince(created) > maxFileAge
+            else { return true }
+
+            let age = now.timeIntervalSince(created)
+            oldestDeletedAge = max(oldestDeletedAge, age)
+            if Self.removeFileQuietly(at: file) {
+                deletedCount += 1
+            } else {
+                errCount += 1
+            }
+            return false
+        }
+
+        if remaining.count > maxPerPayloadFiles {
+            let excess = remaining.prefix(
+                remaining.count - maxPerPayloadFiles
+            )
+            for file in excess {
+                if let created = (try? file.resourceValues(
+                    forKeys: [.creationDateKey]
+                ).creationDate) {
+                    oldestDeletedAge = max(
+                        oldestDeletedAge, now.timeIntervalSince(created)
+                    )
+                }
+                if Self.removeFileQuietly(at: file) {
+                    deletedCount += 1
+                } else {
+                    errCount += 1
+                }
+            }
+            remaining = Array(remaining.suffix(maxPerPayloadFiles))
+        }
+
+        if deletedCount > 0 || errCount > 0 {
+            let hours = Int(oldestDeletedAge / 3600)
+            let result = errCount > 0 ? "err" : "ok"
+            await log(
+                "⌚️ [CLEANUP] path=retention artifact=drain"
+                    + " deleted=\(deletedCount)"
+                    + " remaining=\(remaining.count)"
+                    + " oldest_age_hours=\(hours)"
+                    + " result=\(result)"
+            )
+        }
+
+        return remaining
+    }
+
     private static func payloadIdFromDrainFile(_ fileURL: URL) -> String {
         let name = fileURL.deletingPathExtension().lastPathComponent
         let prefix = "complication_log.drain."
@@ -489,9 +770,6 @@ actor WatchLogger {
         return UUID().uuidString
     }
 
-    /// Sends log content from an external file as a watchLogs envelope.
-    /// On ACK the file is deleted; on error it is kept for retry via pending payloads.
-    /// Uses 64KB cap (matching ComplicationLogBuffer) rather than logSizeCap (16KB used for in-memory flushes).
     private static let drainSizeCap = 64 * 1024
 
     private func sendLogContentFromFile(fileURL: URL) async {
@@ -499,23 +777,27 @@ actor WatchLogger {
 
         guard let data = try? Data(contentsOf: fileURL),
               var content = String(data: data, encoding: .utf8),
-              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              !content.trimmingCharacters(in: .whitespacesAndNewlines)
+                  .isEmpty
         else {
             try? FileManager.default.removeItem(at: fileURL)
             return
         }
 
         if content.utf8.count > Self.drainSizeCap {
-            let data = Data(content.utf8)
-            let truncData = data.prefix(Self.drainSizeCap)
-            if let lastNewline = truncData.lastIndex(of: UInt8(ascii: "\n")) {
-                content = String(decoding: truncData[...lastNewline], as: UTF8.self) + "[truncated]\n"
+            let rawData = Data(content.utf8)
+            let truncData = rawData.prefix(Self.drainSizeCap)
+            if let nl = truncData.lastIndex(of: UInt8(ascii: "\n")) {
+                content = String(
+                    decoding: truncData[...nl], as: UTF8.self
+                ) + "[truncated]\n"
             } else {
-                content = String(decoding: truncData, as: UTF8.self) + "\n[truncated]\n"
+                content = String(
+                    decoding: truncData, as: UTF8.self
+                ) + "\n[truncated]\n"
             }
         }
 
-        // Stable payloadId derived from drain filename UUID to prevent duplicate ingestion on retry
         let payloadId = Self.payloadIdFromDrainFile(fileURL)
         let envelope: [String: Any] = [
             "type": "watchLogs",
@@ -532,23 +814,177 @@ actor WatchLogger {
                     Task {
                         if let ackType = reply["type"] as? String,
                            ackType == "ack",
-                           let ackPayloadId = reply["payloadId"] as? String,
-                           ackPayloadId == payloadId
-                        {
-                            try? FileManager.default.removeItem(at: fileURL)
-                            await WatchLogger.shared.removePendingPayload(payloadId)
+                           let ackId = reply["payloadId"] as? String,
+                           ackId == payloadId {
+                            let res = WatchLogger.removeFileTracked(
+                                at: fileURL
+                            )
+                            if res.succeeded {
+                                await WatchLogger.shared
+                                    .removePendingPayload(payloadId)
+                            }
+                            await WatchLogger.shared
+                                .logCleanup(
+                                    path: "ack_reply", flow: "drain",
+                                    artifact: "drain",
+                                    payloadId: payloadId,
+                                    result: res
+                                )
                         }
                     }
                 },
                 errorHandler: { _ in
                     Task {
-                        await WatchLogger.shared.storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
+                        await WatchLogger.shared.storePendingPayload(
+                            payloadId: payloadId,
+                            type: "watchLogs",
+                            filePath: filePath
+                        )
                     }
                 }
             )
         } else {
             _ = session.transferUserInfo(envelope)
-            await storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
+            await storePendingPayload(
+                payloadId: payloadId,
+                type: "watchLogs",
+                filePath: filePath
+            )
         }
+    }
+
+    // MARK: - Cleanup log helper
+
+    /// Formats and emits a [CLEANUP] line for ack_reply paths.
+    private func logCleanup(
+        path: String, flow: String, artifact: String,
+        payloadId: String, result res: RemoveResult
+    ) async {
+        var msg = "⌚️ [CLEANUP] path=\(path) flow=\(flow)"
+        msg += " artifact=\(artifact)"
+        msg += " payloadId=\(payloadId)"
+        msg += " outcome=\(res.outcome)"
+        if let err = res.error {
+            msg += " result=err error=\(err)"
+        } else {
+            msg += " result=ok"
+        }
+        await log(msg)
+    }
+
+    // MARK: - Observability (E2, E3)
+
+    /// E3: Recompute cached file counts if stale (10s TTL).
+    private func updateCachedCountsIfStale() {
+        let now = Date()
+        guard now.timeIntervalSince(cachedCountsTimestamp) >= 10
+        else { return }
+
+        let fileManager = FileManager.default
+        let logDir = fileManager.urls(
+            for: .documentDirectory, in: .userDomainMask
+        ).first?.appendingPathComponent("logs", isDirectory: true)
+
+        if let logDir, let files = try? fileManager.contentsOfDirectory(
+            at: logDir, includingPropertiesForKeys: nil
+        ) {
+            cachedWatchLogFiles = files.filter {
+                $0.lastPathComponent.hasPrefix("watch_log_")
+                    && $0.lastPathComponent.hasSuffix(".txt")
+                    && $0.lastPathComponent != "watch_log_daily.txt"
+            }.count
+        }
+
+        if let containerURL = ComplicationLogBuffer
+            .sharedContainerURL() {
+            let drainsDir = containerURL.appendingPathComponent(
+                "logs", isDirectory: true
+            )
+            if let files = try? fileManager.contentsOfDirectory(
+                at: drainsDir, includingPropertiesForKeys: nil
+            ) {
+                cachedDrainFiles = files.filter {
+                    $0.lastPathComponent
+                        .hasPrefix("complication_log.drain.")
+                        && $0.lastPathComponent.hasSuffix(".txt")
+                }.count
+            }
+        }
+
+        cachedCountsTimestamp = now
+    }
+
+    /// E2: Best-effort daily inventory of log files and pending payloads.
+    private func logFileInventory() async {
+        let lastInventory = UserDefaults.standard.double(
+            forKey: lastInventoryKey
+        )
+        let now = Date().timeIntervalSince1970
+        guard (now - lastInventory) >= 24 * 60 * 60 else { return }
+
+        let fileManager = FileManager.default
+        var watchLogsCount = 0
+        var watchLogsBytes: UInt64 = 0
+        var drainsCount = 0
+        var drainsBytes: UInt64 = 0
+
+        let logDir = fileManager.urls(
+            for: .documentDirectory, in: .userDomainMask
+        ).first?.appendingPathComponent("logs", isDirectory: true)
+
+        if let logDir, let files = try? fileManager.contentsOfDirectory(
+            at: logDir, includingPropertiesForKeys: [.fileSizeKey]
+        ) {
+            for file in files
+                where file.lastPathComponent.hasPrefix("watch_log_")
+                && file.lastPathComponent.hasSuffix(".txt")
+                && file.lastPathComponent != "watch_log_daily.txt" {
+                watchLogsCount += 1
+                if let attrs = try? fileManager.attributesOfItem(
+                    atPath: file.path
+                ),
+                    let size = attrs[.size] as? UInt64 {
+                    watchLogsBytes += size
+                }
+            }
+        }
+
+        if let containerURL = ComplicationLogBuffer
+            .sharedContainerURL() {
+            let drainsDir = containerURL.appendingPathComponent(
+                "logs", isDirectory: true
+            )
+            if let files = try? fileManager.contentsOfDirectory(
+                at: drainsDir, includingPropertiesForKeys: [.fileSizeKey]
+            ) {
+                for file in files
+                    where file.lastPathComponent
+                    .hasPrefix("complication_log.drain.")
+                    && file.lastPathComponent.hasSuffix(".txt") {
+                    drainsCount += 1
+                    if let attrs = try? fileManager.attributesOfItem(
+                        atPath: file.path
+                    ),
+                        let size = attrs[.size] as? UInt64 {
+                        drainsBytes += size
+                    }
+                }
+            }
+        }
+
+        let pendingCount = (UserDefaults.standard.array(
+            forKey: pendingPayloadsKey
+        ) as? [[String: Any]])?.count ?? 0
+
+        await log(
+            "⌚️ [INVENTORY]"
+                + " watch_logs_count=\(watchLogsCount)"
+                + " watch_logs_bytes=\(watchLogsBytes)"
+                + " drains_count=\(drainsCount)"
+                + " drains_bytes=\(drainsBytes)"
+                + " pending_count=\(pendingCount)"
+        )
+
+        UserDefaults.standard.set(now, forKey: lastInventoryKey)
     }
 }
