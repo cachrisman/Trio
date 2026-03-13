@@ -1,5 +1,8 @@
 import Foundation
 import os
+#if os(watchOS)
+import WatchConnectivity
+#endif
 import WidgetKit
 
 struct TrioComplicationSnapshot: Equatable, Codable {
@@ -666,6 +669,21 @@ final class TrioComplicationDataStore {
 
             log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta), snapshot_age_seconds=\(ageSec)")
             log("event=complication_save_age age_seconds=\(ageSec) reading_date_epoch_seconds=\(Int(snapshot.readingDate.timeIntervalSince1970)) reading_date=\(Self.iso8601Formatter.string(from: snapshot.readingDate))")
+
+            #if os(watchOS)
+            if WCSession.isSupported(), WCSession.default.activationState == .activated {
+                do {
+                    try WCSession.default.updateApplicationContext([
+                        "complicationLastValidTimestamp": snapshot.readingDate.timeIntervalSince1970
+                    ])
+                    log("event=complication_age_report_sent epoch=\(Int(snapshot.readingDate.timeIntervalSince1970))")
+                } catch {
+                    log("⚠️ complication_age_report_failed error=\(error.localizedDescription)")
+                }
+            } else if WCSession.isSupported() {
+                log("event=complication_age_report_skipped activation_state=\(WCSession.default.activationState.rawValue)")
+            }
+            #endif
 
             if triggerReload {
                 coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false)
