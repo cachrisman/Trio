@@ -1,9 +1,27 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.5)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.6)
 #
 # CHANGELOG:
+#   v1.6  Dirty baseline preservation: when baseline patches (01..N-1) have
+#         uncommitted modifications, save them before stashing and restore
+#         after so the baseline is built from the working-tree versions.
+#         Without this, --from-feature-branch (and cherry-pick mode) would
+#         build the baseline from stale committed patches, producing a patch
+#         with wrong context lines that conflicts during full-stack apply.
+#         Additional fixes:
+#         - Clean only specific dirty patch files after baseline (not all of
+#           patches/) to avoid clobbering unrelated changes.
+#         - Clean dirty patches in main flow after validation, not just in
+#           the trap handler, so stash pop doesn't conflict. Use
+#           git checkout HEAD -- (commit, not index) for robustness.
+#         - --from-feature-branch delete path: fall back to rm -f for
+#           untracked files that git rm can't remove.
+#         - Drift check: compare blob hashes (git rev-parse) instead of
+#           loading full file contents into shell variables.
+#         - Replace || true on git add -A with die on failure.
+#         - Fix bash 3.2 empty-array expansion for EXTRA_FILE_LIST.
 #   v1.5  Add --from-feature-branch: build update from feature branch tree
 #         (checkout/delete patch-scope files) instead of apply patch + cherry-pick.
 #         Use when patch baseline and feature branch have diverged (merge, rebase, amend).
@@ -452,6 +470,7 @@ UPDATE_BRANCH="tmp/${PATCH_DESC}-update"
 
 DID_STASH=false
 STASH_SHA=""
+DIRTY_PATCHES_DIR=""
 ORIGINAL_BRANCH="$CURRENT_BRANCH"
 
 cleanup() {
@@ -477,6 +496,18 @@ cleanup() {
     else
         git branch -D "$UPDATE_BRANCH" 2>/dev/null || true
         git branch -D "$BASELINE_BRANCH" 2>/dev/null || true
+    fi
+
+    # Revert dirty baseline patches before stash pop to avoid conflicts.
+    # On the success path this was already done (DIRTY_PATCHES_DIR=""), so
+    # this block only fires on early exit / die. Use HEAD to guarantee
+    # restoration from the commit, not the index.
+    if [ -n "${DIRTY_PATCHES_DIR:-}" ] && [ -d "${DIRTY_PATCHES_DIR:-}" ]; then
+        for dp in "$DIRTY_PATCHES_DIR"/*.patch; do
+            [ -f "$dp" ] || continue
+            git checkout HEAD -- "patches/$(basename "$dp")" 2>/dev/null || true
+        done
+        rm -rf "$DIRTY_PATCHES_DIR"
     fi
 
     # Pop the exact stash we created (matched by SHA, not message)
@@ -526,11 +557,38 @@ if git status --porcelain -- "$PATCH_RELPATH" 2>/dev/null | grep -q .; then
 fi
 
 if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    # Save dirty baseline patches BEFORE stashing. The stash reverts them to
+    # committed state, but the baseline must use the working-tree versions so
+    # the generated patch has correct context lines against the current stack.
+    if [ ${#BASELINE_PATCHES[@]} -gt 0 ]; then
+        for _bp in "${BASELINE_PATCHES[@]}"; do
+            _bpname=$(basename "$_bp")
+            _bprpath="patches/$_bpname"
+            if git status --porcelain -- "$_bprpath" 2>/dev/null | grep -q .; then
+                if [ -z "$DIRTY_PATCHES_DIR" ]; then
+                    DIRTY_PATCHES_DIR=$(mktemp -d)
+                    print_info "Saving dirty baseline patches for correct baseline build..."
+                fi
+                cp "$_bprpath" "$DIRTY_PATCHES_DIR/$_bpname"
+                print_info "  Saved: $_bpname"
+            fi
+        done
+    fi
+
     print_info "Stashing uncommitted changes..."
     git stash -u -m "mid-stack-update: WIP before updating patch $PATCH_NUM" || die "Failed to stash"
     DID_STASH=true
     STASH_SHA=$(git rev-parse stash@{0} 2>/dev/null)
     print_success "Changes stashed (ref: ${STASH_SHA:0:8})"
+
+    # Restore dirty baseline patches so baseline creation uses them
+    if [ -n "$DIRTY_PATCHES_DIR" ] && [ -d "$DIRTY_PATCHES_DIR" ]; then
+        for _dp in "$DIRTY_PATCHES_DIR"/*.patch; do
+            [ -f "$_dp" ] || continue
+            cp "$_dp" "patches/$(basename "$_dp")"
+        done
+        print_success "Restored dirty baseline patches into working tree"
+    fi
 else
     print_success "Working tree is clean"
 fi
@@ -576,6 +634,16 @@ else
     print_success "No baseline patches to apply (updating the first patch)"
 fi
 
+# Clean up dirty baseline patches from the working tree now that git am has
+# consumed their content. If left dirty, they leak into the baseline→update
+# diff and get included in the generated patch as spurious changed files.
+if [ -n "$DIRTY_PATCHES_DIR" ] && [ -d "$DIRTY_PATCHES_DIR" ]; then
+    for _dp in "$DIRTY_PATCHES_DIR"/*.patch; do
+        [ -f "$_dp" ] || continue
+        git checkout HEAD -- "patches/$(basename "$_dp")" 2>/dev/null || true
+    done
+fi
+
 #===============================================================================
 # Step 3: Create update branch (baseline + current patch + cherry-picks, OR from feature branch)
 #===============================================================================
@@ -589,10 +657,12 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
     # Use EXTRA_FILE_LIST (already parsed); ensure defined when --extra-files wasn't passed
     [ -z "${EXTRA_FILE_LIST+set}" ] && EXTRA_FILE_LIST=()
     PATCH_SCOPE_FILES=("${EXISTING_FILES[@]}")
-    for ef in "${EXTRA_FILE_LIST[@]}"; do
-        ef_trimmed=$(echo "$ef" | tr -d '[:space:]')
-        [ -n "$ef_trimmed" ] && PATCH_SCOPE_FILES+=("$ef_trimmed")
-    done
+    if [ ${#EXTRA_FILE_LIST[@]} -gt 0 ]; then
+        for ef in "${EXTRA_FILE_LIST[@]}"; do
+            ef_trimmed=$(echo "$ef" | tr -d '[:space:]')
+            [ -n "$ef_trimmed" ] && PATCH_SCOPE_FILES+=("$ef_trimmed")
+        done
+    fi
     print_info "Syncing ${#PATCH_SCOPE_FILES[@]} file(s) from $FEATURE_BRANCH (checkout or delete)"
     for f in "${PATCH_SCOPE_FILES[@]}"; do
         [ -n "$f" ] || continue
@@ -601,7 +671,11 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
             echo "    ✓ $f (checkout)"
         else
             if [ -f "$f" ] || git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-                git rm -f "$f" 2>/dev/null || true
+                if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+                    git rm -f "$f" 2>/dev/null || true
+                else
+                    rm -f "$f" 2>/dev/null || true
+                fi
                 echo "    ✓ $f (removed — deleted on feature branch)"
             fi
         fi
@@ -609,7 +683,7 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
     if git diff --staged --quiet 2>/dev/null && git diff --quiet 2>/dev/null; then
         die "No changes: patch-scope files already match $FEATURE_BRANCH. Nothing to regenerate."
     else
-        git add -A 2>/dev/null || true
+        git add -A 2>/dev/null || die "Failed to stage from-feature-branch changes"
         git commit -m "feat: $PATCH_DESC" || die "Failed to commit from-feature-branch state"
         print_success "Committed current state of patch-scope files from $FEATURE_BRANCH"
     fi
@@ -760,12 +834,36 @@ if [ "$SKIP_TEST" = true ]; then
 else
     print_step "Validate full patch stack"
 
+    # Re-restore dirty baseline patches so patch-test.sh (which copies from
+    # patches/) validates the full stack with the correct baseline patches.
+    # They were cleaned from the working tree after baseline creation to avoid
+    # leaking into the generated patch.
+    if [ -n "$DIRTY_PATCHES_DIR" ] && [ -d "$DIRTY_PATCHES_DIR" ]; then
+        for _dp in "$DIRTY_PATCHES_DIR"/*.patch; do
+            [ -f "$_dp" ] || continue
+            cp "$_dp" "patches/$(basename "$_dp")"
+        done
+    fi
+
     if ! "$REPO_ROOT/scripts/patch-test.sh"; then
         die "Patch validation failed! The updated patch does not apply cleanly in the full stack.
   Check the output above for which patch failed and why."
     fi
 
     print_success "All ${#ALL_PATCHES[@]} patches apply cleanly"
+fi
+
+# Clean up re-restored dirty baseline patches now that validation is done.
+# Must happen here (not just in cleanup handler) so the working tree is clean
+# when stash pop runs — otherwise the dirty patch files conflict with the
+# stash's version of the same files.
+if [ -n "$DIRTY_PATCHES_DIR" ] && [ -d "$DIRTY_PATCHES_DIR" ]; then
+    for _dp in "$DIRTY_PATCHES_DIR"/*.patch; do
+        [ -f "$_dp" ] || continue
+        git checkout HEAD -- "patches/$(basename "$_dp")" 2>/dev/null || true
+    done
+    rm -rf "$DIRTY_PATCHES_DIR"
+    DIRTY_PATCHES_DIR=""
 fi
 
 #===============================================================================
@@ -853,9 +951,9 @@ if [ -n "$FEATURE_BRANCH" ]; then
     # should produce identical content (both start from dev for these files).
     CONTENT_DRIFT_FILES=()
     for f in "${VERIFIABLE_FILES[@]}"; do
-        update_content=$(git show "$UPDATE_BRANCH:$f" 2>/dev/null) || continue
-        feature_content=$(git show "$FEATURE_BRANCH:$f" 2>/dev/null) || continue
-        if [ "$update_content" != "$feature_content" ]; then
+        update_blob=$(git rev-parse "$UPDATE_BRANCH:$f" 2>/dev/null) || continue
+        feature_blob=$(git rev-parse "$FEATURE_BRANCH:$f" 2>/dev/null) || continue
+        if [ "$update_blob" != "$feature_blob" ]; then
             CONTENT_DRIFT_FILES+=("$f")
         fi
     done
