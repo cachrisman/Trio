@@ -81,6 +81,9 @@ extension Notification.Name {
         _ = resolver.resolve(BluetoothStateManager.self)!
         _ = resolver.resolve(PluginManager.self)!
         _ = resolver.resolve(AlertPermissionsChecker.self)!
+        _ = resolver.resolve(CloudLogUploadService.self)!
+        let launchBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        debug(.service, "[DEPLOY] event=app_launch platform=ios build=\(launchBuild)")
         if #available(iOS 16.2, *) {
             _ = resolver.resolve(LiveActivityManager.self)!
         }
