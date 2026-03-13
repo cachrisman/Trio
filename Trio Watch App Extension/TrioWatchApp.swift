@@ -1,7 +1,9 @@
 import SwiftUI
 import UserNotifications
+import WatchKit
 
 @main struct TrioWatchApp: App {
+    @WKApplicationDelegateAdaptor(ExtensionDelegate.self) var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
