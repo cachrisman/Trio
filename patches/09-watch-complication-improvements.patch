@@ -1,27 +1,27 @@
-From 54ea8676e1924a07680223b6f44a5289194eaae4 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 13 Mar 2026 15:58:52 +0100
+From e6eec98d76f7a180042c5e1e7b3bd24d9ae2cb79 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Sat, 14 Mar 2026 00:02:16 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
- .../ExtensionDelegate.swift                   |  34 +
- Trio Watch App Extension/TrioWatchApp.swift   |   2 +
- .../Views/ComplicationDebugView.swift         | 535 ++++++++++
- .../Views/TrioMainWatchView.swift             |  55 +-
- .../WatchState+Requests.swift                 |  19 +
- Trio Watch App Extension/WatchState.swift     | 642 +++++++++---
- Trio Watch App/Info.plist                     |  15 +-
- Trio Watch App/TrioWatchApp.entitlements      |  10 +
- Trio Watch Complication/Info.plist            |   2 +
- .../TrioWatchComplication.entitlements        |  10 +
- .../TrioWatchComplication.swift               | 425 +++++++-
- .../TrioWatchComplicationPreview.swift        | 124 +++
- Trio Watch Shared/ComplicationLogBuffer.swift | 281 ++++-
- .../TrioComplicationDataStore.swift           | 983 ++++++++++++++++++
- Trio/Resources/TrioWatch.entitlements         |  10 +
- Trio/Sources/Models/WatchMessageKeys.swift    |   6 +-
- .../WatchManager/AppleWatchManager.swift      | 480 +++++++--
- 17 files changed, 3289 insertions(+), 344 deletions(-)
+ .../ExtensionDelegate.swift                   |   34 +
+ Trio Watch App Extension/TrioWatchApp.swift   |    2 +
+ .../Views/ComplicationDebugView.swift         |  535 +++++++++
+ .../Views/TrioMainWatchView.swift             |   55 +-
+ .../WatchState+Requests.swift                 |   19 +
+ Trio Watch App Extension/WatchState.swift     |  642 ++++++++---
+ Trio Watch App/Info.plist                     |   15 +-
+ Trio Watch App/TrioWatchApp.entitlements      |   10 +
+ Trio Watch Complication/Info.plist            |    2 +
+ .../TrioWatchComplication.entitlements        |   10 +
+ .../TrioWatchComplication.swift               |  425 ++++++-
+ .../TrioWatchComplicationPreview.swift        |  124 ++
+ Trio Watch Shared/ComplicationLogBuffer.swift |  281 ++++-
+ .../TrioComplicationDataStore.swift           | 1001 +++++++++++++++++
+ Trio/Resources/TrioWatch.entitlements         |   10 +
+ Trio/Sources/Models/WatchMessageKeys.swift    |    6 +-
+ .../WatchManager/AppleWatchManager.swift      |  523 +++++++--
+ 17 files changed, 3347 insertions(+), 347 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -2805,12 +2805,15 @@ index 31b8ea095..528bbee31 100644
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..da8510c5d
+index 000000000..6ba4706d8
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,983 @@
+@@ -0,0 +1,1001 @@
 +import Foundation
 +import os
++#if os(watchOS)
++import WatchConnectivity
++#endif
 +import WidgetKit
 +
 +struct TrioComplicationSnapshot: Equatable, Codable {
@@ -3478,6 +3481,21 @@ index 000000000..da8510c5d
 +            log("✅ Snapshot saved: glucose=\(snapshot.glucose), trend=\(snapshot.trend), delta=\(snapshot.delta), snapshot_age_seconds=\(ageSec)")
 +            log("event=complication_save_age age_seconds=\(ageSec) reading_date_epoch_seconds=\(Int(snapshot.readingDate.timeIntervalSince1970)) reading_date=\(Self.iso8601Formatter.string(from: snapshot.readingDate))")
 +
++            #if os(watchOS)
++            if WCSession.isSupported(), WCSession.default.activationState == .activated {
++                do {
++                    try WCSession.default.updateApplicationContext([
++                        "complicationLastValidTimestamp": snapshot.readingDate.timeIntervalSince1970
++                    ])
++                    log("event=complication_age_report_sent epoch=\(Int(snapshot.readingDate.timeIntervalSince1970))")
++                } catch {
++                    log("⚠️ complication_age_report_failed error=\(error.localizedDescription)")
++                }
++            } else if WCSession.isSupported() {
++                log("event=complication_age_report_skipped activation_state=\(WCSession.default.activationState.rawValue)")
++            }
++            #endif
++
 +            if triggerReload {
 +                coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false)
 +            }
@@ -3832,7 +3850,7 @@ index 68e4bdf39..24a31f2ea 100644
      static let maxBolus = "maxBolus"
      static let maxCarbs = "maxCarbs"
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 75c3c182b..9910c0b3b 100644
+index 75c3c182b..01ba34ff1 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -16,6 +16,8 @@ protocol WatchManager {
@@ -4080,7 +4098,7 @@ index 75c3c182b..9910c0b3b 100644
                      "color": value.color
                  ]
              },
-@@ -476,11 +529,173 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -476,11 +529,197 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.confirmBolusFaster: state.confirmBolusFaster,
              WatchMessageKeys.units: state.units.rawValue
          ]
@@ -4163,6 +4181,8 @@ index 75c3c182b..9910c0b3b 100644
 +
 +    /// R2b: Builds a gate key from the complication-visible fields of a WatchState.
 +    /// Matches the watch-side ComplicationSnapshotFingerprint for consistent dual-layer dedup.
++    /// Format: "epoch|glucose|trend|delta" — currentComplicationAgeSeconds() parses the epoch
++    /// from the first pipe-delimited component. Do not change the format without updating that function.
 +    private func computeDispatchGateKey(state: WatchState) -> String {
 +        let epoch = state.glucoseValues.max(by: { $0.date < $1.date })
 +            .map { String(Int($0.date.timeIntervalSince1970)) } ?? "nil"
@@ -4170,14 +4190,36 @@ index 75c3c182b..9910c0b3b 100644
 +        return "\(epoch)|\(display)"
 +    }
 +
-+    /// Step 3b: Complication age in seconds from App Group key (written by watch-side store).
-+    /// Returns .infinity if suite/defaults unavailable or key missing (allows first transfer).
++    /// Step 3b: Complication age from the best available source.
++    /// Prefers ground-truth timestamp from the watch (reported via updateApplicationContext
++    /// after each successful complication save). Falls back to the reading epoch in
++    /// lastDispatchedGateKey (iOS-side proxy) when the watch hasn't reported yet.
++    /// Returns .infinity if neither source has data (first transfer always goes through).
 +    private func currentComplicationAgeSeconds() -> TimeInterval {
-+        guard let suiteName = appGroupIDCandidate().value,
-+              let defaults = UserDefaults(suiteName: suiteName) else { return .infinity }
-+        let lastValid = defaults.object(forKey: "TrioComplication_lastValidTimestamp") as? Date
-+        if lastValid == nil { return .infinity }
-+        return max(0, Date().timeIntervalSince(lastValid!))
++        // Watch writes Swift Double; WCSession bridges it as NSNumber across the process boundary.
++        // The NSNumber path is the one that actually succeeds; TimeInterval cast is kept for safety.
++        let rawTimestamp = WCSession.default.receivedApplicationContext["complicationLastValidTimestamp"]
++        let watchTimestamp = (rawTimestamp as? TimeInterval) ?? (rawTimestamp as? NSNumber)?.doubleValue ?? 0
++        if watchTimestamp > 0 {
++            let age = max(0, Date().timeIntervalSince(Date(timeIntervalSince1970: watchTimestamp)))
++            debug(.watchManager, "🔍 complication_age_check age_seconds=\(Int(age)) threshold=\(Int(Self.complicationAgeGateThresholdSeconds)) gate_passes=\(age > Self.complicationAgeGateThresholdSeconds) source=watchApplicationContext")
++            return age
++        }
++
++        let gateKey = lastDispatchedGateKey
++        guard !gateKey.isEmpty else {
++            debug(.watchManager, "🔍 complication_age_check gate_key_empty returning=infinity")
++            return .infinity
++        }
++        guard let epochString = gateKey.split(separator: "|").first,
++              let epoch = TimeInterval(epochString), epoch > 0 else {
++            debug(.watchManager, "⚠️ complication_age_check gate_key_parse_failed key=\(gateKey) returning=infinity")
++            return .infinity
++        }
++        let readingDate = Date(timeIntervalSince1970: epoch)
++        let age = max(0, Date().timeIntervalSince(readingDate))
++        debug(.watchManager, "🔍 complication_age_check age_seconds=\(Int(age)) threshold=\(Int(Self.complicationAgeGateThresholdSeconds)) gate_passes=\(age > Self.complicationAgeGateThresholdSeconds) source=lastDispatchedGateKey")
++        return age
 +    }
 +
 +    /// Coalesces multiple publisher-driven WatchState updates into a single send.
@@ -4256,7 +4298,7 @@ index 75c3c182b..9910c0b3b 100644
          guard let session = session else { return }
  
          guard session.isPaired else {
-@@ -489,7 +704,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -489,7 +728,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          guard session.isWatchAppInstalled else {
@@ -4265,7 +4307,7 @@ index 75c3c182b..9910c0b3b 100644
              return
          }
  
-@@ -507,19 +722,108 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -507,19 +746,114 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -4300,7 +4342,9 @@ index 75c3c182b..9910c0b3b 100644
 +                }
 +            }
 +        }
-+
+ 
+-        // if session is reachable, it means watch App is in the foreground -> send watchState as message
+-        // if session is not reachable, it means it's in background -> send watchState as userInfo
 +        let readingEpochPresent = complicationMessage[WatchMessageKeys.readingEpoch] != nil
 +        if !readingEpochPresent {
 +            debug(.watchManager, "⚠️ complication_transfer_skipped missing readingEpoch — R1a may not have shipped; sendMessage still firing")
@@ -4318,9 +4362,7 @@ index 75c3c182b..9910c0b3b 100644
 +        if isDuplicateDispatch, !session.isReachable, readingEpochPresent {
 +            debug(.watchManager, "⏭️ complication_transfer_gate_skipped skip_reason=duplicate_gate gate_key=\(gateKey) reading_date_epoch_seconds=\(readingEpoch)")
 +        }
- 
--        // if session is reachable, it means watch App is in the foreground -> send watchState as message
--        // if session is not reachable, it means it's in background -> send watchState as userInfo
++
 +        // sendMessage (budget-free watch UI path) — always fires with fullMessage
          if session.isReachable {
 -            session.sendMessage([WatchMessageKeys.watchState: message], replyHandler: nil) { error in
@@ -4333,6 +4375,9 @@ index 75c3c182b..9910c0b3b 100644
 -            session.transferUserInfo([WatchMessageKeys.watchState: message])
 -            debug(.watchManager, "📤 Transferred new WatchState snapshot via userInfo")
 +            debug(.watchManager, "📤 Transferred new WatchState snapshot via=sendMessage reading_date_epoch_seconds=\(readingEpoch)")
++            if readingEpochPresent, !isDuplicateDispatch {
++                debug(.watchManager, "ℹ️ complication_transfer_skipped_reachable remaining=\(session.remainingComplicationUserInfoTransfers)")
++            }
 +        }
 +
 +        // Complication transfer paths — gated on readingEpoch presence AND dispatch gate.
@@ -4342,9 +4387,12 @@ index 75c3c182b..9910c0b3b 100644
 +        // conservation, not an API limitation — transferCurrentComplicationUserInfo works
 +        // regardless of reachability.
 +        // Step 3b: age gate applies ONLY when remaining > 0; budget-exhausted fallback has no age gate.
-+        // Complication age is computed only when we might spend budget (remaining > 0) to avoid unnecessary App Group reads.
++        // Complication age is derived from the watch-reported timestamp (receivedApplicationContext)
++        // or the reading epoch in lastDispatchedGateKey (iOS-side proxy).
++        let budgetSnapshot = session.remainingComplicationUserInfoTransfers
++        debug(.watchManager, "🔍 complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch)")
 +        if !session.isReachable, readingEpochPresent, !isDuplicateDispatch {
-+            if session.remainingComplicationUserInfoTransfers > 0 {
++            if budgetSnapshot > 0 {
 +                let complicationAgeSeconds = currentComplicationAgeSeconds()
 +                let ageGatePassed = complicationAgeSeconds > Self.complicationAgeGateThresholdSeconds
 +                // Apply age gate — only transfer when complication is stale (age > T).
@@ -4383,9 +4431,13 @@ index 75c3c182b..9910c0b3b 100644
          }
      }
  
-@@ -551,7 +855,19 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-         debug(.watchManager, "📱 Phone session activated with state: \(activationState.rawValue)")
-         debug(.watchManager, "📱 Phone isReachable after activation: \(session.isReachable)")
+@@ -548,10 +882,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             return
+         }
+ 
+-        debug(.watchManager, "📱 Phone session activated with state: \(activationState.rawValue)")
+-        debug(.watchManager, "📱 Phone isReachable after activation: \(session.isReachable)")
++        debug(.watchManager, "📱 Phone session activated state=\(activationState.rawValue) isReachable=\(session.isReachable) isPaired=\(session.isPaired) isWatchAppInstalled=\(session.isWatchAppInstalled) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
  
 -        // Try to send initial data after activation
 +        // R2b: clear dispatch gate on activation so the first post-launch transfer always fires
@@ -4404,7 +4456,7 @@ index 75c3c182b..9910c0b3b 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -772,9 +1088,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -772,9 +1117,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              {
                  debug(.watchManager, "📱 Watch requested watch state data update.")
                  guard let self = self else { return }
@@ -4417,8 +4469,27 @@ index 75c3c182b..9910c0b3b 100644
                  Task {
                      let state = await self.setupWatchState()
                      await self.sendDataToWatch(state)
-@@ -968,7 +1284,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-         debug(.watchManager, "📱 Phone reachability changed: \(session.isReachable)")
+@@ -896,6 +1241,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         }
+     }
+ 
++    func session(_: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
++        let raw = applicationContext["complicationLastValidTimestamp"]
++        let timestamp = (raw as? TimeInterval) ?? (raw as? NSNumber)?.doubleValue
++        if let timestamp {
++            debug(.watchManager, "📱 complication_age_received_from_watch epoch=\(Int(timestamp)) age_seconds=\(Int(Date().timeIntervalSince(Date(timeIntervalSince1970: timestamp))))")
++        }
++    }
++
+     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+         // Check if this is an envelope message
+         if let type = userInfo["type"] as? String,
+@@ -965,10 +1318,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     #endif
+ 
+     func sessionReachabilityDidChange(_ session: WCSession) {
+-        debug(.watchManager, "📱 Phone reachability changed: \(session.isReachable)")
++        debug(.watchManager, "📱 Phone reachability changed: isReachable=\(session.isReachable) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
  
          if session.isReachable {
 -            // Try to send data when connection is established
@@ -4429,7 +4500,7 @@ index 75c3c182b..9910c0b3b 100644
              Task {
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
-@@ -1449,11 +1768,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1449,11 +1805,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -4443,7 +4514,7 @@ index 75c3c182b..9910c0b3b 100644
          }
      }
  
-@@ -1464,12 +1780,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1464,12 +1817,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
