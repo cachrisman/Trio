@@ -12,5 +12,7 @@
 	-->
 	<key>AppGroupID</key>
 	<string>$(TRIO_APP_GROUP_ID)</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Trio reads your blood glucose data to keep the watch complication current when wireless sync is unavailable.</string>
 </dict>
 </plist>

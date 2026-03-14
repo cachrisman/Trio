@@ -1,4 +1,5 @@
 import Foundation
+import HealthKit
 import SwiftUI
 import WatchConnectivity
 import WatchKit
@@ -109,6 +110,11 @@ enum BackgroundTaskWindowCounter {
     private let maxTransferRetries = 3
     private var retryWorkItem: DispatchWorkItem?
 
+    // MARK: - HealthKit (R6)
+
+    private var healthKitStore: HKHealthStore?
+    private var glucoseObserverQuery: HKObserverQuery?
+
     private var backgroundRefreshCount = 0
     private var lastBackgroundRefreshDate: Date?
 
@@ -155,6 +161,128 @@ enum BackgroundTaskWindowCounter {
                 await WatchLogger.shared.log("WCSession is not supported on this device")
             }
         }
+        // R6: independent of WatchConnectivity — HK background delivery is a separate wake path.
+        setupHealthKitBackgroundDelivery()
+    }
+
+    // MARK: - HealthKit background delivery (R6)
+
+    private func setupHealthKitBackgroundDelivery() {
+        guard HKHealthStore.isHealthDataAvailable() else { return }
+        let store = HKHealthStore()
+        guard let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else { return }
+
+        store.requestAuthorization(toShare: nil, read: Set([bgType])) { [weak self] granted, error in
+            guard let self else { return }
+            guard granted, error == nil else {
+                Task {
+                    await WatchLogger.shared.log("❌ hk_authorization_failed granted=\(granted) error=\(error?.localizedDescription ?? "nil")")
+                }
+                return
+            }
+
+            store.enableBackgroundDelivery(for: bgType, frequency: .immediate) { success, error in
+                if let error = error {
+                    Task {
+                        await WatchLogger.shared.log("❌ hk_background_delivery_registration_failed error=\(error.localizedDescription)")
+                    }
+                } else if success {
+                    Task {
+                        await WatchLogger.shared.log("✅ hk_background_delivery_registered success=true")
+                    }
+                } else {
+                    Task {
+                        await WatchLogger.shared.log("⚠️ hk_background_delivery_registered success=false")
+                    }
+                }
+            }
+
+            self.setupGlucoseObserverQuery(store: store, sampleType: bgType)
+        }
+    }
+
+    private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuantityType) {
+        healthKitStore = store
+        let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { [weak self] _, completionHandler, error in
+            guard error == nil else {
+                Task {
+                    await WatchLogger.shared.log("❌ hk_observer_error error=\(error!.localizedDescription)")
+                }
+                completionHandler()
+                return
+            }
+            guard let self else {
+                completionHandler()
+                return
+            }
+            self.fetchLatestGlucoseFromHealthKit(completionHandler: completionHandler)
+        }
+        store.execute(query)
+        glucoseObserverQuery = query
+    }
+
+    private func fetchLatestGlucoseFromHealthKit(completionHandler: @escaping () -> Void) {
+        guard let store = healthKitStore,
+              let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else {
+            completionHandler()
+            return
+        }
+
+        // R6c: HKSampleQuery requires [NSSortDescriptor]; use keyPath API (not deprecated HKSampleSortIdentifierStartDate).
+        let sort = NSSortDescriptor(keyPath: \HKSample.startDate, ascending: false)
+        let query = HKSampleQuery(
+            sampleType: bgType,
+            predicate: nil,
+            limit: 2,
+            sortDescriptors: [sort]
+        ) { _, results, error in
+            if let error = error {
+                Task {
+                    await WatchLogger.shared.log("❌ hk_observer_sample_query_error error=\(error.localizedDescription)")
+                }
+                completionHandler()
+                return
+            }
+            guard let samples = results as? [HKQuantitySample],
+                  let latest = samples.first else {
+                Task {
+                    await WatchLogger.shared.log("⚠️ hk_observer_sample_query_zero_samples")
+                }
+                completionHandler()
+                return
+            }
+
+            let mgDl = latest.quantity.doubleValue(for: .milligramsPerDeciliter())
+            let readingDate = latest.startDate
+            let glucoseString = String(Int(mgDl.rounded()))
+
+            var deltaString = "--"
+            if samples.count >= 2 {
+                let prevMgDl = samples[1].quantity.doubleValue(for: .milligramsPerDeciliter())
+                deltaString = String(format: "%+.0f", mgDl - prevMgDl)
+            }
+
+            let saveAge = Int(Date().timeIntervalSince(readingDate))
+            Task {
+                await WatchLogger.shared.log("🏥 hk_observer_fired reading_epoch=\(Int(readingDate.timeIntervalSince1970)) save_age=\(saveAge) glucose=\(glucoseString) delta=\(deltaString)")
+            }
+
+            let snapshot = TrioComplicationSnapshot(
+                glucose: glucoseString,
+                trend: "",
+                delta: deltaString,
+                readingDate: readingDate,
+                date: Date(),
+                glucoseColor: nil
+            )
+
+            // R6d: Tell the system we're done only after the save has run on main.
+            DispatchQueue.main.async {
+                TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+                completionHandler()
+            }
+        }
+        store.execute(query)
     }
 
     // MARK: - Acknowledgement handling
