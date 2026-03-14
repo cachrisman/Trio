@@ -1,7 +1,7 @@
 # Trio watchOS Complication — Freshness Remediation Plan
 
-**Version:** 1.25 | **Date:** 2026-03-13
-**Status:** ✅ Step 3b deployed (builds 137-138 include Step 3b + logging pipeline fixes); observing 48h from build 137 deploy (2026-03-12) before Step 4 decision gate
+**Version:** 1.35 | **Date:** 2026-03-14
+**Status:** ✅ Step 7 (R6) shipped and live (build 140); `hk_observer_fired` events confirmed in BetterStack; observing 48h from build 137 deploy (2026-03-12) before Step 4 decision gate
 **Source data:** BetterStack source_id=1659391, build 131, 2026-03-08/09
 **Input documents:**
 - Next-Steps Report (AI/BetterStack analysis, 2026-03-09)
@@ -22,9 +22,11 @@ Phases in this document are prefixed **R** (Remediation) to avoid collision with
 | Plan | Phase namespace | Scope |
 |---|---|---|
 | `complication-freshness-implementation-plan.md` v1.27 | FP-Phase 0 through FP-Phase 3 | Instrumentation, BGTask hardening, dedup/fingerprint — **complete as of build 131** |
-| **This document** | **R1 through R5** | Budget exhaustion, redundant triggers, payload size, reconnect safety net, observability |
+| **This document** | **R1 through R6** | Budget exhaustion, redundant triggers, payload size, reconnect safety net, observability, HealthKit background delivery |
 
-When referencing the prior plan's work in code comments or PRs, use `FP-Phase`. When referencing this plan, use `R1`–`R5`.
+When referencing the prior plan's work in code comments or PRs, use `FP-Phase`. When referencing this plan, use `R1`–`R6`.
+
+**Implementation guide step numbering:** Step 5 = R4 (applicationContext safety net). Step 7 = R6 (HealthKit background delivery).
 
 ---
 
@@ -765,9 +767,9 @@ if session.isReachable {
 
 ---
 
-## R4 — App Group Safety Net During Budget Exhaustion
+## R4 — App Group Safety Net During Budget Exhaustion (Step 5)
 
-**Priority:** P1 | **Effort:** 2–3 hrs | **Recommended:** Ship after R3
+**Priority:** P1 | **Effort:** 2–3 hrs | **Recommended:** Ship after R3; can ship after R6 or bundle with R6 in same PR (complementary — R4 touches `AppleWatchManager.swift`, R6 touches `WatchState.swift`)
 **Files:** `AppleWatchManager.swift`, `Trio Watch App Extension/WatchState.swift`
 
 ### Architecture (corrected after Cursor R4 audit)
@@ -1044,6 +1046,268 @@ This gives `reading_epoch` and `snapshot_age` at timeline-build time. If `save_a
 
 ---
 
+## R6 — HealthKit Background Delivery (Step 7)
+
+**Priority:** P2 | **Effort:** Medium (~4–6 hrs including entitlement provisioning)
+
+**Recommended sequencing:** Go straight to R6 (Step 7). R4 (Step 5) would have done nothing for the 24-minute gap you experienced: the data was already in the App Group; the problem was WidgetKit not calling `getTimeline`. R4 sends more data via another WatchConnectivity channel but still ends with a `reloadTimelines` call that WidgetKit can ignore just as freely. R6 gives an independent system-triggered wake that fires specifically when new glucose data arrives in HealthKit; each wake is another `reloadTimelines` call from a fresh background task context. During the 9-minute gap between 05:32 and 05:41, R6 would have fired at least once from the 05:37 reading — potentially breaking the WidgetKit scheduling stall before it became 24 minutes on your wrist. R4 still has real value (it covers the budget-exhaustion failure mode that R6 doesn't help with) but is the lower-urgency problem right now. Ship R6 first; ship R4 after R6 or bundle both in the same PR since they're complementary and touch different files.
+
+R6 addresses two distinct failure modes:
+1. **Budget-exhaustion staleness:** When `complication_transfer_remaining=0`, WatchConnectivity complication transfers stop. R4's `updateApplicationContext` partially mitigates this but is still a WCSession-dependent channel.
+2. **WidgetKit scheduling gaps:** Observed in build 139 — 9-minute gap (05:32–05:41 UTC) where fresh data existed in the App Group but WidgetKit did not call `getTimeline`, resulting in `reload_age=548s`. This occurs even when budget is healthy and data is fresh. R6's `HKObserverQuery` provides an independent wake trigger that fires specifically when new glucose data exists, giving the watch extension an opportunity to call `reloadTimelines` outside of WidgetKit's own scheduling.
+
+### Architecture Summary
+
+HealthKit provides a completely independent data delivery channel from WatchConnectivity. When the iPhone Trio app writes a blood glucose `HKQuantitySample` to HealthKit (`HealthKitManager.swift` line 205, `healthKitStore.save(glucoseSamples)`), Apple syncs the sample to the paired watch's HealthKit store. The watch extension registers an `HKObserverQuery` for `.bloodGlucose` with `enableBackgroundDelivery(for:frequency:.immediate)`, which causes the system to wake the extension via a background delivery task when new samples arrive. Inside the observer callback, the extension queries the latest 2 samples, constructs a `TrioComplicationSnapshot` (glucose value + derived delta), and calls the existing `TrioComplicationDataStore.shared.save()` path. This channel operates entirely outside of WatchConnectivity — it does not depend on `WCSession` activation state, complication transfer budget, or `sendMessage` reachability.
+
+### What's Available in HealthKit vs What Must Be Derived
+
+**Codebase audit (2026-03-14):** The HealthKit write in `BaseHealthKitManager.uploadGlucose(_:)` (`Trio/Sources/Services/HealthKit/HealthKitManager.swift` lines 182–205) constructs `HKQuantitySample` with:
+
+| Field | HealthKit source | Available on watch? | Notes |
+|---|---|---|---|
+| Glucose value | `HKQuantitySample.quantity` (unit: `.milligramsPerDeciliter`) | ✅ Yes | Convert `doubleValue(for: .milligramsPerDeciliter())` → display string via `String(Int(value.rounded()))` |
+| Reading timestamp | `HKQuantitySample.startDate` | ✅ Yes | CGM reading time — use as `readingDate` in `TrioComplicationSnapshot` |
+| Trend arrow | Not in metadata | ❌ No | Metadata contains only `HKMetadataKeyExternalUUID`, `HKMetadataKeySyncIdentifier`, `HKMetadataKeySyncVersion`, and `AppleHealthConfig.TrioInsulinType`. Must be derived or set to `""` |
+| Delta | Not in metadata; derivable from query | ❌ / ✅ Derivable | Query last 2 `bloodGlucose` samples: `latest.quantity - previous.quantity`. Low complexity (~10 lines) |
+| Glucose color | Requires user settings context | ❌ No | Needs threshold settings not available in HealthKit. Pass `nil` — `glucoseColor` is optional in `TrioComplicationSnapshot` |
+
+**Trend derivation options:**
+
+1. **Simple delta-based mapping:** Map delta magnitude per interval to an arrow (e.g., |Δ| < 1 → "→", 1–2 → "↗"/"↘", 2–3 → "↑"/"↓", >3 → "↑↑"/"↓↓"). Approximates the CGM's native trend but may diverge for sensors using proprietary smoothing (G7, Libre 3).
+2. **Fallback to empty string:** Pass `""` for trend. The complication displays glucose + delta but omits the arrow. Strictly better than stale data from an exhausted WatchConnectivity channel.
+3. **Recommended:** Option 2 initially. Add delta-based trend derivation as R6.1 if user feedback requests it. Log `hk_trend_derived=false` so BetterStack can track the channel's display fidelity vs WatchConnectivity deliveries.
+
+### iPhone Side Changes
+
+**None required for basic functionality.** The existing HealthKit write (`healthKitStore.save(glucoseSamples)` at line 205) already produces `HKQuantitySample` objects with `.bloodGlucose` type, `.milligramsPerDeciliter` unit, and sufficient metadata for the watch to identify samples.
+
+**Optional enhancement (defer to R6.1):** Add trend metadata to HealthKit writes:
+```swift
+// In uploadGlucose(_:), add to metadata dict:
+"com.trio.trend": glucoseSample.direction?.rawValue ?? ""
+```
+This would avoid trend derivation on the watch but changes the HealthKit write contract. Verify existing HealthKit consumers (Tidepool, third-party apps reading Trio's BG samples) are unaffected before shipping. Defer unless trend derivation proves unreliable in practice.
+
+### Watch Side Implementation
+
+**R6a — `enableBackgroundDelivery` registration:**
+
+Must be called on every app launch — registration does not persist across process restarts. Place in `WatchState.init()` or `setupSession()` (where `WCSession.activate()` already runs at line ~59). Idempotent; re-registering is safe.
+
+```swift
+// In WatchState, during initialization (setupSession or init):
+private func setupHealthKitBackgroundDelivery() {
+    guard HKHealthStore.isHealthDataAvailable() else { return }
+    let store = HKHealthStore()
+    guard let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else { return }
+
+    store.requestAuthorization(toShare: nil, read: Set([bgType])) { [weak self] granted, error in
+        guard let self else { return }
+        guard granted, error == nil else {
+            debug(.watchManager, "❌ hk_authorization_failed granted=\(granted) error=\(error?.localizedDescription ?? "nil")")
+            return
+        }
+
+        store.enableBackgroundDelivery(for: bgType, frequency: .immediate) { success, error in
+            if let error = error {
+                debug(.watchManager, "❌ hk_background_delivery_registration_failed error=\(error.localizedDescription)")
+            } else {
+                debug(.watchManager, "✅ hk_background_delivery_registered success=\(success)")
+            }
+        }
+
+        self.setupGlucoseObserverQuery(store: store, sampleType: bgType)
+    }
+}
+```
+
+**R6b — `HKObserverQuery` setup:**
+
+Long-lived observer query for `.bloodGlucose`. The update handler fires each time HealthKit's sample database changes for that type, including cross-device sync from iPhone. *Code review note:* `setupGlucoseObserverQuery` assigns `self.healthKitStore` and executes the query from inside the authorization callback (arbitrary background thread). In practice this is fine — setup runs once at launch before concurrent access — but confirm `WatchState` has no conflicting access patterns on those properties.
+
+```swift
+private var healthKitStore: HKHealthStore?
+private var glucoseObserverQuery: HKObserverQuery?
+
+private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuantityType) {
+    self.healthKitStore = store
+    let query = HKObserverQuery(sampleType: sampleType, predicate: nil) {
+        [weak self] _, completionHandler, error in
+        guard error == nil else {
+            debug(.watchManager, "❌ hk_observer_error error=\(error!.localizedDescription)")
+            completionHandler()
+            return
+        }
+        self?.fetchLatestGlucoseFromHealthKit(completionHandler: completionHandler)
+    }
+    store.execute(query)
+    self.glucoseObserverQuery = query
+}
+```
+
+**R6c — Sample fetch inside observer callback:**
+
+Fetch the latest 2 blood glucose samples (current value + delta derivation). `completionHandler` must be called on all code paths. On the success path, call it **inside** `DispatchQueue.main.async` after the save — not via `defer` at closure exit (see R6d).
+
+```swift
+private func fetchLatestGlucoseFromHealthKit(completionHandler: @escaping () -> Void) {
+    guard let store = healthKitStore,
+          let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else {
+        completionHandler()
+        return
+    }
+
+    let query = HKSampleQuery(
+        sampleType: bgType,
+        predicate: nil,
+        limit: 2,
+        sortDescriptors: [SortDescriptor(\.startDate, order: .reverse)]  // or NSSortDescriptor(keyPath: \HKSample.startDate, ascending: false)
+    ) { _, results, error in
+        if let error = error {
+            // log hk_observer_sample_query_error
+            completionHandler()
+            return
+        }
+        guard let samples = results as? [HKQuantitySample],
+              let latest = samples.first else {
+            // log hk_observer_sample_query_zero_samples
+            completionHandler()
+            return
+        }
+
+        let mgDl = latest.quantity.doubleValue(for: .milligramsPerDeciliter())
+        let readingDate = latest.startDate
+        let glucoseString = String(Int(mgDl.rounded()))
+        var deltaString = "--"
+        if samples.count >= 2 {
+            let prevMgDl = samples[1].quantity.doubleValue(for: .milligramsPerDeciliter())
+            deltaString = String(format: "%+.0f", mgDl - prevMgDl)
+        }
+        let saveAge = Int(Date().timeIntervalSince(readingDate))
+        // log hk_observer_fired
+
+        let snapshot = TrioComplicationSnapshot(
+            glucose: glucoseString,
+            trend: "",
+            delta: deltaString,
+            readingDate: readingDate,
+            date: Date(),
+            glucoseColor: nil
+        )
+
+        DispatchQueue.main.async {
+            TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+            completionHandler()
+        }
+    }
+    store.execute(query)
+}
+```
+
+**R6d — `completionHandler()` requirement:**
+
+The `completionHandler` passed to the `HKObserverQuery` update handler **must** be called when processing is complete. Failure to call it causes the system to throttle or stop waking the extension for future updates. Call it **after** the work is done: on the success path, invoke `completionHandler()` inside the `DispatchQueue.main.async { ... }` block, after `TrioComplicationDataStore.shared.save(...)`. Do not use `defer { completionHandler() }` at HKSampleQuery closure exit — that would signal "done" before the async save runs. On error or zero-samples paths, call `completionHandler()` before returning.
+
+### Entitlement and Info.plist Requirements
+
+HealthKit with background delivery is already enabled on the Trio WatchKit Extension App ID in the Apple Developer portal. Add the following to the project entitlements file:
+
+| Entitlement key | Required value | Current status | File to modify |
+|---|---|---|---|
+| `com.apple.developer.healthkit` | `true` | ✅ Already present in provisioning profile | `Trio Watch App/TrioWatchApp.entitlements` |
+| `com.apple.developer.healthkit.background-delivery` | `true` | ✅ Already present in provisioning profile | `Trio Watch App/TrioWatchApp.entitlements` |
+
+Add the keys to `Trio Watch App/TrioWatchApp.entitlements` (e.g. via Xcode → Signing & Capabilities → + HealthKit with "Background Delivery" checked). Entitlements file addition only required — no provisioning profile update needed.
+
+**Privacy usage description (required):** The watch app calls `requestAuthorization(toShare: nil, read:)`, so `NSHealthShareUsageDescription` **must** be present in the watch app's `Info.plist`. Without it, the authorization request may crash the process at runtime or fail silently — and since `setupHealthKitBackgroundDelivery()` runs on every app launch, this would break the entire watch app. Add to `Trio Watch App/Info.plist`:
+
+```xml
+<key>NSHealthShareUsageDescription</key>
+<string>Trio reads your blood glucose data to keep the watch complication current when wireless sync is unavailable.</string>
+```
+
+`NSHealthUpdateUsageDescription` is **not** required because `toShare: nil` means no write access is requested. Apple only requires the update description when `toShare` contains types.
+
+**For reference — main app entitlements (already present):** `Trio/Resources/Trio.entitlements` has both `com.apple.developer.healthkit` and `com.apple.developer.healthkit.background-delivery` = `true`, and `Trio/Resources/Info.plist` has both `NSHealthShareUsageDescription` and `NSHealthUpdateUsageDescription`.
+
+**Watch Complication** (`Trio Watch Complication/TrioWatchComplication.entitlements`): Does NOT need HealthKit entitlements — it reads via the App Group shared container, not HealthKit directly.
+
+### Dedup and Dual-Delivery Behavior
+
+`saveOnMain` (FP-Phase 3.1) in `TrioComplicationDataStore` gates all saves through `shouldUpdate(new:current:)` — which compares `readingDate` (±1s tolerance) and display fields (`glucose`, `trend`, `delta`, `state`). Only snapshots that are newer or have different display content pass through.
+
+**For the same CGM reading arriving via both channels:** The HealthKit-derived snapshot has `trend=""` and a numerically-derived `delta`, while the WatchConnectivity snapshot has the iPhone-computed trend and delta. Since `trend` differs (`""` ≠ `"↗"`), `shouldUpdate` returns `true` — the HK snapshot is **not** rejected as a duplicate. Both writes are accepted by `saveOnMain`.
+
+**Practical consequence in normal operation (both channels active):** WatchConnectivity typically delivers first (lower latency). The HK delivery arrives 10–60s later, passes `shouldUpdate` (trend differs), and overwrites the WC snapshot with `trend=""`. The complication shows correct glucose + delta but loses the trend arrow until the next WC delivery (~5 min). This is acceptable because:
+- The trend arrow is the least critical display field — glucose value and delta are correct
+- The loss is transient (restored on the next CGM interval's WC delivery)
+- The overwrite also triggers a `coalescedReloadOnMain(minInterval: 5)` call; since 10–60s > 5s, the reload is not debounced — WidgetKit gets a second reload request, which may help in WidgetKit scheduling gap scenarios
+
+**In target scenarios (budget exhaustion, WidgetKit scheduling gaps):** WC is not delivering, so HK is the only channel. No overwrite, no trend regression. The `trend=""` is strictly better than stale data or no update at all.
+
+**Reload conditions:** `save(snapshot, minInterval: 5)` triggers a `coalescedReloadOnMain` call only when (a) the snapshot passes `saveOnMain` dedup, and (b) 5+ seconds have elapsed since the last reload. In the target scenarios, both conditions are typically met because no prior delivery has occurred recently.
+
+No additional dedup logic is needed in the HealthKit observer. The overwrite is benign in normal operation and beneficial in target scenarios.
+
+### Risks
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| HealthKit entitlements missing from watch extension entitlements file | **Blocker** | Add `com.apple.developer.healthkit` + `com.apple.developer.healthkit.background-delivery` to `TrioWatchApp.entitlements` (provisioning profile already has HealthKit enabled for watch extension App ID) |
+| `NSHealthShareUsageDescription` missing from watch app `Info.plist` | **Blocker** | The watch app calls `requestAuthorization(toShare: nil, read:)` — Apple requires the read usage description in the requesting process's `Info.plist`. Without it, authorization may crash on launch or fail silently. Add to `Trio Watch App/Info.plist`. `NSHealthUpdateUsageDescription` is not needed (`toShare: nil`). **Fixed in v1.34.** |
+| Trend not in HealthKit metadata (derivation complexity) | Medium | Ship with `trend=""` initially. Complication shows glucose + delta. Add delta-based trend derivation in R6.1 if user feedback requests it |
+| HealthKit sync latency not Apple-SLA'd | Medium | Sync depends on Bluetooth proximity and system scheduling. Expect 10–60s in typical conditions, potentially minutes. HealthKit is supplementary to WatchConnectivity, not a replacement |
+| `enableBackgroundDelivery` not re-registered after crash/restart | Medium | Call `setupHealthKitBackgroundDelivery()` in `WatchState.init()` / `setupSession()` on every launch. Registration is idempotent |
+| `completionHandler` not called (system penalizes app) | High | Call on all paths: error/zero-samples paths before return; success path inside `DispatchQueue.main.async` after save. Do not use `defer` at closure exit — that signals "done" before the async save runs. |
+| HealthKit read authorization denied by user | Medium | Watch must request read authorization for `.bloodGlucose`. If denied, observer never fires. Log `hk_authorization_failed`. Falls back to WatchConnectivity-only — no regression |
+| Trend arrow overwrite in normal operation | Low | HK snapshot (`trend=""`) overwrites WC snapshot's real trend when both channels deliver same reading. Transient — restored on next WC delivery (~5 min). Glucose and delta remain correct. Acceptable tradeoff; add delta-based trend derivation in R6.1 if user feedback requests it |
+| Battery impact from observer wakeups | Low | Observer fires only when new BG samples sync (~every 5 min for most CGMs). Per-wakeup cost is trivial: 1 sample query + 1 snapshot save + 1 App Group write |
+
+### Validation
+
+**BetterStack query — confirm the new channel delivers during budget exhaustion:**
+
+```sql
+SELECT
+    dt,
+    JSONExtract(raw, 'message', 'Nullable(String)') AS msg
+FROM remote(t491594_trio_logs)
+WHERE dt > now() - INTERVAL 24 HOUR
+  AND JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%hk_observer_fired%'
+ORDER BY dt DESC
+LIMIT 50
+```
+
+**Cross-channel comparison in exhaustion windows:**
+
+```sql
+SELECT
+    toStartOfHour(dt) AS hour,
+    countIf(JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%hk_observer_fired%') AS hk_deliveries,
+    countIf(JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%budget_exhausted=true%') AS exhaustion_events
+FROM remote(t491594_trio_logs)
+WHERE dt > now() - INTERVAL 24 HOUR
+GROUP BY hour
+ORDER BY hour DESC
+```
+
+**Pass conditions (two distinct failure modes):**
+1. **Budget exhaustion:** During hours where `complication_transfer_remaining=0`, `hk_observer_fired` events should appear with `save_age` p90 < 300s — confirms HealthKit delivers when WatchConnectivity budget is exhausted.
+2. **WidgetKit scheduling gaps:** `reload_age` p90 < 300s overall (not just exhaustion windows). The `hk_observer_fired` → `reloadTimelines` path provides an independent wake trigger that should reduce gaps where fresh data sits in the App Group unread.
+
+**New structured log event:** `hk_observer_fired reading_epoch=X save_age=Y glucose=Z delta=D` — distinguishable from WatchConnectivity deliveries via `msg LIKE '%hk_observer_fired%'` vs `msg LIKE '%didReceiveUserInfo%'` or `msg LIKE '%didReceiveMessage%'`.
+
+### Decision Gate
+
+Ship R6 after R4. Primary motivation is twofold:
+1. **Budget-exhaustion windows:** If R4 post-deploy data still shows p90 `save_age` > 300s during exhaustion, HealthKit provides a WCSession-independent delivery channel.
+2. **WidgetKit scheduling gaps:** Observed in build 139 — 9-minute gap with fresh App Group data, `reload_age=548s`. The `HKObserverQuery` wake trigger fires when new glucose data arrives in HealthKit, giving the watch extension an independent opportunity to call `reloadTimelines`. This addresses a failure mode that R4 cannot fix (R4 still depends on WidgetKit's scheduling to pick up App Group writes).
+
+Do not gate R6 on budget-exhaustion metrics alone. The two failure modes are distinct — R4 addresses the data delivery gap during exhaustion, R6 addresses WidgetKit's scheduling latency via an independent wake trigger.
+
+---
+
 
 
 | Idea | Status | Evidence |
@@ -1073,6 +1337,7 @@ This gives `reading_epoch` and `snapshot_age` at timeline-build time. If `save_a
 | #24 Consistent `reading_epoch` across pipeline | Partial | Gaps at coalescer trigger and `didReceiveMessage`; closes with R5a + R5b |
 | #28 WidgetKit `getTimeline` call clustering | Partial | Generation counter present; per-family clustering untracked; low priority |
 | #30 Scheduled freshness alert | Not implemented | R5e |
+| HealthKit background delivery on watch | ✅ Shipped (build 140) | R6 — live; `hk_observer_fired` confirmed |
 
 ---
 
@@ -1105,6 +1370,12 @@ R4   (updateApplicationContext iOS +     ← benefits from R3 payload being smal
       didReceiveApplicationContext watch)
 
 R5b + R5c + R5d  (observability)         ← opportunistic, ship with any PR
+
+        ↓ R4 post-deploy: observe 48h, then ship R6
+
+R6   (HealthKit background delivery on    ← independent channel; requires entitlement provisioning
+      watch — observer + sample fetch +      and HealthKit read authorization on watch
+      snapshot save to existing path)
 ```
 
 ---
@@ -1124,6 +1395,7 @@ Run 24 hours after each phase ships:
 | R4 | Freshness during exhaustion | `save_age` where `budget_exhausted=true` | p90 < 300s | Unchanged |
 | R5a | Publisher attribution | `coalescer_fired sources=` | No non-glucose source > 30% of multi-C readings | — |
 | R5d | Widget actually advanced | `timeline_entry_epoch` in getTimeline logs | p90 age < 600s at time of `getTimeline` invocation | `save_age` fresh but `timeline_entry_epoch` stale → WidgetKit not picking up App Group writes |
+| R6 | HealthKit delivery + WidgetKit wake | `hk_observer_fired` events; `reload_age` during WidgetKit scheduling gaps | `hk_observer_fired` present in exhaustion windows AND non-exhaustion gaps; `reload_age` p90 < 300s overall | No `hk_observer_fired` events; or `reload_age` unchanged in scheduling-gap windows |
 
 ---
 
@@ -1249,6 +1521,81 @@ This gives `timeline_entry_epoch` and `snapshot_age` at timeline-build time — 
 
 ## Changelog
 
+### v1.35 — 2026-03-14 | R6 shipped (build 140) + NSHealthUpdateUsageDescription remediation
+
+- **R6 shipped and live:** Build 140 deployed to TestFlight. `hk_background_delivery_registered success=true` confirmed at 15:45:19 UTC; `hk_observer_fired` events confirmed (glucose=110/111, delta computed correctly). HealthKit background delivery is operational on the watch.
+- **Unplanned remediation — `NSHealthUpdateUsageDescription`:** Apple App Store Connect validation (altool) rejected the build 139 upload with error ITMS-90683: "Missing purpose string in Info.plist" for `NSHealthUpdateUsageDescription`. Despite `toShare: nil` (no write access requested), Apple requires both `NSHealthShareUsageDescription` and `NSHealthUpdateUsageDescription` whenever the `com.apple.developer.healthkit` entitlement is present. This is a blanket validation requirement, not tied to actual API usage. **Fix:** Added `NSHealthUpdateUsageDescription` to `Trio Watch App/Info.plist`: "Trio may save blood glucose readings to Apple Health to keep your health data synchronized." The v1.34 statement that `NSHealthUpdateUsageDescription` is "not needed" was correct at the code level but incorrect for App Store submission.
+- **Unplanned remediation — `HKUnit.milligramsPerDeciliter` unavailable on watchOS:** Build failed with `type 'HKUnit' has no member 'milligramsPerDeciliter'`. This is a custom extension in `LoopKit/MockKitUI` which is linked to the iOS app but not the watchOS target. **Fix:** Replaced with inline construction: `HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))`.
+- **Status line:** Updated to reflect R6 shipped.
+- **Backlog table:** HealthKit row updated to ✅ Shipped.
+
+### v1.34 — 2026-03-14 | R6 blocker fix: NSHealthShareUsageDescription for watch app
+
+- **Blocker found (Cursor code review, confirmed by ChatGPT + Claude):** `Trio Watch App/Info.plist` was missing `NSHealthShareUsageDescription`. The watch app calls `requestAuthorization(toShare: nil, read:)` — Apple requires the read usage description in the requesting process's Info.plist. Without it, authorization may crash the watch app on launch or fail silently. Since `setupHealthKitBackgroundDelivery()` runs from `init()` → `setupSession()` on every launch, this was a high-risk failure mode for the entire watch app.
+- **Fix:** Added `NSHealthShareUsageDescription` to `Trio Watch App/Info.plist` with user-facing string: "Trio reads your blood glucose data to keep the watch complication current when wireless sync is unavailable." The "when wireless sync is unavailable" clause explains why the watch needs HealthKit specifically (backup channel, not primary).
+- **Not needed (at code level):** `NSHealthUpdateUsageDescription` — `toShare: nil` means no write access is requested. However, Apple App Store Connect validation requires `NSHealthUpdateUsageDescription` in Info.plist whenever the HealthKit entitlement is present, regardless of whether the app actually writes. See v1.35.
+- **Entitlement and Info.plist Requirements section:** Renamed from "Entitlement Requirements"; added privacy usage description subsection with rationale, XML block, and explicit note that `NSHealthUpdateUsageDescription` is not needed.
+- **Risks table:** Added `NSHealthShareUsageDescription` missing row (Blocker, fixed in v1.34).
+
+### v1.32 — 2026-03-14 | Step 7 implementation — code review (ChatGPT round 1 + 2)
+
+- **CR1:** HK setup must not be inside `if WCSession.isSupported()` — R6 is an independent wake path. Call `setupHealthKitBackgroundDelivery()` outside that block. Implemented in WatchState.
+- **CR2:** In `HKObserverQuery` update handler, if `self` is nil, `completionHandler()` was never called. Add `guard let self else { completionHandler(); return }`. Implemented.
+- **CR3/CR4:** Log sample query errors and zero samples; log `success=false` for background delivery distinctly. Implemented.
+- **CR5 (ChatGPT round 2):** completionHandler() was called via defer when the HKSampleQuery closure exited, but the save runs in DispatchQueue.main.async — system was told "done" before save ran. Call completionHandler() inside the main.async block after save. R6d section updated; implementation guide v1.18 CR5 + prompt updated.
+- **Sanity checks (ChatGPT round 3):** (1) TrioComplicationDataStore.save() uses onMain(); when caller is already on main, onMain runs the block synchronously — no extra async hop; completionHandler() after save is correct. (2) WatchState is singleton (static let shared); no duplicate HK setup. See implementation guide Step 7 sanity-checks table.
+
+### v1.33 — 2026-03-14 | Step 7 sanity checks (ChatGPT round 3) — doc
+
+- Version bump; sanity-check verification (save synchronous on main, WatchState singleton) already noted in v1.32 changelog. Implementation guide v1.19 adds Step 7 sanity-checks table.
+
+### v1.31 — 2026-03-14 | R6 pre-implementation fixes (entitlements, weak self, SortDescriptor)
+
+- **Entitlement Requirements:** HealthKit already enabled on watch extension App ID in Apple Developer portal. Table updated: both keys now ✅ "Already present in provisioning profile"; note changed to "Entitlements file addition only required — no provisioning profile update needed." Removed "must update provisioning profile" language.
+- **Risks table:** HealthKit row updated to state provisioning profile already has HealthKit; only entitlements file must be added.
+- **R6a code block:** Added `[weak self]` and `guard let self else { return }` in `requestAuthorization` callback to avoid strong capture in async callback.
+- **R6c code block:** Replaced deprecated `NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)` with `SortDescriptor(\.startDate, order: .reverse)` in `HKSampleQuery`; removed `sort` variable.
+
+### v1.30 — 2026-03-14 | Step 5/R4 and Step 7/R6 mapping + sequencing
+
+- **Step ↔ Plan mapping:** Added to Naming Convention: Step 5 = R4 (applicationContext safety net), Step 7 = R6 (HealthKit background delivery).
+- **R4 (Step 5):** Heading now includes "(Step 5)". Recommended line updated: can ship after R6 or bundle with R6 in same PR; noted complementary files (AppleWatchManager vs WatchState).
+- **R6 (Step 7):** Heading now includes "(Step 7)". Replaced "Prerequisite: R4 must be shipped first" with **Recommended sequencing: go straight to R6.** Rationale: R4 would have done nothing for the 24-minute gap (data already in App Group, WidgetKit not calling getTimeline; R4 still ends with reloadTimelines WidgetKit can ignore). R6 gives independent system-triggered wake when new glucose arrives; e.g. during 9-min gap, R6 would have fired from 05:37 reading. R4 still valuable for budget exhaustion but lower urgency. Ship R6 first; R4 after R6 or bundle both.
+
+### v1.29 — 2026-03-14 | R6 dedup accuracy + stale conditional language
+
+- **Dedup and Dual-Delivery Behavior:** Rewrote section for accuracy against actual code. The prior version claimed "the second delivery is rejected as a duplicate" which was incorrect — `shouldUpdate` compares `trend` and the HK snapshot's `trend=""` differs from WC's real trend, so `shouldUpdate` returns `true` and both writes are accepted. New section documents: (a) the HK snapshot overwrites WC's trend arrow in normal dual-delivery operation, (b) this is transient and acceptable (glucose+delta correct, trend restored on next WC delivery), (c) the overwrite's `coalescedReloadOnMain` call fires because 10–60s HealthKit sync latency exceeds the 5s debounce, (d) in target scenarios (exhaustion, WidgetKit gaps) there is no overwrite because WC is not delivering.
+- **Risks table:** Added "Trend arrow overwrite in normal operation" (Low severity).
+- **Backlog table row:** Updated from "gated on R4 post-deploy data" to "ship after R4; see §R6" — consistent with v1.27 decision gate broadening.
+- **Implementation sequence arrow:** Changed from "if p90 complication_age > 300s in exhaustion windows after 48h" to "observe 48h, then ship R6" — consistent with v1.27 decision gate broadening.
+
+---
+
+### v1.28 — 2026-03-14 | R6 nit fixes (naming, entitlement)
+
+- **Naming convention:** Fixed `R1`–`R5` → `R1`–`R6` in the naming convention line and annotated the initial-draft changelog entries. The naming convention table was already updated in v1.26 but the prose reference was missed.
+- **`healthkit.access` entitlement:** Not referenced in the remediation plan (only in the implementation guide). Noted here for cross-reference: the guide's XML block and Cursor prompt incorrectly included `com.apple.developer.healthkit.access` (empty array). This entitlement is for sensitive HealthKit capability types and is not needed for reading `.bloodGlucose`. Removed in guide v1.14.
+
+---
+
+### v1.27 — 2026-03-14 | R6 decision gate broadened
+
+- **R6 decision gate:** Broadened from "ship only if budget-exhaustion staleness persists" to "ship after R4 — addresses two distinct failure modes." Added WidgetKit scheduling gap as co-equal motivation (observed in build 139: 9-min gap with fresh App Group data, `reload_age=548s`). The `HKObserverQuery` wake trigger fires when new glucose data arrives in HealthKit, providing an independent opportunity to call `reloadTimelines` outside of WidgetKit's own scheduling.
+- **Prerequisite:** Updated to describe both failure modes explicitly (budget exhaustion + WidgetKit scheduling gaps). Removed "motivated only if" conditional language.
+- **Validation:** Pass conditions split into two categories (budget exhaustion: `save_age` p90 < 300s in exhaustion windows; WidgetKit gaps: `reload_age` p90 < 300s overall). Validation Protocol table row updated.
+
+---
+
+### v1.26 — 2026-03-14 | R6 HealthKit Background Delivery
+
+- **R6 section added:** New remediation phase — HealthKit background delivery as an independent complication update channel on watchOS, completely outside WatchConnectivity.
+- **Codebase audit results embedded:** iPhone-side HealthKit writes confirmed in `HealthKitManager.swift` line 205 (`.bloodGlucose`, `.milligramsPerDeciliter`, no trend/delta metadata). Watch extension and complication confirmed to have zero HealthKit references. Entitlements audit: watch extension missing both `com.apple.developer.healthkit` and `com.apple.developer.healthkit.background-delivery` (blocker). Main app has both.
+- **Architecture:** `HKObserverQuery` + `enableBackgroundDelivery` on watch → sample fetch → `TrioComplicationSnapshot` construction → existing `TrioComplicationDataStore.shared.save()` path. Delta derived from last 2 samples; trend set to `""` initially (derivation deferred to R6.1).
+- **Dedup:** `saveOnMain` (FP-Phase 3.1) handles dual-channel dedup automatically — no new dedup logic needed.
+- **Naming convention:** Updated R-namespace to R1–R6. Implementation Sequence, Validation Protocol, and Backlog tables updated.
+
+---
+
 ### v1.25 — 2026-03-13 | Logging fixes context for Step 4 gate
 
 - **Status:** Updated to reflect builds 137-138 deployment with cloud logging pipeline fixes. Step 3b is now deployed and observable with accurate build attribution.
@@ -1367,12 +1714,12 @@ This gives `timeline_entry_epoch` and `snapshot_age` at timeline-build time — 
 
 ### v1.0 — 2026-03-09 | Initial version
 
-First draft of the Freshness Remediation Plan (R1–R5), synthesized from:
+First draft of the Freshness Remediation Plan (R1–R5; R6 added in v1.26), synthesized from:
 - BetterStack telemetry analysis (build 131, 2026-03-08/09)
 - ChatGPT critique #1 of the Next-Steps Report
 - Prior implementation plan `complication-freshness-implementation-plan.md` v1.27 (FP-Phase 0–3)
 
-Established root-cause hierarchy (redundant triggers → budget burn → frozen queue → stale complication), defined R1–R5 phases, and set the implementation sequence.
+Established root-cause hierarchy (redundant triggers → budget burn → frozen queue → stale complication), defined R1–R5 phases (R6 added in v1.26), and set the implementation sequence.
 
 ---
 
@@ -1744,3 +2091,27 @@ The `// (2) save must happen BEFORE forceWidgetReloadIfStale()` comment in the `
 - The Step 4 decision gate (avg C > 1.3?) should query build >= 137 data only. Earlier builds have contaminated build attribution.
 
 **Next gate:** Observe 48h from build 137 deployment (2026-03-12). Run avg C query ~2026-03-15. If avg C <= 1.3: skip Step 4, proceed to Step 5 (R4). If avg C > 1.3: implement Step 4 (R2d).
+
+---
+
+### Build 140 — Step 7: R6 HealthKit Background Delivery (2026-03-14)
+
+**Commits:** `1b1c2d10d` (R6 implementation), `f1cadf3e2` (HKUnit fix + NSHealthUpdateUsageDescription) on `feature/watch-complication-improvements`
+**Patch:** `09-watch-complication-improvements.patch` regenerated via `mid-stack-update.sh --patch 09 --cherry-pick 1b1c2d10d,f1cadf3e2`
+**Build:** 140 (v0.6.0) — deployed to TestFlight
+
+**R6a — Background delivery registration:** Confirmed working. `hk_background_delivery_registered success=true` logged at 15:45:19 UTC on first watch app launch after install.
+
+**R6b — Observer query:** Confirmed working. `hk_observer_fired` events observed at 15:45:20, 15:52:54, 15:54:15 UTC with correct glucose values (110, 111) and derived deltas (-9, -2).
+
+**R6c — Sample fetch + snapshot save:** Confirmed working. Glucose extracted from HealthKit samples, delta derived from 2-sample comparison, snapshot saved to App Group via `TrioComplicationDataStore.shared.save()`.
+
+**Unplanned remediations (2 issues discovered during build/deploy):**
+
+1. **`HKUnit.milligramsPerDeciliter` unavailable on watchOS:** Build error — `type 'HKUnit' has no member 'milligramsPerDeciliter'`. The convenience property is a custom extension in `LoopKit/MockKitUI`, linked only to the iOS target. **Fix:** Replaced with `HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))` inline in `WatchState.swift`.
+
+2. **`NSHealthUpdateUsageDescription` required by App Store Connect:** Upload to TestFlight rejected (ITMS-90683) despite `toShare: nil`. Apple requires both HealthKit usage description keys whenever the `com.apple.developer.healthkit` entitlement is present, regardless of actual API usage. Developer forums confirm this is a blanket validation rule affecting both read-only and write-only apps. **Fix:** Added `NSHealthUpdateUsageDescription` to `Trio Watch App/Info.plist`. The string does not grant additional capability — the authorization request remains read-only (`toShare: nil`).
+
+**Observation:** Both remediations were discovered during the build/deploy cycle, not during the code review phase. The `HKUnit` issue was a watchOS target linkage gap that Xcode doesn't surface until compilation. The `NSHealthUpdateUsageDescription` requirement was a runtime App Store validation rule not documented in Apple's HealthKit authorization guide — only discoverable via actual upload attempt or developer forum reports.
+
+**Next gate:** Observe 48h `hk_observer_fired` events. Validate: (a) cadence matches CGM interval (~5 min), (b) `save_age` p90 < 300s, (c) events continue during budget-exhaustion windows, (d) dual-delivery dedup behavior matches plan §R6 expectations.

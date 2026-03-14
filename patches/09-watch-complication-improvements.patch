@@ -1,6 +1,6 @@
-From e6eec98d76f7a180042c5e1e7b3bd24d9ae2cb79 Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sat, 14 Mar 2026 00:02:16 +0100
+From 8eb323f458032f8f39d35182ff721a6776a52a90 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sat, 14 Mar 2026 15:59:37 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
@@ -9,9 +9,9 @@ Subject: [PATCH] feat: watch-complication-improvements
  .../Views/ComplicationDebugView.swift         |  535 +++++++++
  .../Views/TrioMainWatchView.swift             |   55 +-
  .../WatchState+Requests.swift                 |   19 +
- Trio Watch App Extension/WatchState.swift     |  642 ++++++++---
- Trio Watch App/Info.plist                     |   15 +-
- Trio Watch App/TrioWatchApp.entitlements      |   10 +
+ Trio Watch App Extension/WatchState.swift     |  770 ++++++++++---
+ Trio Watch App/Info.plist                     |   19 +-
+ Trio Watch App/TrioWatchApp.entitlements      |   14 +
  Trio Watch Complication/Info.plist            |    2 +
  .../TrioWatchComplication.entitlements        |   10 +
  .../TrioWatchComplication.swift               |  425 ++++++-
@@ -21,7 +21,7 @@ Subject: [PATCH] feat: watch-complication-improvements
  Trio/Resources/TrioWatch.entitlements         |   10 +
  Trio/Sources/Models/WatchMessageKeys.swift    |    6 +-
  .../WatchManager/AppleWatchManager.swift      |  523 +++++++--
- 17 files changed, 3347 insertions(+), 347 deletions(-)
+ 17 files changed, 3483 insertions(+), 347 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -769,11 +769,12 @@ index d47a971c9..f53d1ce43 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f4fb33fde..0a9f3cec8 100644
+index f4fb33fde..c68438848 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
-@@ -1,20 +1,47 @@
+@@ -1,20 +1,48 @@
  import Foundation
++import HealthKit
  import SwiftUI
  import WatchConnectivity
 +import WatchKit
@@ -827,7 +828,7 @@ index f4fb33fde..0a9f3cec8 100644
      var currentGlucose: String = "--"
      var currentGlucoseColorString: String = "#ffffff"
      var trend: String? = ""
-@@ -28,59 +55,92 @@ import WatchConnectivity
+@@ -28,59 +56,97 @@ import WatchConnectivity
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
@@ -900,6 +901,11 @@ index f4fb33fde..0a9f3cec8 100644
 +    private let maxTransferRetries = 3
 +    private var retryWorkItem: DispatchWorkItem?
 +
++    // MARK: - HealthKit (R6)
++
++    private var healthKitStore: HKHealthStore?
++    private var glucoseObserverQuery: HKObserverQuery?
++
 +    private var backgroundRefreshCount = 0
 +    private var lastBackgroundRefreshDate: Date?
 +
@@ -936,7 +942,7 @@ index f4fb33fde..0a9f3cec8 100644
      private func setupSession() {
          if WCSession.isSupported() {
              let session = WCSession.default
-@@ -88,16 +148,16 @@ import WatchConnectivity
+@@ -88,16 +154,138 @@ import WatchConnectivity
              session.activate()
              self.session = session
              Task {
@@ -947,8 +953,130 @@ index f4fb33fde..0a9f3cec8 100644
              Task {
 -                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
 +                await WatchLogger.shared.log("WCSession is not supported on this device")
++            }
++        }
++        // R6: independent of WatchConnectivity — HK background delivery is a separate wake path.
++        setupHealthKitBackgroundDelivery()
++    }
++
++    // MARK: - HealthKit background delivery (R6)
++
++    private func setupHealthKitBackgroundDelivery() {
++        guard HKHealthStore.isHealthDataAvailable() else { return }
++        let store = HKHealthStore()
++        guard let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else { return }
++
++        store.requestAuthorization(toShare: nil, read: Set([bgType])) { [weak self] granted, error in
++            guard let self else { return }
++            guard granted, error == nil else {
++                Task {
++                    await WatchLogger.shared.log("❌ hk_authorization_failed granted=\(granted) error=\(error?.localizedDescription ?? "nil")")
++                }
++                return
++            }
++
++            store.enableBackgroundDelivery(for: bgType, frequency: .immediate) { success, error in
++                if let error = error {
++                    Task {
++                        await WatchLogger.shared.log("❌ hk_background_delivery_registration_failed error=\(error.localizedDescription)")
++                    }
++                } else if success {
++                    Task {
++                        await WatchLogger.shared.log("✅ hk_background_delivery_registered success=true")
++                    }
++                } else {
++                    Task {
++                        await WatchLogger.shared.log("⚠️ hk_background_delivery_registered success=false")
++                    }
++                }
++            }
++
++            self.setupGlucoseObserverQuery(store: store, sampleType: bgType)
++        }
++    }
++
++    private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuantityType) {
++        healthKitStore = store
++        let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { [weak self] _, completionHandler, error in
++            guard error == nil else {
++                Task {
++                    await WatchLogger.shared.log("❌ hk_observer_error error=\(error!.localizedDescription)")
++                }
++                completionHandler()
++                return
++            }
++            guard let self else {
++                completionHandler()
++                return
++            }
++            self.fetchLatestGlucoseFromHealthKit(completionHandler: completionHandler)
++        }
++        store.execute(query)
++        glucoseObserverQuery = query
++    }
++
++    private func fetchLatestGlucoseFromHealthKit(completionHandler: @escaping () -> Void) {
++        guard let store = healthKitStore,
++              let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else {
++            completionHandler()
++            return
++        }
++
++        let mgDlUnit = HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))
++        let sort = NSSortDescriptor(keyPath: \HKSample.startDate, ascending: false)
++        let query = HKSampleQuery(
++            sampleType: bgType,
++            predicate: nil,
++            limit: 2,
++            sortDescriptors: [sort]
++        ) { _, results, error in
++            if let error = error {
++                Task {
++                    await WatchLogger.shared.log("❌ hk_observer_sample_query_error error=\(error.localizedDescription)")
++                }
++                completionHandler()
++                return
++            }
++            guard let samples = results as? [HKQuantitySample],
++                  let latest = samples.first else {
++                Task {
++                    await WatchLogger.shared.log("⚠️ hk_observer_sample_query_zero_samples")
++                }
++                completionHandler()
++                return
++            }
++
++            let mgDl = latest.quantity.doubleValue(for: mgDlUnit)
++            let readingDate = latest.startDate
++            let glucoseString = String(Int(mgDl.rounded()))
++
++            var deltaString = "--"
++            if samples.count >= 2 {
++                let prevMgDl = samples[1].quantity.doubleValue(for: mgDlUnit)
++                deltaString = String(format: "%+.0f", mgDl - prevMgDl)
++            }
++
++            let saveAge = Int(Date().timeIntervalSince(readingDate))
++            Task {
++                await WatchLogger.shared.log("🏥 hk_observer_fired reading_epoch=\(Int(readingDate.timeIntervalSince1970)) save_age=\(saveAge) glucose=\(glucoseString) delta=\(deltaString)")
++            }
++
++            let snapshot = TrioComplicationSnapshot(
++                glucose: glucoseString,
++                trend: "",
++                delta: deltaString,
++                readingDate: readingDate,
++                date: Date(),
++                glucoseColor: nil
++            )
++
++            // R6d: Tell the system we're done only after the save has run on main.
++            DispatchQueue.main.async {
++                TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
++                completionHandler()
              }
          }
++        store.execute(query)
      }
  
 -    // MARK: – Handle Acknowledgement Messages FROM Phone
@@ -956,7 +1084,7 @@ index f4fb33fde..0a9f3cec8 100644
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
          Task {
-@@ -106,21 +166,17 @@ import WatchConnectivity
+@@ -106,21 +294,17 @@ import WatchConnectivity
  
          if success {
              Task {
@@ -980,7 +1108,7 @@ index f4fb33fde..0a9f3cec8 100644
              DispatchQueue.main.async {
                  self.showCommsAnimation = false
              }
-@@ -135,7 +191,7 @@ import WatchConnectivity
+@@ -135,7 +319,7 @@ import WatchConnectivity
  
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                  self.showAcknowledgmentBanner = false
@@ -989,7 +1117,7 @@ index f4fb33fde..0a9f3cec8 100644
                  Task {
                      await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                  }
-@@ -145,14 +201,12 @@ import WatchConnectivity
+@@ -145,14 +329,12 @@ import WatchConnectivity
  
      // MARK: - WCSessionDelegate
  
@@ -1006,7 +1134,7 @@ index f4fb33fde..0a9f3cec8 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -160,84 +214,68 @@ import WatchConnectivity
+@@ -160,84 +342,68 @@ import WatchConnectivity
  
              if activationState == .activated {
                  Task {
@@ -1102,7 +1230,7 @@ index f4fb33fde..0a9f3cec8 100644
              }
              DispatchQueue.main.async {
                  self.showSyncingAnimation = false
-@@ -246,98 +284,154 @@ import WatchConnectivity
+@@ -246,98 +412,154 @@ import WatchConnectivity
      }
  
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
@@ -1294,7 +1422,7 @@ index f4fb33fde..0a9f3cec8 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -348,7 +442,7 @@ import WatchConnectivity
+@@ -348,7 +570,7 @@ import WatchConnectivity
                  }
  
                  Task {
@@ -1303,7 +1431,7 @@ index f4fb33fde..0a9f3cec8 100644
                  }
  
                  switch ackCode {
-@@ -371,26 +465,29 @@ import WatchConnectivity
+@@ -371,26 +593,29 @@ import WatchConnectivity
                  }
              }
  
@@ -1340,7 +1468,7 @@ index f4fb33fde..0a9f3cec8 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -399,31 +496,27 @@ import WatchConnectivity
+@@ -399,31 +624,27 @@ import WatchConnectivity
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -1376,7 +1504,7 @@ index f4fb33fde..0a9f3cec8 100644
              DispatchQueue.main.async {
                  self.showSyncingAnimation = false
              }
-@@ -431,38 +524,34 @@ import WatchConnectivity
+@@ -431,38 +652,34 @@ import WatchConnectivity
          }
  
          Task {
@@ -1423,7 +1551,7 @@ index f4fb33fde..0a9f3cec8 100644
          if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
              self.currentGlucose = currentGlucose
          }
-@@ -494,29 +583,27 @@ import WatchConnectivity
+@@ -494,29 +711,27 @@ import WatchConnectivity
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
              glucoseValues = glucoseData.compactMap { data in
                  guard let glucose = data["glucose"] as? Double,
@@ -1465,7 +1593,7 @@ index f4fb33fde..0a9f3cec8 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -537,41 +624,272 @@ import WatchConnectivity
+@@ -537,41 +752,272 @@ import WatchConnectivity
              }
          }
  
@@ -1523,15 +1651,18 @@ index f4fb33fde..0a9f3cec8 100644
 +        } else if let fallbackDate = dateValue(from: message[WatchMessageKeys.date]) {
 +            Task {
 +                await WatchLogger.shared.log("⚠️ saveComplicationSnapshot: readingEpoch missing; falling back to build-time date — complication freshness unreliable")
-+            }
+             }
 +            readingDate = fallbackDate
 +        } else {
 +            Task {
 +                await WatchLogger.shared.log("📸 saveComplicationSnapshot SKIPPED: no valid readingDate")
 +            }
 +            return
-+        }
-+
+         }
+ 
+-        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
+-            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
+-                maxCarbs = decimalValue
 +        let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
 +        let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
 +        let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
@@ -1574,9 +1705,9 @@ index f4fb33fde..0a9f3cec8 100644
 +            return
          }
  
--        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
--            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
--                maxCarbs = decimalValue
+-        if let maxFatValue = message[WatchMessageKeys.maxFat] {
+-            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
+-                maxFat = decimalValue
 +        if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
 +            guard glucoseValue >= 40 && glucoseValue <= 400 else {
 +                Task {
@@ -1586,16 +1717,20 @@ index f4fb33fde..0a9f3cec8 100644
              }
          }
  
--        if let maxFatValue = message[WatchMessageKeys.maxFat] {
--            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
--                maxFat = decimalValue
+-        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
+-            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
+-                maxProtein = decimalValue
 +        guard let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp else {
 +            Task {
 +                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: no valid CGM reading timestamp")
              }
 +            return
-+        }
-+
+         }
+ 
+-        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
+-            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
+-                // limit minimum to 0.05 to avoid dealing with 0.025 increments
+-                self.bolusIncrement = max(decimalValue, 0.05)
 +        let snapshot = TrioComplicationSnapshot(
 +            glucose: currentGlucose,
 +            trend: trend ?? "",
@@ -1607,11 +1742,8 @@ index f4fb33fde..0a9f3cec8 100644
 +
 +        Task {
 +            await WatchLogger.shared.log("🔄 forceComplicationUpdate: glucose=\(currentGlucose), readingDate=\(effectiveReadingDate)")
-         }
- 
--        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
--            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
--                maxProtein = decimalValue
++        }
++
 +        TrioComplicationDataStore.shared.save(snapshot, triggerReload: false)
 +        TrioComplicationDataStore.shared.forceReload(scheduleRetry: false)
 +    }
@@ -1640,10 +1772,9 @@ index f4fb33fde..0a9f3cec8 100644
              }
          }
  
--        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
--            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
--                // limit minimum to 0.05 to avoid dealing with 0.025 increments
--                self.bolusIncrement = max(decimalValue, 0.05)
+-        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] {
+-            if let booleanValue = confirmBolusFaster as? Bool {
+-                self.confirmBolusFaster = booleanValue
 +        func handleBackgroundTasks(_ tasks: Set<WKRefreshBackgroundTask>) {
 +            Task {
 +                await WatchLogger.shared.log("Handling background tasks: \(tasks.count)")
@@ -1699,15 +1830,12 @@ index f4fb33fde..0a9f3cec8 100644
              }
          }
 +    #endif
- 
--        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] {
--            if let booleanValue = confirmBolusFaster as? Bool {
--                self.confirmBolusFaster = booleanValue
++
 +    func loadFallbackDataFromComplication() {
 +        guard let snapshot = TrioComplicationDataStore.shared.latestSnapshot() else {
 +            DispatchQueue.main.async {
 +                self.showSyncingAnimation = false
-             }
++            }
 +            return
 +        }
 +
@@ -1753,15 +1881,15 @@ index f4fb33fde..0a9f3cec8 100644
 +
 +        let dates = glucoseData.compactMap { data in
 +            dateValue(from: data["date"])
-         }
++        }
 +        return dates.max()
      }
  }
 diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
-index 8d15acbed..be8edf8a9 100644
+index 8d15acbed..80d6438ea 100644
 --- a/Trio Watch App/Info.plist	
 +++ b/Trio Watch App/Info.plist	
-@@ -2,10 +2,15 @@
+@@ -2,10 +2,19 @@
  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
  <plist version="1.0">
  <dict>
@@ -1780,18 +1908,26 @@ index 8d15acbed..be8edf8a9 100644
 +	-->
 +	<key>AppGroupID</key>
 +	<string>$(TRIO_APP_GROUP_ID)</string>
++	<key>NSHealthShareUsageDescription</key>
++	<string>Trio reads your blood glucose data to keep the watch complication current when wireless sync is unavailable.</string>
++	<key>NSHealthUpdateUsageDescription</key>
++	<string>Trio may save blood glucose readings to Apple Health to keep your health data synchronized.</string>
  </dict>
  </plist>
 diff --git a/Trio Watch App/TrioWatchApp.entitlements b/Trio Watch App/TrioWatchApp.entitlements
 new file mode 100644
-index 000000000..9a37de423
+index 000000000..54e6e8145
 --- /dev/null
 +++ b/Trio Watch App/TrioWatchApp.entitlements	
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,14 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 +<plist version="1.0">
 +<dict>
++	<key>com.apple.developer.healthkit</key>
++	<true/>
++	<key>com.apple.developer.healthkit.background-delivery</key>
++	<true/>
 +	<key>com.apple.security.application-groups</key>
 +	<array>
 +		<string>$(TRIO_APP_GROUP_ID)</string>

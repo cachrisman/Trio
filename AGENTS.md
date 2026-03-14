@@ -1,4 +1,4 @@
-# AGENTS.md — v8
+# AGENTS.md — v9
 
 Instructions for AI agents working in this repository.
 
@@ -158,7 +158,7 @@ When asked to run a build, do the following.
 - **Investigate immediately:** Read the relevant part of the log (e.g. around failure messages, ❌ markers, or "error:" / "ARCHIVE FAILED") to identify the cause.
 - **Propose a fix** and, if the fix is **relatively minor** (e.g. a clear typo, one-file change, or small logic fix):
   - Implement the fix on the appropriate branch **in the Trio worktree** (feature branch or, for patch-stack builds, the branch that the patch was generated from).
-  - Regenerate the patch using `./scripts/generate-patch.sh` (see "Common workflows" and `docs/process/feature-branch-workflow-optimization.md`).
+  - Regenerate the patch using `mid-stack-update.sh --cherry-pick` (see "Update an existing patch (mid-stack)" above). **Important:** the fix commit is rarely the only new commit on the feature branch. Follow the pre-flight step to enumerate ALL commits not yet in the patch and include them all in `--cherry-pick`, earliest first.
   - Run `scripts/patch-test.sh` to validate the patch stack.
   - If patch test passes, start a **new** build in the background and again give the user a `tail -f` command for the new log.
 - If the fix is not minor (e.g. architectural or multi-file), report the findings and proposed fix to the user and do not automatically implement or start a new build unless asked.
@@ -185,6 +185,22 @@ Prefer `--include-files` over `--all-files` when only specific files changed.
 manually create baseline branches, run `generate-patch.sh` directly, or
 replicate the workflow steps by hand. The manual workflow exists in the docs
 only as a reference for understanding what the script does internally.
+
+#### Pre-flight: enumerate ALL new commits
+
+Before running `--cherry-pick`, always determine **every** commit on the feature
+branch that is not yet in the patch. Do not assume the commit you just made is
+the only one — there may be earlier commits added since the last patch update.
+
+```bash
+# From either worktree — list recent feature-branch commits:
+git log --oneline <feature-branch> | head -10
+```
+
+Compare against what is already in the patch (the last cherry-picked or squashed
+state). Include **all** new commits in `--cherry-pick`, earliest first. A common
+mistake is cherry-picking only a fix commit while forgetting the feature commit
+it modifies — this guarantees a conflict.
 
 ```bash
 # From Trio-dev worktree, on dev branch:
@@ -214,6 +230,11 @@ to the manual workflow. Common failure causes and fixes:
   matches, cherry-pick will conflict. Use `--from-feature-branch` with
   `--feature-branch <branch>` to regenerate the patch from the current feature
   branch state; no rebase required.
+  **`--from-feature-branch` is a last resort, not an escape hatch.** Only use
+  it when diagnosis confirms the baseline has actually diverged (merge, rebase,
+  or amend on the feature branch). Do NOT use it to work around cherry-pick
+  conflicts caused by missing intermediate commits — that masks the real
+  problem and skips the cherry-pick workflow's provenance tracking.
 
 See `./scripts/mid-stack-update.sh -h` for all options.
 
@@ -321,6 +342,11 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v9 (2026-03-14)
+- **Mid-stack cherry-pick pre-flight:** Added mandatory pre-flight step to "Update an existing patch (mid-stack)" — before running `--cherry-pick`, enumerate ALL new commits on the feature branch not yet in the patch and include them all, earliest first. Prevents the common mistake of cherry-picking only a fix commit while forgetting the feature commit it modifies.
+- **Build-fix workflow references `mid-stack-update.sh`:** Updated "If an error is detected" (section 4) to reference `mid-stack-update.sh --cherry-pick` instead of `generate-patch.sh`, and explicitly warns that the fix commit is rarely the only new commit.
+- **`--from-feature-branch` gated as last resort:** Added explicit warning that `--from-feature-branch` must only be used when the baseline has actually diverged (merge/rebase/amend), not as a workaround for cherry-pick conflicts caused by missing intermediate commits.
 
 ### v8 (2026-03-12)
 - **Docs on `dev`; docs branch removed:** Plan/design docs and prompts now live in `docs/` on the `dev` branch and are committed with completed patch work. Removed the dedicated "Tracking plan and design docs (dedicated `docs` branch)" section and replaced it with "Tracking docs on `dev`" and rules of thumb (WIP uncommitted OK; commit docs with patch at completion; docs reflect reality at completion).
