@@ -228,7 +228,7 @@ enum BackgroundTaskWindowCounter {
             return
         }
 
-        // R6c: HKSampleQuery requires [NSSortDescriptor]; use keyPath API (not deprecated HKSampleSortIdentifierStartDate).
+        let mgDlUnit = HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))
         let sort = NSSortDescriptor(keyPath: \HKSample.startDate, ascending: false)
         let query = HKSampleQuery(
             sampleType: bgType,
@@ -252,13 +252,13 @@ enum BackgroundTaskWindowCounter {
                 return
             }
 
-            let mgDl = latest.quantity.doubleValue(for: .milligramsPerDeciliter())
+            let mgDl = latest.quantity.doubleValue(for: mgDlUnit)
             let readingDate = latest.startDate
             let glucoseString = String(Int(mgDl.rounded()))
 
             var deltaString = "--"
             if samples.count >= 2 {
-                let prevMgDl = samples[1].quantity.doubleValue(for: .milligramsPerDeciliter())
+                let prevMgDl = samples[1].quantity.doubleValue(for: mgDlUnit)
                 deltaString = String(format: "%+.0f", mgDl - prevMgDl)
             }
 
