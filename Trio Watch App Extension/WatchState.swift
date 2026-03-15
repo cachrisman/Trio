@@ -101,6 +101,8 @@ enum BackgroundTaskWindowCounter {
     /// Connectivity background tasks held until userInfo processing finishes. Main queue only.
     private var pendingConnectivityTasks: [WKRefreshBackgroundTask] = []
     private var lastUserInfoReceivedAt: Date?
+    /// R5c — set in didReceiveUserInfo and passed through to saveComplicationSnapshot for decode_ms (reading_epoch there is derived from the payload being saved to avoid misattribution).
+    private var lastUserInfoReceiveTimestamp: Date?
     private var quietWindowWorkItem: DispatchWorkItem?
 
     private var activationTimestamp: Date?
@@ -188,11 +190,11 @@ enum BackgroundTaskWindowCounter {
                     }
                 } else if success {
                     Task {
-                        await WatchLogger.shared.log("✅ hk_background_delivery_registered success=true")
+                        await WatchLogger.shared.log("✅ hk_background_delivery_registered success=true low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)")
                     }
                 } else {
                     Task {
-                        await WatchLogger.shared.log("⚠️ hk_background_delivery_registered success=false")
+                        await WatchLogger.shared.log("⚠️ hk_background_delivery_registered success=false low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)")
                     }
                 }
             }
@@ -204,9 +206,10 @@ enum BackgroundTaskWindowCounter {
     private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuantityType) {
         healthKitStore = store
         let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { [weak self] _, completionHandler, error in
+            let fireId = UUID()
             guard error == nil else {
                 Task {
-                    await WatchLogger.shared.log("❌ hk_observer_error error=\(error!.localizedDescription)")
+                    await WatchLogger.shared.log("❌ hk_observer_error fire_id=\(fireId) error=\(error!.localizedDescription)")
                 }
                 completionHandler()
                 return
@@ -215,74 +218,163 @@ enum BackgroundTaskWindowCounter {
                 completionHandler()
                 return
             }
-            self.fetchLatestGlucoseFromHealthKit(completionHandler: completionHandler)
+            self.fetchLatestGlucoseFromHealthKit(fireId: fireId, completionHandler: completionHandler)
         }
         store.execute(query)
         glucoseObserverQuery = query
     }
 
-    private func fetchLatestGlucoseFromHealthKit(completionHandler: @escaping () -> Void) {
+    private func fetchLatestGlucoseFromHealthKit(fireId: UUID, completionHandler: @escaping () -> Void) {
         guard let store = healthKitStore,
               let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else {
+            Task {
+                await WatchLogger.shared.log("❌ hk_observer_guard_failed fire_id=\(fireId) reason=nil_store_or_type")
+            }
             completionHandler()
             return
         }
 
+        let dataStore = TrioComplicationDataStore.shared
         let mgDlUnit = HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))
-        let sort = NSSortDescriptor(keyPath: \HKSample.startDate, ascending: false)
-        let query = HKSampleQuery(
-            sampleType: bgType,
-            predicate: nil,
-            limit: 2,
-            sortDescriptors: [sort]
-        ) { _, results, error in
-            if let error = error {
+
+        // R6.1 — Load anchor; decode failure → nil + 24h cap
+        var anchor: HKQueryAnchor?
+        if let data = dataStore.hkGlucoseAnchor() {
+            if let decoded = try? NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data) {
+                anchor = decoded
+            } else {
                 Task {
-                    await WatchLogger.shared.log("❌ hk_observer_sample_query_error error=\(error.localizedDescription)")
+                    await WatchLogger.shared.log("⚠️ hk_anchor_decode_failed fire_id=\(fireId)")
                 }
-                completionHandler()
-                return
             }
-            guard let samples = results as? [HKQuantitySample],
-                  let latest = samples.first else {
-                Task {
-                    await WatchLogger.shared.log("⚠️ hk_observer_sample_query_zero_samples")
-                }
-                completionHandler()
-                return
-            }
-
-            let mgDl = latest.quantity.doubleValue(for: mgDlUnit)
-            let readingDate = latest.startDate
-            let glucoseString = String(Int(mgDl.rounded()))
-
-            var deltaString = "--"
-            if samples.count >= 2 {
-                let prevMgDl = samples[1].quantity.doubleValue(for: mgDlUnit)
-                deltaString = String(format: "%+.0f", mgDl - prevMgDl)
-            }
-
-            let saveAge = Int(Date().timeIntervalSince(readingDate))
+        } else {
             Task {
-                await WatchLogger.shared.log("🏥 hk_observer_fired reading_epoch=\(Int(readingDate.timeIntervalSince1970)) save_age=\(saveAge) glucose=\(glucoseString) delta=\(deltaString)")
-            }
-
-            let snapshot = TrioComplicationSnapshot(
-                glucose: glucoseString,
-                trend: "",
-                delta: deltaString,
-                readingDate: readingDate,
-                date: Date(),
-                glucoseColor: nil
-            )
-
-            // R6d: Tell the system we're done only after the save has run on main.
-            DispatchQueue.main.async {
-                TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
-                completionHandler()
+                await WatchLogger.shared.log("⚠️ hk_observer_nil_anchor fire_id=\(fireId)")
             }
         }
+
+        // R6.1 — Nil anchor: cap to 24h. With anchor: no date cap. SyncIdentifier filter deferred (see plan §Source Predicate).
+        let predicate: NSPredicate?
+        if anchor == nil {
+            let twentyFourHoursAgo = Date().addingTimeInterval(-24 * 3600)
+            predicate = HKQuery.predicateForSamples(withStart: twentyFourHoursAgo, end: nil, options: .strictStartDate)
+        } else {
+            predicate = nil
+        }
+
+        let query = HKAnchoredObjectQuery(
+            type: bgType,
+            predicate: predicate,
+            anchor: anchor,
+            limit: HKObjectQueryNoLimit,
+            resultsHandler: { [weak self] _, samples, _, newAnchor, error in
+                guard let self else {
+                    completionHandler()
+                    return
+                }
+                if let error = error {
+                    Task {
+                        await WatchLogger.shared.log("❌ hk_observer_query_error fire_id=\(fireId) error=\(error.localizedDescription)")
+                    }
+                    completionHandler()
+                    return
+                }
+                if let newAnchor = newAnchor,
+                   let anchorData = try? NSKeyedArchiver.archivedData(withRootObject: newAnchor, requiringSecureCoding: true) {
+                    dataStore.saveHKGlucoseAnchor(anchorData)
+                }
+
+                let added = (samples as? [HKQuantitySample]) ?? []
+                let sortedByDate = added.sorted { $0.startDate > $1.startDate }
+                if sortedByDate.isEmpty {
+                    Task {
+                        await WatchLogger.shared.log("⚠️ hk_observer_no_new_samples fire_id=\(fireId)")
+                    }
+                    completionHandler()
+                    return
+                }
+
+                let latest = sortedByDate[0]
+                let latestEpoch = latest.startDate.timeIntervalSince1970
+                let latestMgDl = latest.quantity.doubleValue(for: mgDlUnit)
+
+                if latestEpoch == dataStore.hkLastReceivedGlucoseEpoch() {
+                    Task {
+                        await WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
+                    }
+                    completionHandler()
+                    return
+                }
+
+                var previousMgDl: Double?
+                var previousEpoch: TimeInterval?
+                if sortedByDate.count >= 2 {
+                    let prev = sortedByDate[1]
+                    previousMgDl = prev.quantity.doubleValue(for: mgDlUnit)
+                    previousEpoch = prev.startDate.timeIntervalSince1970
+                } else {
+                    let storedEpoch = dataStore.hkLastReceivedGlucoseEpoch()
+                    if storedEpoch > 0 {
+                        previousEpoch = storedEpoch
+                        previousMgDl = dataStore.hkLastReceivedGlucoseValueMgDl()
+                    }
+                }
+
+                let timeDelta = previousEpoch.map { latestEpoch - $0 } ?? 0
+                let plausibilityOK = timeDelta > 0 && timeDelta < 15 * 60
+
+                var deltaString = "--"
+                var trendString = ""
+                var trendDerived = false
+
+                if let prev = previousMgDl, plausibilityOK {
+                    let rawDeltaMgDl = latestMgDl - prev
+                    let deltaInt = Int(rawDeltaMgDl.rounded())
+                    deltaString = String(format: "%+d", deltaInt)
+                    trendString = Self.hkTrendString(fromDeltaMgDl: deltaInt)
+                    trendDerived = true
+                }
+
+                dataStore.setHKLastReceivedGlucoseEpoch(latestEpoch)
+                dataStore.setHKLastReceivedGlucoseValueMgDl(latestMgDl)
+
+                let readingDate = latest.startDate
+                let glucoseString = String(Int(latestMgDl.rounded()))
+                let syncLag = Int(Date().timeIntervalSince(readingDate))
+
+                Task {
+                    await WatchLogger.shared.log("🏥 hk_observer_fired fire_id=\(fireId) reading_epoch=\(Int(readingDate.timeIntervalSince1970)) sync_lag=\(syncLag) glucose=\(glucoseString) delta=\(deltaString) trend=\(trendString) trend_derived=\(trendDerived) samples_in_batch=\(sortedByDate.count) query_type=anchoredQuery")
+                }
+
+                let snapshot = TrioComplicationSnapshot(
+                    glucose: glucoseString,
+                    trend: trendString,
+                    delta: deltaString,
+                    readingDate: readingDate,
+                    date: Date(),
+                    glucoseColor: nil
+                )
+
+                DispatchQueue.main.async {
+                    TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+                    completionHandler()
+                }
+            }
+        )
         store.execute(query)
+    }
+
+    /// R6.1 — Same integer threshold semantics as BloodGlucose.Direction.init(trend:) (raw direction strings).
+    private static func hkTrendString(fromDeltaMgDl delta: Int) -> String {
+        switch delta {
+        case ...(-30): return "DoubleDown"
+        case -29 ... (-20): return "SingleDown"
+        case -19 ... (-10): return "FortyFiveDown"
+        case -9 ..< 10: return "Flat"
+        case 10 ..< 20: return "FortyFiveUp"
+        case 20 ..< 30: return "SingleUp"
+        default: return "DoubleUp"
+        }
     }
 
     // MARK: - Acknowledgement handling
@@ -368,10 +460,15 @@ enum BackgroundTaskWindowCounter {
             await WatchLogger.shared.log("Watch received data: \(message)")
         }
 
+        // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
         if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
            let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
         {
             if date >= Date().addingTimeInterval(-15 * 60) {
+                let extractedEpoch = (watchStateDict[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
+                Task {
+                    await WatchLogger.shared.log("📬 didReceiveMessage reading_epoch=\(extractedEpoch) receive_wall=\(Date().timeIntervalSince1970)")
+                }
                 Task {
                     await WatchLogger.shared.log("Handling watchState from \(date)")
                 }
@@ -444,6 +541,7 @@ enum BackgroundTaskWindowCounter {
 
         // Log using already-decoded readingDate (no extra decode); epoch only when we have it.
         let readingDateEpoch = Int(readingDate.timeIntervalSince1970)
+        lastUserInfoReceiveTimestamp = Date()
         Task {
             await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
         }
@@ -469,14 +567,15 @@ enum BackgroundTaskWindowCounter {
                 Task {
                     await WatchLogger.shared.log("event=complication_userinfo_no_pending_tasks window_id=\(wid) reading_date_epoch=\(readingDateEpoch) note=race_or_foreground")
                 }
-                scheduleUIUpdate(with: payload)
+                scheduleUIUpdate(with: payload, fromUserInfo: true, userInfoReceiveTimestamp: lastUserInfoReceiveTimestamp)
             } else {
                 pendingData.merge(payload) { _, new in new }
                 lastUserInfoReceivedAt = Date()
                 quietWindowWorkItem?.cancel()
                 finalizeWorkItem?.cancel()
+                let receiveTs = lastUserInfoReceiveTimestamp
                 let work = DispatchWorkItem { [self] in
-                    finalizePendingData()
+                    finalizePendingData(fromUserInfo: true, userInfoReceiveTimestamp: receiveTs)
                     let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
                     let pendingCount = pendingConnectivityTasks.count
                     Task {
@@ -610,12 +709,12 @@ enum BackgroundTaskWindowCounter {
             }
 
             if let watchStateData = message[WatchMessageKeys.watchState] as? [String: Any] {
-                self.scheduleUIUpdate(with: watchStateData)
+                self.scheduleUIUpdate(with: watchStateData, fromUserInfo: false)
             }
         }
     }
 
-    private func scheduleUIUpdate(with newData: [String: Any]) {
+    private func scheduleUIUpdate(with newData: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
         guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
             Task {
                 await WatchLogger.shared.log("Invalid date format in WatchState data")
@@ -644,18 +743,20 @@ enum BackgroundTaskWindowCounter {
 
         finalizeWorkItem?.cancel()
 
+        let fromUserInfoCapture = fromUserInfo
+        let userInfoTsCapture = userInfoReceiveTimestamp
         let workItem = DispatchWorkItem { [self] in
             Task {
                 await WatchLogger.shared.log("Debounced update fired")
             }
-            self.finalizePendingData()
+            self.finalizePendingData(fromUserInfo: fromUserInfoCapture, userInfoReceiveTimestamp: userInfoTsCapture)
         }
         finalizeWorkItem = workItem
         let delay: TimeInterval = isColdStart ? 0.2 : 0.1
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
-    private func finalizePendingData() {
+    private func finalizePendingData(fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
         guard !pendingData.isEmpty else {
             Task {
                 await WatchLogger.shared.log("finalizePendingData called with empty data")
@@ -671,7 +772,7 @@ enum BackgroundTaskWindowCounter {
             await WatchLogger.shared.log("Finalizing pending data")
         }
 
-        processRawDataForWatchState(pendingData)
+        processRawDataForWatchState(pendingData, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
         pendingData.removeAll()
 
         DispatchQueue.main.async {
@@ -683,7 +784,7 @@ enum BackgroundTaskWindowCounter {
         }
     }
 
-    private func processRawDataForWatchState(_ message: [String: Any]) {
+    private func processRawDataForWatchState(_ message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
         Task {
             await WatchLogger.shared.log("Processing raw WatchState data with keys: \(message.keys.joined(separator: ", "))")
         }
@@ -802,10 +903,10 @@ enum BackgroundTaskWindowCounter {
             self.confirmBolusFaster = confirmBolusFaster
         }
 
-        saveComplicationSnapshot(from: message)
+        saveComplicationSnapshot(from: message, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
     }
 
-    private func saveComplicationSnapshot(from message: [String: Any]) {
+    private func saveComplicationSnapshot(from message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
         Task {
             await WatchLogger.shared.log("📸 saveComplicationSnapshot called with keys: \(message.keys.joined(separator: ", "))")
         }
@@ -853,6 +954,19 @@ enum BackgroundTaskWindowCounter {
         }
 
         TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+
+        // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
+        // Use only the threaded userInfoReceiveTimestamp; no fallback to instance state so attribution stays unambiguous.
+        if fromUserInfo, let start = userInfoReceiveTimestamp {
+            let decodeMs = Int(Date().timeIntervalSince(start) * 1000)
+            let readingEpoch = Int(readingDate.timeIntervalSince1970)
+            Task {
+                await WatchLogger.shared.log("⏱️ userInfo_decoded reading_epoch=\(readingEpoch) decode_ms=\(decodeMs)")
+            }
+        }
+        if fromUserInfo {
+            lastUserInfoReceiveTimestamp = nil
+        }
     }
 
     func forceComplicationUpdate() {

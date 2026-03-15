@@ -203,6 +203,10 @@ final class TrioComplicationDataStore {
     private static let reloadGenerationKey = "TrioComplication_reloadGeneration"
     private static let lastReloadRequestEpochSecondsKey = "TrioComplication_lastReloadRequestEpochSeconds"
     private static let fingerprintKey = "complication_last_saved_fingerprint"
+    // R6.1 — HealthKit anchored query state (watch app extension only)
+    private static let hkGlucoseAnchorKey = "TrioComplication_hkGlucoseAnchor"
+    private static let hkLastReceivedGlucoseEpochKey = "TrioComplication_hkLastReceivedGlucoseEpoch"
+    private static let hkLastReceivedGlucoseValueMgDlKey = "TrioComplication_hkLastReceivedGlucoseValueMgDl"
     static let latencyValidityWindowSeconds = 600
 
     /// Reused for structured log fields (reading_date); avoids per-call allocation.
@@ -480,6 +484,36 @@ final class TrioComplicationDataStore {
         if shouldLog {
             log(diagnosticsSummary(context: context))
         }
+    }
+
+    // MARK: - R6.1 HealthKit anchor and previous-sample persistence
+
+    /// R6.1 — Persisted HKQueryAnchor (encoded Data). Used by watch app extension only.
+    func hkGlucoseAnchor() -> Data? {
+        appGroupDefaults?.data(forKey: Self.hkGlucoseAnchorKey)
+    }
+
+    /// R6.1 — Save encoded anchor after successful anchored query.
+    func saveHKGlucoseAnchor(_ data: Data) {
+        appGroupDefaults?.set(data, forKey: Self.hkGlucoseAnchorKey)
+    }
+
+    /// R6.1 — Epoch (startDate.timeIntervalSince1970) of last processed glucose sample.
+    func hkLastReceivedGlucoseEpoch() -> TimeInterval {
+        appGroupDefaults?.double(forKey: Self.hkLastReceivedGlucoseEpochKey) ?? 0
+    }
+
+    func setHKLastReceivedGlucoseEpoch(_ epoch: TimeInterval) {
+        appGroupDefaults?.set(epoch, forKey: Self.hkLastReceivedGlucoseEpochKey)
+    }
+
+    /// R6.1 — Glucose value (mg/dL) of last processed sample (for delta/trend derivation).
+    func hkLastReceivedGlucoseValueMgDl() -> Double {
+        appGroupDefaults?.double(forKey: Self.hkLastReceivedGlucoseValueMgDlKey) ?? 0
+    }
+
+    func setHKLastReceivedGlucoseValueMgDl(_ value: Double) {
+        appGroupDefaults?.set(value, forKey: Self.hkLastReceivedGlucoseValueMgDlKey)
     }
 
     // MARK: - Phase 3.2 Canonical Comparator
@@ -975,7 +1009,9 @@ final class TrioComplicationDataStore {
         latencyValid: Bool,
         latencySeconds: Int,
         reloadRequestedAtEpochSeconds: Int,
-        mostRecentReloadId: String
+        mostRecentReloadId: String,
+        getTimelineAtEpochSeconds: Int,
+        dataAgeSeconds: Int
     ) {
         log(
             "event=complication_get_timeline_called"
@@ -989,6 +1025,17 @@ final class TrioComplicationDataStore {
             + " latency_seconds=\(latencySeconds)"
             + " reload_requested_at_epoch_seconds=\(reloadRequestedAtEpochSeconds)"
             + " most_recent_reload_id=\(mostRecentReloadId)"
+            + " get_timeline_at_epoch_seconds=\(getTimelineAtEpochSeconds)"
+            + " data_age_seconds=\(dataAgeSeconds)"
+        )
+    }
+
+    /// R5f — Snapshot path visible-recency observability.
+    func logWidgetGetSnapshotInvocation(getSnapshotAtEpochSeconds: Int, dataAgeSeconds: Int) {
+        log(
+            "event=complication_get_snapshot_called"
+            + " get_snapshot_at_epoch_seconds=\(getSnapshotAtEpochSeconds)"
+            + " data_age_seconds=\(dataAgeSeconds)"
         )
     }
 #endif

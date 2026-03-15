@@ -802,6 +802,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             session.sendMessage([WatchMessageKeys.watchState: fullMessage], replyHandler: nil) { error in
                 debug(.watchManager, "❌ Error sending watch state: \(error)")
             }
+            debug(.watchManager, "📨 sendMessage_sent reading_epoch=\(readingEpoch) send_wall=\(Date().timeIntervalSince1970)")
             debug(.watchManager, "📤 Transferred new WatchState snapshot via=sendMessage reading_date_epoch_seconds=\(readingEpoch)")
             if readingEpochPresent, !isDuplicateDispatch {
                 debug(.watchManager, "ℹ️ complication_transfer_skipped_reachable remaining=\(session.remainingComplicationUserInfoTransfers)")

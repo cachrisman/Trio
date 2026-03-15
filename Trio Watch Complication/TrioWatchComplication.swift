@@ -146,7 +146,18 @@ struct TrioWatchComplicationProvider: TimelineProvider {
             completion(placeholder(in: context))
             return
         }
-        completion(loadLatestEntry())
+        let entry = loadLatestEntry()
+        let getSnapshotAtEpochSeconds = Int(Date().timeIntervalSince1970)
+        let dataAgeSeconds: Int = {
+            let rd = entry.readingDate
+            if rd == .distantPast || rd.timeIntervalSince1970 <= 0 { return -1 }
+            return max(0, Int(Date().timeIntervalSince(rd)))
+        }()
+        TrioComplicationDataStore.shared.logWidgetGetSnapshotInvocation(
+            getSnapshotAtEpochSeconds: getSnapshotAtEpochSeconds,
+            dataAgeSeconds: dataAgeSeconds
+        )
+        completion(entry)
     }
 
     func getTimeline(in _: Context, completion: @escaping (Timeline<TrioWatchComplicationEntry>) -> Void) {
@@ -198,6 +209,14 @@ struct TrioWatchComplicationProvider: TimelineProvider {
 
         let reloadId = store.newestReloadRecord()?.id.uuidString ?? "none"
 
+        let snapshot = loadLatestEntry()
+        let getTimelineAtEpochSeconds = Int(Date().timeIntervalSince1970)
+        let dataAgeSeconds: Int = {
+            let rd = snapshot.readingDate
+            if rd == .distantPast || rd.timeIntervalSince1970 <= 0 { return -1 }
+            return max(0, Int(Date().timeIntervalSince(rd)))
+        }()
+
         store.logWidgetGetTimelineInvocation(
             appGroupAvailable: appGroupAvailable,
             observedGenerationSource: generationSource,
@@ -208,10 +227,10 @@ struct TrioWatchComplicationProvider: TimelineProvider {
             latencyValid: latencyValid,
             latencySeconds: latencySeconds,
             reloadRequestedAtEpochSeconds: lastReloadEpoch ?? -1,
-            mostRecentReloadId: reloadId
+            mostRecentReloadId: reloadId,
+            getTimelineAtEpochSeconds: getTimelineAtEpochSeconds,
+            dataAgeSeconds: dataAgeSeconds
         )
-
-        let snapshot = loadLatestEntry()
         var entries: [TrioWatchComplicationEntry] = []
         let now = Date().roundedDownToMinute
 
