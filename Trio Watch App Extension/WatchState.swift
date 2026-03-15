@@ -1,20 +1,48 @@
 import Foundation
+import HealthKit
 import SwiftUI
 import WatchConnectivity
+import WatchKit
 
-/// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
-/// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
+// MARK: - BackgroundTaskWindowCounter (Phase 2.2)
+
+/// In-memory monotonic counter for correlating WKWatchConnectivityRefreshBackgroundTask wake windows with didReceiveUserInfo.
+/// Watch app extension only; used by handleBackgroundTasks and WCSession delegate.
+enum BackgroundTaskWindowCounter {
+    private static let lock = NSLock()
+    private static var lastWindowId = 0
+    private static var lastReceivedAt: Date?
+
+    /// Advance counter, record time, return (windowId, receivedAt). Thread-safe.
+    static func next() -> (windowId: Int, receivedAt: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        lastWindowId += 1
+        let receivedAt = Date()
+        lastReceivedAt = receivedAt
+        return (lastWindowId, receivedAt)
+    }
+
+    /// Current window id only if last received was within 30s; else nil. Thread-safe.
+    static func currentOrNil() -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let at = lastReceivedAt else { return nil }
+        return Date().timeIntervalSince(at) <= 30 ? lastWindowId : nil
+    }
+}
+
 @Observable final class WatchState: NSObject, WCSessionDelegate {
-    // MARK: - Properties
+    static let shared = WatchState()
 
-    /// The WatchConnectivity session instance used for communication
+    // MARK: - WatchConnectivity
+
     var session: WCSession?
-    /// Indicates if the paired iPhone is currently reachable
     var isReachable = false
+    var lastWatchStateUpdate: Date?
 
-    var lastWatchStateUpdate: TimeInterval?
+    // MARK: - Main view metrics
 
-    /// main view relevant metrics
     var currentGlucose: String = "--"
     var currentGlucoseColorString: String = "#ffffff"
     var trend: String? = ""
@@ -28,59 +56,99 @@ import WatchConnectivity
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
-    /// treatments inputs
-    /// used to store carbs for combined meal-bolus-treatments
+    // MARK: - Treatment inputs
+
     var carbsAmount: Int = 0
     var fatAmount: Int = 0
     var proteinAmount: Int = 0
     var bolusAmount: Double = 0.0
     var confirmationProgress: Double = 0.0
 
-    // Safety limits
+    // MARK: - Safety limits
+
     var maxBolus: Decimal = 10
     var maxCarbs: Decimal = 250
     var maxFat: Decimal = 250
     var maxProtein: Decimal = 250
 
-    // Pump specific dosing increment
+    // MARK: - Pump-specific increments
+
     var bolusIncrement: Decimal = 0.05
     var confirmBolusFaster: Bool = false
 
-    // Acknowlegement handling
+    // MARK: - Acknowledgment handling
+
     var showCommsAnimation: Bool = false
     var showAcknowledgmentBanner: Bool = false
     var acknowledgementStatus: AcknowledgementStatus = .pending
     var acknowledgmentMessage: String = ""
     var shouldNavigateToRoot: Bool = true
 
-    // Bolus calculation progress
-    var showBolusCalculationProgress: Bool = false
+    // MARK: - Progress state
 
-    // Meal bolus-specific properties
+    var showBolusCalculationProgress: Bool = false
     var mealBolusStep: MealBolusStep = .savingCarbs
     var isMealBolusCombo: Bool = false
-
     var recommendedBolus: Decimal = 0
 
-    // MARK: - Debouncing and batch processing helpers
+    // MARK: - Debouncing and sync helpers
 
-    /// Temporary storage for new data arriving via WatchConnectivity.
     private var pendingData: [String: Any] = [:]
-
-    /// Work item to schedule finalizing the pending data.
     private var finalizeWorkItem: DispatchWorkItem?
-
-    /// A flag to tell the UI we’re still updating.
     var showSyncingAnimation: Bool = false
+    var syncTimeoutWorkItem: DispatchWorkItem?
+
+    /// Connectivity background tasks held until userInfo processing finishes. Main queue only.
+    private var pendingConnectivityTasks: [WKRefreshBackgroundTask] = []
+    private var lastUserInfoReceivedAt: Date?
+    /// R5c — set in didReceiveUserInfo and passed through to saveComplicationSnapshot for decode_ms (reading_epoch there is derived from the payload being saved to avoid misattribution).
+    private var lastUserInfoReceiveTimestamp: Date?
+    private var quietWindowWorkItem: DispatchWorkItem?
+
+    private var activationTimestamp: Date?
+    private var forcedSinceActivation = false
+
+    private var transferRetryCount = 0
+    private let maxTransferRetries = 3
+    private var retryWorkItem: DispatchWorkItem?
+
+    // MARK: - HealthKit (R6)
+
+    private var healthKitStore: HKHealthStore?
+    private var glucoseObserverQuery: HKObserverQuery?
+
+    private var backgroundRefreshCount = 0
+    private var lastBackgroundRefreshDate: Date?
+
+    /// Guards against duplicate requestWatchStateUpdate() calls on cold start.
+    /// Reset in noteAppBecameActive() on each active transition. Main-thread confined.
+    private var hasRequestedInitialUpdate = false
 
     var deviceType = WatchSize.current
+
+    private var isColdStart: Bool {
+        guard let activationTimestamp = activationTimestamp else { return true }
+        return Date().timeIntervalSince(activationTimestamp) < 60
+    }
 
     override init() {
         super.init()
         setupSession()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.forceComplicationUpdate()
+            self.scheduleBackgroundRefresh()
+        }
     }
 
-    /// Configures the WatchConnectivity session if supported on the device
+    func noteAppBecameActive() {
+        assert(Thread.isMainThread, "noteAppBecameActive must be called on main thread")
+        activationTimestamp = Date()
+        forcedSinceActivation = false
+        hasRequestedInitialUpdate = false
+        Task { await WatchLogger.shared.log("Cold start window active for 60s") }
+    }
+
     private func setupSession() {
         if WCSession.isSupported() {
             let session = WCSession.default
@@ -88,16 +156,228 @@ import WatchConnectivity
             session.activate()
             self.session = session
             Task {
-                await WatchLogger.shared.log("⌚️ WCSession setup complete.")
+                await WatchLogger.shared.log("WCSession setup complete.")
             }
         } else {
             Task {
-                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
+                await WatchLogger.shared.log("WCSession is not supported on this device")
             }
+        }
+        // R6: independent of WatchConnectivity — HK background delivery is a separate wake path.
+        setupHealthKitBackgroundDelivery()
+    }
+
+    // MARK: - HealthKit background delivery (R6)
+
+    private func setupHealthKitBackgroundDelivery() {
+        guard HKHealthStore.isHealthDataAvailable() else { return }
+        let store = HKHealthStore()
+        guard let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else { return }
+
+        store.requestAuthorization(toShare: nil, read: Set([bgType])) { [weak self] granted, error in
+            guard let self else { return }
+            guard granted, error == nil else {
+                Task {
+                    await WatchLogger.shared.log("❌ hk_authorization_failed granted=\(granted) error=\(error?.localizedDescription ?? "nil")")
+                }
+                return
+            }
+
+            store.enableBackgroundDelivery(for: bgType, frequency: .immediate) { success, error in
+                if let error = error {
+                    Task {
+                        await WatchLogger.shared.log("❌ hk_background_delivery_registration_failed error=\(error.localizedDescription)")
+                    }
+                } else if success {
+                    Task {
+                        await WatchLogger.shared.log("✅ hk_background_delivery_registered success=true low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)")
+                    }
+                } else {
+                    Task {
+                        await WatchLogger.shared.log("⚠️ hk_background_delivery_registered success=false low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)")
+                    }
+                }
+            }
+
+            self.setupGlucoseObserverQuery(store: store, sampleType: bgType)
         }
     }
 
-    // MARK: – Handle Acknowledgement Messages FROM Phone
+    private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuantityType) {
+        healthKitStore = store
+        let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { [weak self] _, completionHandler, error in
+            let fireId = UUID()
+            guard error == nil else {
+                Task {
+                    await WatchLogger.shared.log("❌ hk_observer_error fire_id=\(fireId) error=\(error!.localizedDescription)")
+                }
+                completionHandler()
+                return
+            }
+            guard let self else {
+                completionHandler()
+                return
+            }
+            self.fetchLatestGlucoseFromHealthKit(fireId: fireId, completionHandler: completionHandler)
+        }
+        store.execute(query)
+        glucoseObserverQuery = query
+    }
+
+    private func fetchLatestGlucoseFromHealthKit(fireId: UUID, completionHandler: @escaping () -> Void) {
+        guard let store = healthKitStore,
+              let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else {
+            Task {
+                await WatchLogger.shared.log("❌ hk_observer_guard_failed fire_id=\(fireId) reason=nil_store_or_type")
+            }
+            completionHandler()
+            return
+        }
+
+        let dataStore = TrioComplicationDataStore.shared
+        let mgDlUnit = HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))
+
+        // R6.1 — Load anchor; decode failure → nil + 24h cap
+        var anchor: HKQueryAnchor?
+        if let data = dataStore.hkGlucoseAnchor() {
+            if let decoded = try? NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data) {
+                anchor = decoded
+            } else {
+                Task {
+                    await WatchLogger.shared.log("⚠️ hk_anchor_decode_failed fire_id=\(fireId)")
+                }
+            }
+        } else {
+            Task {
+                await WatchLogger.shared.log("⚠️ hk_observer_nil_anchor fire_id=\(fireId)")
+            }
+        }
+
+        // R6.1 — Nil anchor: cap to 24h. With anchor: no date cap. SyncIdentifier filter deferred (see plan §Source Predicate).
+        let predicate: NSPredicate?
+        if anchor == nil {
+            let twentyFourHoursAgo = Date().addingTimeInterval(-24 * 3600)
+            predicate = HKQuery.predicateForSamples(withStart: twentyFourHoursAgo, end: nil, options: .strictStartDate)
+        } else {
+            predicate = nil
+        }
+
+        let query = HKAnchoredObjectQuery(
+            type: bgType,
+            predicate: predicate,
+            anchor: anchor,
+            limit: HKObjectQueryNoLimit,
+            resultsHandler: { [weak self] _, samples, _, newAnchor, error in
+                guard let self else {
+                    completionHandler()
+                    return
+                }
+                if let error = error {
+                    Task {
+                        await WatchLogger.shared.log("❌ hk_observer_query_error fire_id=\(fireId) error=\(error.localizedDescription)")
+                    }
+                    completionHandler()
+                    return
+                }
+                if let newAnchor = newAnchor,
+                   let anchorData = try? NSKeyedArchiver.archivedData(withRootObject: newAnchor, requiringSecureCoding: true) {
+                    dataStore.saveHKGlucoseAnchor(anchorData)
+                }
+
+                let added = (samples as? [HKQuantitySample]) ?? []
+                let sortedByDate = added.sorted { $0.startDate > $1.startDate }
+                if sortedByDate.isEmpty {
+                    Task {
+                        await WatchLogger.shared.log("⚠️ hk_observer_no_new_samples fire_id=\(fireId)")
+                    }
+                    completionHandler()
+                    return
+                }
+
+                let latest = sortedByDate[0]
+                let latestEpoch = latest.startDate.timeIntervalSince1970
+                let latestMgDl = latest.quantity.doubleValue(for: mgDlUnit)
+
+                if latestEpoch == dataStore.hkLastReceivedGlucoseEpoch() {
+                    Task {
+                        await WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
+                    }
+                    completionHandler()
+                    return
+                }
+
+                var previousMgDl: Double?
+                var previousEpoch: TimeInterval?
+                if sortedByDate.count >= 2 {
+                    let prev = sortedByDate[1]
+                    previousMgDl = prev.quantity.doubleValue(for: mgDlUnit)
+                    previousEpoch = prev.startDate.timeIntervalSince1970
+                } else {
+                    let storedEpoch = dataStore.hkLastReceivedGlucoseEpoch()
+                    if storedEpoch > 0 {
+                        previousEpoch = storedEpoch
+                        previousMgDl = dataStore.hkLastReceivedGlucoseValueMgDl()
+                    }
+                }
+
+                let timeDelta = previousEpoch.map { latestEpoch - $0 } ?? 0
+                let plausibilityOK = timeDelta > 0 && timeDelta < 15 * 60
+
+                var deltaString = "--"
+                var trendString = ""
+                var trendDerived = false
+
+                if let prev = previousMgDl, plausibilityOK {
+                    let rawDeltaMgDl = latestMgDl - prev
+                    let deltaInt = Int(rawDeltaMgDl.rounded())
+                    deltaString = String(format: "%+d", deltaInt)
+                    trendString = Self.hkTrendString(fromDeltaMgDl: deltaInt)
+                    trendDerived = true
+                }
+
+                dataStore.setHKLastReceivedGlucoseEpoch(latestEpoch)
+                dataStore.setHKLastReceivedGlucoseValueMgDl(latestMgDl)
+
+                let readingDate = latest.startDate
+                let glucoseString = String(Int(latestMgDl.rounded()))
+                let syncLag = Int(Date().timeIntervalSince(readingDate))
+
+                Task {
+                    await WatchLogger.shared.log("🏥 hk_observer_fired fire_id=\(fireId) reading_epoch=\(Int(readingDate.timeIntervalSince1970)) sync_lag=\(syncLag) glucose=\(glucoseString) delta=\(deltaString) trend=\(trendString) trend_derived=\(trendDerived) samples_in_batch=\(sortedByDate.count) query_type=anchoredQuery")
+                }
+
+                let snapshot = TrioComplicationSnapshot(
+                    glucose: glucoseString,
+                    trend: trendString,
+                    delta: deltaString,
+                    readingDate: readingDate,
+                    date: Date(),
+                    glucoseColor: nil
+                )
+
+                DispatchQueue.main.async {
+                    TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+                    completionHandler()
+                }
+            }
+        )
+        store.execute(query)
+    }
+
+    /// R6.1 — Same integer threshold semantics as BloodGlucose.Direction.init(trend:) (raw direction strings).
+    private static func hkTrendString(fromDeltaMgDl delta: Int) -> String {
+        switch delta {
+        case ...(-30): return "DoubleDown"
+        case -29 ... (-20): return "SingleDown"
+        case -19 ... (-10): return "FortyFiveDown"
+        case -9 ..< 10: return "Flat"
+        case 10 ..< 20: return "FortyFiveUp"
+        case 20 ..< 30: return "SingleUp"
+        default: return "DoubleUp"
+        }
+    }
+
+    // MARK: - Acknowledgement handling
 
     func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
         Task {
@@ -106,21 +386,17 @@ import WatchConnectivity
 
         if success {
             Task {
-                await WatchLogger.shared.log("⌚️ Acknowledgment received: \(message)")
+                await WatchLogger.shared.log("Acknowledgment received: \(message)")
             }
             acknowledgementStatus = .success
             acknowledgmentMessage = message
-
-            // Hide progress animation
             DispatchQueue.main.async {
                 self.showCommsAnimation = false
             }
         } else {
             Task {
-                await WatchLogger.shared.log("⌚️ Acknowledgment failed: \(message)")
+                await WatchLogger.shared.log("Acknowledgment failed: \(message)")
             }
-
-            // Hide progress animation
             DispatchQueue.main.async {
                 self.showCommsAnimation = false
             }
@@ -135,7 +411,7 @@ import WatchConnectivity
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 self.showAcknowledgmentBanner = false
-                self.showSyncingAnimation = false // Just ensure this is 100% set to false
+                self.showSyncingAnimation = false
                 Task {
                     await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                 }
@@ -145,14 +421,12 @@ import WatchConnectivity
 
     // MARK: - WCSessionDelegate
 
-    /// Called when the session has completed activation
-    /// Updates the reachability status and logs the activation state
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         DispatchQueue.main.async {
             if let error = error {
                 Task {
-                    await WatchLogger.shared.log("⌚️ Watch session activation failed: \(error)", force: true)
-                    await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+                    await WatchLogger.shared.log("Watch session activation failed: \(error)", force: true)
+                    await WatchLogger.shared.log("Saving logs to disk as fallback.")
                     await WatchLogger.shared.flushPersistedLogs()
                 }
                 return
@@ -160,84 +434,73 @@ import WatchConnectivity
 
             if activationState == .activated {
                 Task {
-                    await WatchLogger.shared.log("⌚️ Watch session activated with state: \(activationState.rawValue)")
+                    await WatchLogger.shared.log("Watch session activated with state: \(activationState.rawValue)")
                 }
 
                 self.forceConditionalWatchStateUpdate()
-
                 self.isReachable = session.isReachable
 
                 Task {
-                    await WatchLogger.shared.log("⌚️ Watch isReachable after activation: \(session.isReachable)")
+                    await WatchLogger.shared.log("Watch isReachable after activation: \(session.isReachable)")
                 }
             }
         }
     }
 
-    /// Handles incoming messages from the paired iPhone when Phone is in the foreground
     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
         Task {
-            await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
+            await WatchLogger.shared.log("Watch received data: \(message)")
         }
 
-        // If the message has a nested "watchState" dictionary with date as TimeInterval
+        // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
         if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
-           let timestamp = watchStateDict[WatchMessageKeys.date] as? TimeInterval
+           let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
         {
-            let date = Date(timeIntervalSince1970: timestamp)
-
-            // Check if it's not older than 15 min
             if date >= Date().addingTimeInterval(-15 * 60) {
+                let extractedEpoch = (watchStateDict[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
                 Task {
-                    await WatchLogger.shared.log("⌚️ Handling watchState from \(date)")
+                    await WatchLogger.shared.log("📬 didReceiveMessage reading_epoch=\(extractedEpoch) receive_wall=\(Date().timeIntervalSince1970)")
+                }
+                Task {
+                    await WatchLogger.shared.log("Handling watchState from \(date)")
                 }
                 processWatchMessage(message)
             } else {
                 Task {
-                    await WatchLogger.shared.log("⌚️ Received outdated watchState data (\(date))")
+                    await WatchLogger.shared.log("Received outdated watchState data (\(date))")
                 }
                 DispatchQueue.main.async {
                     self.showSyncingAnimation = false
                 }
             }
             return
-        }
-
-        // Else if the message is an "ack" at the top level
-        // e.g. { "acknowledged": true, "message": "Started Temp Target...", "date": Date(...) }
-        else if
+        } else if
             let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
             let ackMessage = message[WatchMessageKeys.message] as? String,
             let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
         {
             Task {
                 await WatchLogger.shared
-                    .log("⌚️ Handling ack with message: \(ackMessage), success: \(acknowledged), ackCode: \(ackCodeRaw)")
+                    .log("Handling ack with message: \(ackMessage), success: \(acknowledged), ackCode: \(ackCodeRaw)")
             }
             DispatchQueue.main.async {
-                // For ack messages, we do NOT show “Syncing...”
                 self.showSyncingAnimation = false
             }
             processWatchMessage(message)
             return
-
-                    // Recommended bolus is also not part of the WatchState message, hence the extra condition here
-        } else if
-            let recommendedBolus = message[WatchMessageKeys.recommendedBolus] as? NSNumber
-        {
+        } else if let recommendedBolus = message[WatchMessageKeys.recommendedBolus] as? NSNumber {
             Task {
-                await WatchLogger.shared.log("⌚️ Received recommended bolus: \(recommendedBolus)")
+                await WatchLogger.shared.log("Received recommended bolus: \(recommendedBolus)")
             }
 
             DispatchQueue.main.async {
                 self.recommendedBolus = recommendedBolus.decimalValue
                 self.showBolusCalculationProgress = false
             }
-
             return
         } else {
             Task {
-                await WatchLogger.shared.log("⌚️ Faulty data. Skipping...")
+                await WatchLogger.shared.log("Faulty data. Skipping.")
             }
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
@@ -246,98 +509,156 @@ import WatchConnectivity
     }
 
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
-        guard let snapshot = WatchStateSnapshot(from: userInfo) else {
+        Task {
+            await WatchLogger.shared.log("Received userInfo with keys: \(userInfo.keys.joined(separator: ", "))")
+        }
+
+        let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
+
+        let readingDate = latestGlucoseDate(from: payload) ?? dateValue(from: payload[WatchMessageKeys.date])
+        guard let readingDate = readingDate else {
             Task {
-                await WatchLogger.shared.log("⌚️ Invalid snapshot received", force: true)
+                await WatchLogger.shared.log("Invalid snapshot received (missing date)")
             }
             return
         }
 
-        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
+        // Log using already-decoded readingDate (no extra decode); epoch only when we have it.
+        let readingDateEpoch = Int(readingDate.timeIntervalSince1970)
+        lastUserInfoReceiveTimestamp = Date()
+        Task {
+            await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
+        }
 
-        guard snapshot.date > lastProcessed else {
-            Task {
-                await WatchLogger.shared.log("⌚️ Ignoring outdated or duplicate WatchState snapshot", force: true)
-            }
+        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
+        // state is not populated here (defaults to nil) because no call site currently sets it.
+        // If state is ever set during snapshot construction, add it here too — otherwise this
+        // fingerprint will always differ from the saved one, defeating dedup for this path.
+        let tempSnapshot = TrioComplicationSnapshot(
+            glucose: payload[WatchMessageKeys.currentGlucose] as? String ?? "--",
+            trend: payload[WatchMessageKeys.trend] as? String ?? "",
+            delta: payload[WatchMessageKeys.delta] as? String ?? "",
+            readingDate: readingDate,
+            date: Date()
+        )
+        if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
             return
         }
 
-        WatchStateSnapshot.saveLatestDateToDisk(snapshot.date)
-
-        DispatchQueue.main.async {
-            self.scheduleUIUpdate(with: snapshot.payload)
+        DispatchQueue.main.async { [self] in
+            if pendingConnectivityTasks.isEmpty {
+                let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+                Task {
+                    await WatchLogger.shared.log("event=complication_userinfo_no_pending_tasks window_id=\(wid) reading_date_epoch=\(readingDateEpoch) note=race_or_foreground")
+                }
+                scheduleUIUpdate(with: payload, fromUserInfo: true, userInfoReceiveTimestamp: lastUserInfoReceiveTimestamp)
+            } else {
+                pendingData.merge(payload) { _, new in new }
+                lastUserInfoReceivedAt = Date()
+                quietWindowWorkItem?.cancel()
+                finalizeWorkItem?.cancel()
+                let receiveTs = lastUserInfoReceiveTimestamp
+                let work = DispatchWorkItem { [self] in
+                    finalizePendingData(fromUserInfo: true, userInfoReceiveTimestamp: receiveTs)
+                    let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+                    let pendingCount = pendingConnectivityTasks.count
+                    Task {
+                        await WatchLogger.shared.log("event=complication_finalize_begin window_id=\(wid) pending_count=\(pendingCount)")
+                    }
+                    Task {
+                        await WatchLogger.shared.log("event=complication_bgtask_completing path=fast window_id=\(wid) task_type=WKWatchConnectivityRefreshBackgroundTask completed_count=\(pendingCount) ⚡️ BGTask completing (fast) window_id=\(wid) count=\(pendingCount)")
+                    }
+                    for t in pendingConnectivityTasks {
+                        t.setTaskCompletedWithSnapshot(false)
+                    }
+                    pendingConnectivityTasks.removeAll()
+                    Task {
+                        await WatchLogger.shared.log("event=complication_finalize_end window_id=\(wid) cleared_count=\(pendingCount)")
+                    }
+                }
+                quietWindowWorkItem = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+            }
         }
     }
 
     func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
         if let error = error {
             Task {
-                await WatchLogger.shared.log("⌚️ transferUserInfo failed with error: \(error)")
-                await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
+                await WatchLogger.shared.log("transferUserInfo failed with error: \(error)")
+                await WatchLogger.shared.log("Saving logs to disk as fallback.")
                 await WatchLogger.shared.flushPersistedLogs()
             }
+
+            if transferRetryCount < maxTransferRetries {
+                transferRetryCount += 1
+                let retryDelay = TimeInterval(transferRetryCount * 2)
+
+                retryWorkItem?.cancel()
+                retryWorkItem = DispatchWorkItem { [weak self] in
+                    self?.requestWatchStateUpdate()
+                }
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: retryWorkItem!)
+            } else {
+                transferRetryCount = 0
+                loadFallbackDataFromComplication()
+            }
+        } else {
+            transferRetryCount = 0
         }
     }
 
-    /// Called when the reachability status of the paired iPhone changes
-    /// Updates the local reachability status
     func sessionReachabilityDidChange(_ session: WCSession) {
         DispatchQueue.main.async {
             Task {
-                await WatchLogger.shared.log("⌚️ Watch reachability changed: \(session.isReachable)")
+                await WatchLogger.shared.log("Watch reachability changed: \(session.isReachable)")
             }
 
-            if session.isReachable {
-                self.forceConditionalWatchStateUpdate()
+            self.isReachable = session.isReachable
 
-                // reset input amounts
+            if session.isReachable {
+                if self.isColdStart, !self.forcedSinceActivation {
+                    self.forceConditionalWatchStateUpdate()
+                    self.forcedSinceActivation = true
+                }
+
                 self.bolusAmount = 0
                 self.carbsAmount = 0
-
-                // reset auth progress
                 self.confirmationProgress = 0
             }
         }
     }
 
-    /// Conditionally triggers a watch state update if the last known update was too long ago or has never occurred.
-    ///
-    /// This method checks the `lastWatchStateUpdate` timestamp to determine how many seconds
-    /// have elapsed since the last update under the following conditions
-    ///  - If `lastWatchStateUpdate` is `nil` (meaning there has never been an update), or
-    ///  - If more than 15 seconds have passed,
-    ///
-    /// it will show a syncing animation and request a new watch state update from the iPhone app.
     private func forceConditionalWatchStateUpdate() {
+        assert(Thread.isMainThread, "forceConditionalWatchStateUpdate must be called on main thread")
         guard let lastUpdateTimestamp = lastWatchStateUpdate else {
+            guard !hasRequestedInitialUpdate else { return }
+            hasRequestedInitialUpdate = true
             Task {
                 await WatchLogger.shared.log("Forcing initial WatchState update")
             }
-
-            // If there's no recorded timestamp, we must force a fresh update immediately.
             showSyncingAnimation = true
             requestWatchStateUpdate()
+            forcedSinceActivation = true
             return
         }
 
-        let now = Date().timeIntervalSince1970
-        let secondsSinceUpdate = now - lastUpdateTimestamp
+        let now = Date()
+        let secondsSinceUpdate = now.timeIntervalSince(lastUpdateTimestamp)
         Task {
             await WatchLogger.shared.log("Time since last update: \(secondsSinceUpdate) seconds")
         }
 
-        // If more than 15 seconds have elapsed since the last update, force an(other) update.
-        if secondsSinceUpdate > 15 {
+        if secondsSinceUpdate > 15 || isColdStart {
             showSyncingAnimation = true
             requestWatchStateUpdate()
-            return
+            forcedSinceActivation = true
         }
     }
 
-    /// Handles incoming messages that either contain an acknowledgement or fresh watchState data  (<15 min)
     private func processWatchMessage(_ message: [String: Any]) {
         DispatchQueue.main.async {
-            // 1) Acknowledgment logic
             if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                let ackMessage = message[WatchMessageKeys.message] as? String,
                let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
@@ -348,7 +669,7 @@ import WatchConnectivity
                 }
 
                 Task {
-                    await WatchLogger.shared.log("⌚️ Received acknowledgment: \(ackMessage), success: \(acknowledged)")
+                    await WatchLogger.shared.log("Received acknowledgment: \(ackMessage), success: \(acknowledged)")
                 }
 
                 switch ackCode {
@@ -371,26 +692,29 @@ import WatchConnectivity
                 }
             }
 
-            // 2) Raw watchState data
             if let watchStateData = message[WatchMessageKeys.watchState] as? [String: Any] {
-                self.scheduleUIUpdate(with: watchStateData)
+                self.scheduleUIUpdate(with: watchStateData, fromUserInfo: false)
             }
         }
     }
 
-    /// Accumulate new data, set isSyncing, and debounce final update
-    private func scheduleUIUpdate(with newData: [String: Any]) {
-        if let incomingTimestamp = newData[WatchMessageKeys.date] as? TimeInterval,
-           let lastTimestamp = lastWatchStateUpdate,
-           incomingTimestamp <= lastTimestamp
-        {
+    private func scheduleUIUpdate(with newData: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
+        guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
             Task {
-                await WatchLogger.shared.log("Skipping UI update — outdated WatchState (\(incomingTimestamp))")
+                await WatchLogger.shared.log("Invalid date format in WatchState data")
             }
             return
         }
 
-        // 1) Mark as syncing
+        if let lastTimestamp = lastWatchStateUpdate,
+           incomingDate <= lastTimestamp
+        {
+            Task {
+                await WatchLogger.shared.log("Skipping UI update — outdated WatchState (\(incomingDate))")
+            }
+            return
+        }
+
         DispatchQueue.main.async {
             self.showSyncingAnimation = true
         }
@@ -399,31 +723,29 @@ import WatchConnectivity
             await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
         }
 
-        // 2) Merge data into our pendingData
         pendingData.merge(newData) { _, newVal in newVal }
 
-        // 3) Cancel any previous finalization
         finalizeWorkItem?.cancel()
 
-        // 4) Create and schedule a new finalization
+        let fromUserInfoCapture = fromUserInfo
+        let userInfoTsCapture = userInfoReceiveTimestamp
         let workItem = DispatchWorkItem { [self] in
             Task {
-                await WatchLogger.shared.log("⏳ Debounced update fired")
+                await WatchLogger.shared.log("Debounced update fired")
             }
-            self.finalizePendingData()
+            self.finalizePendingData(fromUserInfo: fromUserInfoCapture, userInfoReceiveTimestamp: userInfoTsCapture)
         }
         finalizeWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: workItem)
+        let delay: TimeInterval = isColdStart ? 0.2 : 0.1
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
-    /// Applies all pending data to the watch state in one shot
-    private func finalizePendingData() {
+    private func finalizePendingData(fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
         guard !pendingData.isEmpty else {
             Task {
-                await WatchLogger.shared.log("⚠️ finalizePendingData called with empty data")
+                await WatchLogger.shared.log("finalizePendingData called with empty data")
             }
 
-            // If we have no actual data, just end syncing
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
             }
@@ -431,37 +753,33 @@ import WatchConnectivity
         }
 
         Task {
-            await WatchLogger.shared.log("⌚️ Finalizing pending data")
+            await WatchLogger.shared.log("Finalizing pending data")
         }
 
-        // Actually set your main UI properties here
-        processRawDataForWatchState(pendingData)
-
-        // Clear
+        processRawDataForWatchState(pendingData, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
         pendingData.removeAll()
 
-        // Done - hide sync animation
         DispatchQueue.main.async {
             self.showSyncingAnimation = false
         }
 
         Task {
-            await WatchLogger.shared.log("✅ Watch UI update complete")
+            await WatchLogger.shared.log("Watch UI update complete")
         }
     }
 
-    /// Updates the UI properties
-    private func processRawDataForWatchState(_ message: [String: Any]) {
+    private func processRawDataForWatchState(_ message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
         Task {
             await WatchLogger.shared.log("Processing raw WatchState data with keys: \(message.keys.joined(separator: ", "))")
         }
 
-        if let timestamp = message[WatchMessageKeys.date] as? TimeInterval {
-            lastWatchStateUpdate = timestamp
-            Task {
-                await WatchLogger.shared.log("Updated lastWatchStateUpdate: \(timestamp)")
-            }
+        if let date = dateValue(from: message[WatchMessageKeys.date]) {
+            lastWatchStateUpdate = date
+            forcedSinceActivation = false
         }
+
+        syncTimeoutWorkItem?.cancel()
+        syncTimeoutWorkItem = nil
 
         if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
             self.currentGlucose = currentGlucose
@@ -494,29 +812,27 @@ import WatchConnectivity
         if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
             glucoseValues = glucoseData.compactMap { data in
                 guard let glucose = data["glucose"] as? Double,
-                      let timestamp = data["date"] as? TimeInterval,
                       let colorString = data["color"] as? String
                 else { return nil }
 
-                return (
-                    Date(timeIntervalSince1970: timestamp),
-                    glucose,
-                    colorString.toColor() // Convert colorString to Color
-                )
+                let dateValue = dateValue(from: data["date"])
+                guard let date = dateValue else { return nil }
+
+                return (date: date, glucose: glucose, color: colorString.toColor())
             }
             .sorted { $0.date < $1.date }
         }
 
-        if let minYAxisValue = message[WatchMessageKeys.minYAxisValue] {
-            if let decimalValue = (minYAxisValue as? NSNumber)?.decimalValue {
-                self.minYAxisValue = decimalValue
-            }
+        if let minYAxisValue = message[WatchMessageKeys.minYAxisValue],
+           let decimalValue = (minYAxisValue as? NSNumber)?.decimalValue
+        {
+            self.minYAxisValue = decimalValue
         }
 
-        if let maxYAxisValue = message[WatchMessageKeys.maxYAxisValue] {
-            if let decimalValue = (maxYAxisValue as? NSNumber)?.decimalValue {
-                self.maxYAxisValue = decimalValue
-            }
+        if let maxYAxisValue = message[WatchMessageKeys.maxYAxisValue],
+           let decimalValue = (maxYAxisValue as? NSNumber)?.decimalValue
+        {
+            self.maxYAxisValue = decimalValue
         }
 
         if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
@@ -537,41 +853,285 @@ import WatchConnectivity
             }
         }
 
-        if let maxBolusValue = message[WatchMessageKeys.maxBolus] {
-            if let decimalValue = (maxBolusValue as? NSNumber)?.decimalValue {
-                maxBolus = decimalValue
+        if let maxBolusValue = message[WatchMessageKeys.maxBolus],
+           let decimalValue = (maxBolusValue as? NSNumber)?.decimalValue
+        {
+            maxBolus = decimalValue
+        }
+
+        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs],
+           let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue
+        {
+            maxCarbs = decimalValue
+        }
+
+        if let maxFatValue = message[WatchMessageKeys.maxFat],
+           let decimalValue = (maxFatValue as? NSNumber)?.decimalValue
+        {
+            maxFat = decimalValue
+        }
+
+        if let maxProteinValue = message[WatchMessageKeys.maxProtein],
+           let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue
+        {
+            maxProtein = decimalValue
+        }
+
+        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement],
+           let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue
+        {
+            self.bolusIncrement = max(decimalValue, 0.05)
+        }
+
+        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] as? Bool {
+            self.confirmBolusFaster = confirmBolusFaster
+        }
+
+        saveComplicationSnapshot(from: message, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
+    }
+
+    private func saveComplicationSnapshot(from message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
+        Task {
+            await WatchLogger.shared.log("📸 saveComplicationSnapshot called with keys: \(message.keys.joined(separator: ", "))")
+        }
+
+        // R3: prefer top-level readingEpoch (R1a) over deriving from glucoseValues array
+        let readingDate: Date
+        if let epoch = message[WatchMessageKeys.readingEpoch] as? TimeInterval {
+            readingDate = Date(timeIntervalSince1970: epoch)
+        } else if let latestDate = latestGlucoseDate(from: message) {
+            readingDate = latestDate
+        } else if let fallbackDate = dateValue(from: message[WatchMessageKeys.date]) {
+            Task {
+                await WatchLogger.shared.log("⚠️ saveComplicationSnapshot: readingEpoch missing; falling back to build-time date — complication freshness unreliable")
+            }
+            readingDate = fallbackDate
+        } else {
+            Task {
+                await WatchLogger.shared.log("📸 saveComplicationSnapshot SKIPPED: no valid readingDate")
+            }
+            return
+        }
+
+        let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
+        let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
+        let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
+        let glucoseColorValue = (message[WatchMessageKeys.currentGlucoseColorString] as? String) ?? currentGlucoseColorString
+
+        Task {
+            await WatchLogger.shared.log("📸 Saving snapshot: glucose=\(glucoseValue), trend=\(trendValue), delta=\(deltaValue), readingDate=\(readingDate)")
+            await WatchLogger.shared.log("🔍 Debug: glucoseValue source - message: \(message[WatchMessageKeys.currentGlucose] as? String ?? "nil"), currentGlucose: \(currentGlucose)")
+        }
+
+        let snapshot = TrioComplicationSnapshot(
+            glucose: glucoseValue,
+            trend: trendValue,
+            delta: deltaValue,
+            readingDate: readingDate,
+            date: Date(),
+            glucoseColor: glucoseColorValue
+        )
+
+        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
+        if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: snapshot, handler: "message") {
+            return
+        }
+
+        TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+
+        // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
+        // Use only the threaded userInfoReceiveTimestamp; no fallback to instance state so attribution stays unambiguous.
+        if fromUserInfo, let start = userInfoReceiveTimestamp {
+            let decodeMs = Int(Date().timeIntervalSince(start) * 1000)
+            let readingEpoch = Int(readingDate.timeIntervalSince1970)
+            Task {
+                await WatchLogger.shared.log("⏱️ userInfo_decoded reading_epoch=\(readingEpoch) decode_ms=\(decodeMs)")
+            }
+        }
+        if fromUserInfo {
+            lastUserInfoReceiveTimestamp = nil
+        }
+    }
+
+    func forceComplicationUpdate() {
+        Task {
+            await WatchLogger.shared.log("🔄 forceComplicationUpdate called")
+        }
+
+        guard !currentGlucose.isEmpty,
+              !currentGlucose.contains("??"),
+              !currentGlucose.localizedCaseInsensitiveContains("error")
+        else {
+            Task {
+                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: invalid glucose '\(currentGlucose)'")
+            }
+            return
+        }
+
+        if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
+            guard glucoseValue >= 40 && glucoseValue <= 400 else {
+                Task {
+                    await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
+                }
+                return
             }
         }
 
-        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
-            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
-                maxCarbs = decimalValue
+        guard let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp else {
+            Task {
+                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: no valid CGM reading timestamp")
+            }
+            return
+        }
+
+        let snapshot = TrioComplicationSnapshot(
+            glucose: currentGlucose,
+            trend: trend ?? "",
+            delta: delta ?? "",
+            readingDate: effectiveReadingDate,
+            date: Date(),
+            glucoseColor: currentGlucoseColorString
+        )
+
+        Task {
+            await WatchLogger.shared.log("🔄 forceComplicationUpdate: glucose=\(currentGlucose), readingDate=\(effectiveReadingDate)")
+        }
+
+        TrioComplicationDataStore.shared.save(snapshot, triggerReload: false)
+        TrioComplicationDataStore.shared.forceReload(scheduleRetry: false)
+    }
+
+    #if os(watchOS)
+        func scheduleBackgroundRefresh() {
+            let hasRecentData = lastWatchStateUpdate != nil &&
+                Date().timeIntervalSince(lastWatchStateUpdate!) < 300
+
+            let nextInterval: TimeInterval
+            if isReachable {
+                nextInterval = hasRecentData ? 300 : 180
+            } else {
+                nextInterval = hasRecentData ? 900 : 600
+            }
+
+            let refreshDate = Date().addingTimeInterval(nextInterval)
+            WKExtension.shared().scheduleBackgroundRefresh(withPreferredDate: refreshDate, userInfo: nil) { error in
+                Task {
+                    if let error = error {
+                        await WatchLogger.shared.log("Failed to schedule background refresh: \(error)")
+                    } else {
+                        await WatchLogger.shared.log("Scheduled background refresh at \(refreshDate)")
+                    }
+                }
             }
         }
 
-        if let maxFatValue = message[WatchMessageKeys.maxFat] {
-            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
-                maxFat = decimalValue
+        func handleBackgroundTasks(_ tasks: Set<WKRefreshBackgroundTask>) {
+            Task {
+                await WatchLogger.shared.log("Handling background tasks: \(tasks.count)")
             }
+
+            for task in tasks {
+                if let refreshTask = task as? WKApplicationRefreshBackgroundTask {
+                    backgroundRefreshCount += 1
+                    lastBackgroundRefreshDate = Date()
+
+                    if isReachable {
+                        requestWatchStateUpdate()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            self.forceComplicationUpdate()
+                        }
+                    } else {
+                        loadFallbackDataFromComplication()
+                        forceComplicationUpdate()
+                    }
+
+                    refreshTask.setTaskCompletedWithSnapshot(false)
+                    scheduleBackgroundRefresh()
+                } else if task is WKWatchConnectivityRefreshBackgroundTask {
+                    let (bgTaskWindowId, receivedAt) = BackgroundTaskWindowCounter.next()
+                    Task {
+                        await WatchLogger.shared.log("event=complication_bgtask_received window_id=\(bgTaskWindowId) task_type=WKWatchConnectivityRefreshBackgroundTask 📡 BGTask received: WKWatchConnectivityRefreshBackgroundTask window_id=\(bgTaskWindowId)")
+                    }
+                    // Hold until userInfo processing completes (quiet-window or 5s safety timeout). All access on main.
+                    // Multiple tasks in one wake are all stored; multiple didReceiveUserInfo reset the 300ms quiet window; last timer runs, then one finalize and complete all. If handle(_:backgroundTasks:) is delivered after the debounce already fired (userInfo first, then task), the 5s timeout rescues the task.
+                    DispatchQueue.main.async { [self] in
+                        pendingConnectivityTasks.append(task)
+                        let pendingCount = pendingConnectivityTasks.count
+                        Task {
+                            await WatchLogger.shared.log("event=complication_bgtask_enqueued window_id=\(bgTaskWindowId) task_type=WKWatchConnectivityRefreshBackgroundTask pending_count=\(pendingCount)")
+                        }
+                        let taskToComplete = task
+                        let windowId = bgTaskWindowId
+                        let receivedAtCapture = receivedAt
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [self] in
+                            if let idx = pendingConnectivityTasks.firstIndex(where: { $0 === taskToComplete }) {
+                                pendingConnectivityTasks.remove(at: idx)
+                                let completionDelayMs = Int(Date().timeIntervalSince(receivedAtCapture) * 1000)
+                                Task {
+                                    await WatchLogger.shared.log("event=complication_bgtask_completing path=timeout window_id=\(windowId) task_type=WKWatchConnectivityRefreshBackgroundTask completion_delay_ms=\(completionDelayMs) completed_count=1 📡 BGTask completing (timeout) window_id=\(windowId)")
+                                }
+                                taskToComplete.setTaskCompletedWithSnapshot(false)
+                            }
+                        }
+                    }
+                } else {
+                    task.setTaskCompletedWithSnapshot(false)
+                }
+            }
+        }
+    #endif
+
+    func loadFallbackDataFromComplication() {
+        guard let snapshot = TrioComplicationDataStore.shared.latestSnapshot() else {
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
+            }
+            return
         }
 
-        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
-            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
-                maxProtein = decimalValue
+        if let lastUpdate = lastWatchStateUpdate,
+           Date().timeIntervalSince(lastUpdate) <= 15
+        {
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
             }
+            return
         }
 
-        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
-            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
-                // limit minimum to 0.05 to avoid dealing with 0.025 increments
-                self.bolusIncrement = max(decimalValue, 0.05)
+        DispatchQueue.main.async {
+            self.currentGlucose = snapshot.glucose
+            self.trend = snapshot.trend
+            self.delta = snapshot.delta
+            if let glucoseColor = snapshot.glucoseColor {
+                self.currentGlucoseColorString = glucoseColor
             }
+            self.lastWatchStateUpdate = snapshot.readingDate
+            self.showSyncingAnimation = false
+            self.syncTimeoutWorkItem?.cancel()
+        }
+    }
+
+    private func dateValue(from value: Any?) -> Date? {
+        if let date = value as? Date {
+            return date
+        }
+        if let seconds = value as? TimeInterval {
+            return Date(timeIntervalSince1970: seconds)
+        }
+        if let number = value as? NSNumber {
+            return Date(timeIntervalSince1970: number.doubleValue)
+        }
+        return nil
+    }
+
+    private func latestGlucoseDate(from message: [String: Any]) -> Date? {
+        guard let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] else {
+            return nil
         }
 
-        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] {
-            if let booleanValue = confirmBolusFaster as? Bool {
-                self.confirmBolusFaster = booleanValue
-            }
+        let dates = glucoseData.compactMap { data in
+            dateValue(from: data["date"])
         }
+        return dates.max()
     }
 }
