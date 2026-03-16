@@ -1,7 +1,7 @@
 # Trio watchOS Complication — Freshness Remediation Plan
 
-**Version:** 1.35 | **Date:** 2026-03-14
-**Status:** ✅ Step 7 (R6) shipped and live (build 140); `hk_observer_fired` events confirmed in BetterStack; observing 48h from build 137 deploy (2026-03-12) before Step 4 decision gate
+**Version:** 1.52 | **Date:** 2026-03-16
+**Status:** ✅ Build 141 built and deployed (patch 09: R5c/R5b corrections); R6 shipped and live (build 140); R6.1 + R5f + R5c + R5b implemented; delta/trend fix and doc accuracy pass applied; post-review R5c attribution and R5b verification applied; R5c follow-up (ChatGPT + Claude) cleanups applied; observing 48h from build 137 deploy (2026-03-12) before Step 4 decision gate
 **Source data:** BetterStack source_id=1659391, build 131, 2026-03-08/09
 **Input documents:**
 - Next-Steps Report (AI/BetterStack analysis, 2026-03-09)
@@ -656,6 +656,30 @@ if session.isReachable {
 
 > **BetterStack query note:** The avg C/reading query must filter `transfer_path IN ('complication', 'userInfo')` — not just `complication_transfer_attempted = true`. Session-guard skips (`transfer_path = 'skipped_session_not_ready'`) must be excluded or they will make the metric appear better without any real freshness improvement.
 
+### Better Stack avg C metrics (extraction rules)
+
+**Definition of avg C:** Avg C = (number of **complication transfers**) / (unique CGM readings). "Complication transfers" means both the budget-consuming path and the fallback: in current log terms, **both** `via=transferCurrentComplicationUserInfo` **and** `via=userInfo` (equivalent to plan's `transfer_path IN ('complication', 'userInfo')`). Exclude `via=sendMessage` (budget-free UI path). Target: avg C ≤ 1.3.
+
+**Legacy metric limitation:** The original Better Stack metric `complication_c_transfers` was defined to count only `via=userInfo`. That undercounts when the app uses the main complication path (`transferCurrentComplicationUserInfo`), so the dashboard "Avg C / reading" chart showed 0 whenever budget was available and the fallback was not used. Because of a Better Stack platform limitation, the existing `complication_c_transfers` extraction rule could not be modified in place.
+
+**New metric and dashboard:** A new metric **`complication_c_total_transfers`** was created with an extraction rule that counts **both** complication paths. Aggregation: **sum** only (each matching line contributes 1; `sumMerge(complication_c_total_transfers_sum)` gives the count of transfers per bucket). The Trio Dashboard "Avg C / reading" chart is updated to use `complication_c_total_transfers` (and `complication_c_readings` unchanged) going forward. Chart formula: `sumMerge(complication_c_total_transfers_sum) * 1.0 / nullIf(uniqMerge(complication_c_readings_uniq), 0)` per time bucket.
+
+**Extraction rule for `complication_c_total_transfers`** (aggregation: **sum**; emits 1 per matching log line, 0 otherwise):
+
+```text
+if(
+  JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%Transferred new WatchState%'
+  AND (
+    JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%via=transferCurrentComplicationUserInfo%'
+    OR JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%via=userInfo%'
+  ),
+  1,
+  0
+)
+```
+
+**`complication_c_readings`** (unchanged): Extract `reading_date_epoch_seconds` from any "Transferred new WatchState" line for the denominator (uniq of CGM readings). Rule: `if(JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%Transferred new WatchState%', toInt64OrNull(extract(JSONExtract(raw, 'message', 'Nullable(String)'), 'reading_date_epoch_seconds=([0-9]+)')), NULL)` with aggregation type uniq.
+
 ---
 
 ## R3 — Strip Oversized Payload from Complication Transfers
@@ -769,7 +793,7 @@ if session.isReachable {
 
 ## R4 — App Group Safety Net During Budget Exhaustion (Step 5)
 
-**Priority:** P1 | **Effort:** 2–3 hrs | **Recommended:** Ship after R3; can ship after R6 or bundle with R6 in same PR (complementary — R4 touches `AppleWatchManager.swift`, R6 touches `WatchState.swift`)
+**Priority:** P1 | **Effort:** 2–3 hrs | **Status:** PENDING — R6 has shipped (build 140); ship R4 as the next PR after the R6 48h observation window concludes. R4 touches `AppleWatchManager.swift` (iOS) and `WatchState.swift` (watch); R6 touched only `WatchState.swift` — no file conflict.
 **Files:** `AppleWatchManager.swift`, `Trio Watch App Extension/WatchState.swift`
 
 ### Architecture (corrected after Cursor R4 audit)
@@ -823,7 +847,10 @@ if sessionIsReadyForTransfer() {
 
 Add (or confirm) `didReceiveApplicationContext` in watch-side `WatchState.swift`:
 
+> **R5d integration dependency:** The full handler (with `lastDataReceivedAt` and `forceWidgetReloadIfStale`) requires R5d (Step 6). The simplified version below is the standalone R4 handler — implement it if shipping R4 independently. When R5d ships, the handler is extended with the three-constraint ordering (shown in plan §R5d and implementation guide Step 5's watch-side block).
+
 ```swift
+// Standalone R4 handler (no R5d integration):
 func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
     debug(.watchManager, "📦 didReceiveApplicationContext")
     guard let payload = applicationContext[WatchMessageKeys.watchState] as? [String: Any] else {
@@ -877,6 +904,8 @@ debug(.watchManager, "📨 sendMessage_sent reading_epoch=\(readingEpoch) send_w
 debug(.watchManager, "📬 didReceiveMessage reading_epoch=\(extractedEpoch) receive_wall=\(Date().timeIntervalSince1970)")
 ```
 
+**As implemented (post-review):** The send payload is `[WatchMessageKeys.watchState: fullMessage]`; `fullMessage` is the inner watch-state dict (from `watchStateToDictionary`) and contains `readingEpoch`. On the watch, we only enter the R5b log block after `if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any], ...`, so `watchStateDict` is that inner payload. Reading `watchStateDict[WatchMessageKeys.readingEpoch]` is therefore correct for end-to-end timing. A code comment in `WatchState.swift` documents this so future changes do not read epoch from the wrong level.
+
 ### R5c — didReceiveUserInfo decode latency
 
 ```swift
@@ -887,6 +916,8 @@ let receiveTimestamp = Date()
 let decodeMs = Int(Date().timeIntervalSince(receiveTimestamp) * 1000)
 debug(.watchManager, "⏱️ userInfo_decoded reading_epoch=\(readingEpoch) decode_ms=\(decodeMs)")
 ```
+
+**As implemented (post-review):** Attribution must not depend on shared mutable state, because both the userInfo path and the sendMessage path use the same `pendingData` / `finalizePendingData` machinery and overlapping userInfo deliveries can overwrite instance state before a save runs. Attribution is **threaded with the work** in two ways: (1) **Path flag:** `scheduleUIUpdate(with:fromUserInfo:)` and `finalizePendingData(fromUserInfo:)` take a `fromUserInfo` parameter; the userInfo path passes `true`, the sendMessage path passes `false`; the debounced work item captures it and passes it through so the run that processes the payload decides whether to log `userInfo_decoded`. (2) **Timestamp and epoch:** The receive timestamp is passed as `userInfoReceiveTimestamp` through `scheduleUIUpdate` → `finalizePendingData` → `processRawDataForWatchState` → `saveComplicationSnapshot`. In the pending-tasks path, `receiveTs = lastUserInfoReceiveTimestamp` is captured **outside** the `DispatchWorkItem` at creation time so a second delivery cannot overwrite it before the work runs. In `saveComplicationSnapshot`, `reading_epoch` is taken from the payload being saved (`Int(readingDate.timeIntervalSince1970)` from the same `message` that produced `readingDate`), not from instance state. **No fallback:** When `fromUserInfo` is true, only the threaded `userInfoReceiveTimestamp` is used for `decode_ms`; there is no fallback to `lastUserInfoReceiveTimestamp`, so attribution stays unambiguous if a call path ever omitted the parameter. The former `lastUserInfoReadingEpoch` property was removed as dead state after the log was switched to payload-derived epoch. (Post-review follow-up: ChatGPT suggested removing the fallback and dead state; Claude confirmed the threading shape and noted the fallback had already been removed.)
 
 ### R5d — Sleep-gap forced reload
 
@@ -1028,7 +1059,9 @@ HAVING exhausted_count > 5
 
 Set severity: **Warning** — `transferUserInfo` fallback still delivers data, just with latency.
 
-### R5f — WidgetKit timeline validation logging
+### R5f — WidgetKit timeline and snapshot validation logging
+
+The complication can render fresh data from **both** WidgetKit entry paths: `getTimeline` and `getSnapshot`. Both load from the App Group snapshot via `latestSnapshot()`. A chart based only on `complication_get_timeline_called` is **not** a complete visible-recency chart — the face can show fresh data from `getSnapshot` without any `getTimeline` call. R5f specifies observability for both entry points (complication extension / WidgetKit only; not HealthKit observer events).
 
 Add to `getTimeline(in:completion:)` in `Trio Watch Complication/TrioWatchComplication.swift` after building entries (~line 229):
 
@@ -1044,13 +1077,41 @@ if let firstEntry = entries.first {
 
 This gives `reading_epoch` and `snapshot_age` at timeline-build time. If `save_age` is fresh but `snapshot_age` here is stale, WidgetKit is not picking up the App Group writes — indicates the complication kind string is wrong or the App Group container is mismatched.
 
+**WidgetKit entry-path events (R6.1 logging enhancement):**
+
+**A. Timeline path — `event=complication_get_timeline_called`** (emitted when `getTimeline` is invoked):
+
+- **`get_timeline_at_epoch_seconds`** — Unix epoch seconds when `getTimeline` was invoked or when the event is logged. Intended computation: `Int(Date().timeIntervalSince1970)` at the start of `getTimeline` or immediately before the event is logged.
+- **`data_age_seconds`** — Age in seconds of the snapshot actually used to build the timeline. Intended computation: after loading the snapshot that will be returned to WidgetKit for this timeline, `max(0, Int(Date().timeIntervalSince(snapshot.readingDate)))`. If there is no valid reading date (e.g. placeholder or fallback), use a sentinel such as `-1`. This must be based on the snapshot actually returned to WidgetKit for that timeline, not on the most recent saved snapshot from some other code path.
+
+**B. Snapshot path — `event=complication_get_snapshot_called`** (emitted when `getSnapshot` is invoked):
+
+- **`get_snapshot_at_epoch_seconds`** — Unix epoch seconds when `getSnapshot` was invoked or when the event is logged.
+- **`data_age_seconds`** — Age in seconds of the snapshot actually used to produce the snapshot entry. Compute from the snapshot loaded and used to build the entry returned to WidgetKit on this path. Use the same sentinel (e.g. `-1`) when there is no valid reading date.
+
+In both A and B, `data_age_seconds` must be computed from the snapshot **actually used to build the WidgetKit entry returned on that path** — not from some other save/reload path, and not from "latest known reading" in the abstract.
+
+**Observability framing:**
+
+- **Timeline-generation observability** — driven by `event=complication_get_timeline_called`; measures when timelines are built and with what data age.
+- **Snapshot-generation observability** — driven by `event=complication_get_snapshot_called`; measures when snapshots are produced and with what data age.
+- **Visible recency** — to approximate what the user actually saw, **both** paths matter. getTimeline logging alone does **not** reconstruct all visible refreshes; getSnapshot can show fresh data without any getTimeline call. getTimeline logging is still useful and should be kept for timeline-refresh analysis.
+
+**Rationale:** These events and fields make timeline and snapshot generation directly queryable and support better reconstruction of visible recency in Better Stack Explore when both events are used. They avoid inferring visibility solely from `complication_save_age` or reload events.
+
+**Scope boundary:** This R5f enhancement does not change reload logic, dedup logic, HealthKit behavior, trend/delta derivation, or WidgetKit scheduling. It only improves observability of what WidgetKit rendered or prepared to render on each entry path.
+
+**Better Stack / sawtooth:** A sawtooth built only from `complication_get_timeline_called` is a **timeline-refresh sawtooth**, not a full visible-recency sawtooth. To better reconcile charts with cases where the face shows "NOW" without a logged getTimeline, snapshot logging is also needed. Better Stack Explore can use both events to better understand actual visible freshness. This may still not translate cleanly to standard metric-bucket dashboards because of as-of / point-in-time reconstruction limits.
+
+**Chart naming / interpretation:** A chart based only on `complication_get_timeline_called` should be interpreted as **timeline-recency** or **timeline-refresh recency**. If the goal is actual **visible recency**, include `complication_get_snapshot_called` in the analysis as well.
+
 ---
 
 ## R6 — HealthKit Background Delivery (Step 7)
 
 **Priority:** P2 | **Effort:** Medium (~4–6 hrs including entitlement provisioning)
 
-**Recommended sequencing:** Go straight to R6 (Step 7). R4 (Step 5) would have done nothing for the 24-minute gap you experienced: the data was already in the App Group; the problem was WidgetKit not calling `getTimeline`. R4 sends more data via another WatchConnectivity channel but still ends with a `reloadTimelines` call that WidgetKit can ignore just as freely. R6 gives an independent system-triggered wake that fires specifically when new glucose data arrives in HealthKit; each wake is another `reloadTimelines` call from a fresh background task context. During the 9-minute gap between 05:32 and 05:41, R6 would have fired at least once from the 05:37 reading — potentially breaking the WidgetKit scheduling stall before it became 24 minutes on your wrist. R4 still has real value (it covers the budget-exhaustion failure mode that R6 doesn't help with) but is the lower-urgency problem right now. Ship R6 first; ship R4 after R6 or bundle both in the same PR since they're complementary and touch different files.
+**Ship order (historical):** R6 shipped before R4 (build 140, 2026-03-14) — see §Decision Gate. Rationale at the time: R4 would have done nothing for the 24-minute gap observed prior to build 140 because the data was already in the App Group and the problem was WidgetKit not calling `getTimeline`. R6 gives an independent system-triggered wake that fires when new glucose data arrives in HealthKit, giving the watch extension an additional opportunity to call `reloadTimelines`. R4 remains valuable for budget-exhaustion coverage — it is still pending as of this writing. R4 and R6 touch different files and can ship as separate PRs or be bundled.
 
 R6 addresses two distinct failure modes:
 1. **Budget-exhaustion staleness:** When `complication_transfer_remaining=0`, WatchConnectivity complication transfers stop. R4's `updateApplicationContext` partially mitigates this but is still a WCSession-dependent channel.
@@ -1066,7 +1127,7 @@ HealthKit provides a completely independent data delivery channel from WatchConn
 
 | Field | HealthKit source | Available on watch? | Notes |
 |---|---|---|---|
-| Glucose value | `HKQuantitySample.quantity` (unit: `.milligramsPerDeciliter`) | ✅ Yes | Convert `doubleValue(for: .milligramsPerDeciliter())` → display string via `String(Int(value.rounded()))` |
+| Glucose value | `HKQuantitySample.quantity` (unit: `.milligramsPerDeciliter`) | ✅ Yes | Convert `doubleValue(for: HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci)))` → display string via `String(Int(value.rounded()))`. **Note:** `.milligramsPerDeciliter()` is a LoopKit extension unavailable on watchOS (build 140 confirmed) — use the inline unit construction. |
 | Reading timestamp | `HKQuantitySample.startDate` | ✅ Yes | CGM reading time — use as `readingDate` in `TrioComplicationSnapshot` |
 | Trend arrow | Not in metadata | ❌ No | Metadata contains only `HKMetadataKeyExternalUUID`, `HKMetadataKeySyncIdentifier`, `HKMetadataKeySyncVersion`, and `AppleHealthConfig.TrioInsulinType`. Must be derived or set to `""` |
 | Delta | Not in metadata; derivable from query | ❌ / ✅ Derivable | Query last 2 `bloodGlucose` samples: `latest.quantity - previous.quantity`. Low complexity (~10 lines) |
@@ -1076,7 +1137,7 @@ HealthKit provides a completely independent data delivery channel from WatchConn
 
 1. **Simple delta-based mapping:** Map delta magnitude per interval to an arrow (e.g., |Δ| < 1 → "→", 1–2 → "↗"/"↘", 2–3 → "↑"/"↓", >3 → "↑↑"/"↓↓"). Approximates the CGM's native trend but may diverge for sensors using proprietary smoothing (G7, Libre 3).
 2. **Fallback to empty string:** Pass `""` for trend. The complication displays glucose + delta but omits the arrow. Strictly better than stale data from an exhausted WatchConnectivity channel.
-3. **Recommended:** Option 2 initially. Add delta-based trend derivation as R6.1 if user feedback requests it. Log `hk_trend_derived=false` so BetterStack can track the channel's display fidelity vs WatchConnectivity deliveries.
+3. **Recommended:** Option 2 initially. Add delta-based trend derivation as R6.1 (spec complete — see §R6.1, ready for implementation). Log `hk_trend_derived=false` so BetterStack can track the channel's display fidelity vs WatchConnectivity deliveries.
 
 ### iPhone Side Changes
 
@@ -1093,7 +1154,7 @@ This would avoid trend derivation on the watch but changes the HealthKit write c
 
 **R6a — `enableBackgroundDelivery` registration:**
 
-Must be called on every app launch — registration does not persist across process restarts. Place in `WatchState.init()` or `setupSession()` (where `WCSession.activate()` already runs at line ~59). Idempotent; re-registering is safe.
+Must be called on every app launch — registration does not persist across process restarts. Place at the **end of `setupSession()`**, **outside** the `if WCSession.isSupported()` block. HK setup is independent of WatchConnectivity — gating it on `isSupported()` would prevent background delivery on devices where WCSession is unavailable or fails, even though HealthKit works independently. Idempotent; re-registering is safe. (CR1 from build 140 code review: moving this call outside `if WCSession.isSupported()` was a required fix.)
 
 ```swift
 // In WatchState, during initialization (setupSession or init):
@@ -1139,7 +1200,10 @@ private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuant
             completionHandler()
             return
         }
-        self?.fetchLatestGlucoseFromHealthKit(completionHandler: completionHandler)
+        // CR2 (required): guard self before use — if self is nil, completionHandler()
+        // must still be called or the system will throttle future background deliveries.
+        guard let self else { completionHandler(); return }
+        self.fetchLatestGlucoseFromHealthKit(completionHandler: completionHandler)
     }
     store.execute(query)
     self.glucoseObserverQuery = query
@@ -1162,7 +1226,9 @@ private func fetchLatestGlucoseFromHealthKit(completionHandler: @escaping () -> 
         sampleType: bgType,
         predicate: nil,
         limit: 2,
-        sortDescriptors: [SortDescriptor(\.startDate, order: .reverse)]  // or NSSortDescriptor(keyPath: \HKSample.startDate, ascending: false)
+        sortDescriptors: [NSSortDescriptor(keyPath: \HKSample.startDate, ascending: false)]
+        // ⚠️ HKSampleQuery requires [NSSortDescriptor]? — Swift SortDescriptor does NOT bridge here.
+        // Use keyPath API (non-deprecated). Do NOT use HKSampleSortIdentifierStartDate (deprecated).
     ) { _, results, error in
         if let error = error {
             // log hk_observer_sample_query_error
@@ -1176,12 +1242,15 @@ private func fetchLatestGlucoseFromHealthKit(completionHandler: @escaping () -> 
             return
         }
 
-        let mgDl = latest.quantity.doubleValue(for: .milligramsPerDeciliter())
+        // ⚠️ .milligramsPerDeciliter() is a LoopKit extension unavailable on watchOS.
+        // Use the inline unit construction instead (confirmed by build 140 compile failure):
+        let mgDlUnit = HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))
+        let mgDl = latest.quantity.doubleValue(for: mgDlUnit)
         let readingDate = latest.startDate
         let glucoseString = String(Int(mgDl.rounded()))
         var deltaString = "--"
         if samples.count >= 2 {
-            let prevMgDl = samples[1].quantity.doubleValue(for: .milligramsPerDeciliter())
+            let prevMgDl = samples[1].quantity.doubleValue(for: mgDlUnit)
             deltaString = String(format: "%+.0f", mgDl - prevMgDl)
         }
         let saveAge = Int(Date().timeIntervalSince(readingDate))
@@ -1227,7 +1296,7 @@ Add the keys to `Trio Watch App/TrioWatchApp.entitlements` (e.g. via Xcode → S
 <string>Trio reads your blood glucose data to keep the watch complication current when wireless sync is unavailable.</string>
 ```
 
-`NSHealthUpdateUsageDescription` is **not** required because `toShare: nil` means no write access is requested. Apple only requires the update description when `toShare` contains types.
+`NSHealthUpdateUsageDescription` is also **required by App Store Connect validation** — Apple's altool rejects uploads that have the `com.apple.developer.healthkit` entitlement but are missing this key, regardless of `toShare: nil`. Build 140 confirmed this (ITMS-90683). Despite the read-only authorization intent, both usage description keys must be present. **Fixed in v1.35.**
 
 **For reference — main app entitlements (already present):** `Trio/Resources/Trio.entitlements` has both `com.apple.developer.healthkit` and `com.apple.developer.healthkit.background-delivery` = `true`, and `Trio/Resources/Info.plist` has both `NSHealthShareUsageDescription` and `NSHealthUpdateUsageDescription`.
 
@@ -1255,13 +1324,13 @@ No additional dedup logic is needed in the HealthKit observer. The overwrite is 
 | Risk | Severity | Mitigation |
 |---|---|---|
 | HealthKit entitlements missing from watch extension entitlements file | **Blocker** | Add `com.apple.developer.healthkit` + `com.apple.developer.healthkit.background-delivery` to `TrioWatchApp.entitlements` (provisioning profile already has HealthKit enabled for watch extension App ID) |
-| `NSHealthShareUsageDescription` missing from watch app `Info.plist` | **Blocker** | The watch app calls `requestAuthorization(toShare: nil, read:)` — Apple requires the read usage description in the requesting process's `Info.plist`. Without it, authorization may crash on launch or fail silently. Add to `Trio Watch App/Info.plist`. `NSHealthUpdateUsageDescription` is not needed (`toShare: nil`). **Fixed in v1.34.** |
-| Trend not in HealthKit metadata (derivation complexity) | Medium | Ship with `trend=""` initially. Complication shows glucose + delta. Add delta-based trend derivation in R6.1 if user feedback requests it |
+| `NSHealthShareUsageDescription` missing from watch app `Info.plist` | **Blocker** | The watch app calls `requestAuthorization(toShare: nil, read:)` — Apple requires the read usage description in the requesting process's `Info.plist`. Without it, authorization may crash on launch or fail silently. Add to `Trio Watch App/Info.plist`. `NSHealthUpdateUsageDescription` is also required — App Store Connect rejects uploads with the HealthKit entitlement but missing this key, regardless of `toShare: nil` (ITMS-90683; confirmed by build 140). **Both fixed in v1.35.** |
+| Trend not in HealthKit metadata (derivation complexity) | Medium | Ship with `trend=""` initially. Complication shows glucose + delta. Add delta-based trend derivation in R6.1 (spec complete — see §R6.1) |
 | HealthKit sync latency not Apple-SLA'd | Medium | Sync depends on Bluetooth proximity and system scheduling. Expect 10–60s in typical conditions, potentially minutes. HealthKit is supplementary to WatchConnectivity, not a replacement |
 | `enableBackgroundDelivery` not re-registered after crash/restart | Medium | Call `setupHealthKitBackgroundDelivery()` in `WatchState.init()` / `setupSession()` on every launch. Registration is idempotent |
 | `completionHandler` not called (system penalizes app) | High | Call on all paths: error/zero-samples paths before return; success path inside `DispatchQueue.main.async` after save. Do not use `defer` at closure exit — that signals "done" before the async save runs. |
 | HealthKit read authorization denied by user | Medium | Watch must request read authorization for `.bloodGlucose`. If denied, observer never fires. Log `hk_authorization_failed`. Falls back to WatchConnectivity-only — no regression |
-| Trend arrow overwrite in normal operation | Low | HK snapshot (`trend=""`) overwrites WC snapshot's real trend when both channels deliver same reading. Transient — restored on next WC delivery (~5 min). Glucose and delta remain correct. Acceptable tradeoff; add delta-based trend derivation in R6.1 if user feedback requests it |
+| Trend arrow overwrite in normal operation | Low | HK snapshot (`trend=""`) overwrites WC snapshot's real trend when both channels deliver same reading. Transient — restored on next WC delivery (~5 min). Glucose and delta remain correct. Acceptable tradeoff; add delta-based trend derivation in R6.1 (spec complete — see §R6.1) |
 | Battery impact from observer wakeups | Low | Observer fires only when new BG samples sync (~every 5 min for most CGMs). Per-wakeup cost is trivial: 1 sample query + 1 snapshot save + 1 App Group write |
 
 ### Validation
@@ -1300,11 +1369,251 @@ ORDER BY hour DESC
 
 ### Decision Gate
 
-Ship R6 after R4. Primary motivation is twofold:
-1. **Budget-exhaustion windows:** If R4 post-deploy data still shows p90 `save_age` > 300s during exhaustion, HealthKit provides a WCSession-independent delivery channel.
+**Actual ship order:** R6 shipped before R4 (build 140, 2026-03-14). R4 is still pending. The originally documented ordering ("Ship R6 after R4") was reversed — see implementation guide Part 2 sequencing note and build log.
+
+Primary motivation for R6 was twofold:
+1. **Budget-exhaustion windows:** HealthKit provides a WCSession-independent delivery channel when `complication_transfer_remaining=0`.
 2. **WidgetKit scheduling gaps:** Observed in build 139 — 9-minute gap with fresh App Group data, `reload_age=548s`. The `HKObserverQuery` wake trigger fires when new glucose data arrives in HealthKit, giving the watch extension an independent opportunity to call `reloadTimelines`. This addresses a failure mode that R4 cannot fix (R4 still depends on WidgetKit's scheduling to pick up App Group writes).
 
 Do not gate R6 on budget-exhaustion metrics alone. The two failure modes are distinct — R4 addresses the data delivery gap during exhaustion, R6 addresses WidgetKit's scheduling latency via an independent wake trigger.
+
+---
+
+## R6.1 — HealthKit Channel Improvements
+
+**Priority:** P2 | **Status:** Spec complete — ready for implementation
+
+### Builds on R6
+
+R6 established the watch-side HealthKit observer and background delivery path in build 140. The watch extension registers an `HKObserverQuery` for `.bloodGlucose` with `enableBackgroundDelivery(for:frequency:.immediate)`, fetches the latest samples via `HKSampleQuery`, constructs a `TrioComplicationSnapshot`, and saves through the existing `TrioComplicationDataStore.shared.save()` path. This channel operates entirely outside of WatchConnectivity.
+
+R6.1 is a refinement of the HK fetch and processing path, not a replacement of R6's high-level strategy. The observer registration, authorization flow, entitlements, and background delivery mechanics remain unchanged. R6.1 does NOT change the claim that HealthKit is an independent wake path outside WatchConnectivity.
+
+### Motivation
+
+R6 delivered a working HealthKit channel in build 140, but several areas have known room for improvement:
+
+1. **Non-incremental fetch:** R6 uses `HKSampleQuery` to fetch the latest 2 samples on every observer fire. This re-fetches samples the extension has already processed. An anchored query would advance past previously seen samples and only return genuinely new ones.
+
+2. **Phantom observer fires:** The `HKObserverQuery` fires when the sample database changes for `.bloodGlucose` — including metadata updates, deletions, and cross-device sync events that do not represent a new CGM reading. R6 processes every fire identically, logging `hk_observer_fired` even when the "latest" sample was already handled. Cleaner classification is needed to separate real new-sample events from phantom fires.
+
+3. **Same/latest sample handling:** Without a persisted "last seen" marker, R6 cannot deterministically detect when the observer fired but no new sample arrived. A persisted epoch allows a fast exit on known-epoch fires and prevents redundant snapshot saves.
+
+4. **Trend fidelity:** R6 ships `trend=""` on all HealthKit-derived snapshots. When the HK delivery overwrites a WC-delivered snapshot in dual-delivery mode, the trend arrow is temporarily lost (see R6 "Dedup and Dual-Delivery Behavior"). Deriving a trend from consecutive samples improves display fidelity without waiting for iPhone-side metadata changes.
+
+5. **Instrumentation gaps:** R6 logs `hk_observer_fired` for all fires uniformly. There is no distinction between "observer fired with a genuinely new sample" and "observer fired but latest sample was already processed." Separating these events improves observability and makes phantom-fire rate measurable.
+
+R6.1 improves correctness and observability of the HealthKit channel. R6.1 does NOT reduce Apple-controlled cross-device HealthKit sync latency — sync timing remains dependent on Bluetooth proximity, system scheduling, and Apple's internal sync policy.
+
+### Design
+
+R6.1 specifies the replacement of the R6 HK fetch path with an `HKAnchoredObjectQuery`-based approach:
+
+- **Replace `HKSampleQuery` with `HKAnchoredObjectQuery`:** The anchored query returns only samples added or changed since the last query anchor, eliminating redundant re-fetching of already-processed samples.
+- **Persist query anchor:** The `HKQueryAnchor` returned by a successful anchored query is always saved to App Group storage — regardless of whether the result leads to a snapshot save. This includes normal new-sample processing, no-new-samples phantom fires, and epoch-guard skips. Only query errors and pre-query guard failures leave the anchor unchanged. This prevents repeated delivery of the same already-processed or empty-result state on later observer fires.
+- **Persist last received glucose epoch and value:** An independent `TimeInterval` recording the `startDate` epoch of the most recently processed glucose sample, plus the glucose value in mg/dL. The epoch is used as a post-query guard to skip re-delivered/modified samples. The persisted value enables delta and trend derivation for the common steady-state case where the anchored query returns only one new sample.
+- **Use latest sample for display:** The most recent sample by `startDate` in the anchored query result drives the `TrioComplicationSnapshot` glucose value and reading date. Recency must be determined by sorting the added samples by `startDate`, not by relying on the raw array order returned by `HKAnchoredObjectQuery` — store-insertion order is not guaranteed to be chronological, especially during backfill, sync catch-up, or retroactive sample delivery.
+- **Delta/trend from current + previous sample:** When the anchored query returns two or more new samples (e.g., backfill), the second-most-recent sample by `startDate` in the batch provides the previous value. In the common steady-state case (one new sample per fire), the persisted previous glucose value and epoch serve as the prior sample. This ensures delta and trend derivation works on every normal CGM interval, not just multi-sample batches.
+
+This remains a single-save-per-fire design, not one-save-per-sample. Backfill batches (e.g., after app suspension or extended background) advance the anchor across all returned samples but produce only one snapshot, one save, and one reload attempt.
+
+### Anchor Lifecycle
+
+| Scenario | Behavior |
+|---|---|
+| **First run (nil anchor)** | Query executes with `nil` anchor, which returns all matching samples. To avoid processing the full HealthKit history, the query includes a date predicate capping results to the last 24 hours. The returned anchor is saved for subsequent queries. |
+| **Normal operation** | Query executes with the persisted anchor. Only samples added since the last anchor are returned. Anchor advancement, epoch/value persistence, and snapshot save follow the rules described in the rows below. |
+| **Anchor advancement rule** | The new `HKQueryAnchor` is saved via `TrioComplicationDataStore` after every successful query that returns a non-nil `newAnchor` — including no-new-samples and epoch-guard-skip exits, not just the normal new-sample path. The anchor tracks HealthKit's internal query position, not whether the app saved a snapshot. On the normal new-sample path, the anchor advances even if the snapshot save is debounced or rejected by dedup. On no-new-samples and epoch-guard-skip paths, the anchor advances but the persisted epoch and glucose value are NOT updated (no new sample was processed). Query errors and pre-query guard failures do NOT advance the anchor. |
+| **Anchor decode failure** | If the persisted anchor data cannot be decoded (e.g., data corruption, watchOS version change altering serialization format), the query falls back to nil anchor behavior with the 24-hour date cap. A `hk_anchor_decode_failed` event is logged. The new anchor from the fallback query is saved normally. |
+| **Epoch guard (post-query)** | After the anchored query returns results, the latest returned sample's epoch is compared to the persisted last-received epoch. If they match: the new anchor is saved (see anchor advancement rule), a `hk_observer_skipped_known_epoch` event is logged, and the observer exits without saving a snapshot or updating the persisted epoch/value. This is primarily an edge-case filter for modified or re-delivered samples — samples the anchored query returns as "changed" even though the glucose value and timestamp have not changed. The anchored query's "zero new samples" result handles the majority of phantom fires; the epoch guard catches the remainder. |
+| **Deletion handling** | `HKAnchoredObjectQuery` returns both added samples and deleted objects. Deleted objects are ignored for complication freshness purposes — a deletion does not affect the current display. Modified/re-delivered samples (returned as re-added) are caught by the epoch guard above. |
+
+First run should cap backfill to the last 24 hours to avoid processing an unbounded sample history on fresh install or anchor reset.
+
+Anchor, epoch, and previous-sample value are independent persistence paths. The anchor tracks HealthKit's internal query position; the epoch and value track the last glucose sample the extension actually processed. All are persisted but none depends on another's value.
+
+### TrioComplicationDataStore Additions
+
+R6.1 specifies six new persistence methods in `TrioComplicationDataStore`:
+
+| Method | Purpose |
+|---|---|
+| `hkGlucoseAnchor() -> Data?` | Read the persisted `HKQueryAnchor` as encoded `Data` |
+| `saveHKGlucoseAnchor(_ data: Data)` | Write the `HKQueryAnchor` encoded data to App Group storage |
+| `hkLastReceivedGlucoseEpoch() -> TimeInterval` | Read the epoch (`startDate.timeIntervalSince1970`) of the most recently processed glucose sample |
+| `setHKLastReceivedGlucoseEpoch(_ epoch: TimeInterval)` | Write the last-received epoch to App Group storage |
+| `hkLastReceivedGlucoseValueMgDl() -> Double` | Read the glucose value (mg/dL) of the most recently processed sample |
+| `setHKLastReceivedGlucoseValueMgDl(_ value: Double)` | Write the glucose value (mg/dL) of the most recently processed sample |
+
+The epoch and value methods together provide the "previous sample" data needed for delta and trend derivation when the anchored query returns only one new sample (the common steady-state case).
+
+**Derive-then-persist ordering:** On the genuinely new-sample path, delta and trend must be derived from the persisted previous epoch/value (or second-most-recent batch sample by `startDate`) *before* the current sample's epoch and value are persisted. Overwriting the previous-sample state before derivation would destroy the data needed for delta/trend computation. After derivation, the current sample's epoch and value are persisted, becoming the "previous" for the next fire. On no-new-samples and known-epoch-skip paths, epoch/value are not updated.
+
+These methods belong in `TrioComplicationDataStore` because App Group persistence for the watch complication system is centralized there. All existing snapshot, fingerprint, and complication metadata persistence already flows through this class.
+
+**Anchor serialization:** `HKQueryAnchor` conforms to `NSSecureCoding`, not `Codable`. It must be serialized via `NSKeyedArchiver.archivedData(withRootObject:requiringSecureCoding: true)` and deserialized via `NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from:)`. This is the same pattern used by LoopKit's `PersistenceController.storeAnchor`/`fetchAnchor`. Decode failures should log `hk_anchor_decode_failed` and fall back to nil-anchor + 24h cap behavior.
+
+**Raw `UserDefaults(suiteName:)` usage in `WatchState` is explicitly forbidden for R6.1 persistence.** `WatchState` should call through `TrioComplicationDataStore` for anchor, epoch, and previous-sample storage, maintaining the existing pattern where `WatchState` is a consumer of the data store, not a direct App Group accessor.
+
+### WatchState Changes
+
+R6.1 modifies the HK fetch/processing path in `WatchState.swift` at a design level:
+
+- **Replace the sample-query helper with an anchored-query helper:** The planned change to `fetchLatestGlucoseFromHealthKit(completionHandler:)` replaces `HKSampleQuery` (fetch last 2, no state) with `HKAnchoredObjectQuery` (fetch since last anchor, stateful).
+- **Keep unchanged (function shape):**
+  - `setupHealthKitBackgroundDelivery()` — authorization request, background delivery registration, and observer setup call. **One targeted log-line change:** the `hk_background_delivery_registered` log call gains `low_power_mode=ProcessInfo.processInfo.isLowPowerModeEnabled`. No other change to function body.
+  - `setupGlucoseObserverQuery(store:sampleType:)` — observer registration shape
+  - `HKObserverQuery` creation and execution
+  - Entitlements and Info.plist
+  - HealthKit authorization flow
+- **Only the fetch/processing portion changes in R6.1.** The observer callback signature, the `completionHandler` contract, and the outer structure remain identical.
+
+The observer callback must still call `completionHandler()` on every path — error, no-new-samples, known-epoch skip, and success. This requirement is unchanged from R6.
+
+**`fire_id` lifecycle:** A `UUID` is generated once at the start of each observer callback invocation. This `fire_id` is threaded through all subordinate functions called from that observer fire — the anchored query, persistence calls, and all log events. It is not regenerated per helper or per save. This allows correlating all log events from a single observer wake in BetterStack.
+
+The successful save path still flows through `TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)`, which triggers `coalescedReloadOnMain` only when the snapshot passes dedup and the minimum interval has elapsed. R6.1 does not change the save path, dedup behavior, or reload conditions. Accepted saves trigger a reload attempt; the reload is still subject to the existing debounce.
+
+### Source Predicate Decision
+
+R6.1 specifies the following source filter for the anchored query:
+
+**Selected:** `HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeySyncIdentifier)`
+
+**Rationale:**
+- Trio-written glucose samples already include `HKMetadataKeySyncIdentifier` in their metadata (set during `uploadGlucose` in `HealthKitManager.swift`).
+- This is a presence-only predicate: it returns any sample that has the key set, regardless of the key's value.
+- Filters out samples that lack sync identifiers entirely (e.g., manually entered glucose readings), reducing phantom fires from non-synced sources.
+- Avoids hardcoded bundle-ID string filtering, which is fragile and requires knowledge of the iPhone app's exact bundle identifier from the watch extension.
+
+**Residual risk — practical, not theoretical:** `HKMetadataKeySyncIdentifier` is a standard Apple-recommended metadata key used by any HealthKit-writing app that coordinates sync to prevent duplicate imports. Other diabetes apps (Loop, xDrip, Nightscout uploader, etc.) commonly set this key on their blood glucose samples. In a multi-app setup where another glucose-writing app is active, the presence-only predicate will include that app's samples in the anchored query results. This could produce unexpected delta/trend values if the "previous" sample came from a different source with different timing. Severity is low-to-medium: the glucose values would still be valid readings, but trend derivation across sources could be misleading. Acceptable for R6.1 as a practical tradeoff. Value-specific filtering (matching Trio's UUID format) or bundle/source refinement can be pursued in R6.2 if over-inclusion is observed in practice.
+
+**As implemented:** R6.1 shipped without applying this predicate. The current implementation uses a 24h date cap when the anchor is nil (first run or anchor decode failure) and nil predicate when an anchor exists. SyncIdentifier/source filtering is explicitly deferred to R6.2 or equivalent follow-up.
+
+### Delta and Trend Derivation
+
+R6.1 specifies delta and trend derivation from consecutive glucose samples. Both use a single numeric delta computed from the same pair of samples, and the trend direction is classified using the same raw-delta threshold mapping established in the Trio codebase:
+
+- **Input:** Latest sample by `startDate` (from current anchored query result) and previous sample (second-most-recent by `startDate` in batch, or persisted previous glucose value/epoch for single-sample steady-state fires). Delta and trend derivation must use the same selected previous sample on a given fire — do not derive delta from one source and trend from another.
+- **Numeric delta:** Compute the raw numeric delta first (`latestMgDl - previousMgDl`), then round once to obtain the integer used for both trend threshold mapping and the display delta string. That is: `rawDeltaMgDl = latestMgDl - previousMgDl`; `deltaInt = Int(rawDeltaMgDl.rounded())`. This single rounded integer serves as the input to the trend threshold mapping and the basis for `TrioComplicationSnapshot.delta` (e.g. `"+5"`, `"-12"`). Do not round each endpoint and subtract, which can change the bucket and display at threshold boundaries.
+- **Gate:** Trend is only derived when `0 < timeDelta < 15 minutes`. This ensures the two samples are plausibly consecutive CGM readings (typical CGM interval is 5 minutes; 15 minutes allows for one missed reading).
+- **Threshold mapping:** Apply the integer delta directly to the same threshold family as `BloodGlucose.Direction.init(trend:)` in `BloodGlucoseExtensions.swift`. R6.1 does not use a separate floating-point threshold system — the integer delta is the threshold input:
+
+| Delta (mg/dL) | Direction |
+|---|---|
+| <= -30 | `DoubleDown` |
+| <= -20 | `SingleDown` |
+| <= -10 | `FortyFiveDown` |
+| < 10 | `Flat` |
+| < 20 | `FortyFiveUp` |
+| < 30 | `SingleUp` |
+| >= 30 | `DoubleUp` |
+
+- **Output format:** The trend string stored in `TrioComplicationSnapshot.trend` must use the same raw direction string format as the WatchConnectivity path — e.g., `"Flat"`, `"FortyFiveUp"`, `"SingleUp"`, `"DoubleUp"`, `"FortyFiveDown"`, `"SingleDown"`, `"DoubleDown"`. This aligns with the existing `TrendSymbolMapper.symbol(from:)` in `TrioWatchComplication.swift` which converts these strings to display symbols. Do NOT output symbol glyphs directly.
+- **Display delta formatting:** The display delta string stored in `TrioComplicationSnapshot.delta` is produced by formatting the same integer numeric delta (e.g., `"+5"`, `"-12"`). R6.1 formats delta in mg/dL only; mmol/L display parity with the WC path is deferred (see inherited unit note below).
+- **Fallback:** When the plausibility gate fails (samples too far apart, no previous sample available, or time delta is zero/negative), both trend and delta fall back: trend to `""` (no arrow), delta to the existing no-derivation behavior (e.g., `"--"` or blank per the HK path's no-previous-sample handling). Do not synthesize trend or delta from unrelated or implausible samples. This applies regardless of whether the missing/invalid previous sample comes from the current batch or from persisted previous-sample state.
+
+This aligns R6.1 with Trio's existing direction semantics. The `BloodGlucose.Direction` type and `init(trend:)` live in the iOS target (`Trio/Sources/APS/Extensions/BloodGlucoseExtensions.swift`) and may not be directly importable on the watchOS target. The implementation may need to duplicate the threshold switch statement for the watch extension, or extract it to a shared target. The threshold values and raw direction strings must match the iPhone-side mapping.
+
+This improves display fidelity on HealthKit-derived snapshots — in R6, `trend=""` on every HK delivery caused trend arrow loss during dual-delivery overwrite. R6.1 provides a derived trend on most normal CGM intervals. When R6.1 produces the same raw direction string as the WC path for the same reading, `shouldUpdate` may return `false` for same-reading dual delivery, reducing or eliminating the R6 trend-overwrite regression.
+
+Trend derivation does not affect Apple-controlled cross-device sync timing. It improves the content quality of HK-delivered snapshots once they arrive.
+
+**Inherited unit note:** R6 (and by extension R6.1) computes delta in mg/dL from HealthKit samples. The WC path formats delta using the user's preferred units (mg/dL or mmol/L). For mmol/L users, HK-derived deltas and WC-derived deltas will have different string representations for the same reading (e.g., HK `"+5"` vs WC `"+0.3"`), which affects `shouldUpdate` dedup behavior — the HK snapshot will not be recognized as a duplicate of the WC snapshot. R6.1 does not solve this unit-format parity; it is inherited from R6 and deferred unless separately scoped.
+
+**Derivation scope boundary:** R6.1 adds derivation logic for `delta` and `trend` only. The following snapshot fields and behaviors are intentionally NOT changed by R6.1:
+
+- `glucoseColor` — remains `nil` on HK-derived snapshots. Color derivation is not in scope.
+- `state` — not synthetically derived from HK data. Remains as-is from the existing HK path.
+- Display-unit parity — HK-derived delta is formatted in mg/dL only. mmol/L formatting to match the WC path is deferred (see inherited unit note above).
+- `sync_lag` — used for logging and observability only. Not used in display rendering, dedup logic, or trend derivation.
+
+This is an intentional scope boundary, not a future roadmap commitment.
+
+### Updated Log Taxonomy
+
+R6.1 adds and refines the following structured log events:
+
+| Event | Fields | When |
+|---|---|---|
+| `hk_background_delivery_registered` | `success=Bool low_power_mode=Bool` | App launch, authorization granted. `success` is the value returned by `enableBackgroundDelivery(for:frequency:completion:)`. `low_power_mode` = `ProcessInfo.processInfo.isLowPowerModeEnabled` at registration time — records whether Low Power Mode may affect background delivery cadence. Log with `✅` when `success=true`, `⚠️` when `success=false`. |
+| `hk_background_delivery_registration_failed` | `error=String` | App launch, registration failed |
+| `hk_authorization_failed` | `granted=Bool error=String` | Authorization request denied |
+| `hk_observer_error` | `fire_id=UUID error=String` | Observer query error callback |
+| `hk_observer_fired` | `fire_id=UUID reading_epoch=Int sync_lag=Int glucose=String delta=String trend=String trend_derived=Bool samples_in_batch=Int query_type=anchoredQuery` | Each observer fire that processes a new sample |
+| `hk_observer_no_new_samples` | `fire_id=UUID` | Anchored query returned zero new samples (phantom fire) |
+| `hk_observer_skipped_known_epoch` | `fire_id=UUID epoch=Int` | Latest sample epoch matches persisted last-received epoch |
+| `hk_observer_query_error` | `fire_id=UUID error=String` | Anchored query returned an error |
+| `hk_observer_guard_failed` | `fire_id=UUID reason=String` | Pre-query guard failed (e.g., nil store, nil sample type) |
+| `hk_observer_nil_anchor` | `fire_id=UUID` | First run or anchor decode failure; query executed with nil anchor + 24h date cap |
+| `hk_anchor_decode_failed` | `fire_id=UUID` | Persisted anchor data could not be decoded |
+
+**R6-only events replaced in R6.1:**
+
+| R6 Event | R6.1 Replacement | Reason |
+|---|---|---|
+| `hk_observer_sample_query_error` | `hk_observer_query_error` | Query type changes from `HKSampleQuery` to `HKAnchoredObjectQuery` |
+| `hk_observer_sample_query_zero_samples` | `hk_observer_no_new_samples` | Semantics change: zero new samples (incremental) vs zero total samples (non-incremental) |
+
+The `query_type=anchoredQuery` field on `hk_observer_fired` is the primary way to distinguish R6.1 logs from build-140 R6 logs in BetterStack queries. R6 logs do not include `query_type`.
+
+**R6 → R6.1 field-level rename on `hk_observer_fired`:** R6 uses `save_age=Int`; R6.1 renames this to `sync_lag=Int`. The semantics are identical (`now() - readingDate`), but the name better reflects that the measurement captures end-to-end lag, not just save timing. BetterStack queries spanning R6 and R6.1 builds must account for this rename (e.g., filter on `msg LIKE '%save_age=%'` for R6, `msg LIKE '%sync_lag=%'` for R6.1).
+
+**New `trend` field on `hk_observer_fired`:** R6.1 adds `trend=String` alongside the existing `trend_derived=Bool`. The `trend` field contains the actual derived raw direction string (`"Flat"`, `"FortyFiveUp"`, `"SingleUp"`, `"DoubleUp"`, `"FortyFiveDown"`, `"SingleDown"`, `"DoubleDown"`) or `""` when trend derivation was not possible. This allows BetterStack queries to validate threshold mapping correctness, WC/HK format alignment, and same-reading dual-delivery dedup expectations — not just whether trend was derived, but what value was produced. R6 does not include a `trend` field on `hk_observer_fired` (R6 always sets `trend=""`).
+
+### Latency Domains — What R6.1 Instrumentation Separates
+
+> **Three latency domains in the HealthKit channel:**
+>
+> 1. **iPhone write time** — when the iPhone Trio app writes the `HKQuantitySample` to HealthKit after receiving a CGM reading. This is app-controlled and typically near-instant.
+>
+> 2. **Cross-device HK sync latency** — the time between the iPhone writing the sample and the watch's HealthKit store receiving it. This is entirely Apple-controlled and depends on Bluetooth proximity, system scheduling, and watchOS background activity state. Typical range: 10–60 seconds, but can be minutes.
+>
+> 3. **App processing latency** — the time between the observer firing on the watch and the snapshot being saved to the App Group. This is app-controlled and should be < 1 second under normal conditions.
+>
+> **What `sync_lag` measures:** The `sync_lag` field on `hk_observer_fired` is computed as `now() - readingDate.timeIntervalSince1970` at the point of logging. It captures iPhone-write time + cross-device sync time + watch-side observer/query processing time up to the log statement. It does NOT isolate pure Apple sync latency, and it also includes non-trivial watch-side processing (anchor decode, query execution, sample sorting) that occurs before the log is emitted.
+>
+> **Estimating post-log processing:** Comparing `hk_observer_fired.dt` to the subsequent snapshot-save log's `dt` estimates only the remaining post-log processing time (snapshot construction, main-thread dispatch, save + reload). Watch-side logs cannot fully decompose total latency into perfectly separate buckets — the three domains are a conceptual model, not a clean measurement decomposition.
+
+### Risks
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| Anchor decode/serialization failure | Medium | Fall back to nil anchor with 24h date cap. Log `hk_anchor_decode_failed`. No data loss — just a one-time re-fetch of recent samples. Anchor is re-saved on next successful query. |
+| Source predicate over-inclusion | Low–Medium | `HKMetadataKeySyncIdentifier` is a standard Apple sync key used by multiple diabetes/HealthKit apps. Presence-only filtering may include non-Trio samples in multi-app setups. Accepted tradeoff for R6.1; refine to value-specific or bundle/source filtering in R6.2 if observed. |
+| Trend derivation false confidence | Low | The 15-minute gate prevents deriving trend from non-consecutive samples (e.g., after a sensor gap). When the gate fails, trend falls back to `""` — no misleading arrow. Risk is that two consecutive-looking samples from different CGM sessions could produce a valid-looking but incorrect trend; severity is low because delta magnitude would typically be anomalous in that case. |
+| Increased log/analysis complexity | Low | R6.1 adds more event types and fields than R6. BetterStack queries must filter on `query_type=anchoredQuery` to isolate R6.1 events from build-140 R6 logs. The added granularity improves diagnosability but requires updated query templates. |
+
+### Validation Approach
+
+R6.1 should be validated relative to the build 140 R6 baseline. Key areas:
+
+| Area | Validation method | Pass condition |
+|---|---|---|
+| **Phantom fire rate** | Compare `hk_observer_no_new_samples` count to total `hk_observer_fired` + `hk_observer_no_new_samples` count over 24h. In R6, all fires are logged as `hk_observer_fired` regardless of whether new data existed. | Phantom fire events are classified separately; rate is measurable and not the majority of total fires. |
+| **Trend derivation coverage** | Count `hk_observer_fired` events with `trend_derived=true` vs `trend_derived=false` over a 24h window with active CGM. Also inspect `trend=<value>` to verify threshold mapping produces expected direction strings. | `trend_derived=true` on the majority of normal CGM intervals (consecutive 5-min readings). Derived `trend` values are valid direction strings. |
+| **Anchored-query correctness** | Verify `samples_in_batch=1` on steady-state fires (one new sample per CGM interval). After app suspension, verify `samples_in_batch > 1` for backfill with a single save. For backfill batches, confirm that the saved snapshot's `reading_epoch` corresponds to the sample with the greatest `startDate` in the batch, not an earlier sample. | Batch size matches expected sample cadence. No duplicate saves from multi-sample batches. Displayed snapshot uses the most recent sample by `startDate`. |
+| **Known-epoch skip** | Count `hk_observer_skipped_known_epoch` events over 24h. | Events appear on phantom fires where the latest sample was already processed; no skips for genuinely new samples (glucose/epoch changed). |
+| **No duplicate save explosion** | Confirm that multi-sample backfill batches produce exactly one `Snapshot saved` log per observer fire, not one per sample. | One snapshot save per fire, regardless of `samples_in_batch`. |
+
+**Source-predicate over-inclusion note:** If derived delta or trend values appear anomalous relative to expected CGM behavior — especially in multi-app HealthKit setups — consider source-predicate over-inclusion before treating it as an implementation bug. The presence-only `HKMetadataKeySyncIdentifier` filter may include samples from other diabetes apps with different reading cadences or glucose sources. Symptoms include unexpected large deltas between consecutive samples or trend directions that don't match the user's CGM display. This is a known R6.1 tradeoff; value-specific or bundle/source refinement is deferred to R6.2.
+
+### WC Failure Mode Scenarios
+
+R6.1 improves the HealthKit channel, not WatchConnectivity. These scenarios describe why R6.1 still matters when WC is degraded or absent:
+
+| Scenario | WC state | HK state | R6.1 behavior |
+|---|---|---|---|
+| **WC healthy + HK healthy** | Delivering normally | Observer fires, anchored query returns new sample | Both channels deliver. Because R6.1 produces the same raw direction strings as the WC path, `shouldUpdate` may return `false` for same-reading dual delivery (matching glucose, trend, delta, readingDate), preventing the HK overwrite entirely. If the delta differs due to unit formatting (see inherited unit note), the HK save still occurs but with a valid trend instead of R6's blank `""`. |
+| **WC delayed/failing + HK healthy** | Budget exhausted, session degraded, or sendMessage failing | Observer fires, anchored query returns new sample | HK is the sole delivery channel. Anchored query provides incremental fetch; trend is derived from consecutive samples. Complication stays current via HK alone. |
+| **HK fire with no new sample** | Any state | Observer fires but anchored query returns zero new samples (phantom fire) | R6.1 logs `hk_observer_no_new_samples` and calls `completionHandler()`. No snapshot save, no redundant reload. Clean classification vs R6, which would have re-fetched and potentially re-saved the same sample. |
+| **Post-suspension backfill batch** | Any state | Observer fires after extended background; anchored query returns multiple samples | R6.1 processes the batch: advances anchor across all samples, uses the latest for display, derives trend if consecutive pair available, produces one snapshot save and one reload attempt. |
+
+### Backlog / Status
+
+| Item | Status | Notes |
+|---|---|---|
+| R6.1 — HealthKit Channel Improvements | Planned — spec complete, ready for implementation | Anchored-query design, anchor/epoch persistence location, source predicate decision, log taxonomy, and validation approach specified in this section. Not yet implemented. |
 
 ---
 
@@ -1326,18 +1635,19 @@ Do not gate R6 on budget-exhaustion metrics alone. The two failure modes are dis
 
 | Idea | Cursor status | Disposition |
 |---|---|---|
-| #4 Proactive transfer on iOS app foreground | Not implemented | Defer until R2 ships; would add a 9th call site |
+| #4 Proactive transfer on iOS app foreground | Not implemented | Deferred — R2 has now shipped; re-evaluate after R4 and R6.1 observation windows close |
 | #6 Log `isReachable` duration at transfer | Not implemented | Low effort; add `lastReachabilityChangeDate: Date?` to `AppleWatchManager` |
-| #8 sendMessage latency instrumentation | Partial | R5b |
-| #12 Coalescer trigger count + source logging | Not implemented | R5a / R2a |
-| #13 Lightweight complication payload | Not implemented | R3 |
-| #16 Sleep-gap forced reload | Not implemented | R5d |
+| #8 sendMessage latency instrumentation | Partial | R5b — pending (Step 6) |
+| #12 Coalescer trigger count + source logging | Not implemented | ✅ Shipped (build 133) — R5a / R2a |
+| #13 Lightweight complication payload | Not implemented | ✅ Shipped (build 133) — R3 |
+| #16 Sleep-gap forced reload | Not implemented | R5d — pending (Step 6) |
 | #19 `WKExtendedRuntimeSession` for urgent glucose | Not implemented | High value for urgent-low; significant effort; separate project |
-| #21 `didReceiveUserInfo` decode latency | Not implemented | R5c |
+| #21 `didReceiveUserInfo` decode latency | Not implemented | R5c — pending (Step 6) |
 | #24 Consistent `reading_epoch` across pipeline | Partial | Gaps at coalescer trigger and `didReceiveMessage`; closes with R5a + R5b |
 | #28 WidgetKit `getTimeline` call clustering | Partial | Generation counter present; per-family clustering untracked; low priority |
-| #30 Scheduled freshness alert | Not implemented | R5e |
+| #30 Scheduled freshness alert | Not implemented | ✅ Shipped (build 132) — R5e |
 | HealthKit background delivery on watch | ✅ Shipped (build 140) | R6 — live; `hk_observer_fired` confirmed |
+| HealthKit channel improvements (anchored query, trend, observability) | 📋 Planned — spec complete | R6.1 — ready for implementation; not yet implemented |
 
 ---
 
@@ -1345,37 +1655,39 @@ Do not gate R6 on budget-exhaustion metrics alone. The two failure modes are dis
 
 ```
 R1a  (readingEpoch + transferEnqueuedAt keys in dict)  ─┐
-R1b  (cancel stale queue — startup + before enqueue)    ├── one PR
+R1b  (cancel stale queue — startup + before enqueue)    ├── one PR   ✅ SHIPPED (build 132)
 R5e  (BetterStack exhaustion alert)                    ─┘
 
         ↓ deploy, collect 24h data
 
-R5a / R2a  (coalescer source logging)    ← ship; collect 24h coalescer_fired data
-R3         (allowlist complication msg,  ← parallel with R2a; no dependency
+R5a / R2a  (coalescer source logging)    ← ship; collect 24h coalescer_fired data    ✅ SHIPPED (build 133)
+R3         (allowlist complication msg,  ← parallel with R2a; no dependency          ✅ SHIPPED (build 133)
             watch-side prefer readingEpoch key)
 
         ↓ R2a data confirms publisher attribution
 
-R2b  (epoch+fingerprint dispatch gate)               ← ship; observe 48h
+R2b  (epoch+fingerprint dispatch gate)               ← ship; observe 48h             ✅ SHIPPED (build 134)
 
-Step 3b  (complication-age stale-first gate; T=600s) ← ship after R2b; observe 48h
+Step 3b  (complication-age stale-first gate; T=600s) ← ship after R2b; observe 48h  ✅ SHIPPED (builds 137-138)
 
         ↓ if avg C ≤ 1.3 after 48h → R2c (optional, low priority)
         ↓ if avg C > 1.3 after 48h → R2d (pipeline split)
+        (Decision gate: run avg C query ~2026-03-15 against build 137+ data)
 
 R2c  (settings debounce — only if R2d not pursued)
 R2d  (authoritative-source gating — if R2b insufficient; supersedes R2c)
 
-R4   (updateApplicationContext iOS +     ← benefits from R3 payload being small
-      didReceiveApplicationContext watch)
+R6   (HealthKit background delivery on    ← ✅ SHIPPED (build 140, 2026-03-14)
+      watch — observer + sample fetch +      Shipped before R4; addresses both
+      snapshot save to existing path)        budget-exhaustion and WidgetKit gaps
 
-R5b + R5c + R5d  (observability)         ← opportunistic, ship with any PR
+R4   (updateApplicationContext iOS +     ← PENDING — benefits from R3 payload being small;
+      didReceiveApplicationContext watch)    ship after R6 observation period concludes
 
-        ↓ R4 post-deploy: observe 48h, then ship R6
+R5b + R5c + R5d  (observability)         ← PENDING — opportunistic, ship with R4 or next PR
 
-R6   (HealthKit background delivery on    ← independent channel; requires entitlement provisioning
-      watch — observer + sample fetch +      and HealthKit read authorization on watch
-      snapshot save to existing path)
+R6.1 (HealthKit anchored query, trend    ← PENDING — spec complete, ready for implementation
+      derivation, anchor persistence)       after R6 48h observation period
 ```
 
 ---
@@ -1515,11 +1827,147 @@ if let firstEntry = entries.first {
     debug(.complication, "📅 timeline_built entry_count=\(entries.count) reading_epoch=\(Int(firstEntry.readingDate.timeIntervalSince1970)) snapshot_age=\(Int(Date().timeIntervalSince(firstEntry.readingDate)))s")
 }
 ```
-This gives `timeline_entry_epoch` and `snapshot_age` at timeline-build time — confirms WidgetKit is picking up fresh App Group data.
+This gives `timeline_entry_epoch` and `snapshot_age` at timeline-build time — confirms WidgetKit is picking up fresh App Group data. The same `event=complication_get_timeline_called` log (complication-extension / getTimeline side, not HealthKit) should include `get_timeline_at_epoch_seconds` and `data_age_seconds` per §R5f above. R5f also specifies `event=complication_get_snapshot_called` with `get_snapshot_at_epoch_seconds` and `data_age_seconds` for the getSnapshot path — see §R5f for both entry-path specs.
 
 ---
 
 ## Changelog
+
+### v1.52 — 2026-03-16 | Build 141 deployed (patch 09 + docs)
+
+- **Build 141 built and deployed.** Includes patch 09 (watch-complication-improvements) with post-review R5c attribution and R5b verification corrections (R6.1, R5f, delta/trend fix, R5c follow-up cleanups).
+- **Docs and patch committed to dev:** Remediation plan v1.52, implementation guide v1.37, and `patches/09-watch-complication-improvements.patch` committed together on `dev`.
+
+### v1.51 — 2026-03-15 | R5c post-review follow-up (ChatGPT + Claude)
+
+- **Review context:** After the v1.50 R5c attribution fix (fromUserInfo + work-item capture), two follow-up reviews (ChatGPT, then Claude) evaluated the implementation.
+- **ChatGPT:** Confirmed the fix addresses the main attribution flaw (epoch from payload, timestamp threaded through the path). Requested two cleanups: (1) Remove the fallback `userInfoReceiveTimestamp ?? lastUserInfoReceiveTimestamp` so that when `fromUserInfo` is true we use only the threaded timestamp — avoids reintroducing ambiguity if a path ever reaches saveComplicationSnapshot with `fromUserInfo == true` but nil timestamp. (2) Remove the unused `lastUserInfoReadingEpoch` property and its assignment; dead attribution state can confuse future edits. Both applied.
+- **Claude:** Confirmed (1) capture of `receiveTs` outside the DispatchWorkItem at creation time is correct; (2) `reading_epoch` from the payload being saved is the right fix. Noted the fallback would re-introduce a shared-state read in the unexpected-nil case; by then the fallback had already been removed per ChatGPT. Noted unconditional `lastUserInfoReceiveTimestamp = nil` when `fromUserInfo` is correct (cleans up even when no timestamp available). Confirmed R5b/R5f/R6.1 live in other files; a diff that only touches WatchState for R5c is expected.
+- **§R5c "As implemented (post-review)":** Expanded to describe threading of `userInfoReceiveTimestamp`, epoch from payload, no fallback, removal of `lastUserInfoReadingEpoch`, and capture of `receiveTs` outside the work item. Added one-sentence reference to ChatGPT + Claude follow-up.
+
+### v1.50 — 2026-03-15 | Post-review R5c attribution and R5b verification
+
+- **Review context:** Implementation (R6.1, R5f, R5c, R5b, delta/trend fix) was reviewed; docs (remediation plan v1.49, implementation guide v1.34) were accepted. Two code corrections were required before considering the implementation ready.
+- **R5c (major):** Attribution was originally implemented with a shared boolean `userInfoTriggeredThisFinalize` set/cleared by didReceiveUserInfo and didReceiveMessage. In mixed traffic, the path that last touched the flag could differ from the payload actually being finalized, producing wrong or missing `userInfo_decoded` logs. **Fix:** Attribution now rides with the work item. `scheduleUIUpdate(with:fromUserInfo:)` and `finalizePendingData(fromUserInfo:)` take a `fromUserInfo` parameter; the userInfo path (including the quiet-window work item) passes `true`, the sendMessage path passes `false`; the debounced work item captures the value and passes it through. No shared flag is used for R5c attribution.
+- **R5b (near-blocker):** Reviewer requested verification that the watch-side R5b log reads `readingEpoch` from the **inner** watch-state payload (the value of `WatchMessageKeys.watchState`), not the outer sendMessage envelope. **Verified:** We only enter the R5b block after extracting `watchStateDict = message[WatchMessageKeys.watchState]`; that is the inner payload matching iPhone's `fullMessage`. A code comment was added in `WatchState.swift` documenting this for R5b end-to-end timing.
+- **§R5b / §R5c:** Added "As implemented (post-review)" paragraphs summarizing the above so future implementers and reviewers see the final design.
+
+### v1.49 — 2026-03-15 | R6.1 delta/trend correctness + source-predicate doc accuracy
+
+- **R6.1 delta/trend fix:** Derivation now computes raw numeric delta first (`latestMgDl - previousMgDl`), then rounds once to obtain the integer used for both trend classification and display delta string. This matches the documented intent and avoids endpoint-rounding differences at threshold boundaries (display, trend bucket, dedup). No change to fallback behavior, plausibility gate, or threshold mapping.
+- **Source-predicate doc accuracy:** §Source Predicate Decision now includes an "As implemented" paragraph: R6.1 shipped without the SyncIdentifier predicate; implementation uses 24h date cap when anchor is nil and nil predicate when anchor exists; SyncIdentifier/source filtering deferred to R6.2. §Delta and Trend Derivation "Numeric delta" bullet updated to specify raw-delta-first-then-round-once semantics.
+
+### v1.48 — 2026-03-15 | R6.1 + R5f + R5c + R5b implementation complete
+
+- **R6.1 implemented:** HealthKit fetch path replaced with `HKAnchoredObjectQuery`; anchor, last-received epoch, and previous glucose value persisted in `TrioComplicationDataStore`; derive-then-persist ordering; trend/delta from integer thresholds (raw direction strings); R6.1 log taxonomy and `fire_id`; `low_power_mode` on `hk_background_delivery_registered`. **Deviation:** SyncIdentifier presence predicate not applied (no `predicateForObjects(withMetadataKey:)` single-param API on watchOS); nil anchor uses 24h date cap only; predicate refinement deferred to R6.2.
+- **R5f implemented:** `event=complication_get_timeline_called` now includes `get_timeline_at_epoch_seconds` and `data_age_seconds`; new `event=complication_get_snapshot_called` with `get_snapshot_at_epoch_seconds` and `data_age_seconds`; data age from snapshot actually used on each path; sentinel `-1` for invalid reading date.
+- **R5c implemented:** `didReceiveUserInfo` sets receive timestamp; `saveComplicationSnapshot(from:fromUserInfo:)` logs `userInfo_decoded reading_epoch= decode_ms=` when `fromUserInfo` and timestamp set; `processRawDataForWatchState` calls with `fromUserInfo: true`.
+- **R5b implemented:** iPhone `sendMessage` path logs `sendMessage_sent reading_epoch= send_wall=`; watch `didReceiveMessage` logs `didReceiveMessage reading_epoch= receive_wall=`.
+
+### v1.47 — 2026-03-15 | R5f expanded: timeline + snapshot WidgetKit entry-path logging
+
+- **R5f expanded from timeline-only to both WidgetKit entry paths:** R5f now specifies observability for both `getTimeline` and `getSnapshot`. The complication can render fresh data from either path; getTimeline-only logging does not reconstruct full visible recency.
+- **New `event=complication_get_snapshot_called` added to spec:** Fields `get_snapshot_at_epoch_seconds` and `data_age_seconds` (same semantics as timeline path — snapshot actually used to build the entry on that path; sentinel for invalid reading date).
+- **Better Stack sawtooth guidance corrected:** getTimeline-only chart is described as timeline-refresh / timeline-recency sawtooth, not full visible-recency; snapshot logging is needed to reconcile "face shows NOW without logged getTimeline"; both events support visible-recency analysis in Explore. Scope boundary and chart naming/interpretation note added.
+
+### v1.46 — 2026-03-15 | getTimeline visible-recency logging (R6.1 enhancement)
+
+- **`event=complication_get_timeline_called` now includes `get_timeline_at_epoch_seconds`:** Unix epoch when getTimeline was invoked/logged; supports reconstructing recency between calls.
+- **`event=complication_get_timeline_called` now includes `data_age_seconds`:** Age of the snapshot actually used to build the timeline (complication-extension / getTimeline fields only, not HealthKit observer). Enables visible recency at getTimeline time and sawtooth reconstruction in Better Stack Explore.
+- **§R5f expanded:** Visible recency fields, rationale (directly queryable, avoids save/reload inference, reflects user-visible recency), scope (observability only; no behavior change), and limitation (Explore today; dashboards may not support as-of natively) added. R5f-getTimeline impact updated to reference the new fields.
+
+### v1.45 — 2026-03-15 | 3-pass adversarial review — correctness fixes, stale sequencing, orphaned fields
+
+**Summary:** Three-pass structured review correcting factual errors that were documented in deviation notes or code review tables but never backported to the normative sections of the plan, plus clearing stale sequencing language left over before build 140 changed the actual ship order.
+
+**Correctness fixes in normative code (blocked an implementer or would trigger a repeated compile/deploy failure):**
+
+- **R6c code — `SortDescriptor` compile error:** The code block used `SortDescriptor(\.startDate, order: .reverse)` as the primary form. `HKSampleQuery` requires `[NSSortDescriptor]?`; Swift `SortDescriptor` does not bridge to it and will not compile. Replaced with `NSSortDescriptor(keyPath: \HKSample.startDate, ascending: false)` with explanatory comment. (This was the actual cause of the build 140 compile issue, fixed in deviation — but normative code was never corrected.)
+- **R6c code — `.milligramsPerDeciliter()` unavailable on watchOS:** Both `HKSampleQuery` result extraction calls used this LoopKit extension. Replaced with `HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))` inline in both places (latest and previous sample). Comment added. The architecture table ("What's Available in HealthKit") Notes column was also corrected.
+- **R6b code — `guard let self` missing (CR2):** The normative `setupGlucoseObserverQuery` code used `self?.fetchLatestGlucoseFromHealthKit(completionHandler:)`. If `self` is nil, `completionHandler()` is never called — the system throttles future background delivery. CR2 (required fix) documented this, and the CR table in the implementation guide showed it as "Fixed." But the normative plan code was never updated. Replaced with explicit `guard let self else { completionHandler(); return }` pattern with explanatory comment.
+
+**Correctness fixes in normative text:**
+
+- **`NSHealthUpdateUsageDescription` (§R6 Entitlement requirements, Risks table):** Both locations stated this key "is not required" because `toShare: nil`. Build 140 confirmed Apple's altool rejects uploads when the HealthKit entitlement is present but this key is absent, regardless of `toShare: nil` (ITMS-90683). Corrected in §Entitlement section and Risks table to "required by App Store Connect validation." Historical "Fixed in v1.34/v1.35" markers updated to reflect confirmed behavior.
+- **R6a placement (§Watch Side Implementation):** Stated "Place in `WatchState.init()` or `setupSession()` (where `WCSession.activate()` already runs)." This description implies placement inside the `if WCSession.isSupported()` block — which CR1 explicitly required it to be **outside**. Corrected: "Place at the **end of `setupSession()`**, **outside** the `if WCSession.isSupported()` block" with rationale.
+- **R4 watch-side handler — R5d dependency (§R4 watch app extension side):** Simplified handler shown without note that the full handler (with `lastDataReceivedAt` and `forceWidgetReloadIfStale`) requires R5d. Added labelled "standalone R4 handler" clarification and cross-reference to §R5d for the R5d-integrated version.
+
+**Orphaned field fix (§R6.1 Updated Log Taxonomy):**
+
+- **`hk_background_delivery_registered` `low_power_mode=Bool`:** R6.1 taxonomy changed this field from `success=Bool` to `low_power_mode=Bool` with no implementation path, no source API, and no explanation of why `success` was dropped. An implementer had no way to know what `low_power_mode` was or how to produce it. Resolved: both `success=Bool` and `low_power_mode=Bool` now specified; `low_power_mode` source documented as `ProcessInfo.processInfo.isLowPowerModeEnabled`; logging behavior for `success=false` case documented (⚠️ prefix).
+
+**Stale sequencing and status language:**
+
+- **§R6 "Recommended sequencing" paragraph:** Was written as live present-tense advice ("Go straight to R6…Ship R6 first") for a decision already made. Recast as historical rationale paragraph reflecting the actual outcome (R6 shipped build 140 before R4).
+- **§R6 Decision Gate:** "Ship R6 after R4" was the original recommendation; actual order was reversed. Rewritten to document actual ship order and direct readers to §Implementation Sequence for current status.
+- **§Implementation Sequence diagram:** Fully updated to reflect current state — R1–R6 all annotated with build numbers and ✅ status; R4, R5b/c/d, and R6.1 annotated as PENDING with rationale for ordering.
+- **§R4 header:** "can ship after R6 or bundle with R6 in same PR" — R6 has shipped. Replaced with current status: "PENDING — ship R4 as next PR after R6 48h observation window concludes."
+- **§R6 Risks table — trend derivation row:** "add delta-based trend derivation in R6.1 if user feedback requests it" (×2). Replaced with "see R6.1 (spec complete — see §R6.1)" since R6.1 is now planned independently of user feedback.
+- **§R6 Trend derivation options — option 3:** Same "if user feedback requests it" language corrected to "spec complete — see §R6.1, ready for implementation."
+
+### v1.44 — 2026-03-15 | R6.1 delta/trend derivation clarity — numeric vs display, threshold input, fallback, scope boundary
+
+- **Section renamed:** "Trend Derivation" → "Delta and Trend Derivation" to reflect that the section covers both delta and trend.
+- **Numeric vs display delta clarified:** "Delta computation" renamed to "Numeric delta" with explicit statement that the single integer mg/dL delta serves both trend classification and display-string formatting. New "Display delta formatting" bullet specifies how `TrioComplicationSnapshot.delta` is produced from the same numeric delta.
+- **Shared previous-sample constraint:** Input bullet now explicitly requires that delta and trend use the same selected previous sample on a given fire.
+- **Threshold input clarified:** Threshold mapping bullet now explicitly states the integer delta is applied directly — no separate floating-point threshold system in R6.1.
+- **Fallback expanded:** Fallback bullet now covers both trend and delta (not just trend). Explicitly states both fall back when the plausibility gate fails, regardless of batch vs persisted previous-sample source.
+- **Derivation scope boundary added:** New paragraph after the inherited unit note explicitly documenting that R6.1 only derives `delta` and `trend`; `glucoseColor`, `state`, mmol/L parity, and `sync_lag` in display/dedup/trend are intentionally out of scope.
+
+### v1.43 — 2026-03-15 | R6.1 taxonomy fix — `fire_id` on `hk_observer_error`
+
+- **`hk_observer_error` now includes `fire_id`:** Added `fire_id=UUID` to the R6.1 `hk_observer_error` event fields for consistency with all other observer-callback events. Per the spec, `fire_id` is generated at the start of each observer callback before error checking, so it is available on this path.
+
+### v1.42 — 2026-03-15 | R6.1 final polish — backfill validation, Anchor Lifecycle clarity
+
+- **Backfill validation tightened:** Anchored-query correctness pass condition now explicitly requires verifying that the saved snapshot uses the sample with the greatest `startDate` in backfill batches, not just that a single save occurred.
+- **Anchor Lifecycle "Normal operation" row tightened:** Replaced vague "saved after processing" wording with a cross-reference to the detailed anchor advancement, epoch/value persistence, and snapshot save rules in subsequent rows.
+
+### v1.41 — 2026-03-15 | Better Stack avg C metrics — complication_c_total_transfers (sum only), chart formula
+
+- **Avg C metrics section completed:** Documented that `complication_c_total_transfers` uses **sum** aggregation only. Dashboard chart formula added: `sumMerge(complication_c_total_transfers_sum) * 1.0 / nullIf(uniqMerge(complication_c_readings_uniq), 0)` per bucket. Extraction rule label clarified to "aggregation: **sum**".
+
+### v1.39 — 2026-03-15 | R6.1 spec polish — derive-then-persist ordering, startDate qualifiers, source-predicate validation
+
+- **Trend Derivation `startDate` qualifier added:** Input line now explicitly says "Latest sample by `startDate`" and "second-most-recent by `startDate` in batch," matching the Design section's sort requirement. Prevents ambiguity for readers entering the Trend Derivation section directly.
+- **Derive-then-persist ordering clarified:** TrioComplicationDataStore Additions section now explicitly states that delta/trend must be derived from the persisted previous epoch/value *before* the current sample's epoch/value are persisted. Prevents an implementer from accidentally overwriting the previous-sample state before derivation.
+- **Source-predicate over-inclusion validation note added:** Validation Approach section now includes guidance that anomalous delta/trend values in multi-app setups should be considered as possible source-predicate over-inclusion symptoms before treating them as implementation bugs. Known R6.1 tradeoff; value-specific refinement deferred to R6.2.
+
+### v1.38 — 2026-03-14 | R6.1 spec tightening — anchor advancement, field rename, sample ordering, trend observability
+
+- **Anchor advancement on non-save exits clarified:** Anchor Lifecycle table restructured — "Successful anchor advancement" renamed to "Anchor advancement rule" covering all successful-query paths. Anchor is always saved after a non-error query (including no-new-samples and epoch-guard-skip exits), but epoch/value are only updated when a genuinely new sample is processed. Query errors and pre-query guard failures do not advance the anchor. Design section "Persist query anchor" bullet updated to match.
+- **`save_age` → `sync_lag` field rename documented:** R6 uses `save_age` on `hk_observer_fired`; R6.1 renames to `sync_lag`. Added explicit note in Updated Log Taxonomy section with BetterStack query guidance for cross-build queries.
+- **Anchored-query sample ordering requirement specified:** Design section now states that latest/previous sample must be determined by sorting `addedObjects` by `startDate`, not by relying on raw array order. Store-insertion order is not guaranteed chronological during backfill, sync catch-up, or retroactive delivery.
+- **`trend=String` field added to `hk_observer_fired` log taxonomy:** R6.1 logs the actual derived direction string alongside `trend_derived=Bool`, enabling validation of threshold mapping correctness and WC/HK format alignment in BetterStack.
+- **Latency-domain wording tightened:** `sync_lag` description now notes it includes watch-side observer/query processing time, not just transit. Post-log processing estimation reworded to acknowledge watch-side logs cannot fully decompose latency into separate buckets.
+- **Validation approach wording softened:** Phantom fire rate and trend coverage pass conditions changed from specific percentage thresholds to directional expectations. Trend coverage now includes `trend` value validation.
+
+### v1.37 — 2026-03-14 | R6.1 spec review fixes — previous-sample persistence, trend format, epoch ordering
+
+- **Previous-sample persistence added:** `hkLastReceivedGlucoseValueMgDl()` and `setHKLastReceivedGlucoseValueMgDl(_:)` added to `TrioComplicationDataStore` planned methods (now 6 total). Design section updated to explain how persisted previous glucose value/epoch enables delta/trend derivation for the common steady-state single-sample anchored-query case.
+- **Trend output format specified:** R6.1 must produce raw direction strings (`"Flat"`, `"SingleUp"`, etc.) matching the WC path format, not symbol glyphs. Aligns with existing `TrendSymbolMapper.symbol(from:)` and enables `shouldUpdate` dedup to correctly identify same-reading dual delivery.
+- **Trend derivation changed from mg/dL/min rate to raw-delta threshold mapping:** Now uses the same `Int` delta thresholds as `BloodGlucose.Direction.init(trend:)` (<=−30 DoubleDown through >=30 DoubleUp). Threshold table added to spec. Note added that the switch statement may need duplication or extraction for the watchOS target.
+- **Epoch-guard ordering corrected:** Changed from "checked before executing the anchored query" to "post-query filter applied to returned results." Clarified that this is an edge-case filter for modified/re-delivered samples, not the primary incremental mechanism.
+- **Anchor serialization specified:** `NSKeyedArchiver.archivedData(withRootObject:requiringSecureCoding:)` / `NSKeyedUnarchiver.unarchivedObject(ofClass:from:)` — `HKQueryAnchor` is `NSSecureCoding`, not `Codable`. References LoopKit `PersistenceController` pattern.
+- **Deletion handling added:** Anchor Lifecycle table now explicitly states deleted objects from `HKAnchoredObjectQuery` are ignored; modified/re-delivered samples caught by epoch guard.
+- **Source-predicate risk language tightened:** `HKMetadataKeySyncIdentifier` described as a standard Apple key used by multiple diabetes apps, not a Trio-specific key. Over-inclusion risk upgraded to practical, not theoretical. Severity raised to Low–Medium.
+- **Dual-delivery dedup benefit noted:** WC healthy + HK healthy scenario updated to explain that matching raw direction strings can prevent the R6 trend-overwrite regression via `shouldUpdate` returning `false`.
+- **`fire_id` lifecycle clarified:** Generated once per observer callback; threaded through all subordinate functions; not regenerated per helper or save.
+- **Inherited unit-consistency note added:** HK delta is mg/dL-only; WC may format as mmol/L; affects dedup for mmol/L users. Deferred unless separately scoped.
+
+### v1.36 — 2026-03-14 | R6.1 HealthKit channel improvements spec added
+
+- **R6.1 section added:** New `## R6.1 — HealthKit Channel Improvements` section with full planning/specification material for the follow-on HealthKit channel refinement. R6 remains shipped in build 140; R6.1 is spec complete and ready for implementation.
+- **Anchored-query design specified:** Planned replacement of R6's `HKSampleQuery` fetch path with `HKAnchoredObjectQuery` — incremental fetch, persisted anchor, persisted last-received epoch, fast exit on known-epoch fires.
+- **Anchor/epoch persistence location specified:** Four new methods planned for `TrioComplicationDataStore` (`hkGlucoseAnchor`, `saveHKGlucoseAnchor`, `hkLastReceivedGlucoseEpoch`, `setHKLastReceivedGlucoseEpoch`). Raw `UserDefaults(suiteName:)` in `WatchState` explicitly forbidden for this feature.
+- **Source predicate decision recorded:** `HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeySyncIdentifier)` selected; rationale and residual risk documented.
+- **Trend derivation specified:** Latest + previous sample, mg/dL/min rate, 15-minute gate, blank fallback when gate fails.
+- **Log taxonomy expanded:** 11 R6.1 events specified with fields; 2 R6-only events identified for replacement; `query_type=anchoredQuery` as the R6/R6.1 discriminator.
+- **Latency domains callout added:** Three-domain breakdown (iPhone write, cross-device sync, app processing) with explicit note that `sync_lag` does not isolate Apple sync latency.
+- **R6.1 risks table added:** Anchor decode failure, source predicate over-inclusion, trend false confidence, log complexity.
+- **Validation approach added:** Phantom fire rate, trend coverage, anchored-query correctness, known-epoch skip, no duplicate save explosion.
+- **WC failure mode scenarios added:** Four scenarios showing R6.1 behavior when WC is healthy, degraded, or absent.
+- **Backlog table updated:** R6.1 row added (planned — spec complete, ready for implementation).
 
 ### v1.35 — 2026-03-14 | R6 shipped (build 140) + NSHealthUpdateUsageDescription remediation
 
