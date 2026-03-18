@@ -859,6 +859,29 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 cancelStaleQueuedTransfers()
             }
         }
+
+        // R4: applicationContext safety net — budget-free parallel delivery channel.
+        // Fires only during budget exhaustion or deep queue; dormant during normal operation.
+        guard sessionIsReadyForTransfer() else {
+            debug(.watchManager, "📦 context_skipped activation_state=\(session.activationState.rawValue) paired=\(session.isPaired) installed=\(session.isWatchAppInstalled)")
+            return
+        }
+
+        let budgetExhausted = session.remainingComplicationUserInfoTransfers == 0
+        let queueDeep = session.outstandingUserInfoTransfers.count > 5
+        guard budgetExhausted || queueDeep else { return }
+
+        let ctx: [String: Any] = [
+            WatchMessageKeys.watchState: complicationMessage,
+            "context_updated_at": Date().timeIntervalSince1970
+        ]
+        debug(.watchManager, "📦 context_attempted budget_exhausted=\(budgetExhausted) queue_depth=\(session.outstandingUserInfoTransfers.count)")
+        do {
+            try session.updateApplicationContext(ctx)
+            debug(.watchManager, "📦 context_succeeded reading_epoch=\(readingEpoch)")
+        } catch {
+            debug(.watchManager, "📦 context_failed context_update_failed=true error=\(error)")
+        }
     }
 
     func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode) {

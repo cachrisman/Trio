@@ -646,6 +646,18 @@ enum BackgroundTaskWindowCounter {
         }
     }
 
+    // R4: applicationContext safety net — parallel delivery channel from iOS during budget exhaustion.
+    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        Task { await WatchLogger.shared.log("📦 didReceiveApplicationContext") }
+        guard let payload = applicationContext[WatchMessageKeys.watchState] as? [String: Any] else {
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.saveComplicationSnapshot(from: payload)
+        }
+    }
+
     private func forceConditionalWatchStateUpdate() {
         assert(Thread.isMainThread, "forceConditionalWatchStateUpdate must be called on main thread")
         guard let lastUpdateTimestamp = lastWatchStateUpdate else {
