@@ -1,0 +1,14 @@
+---
+description: Step 5 of feature docs workflow — red-team review of implementation changes (docs/prompts/05-implementation-changes-red-team-full-review.md) when user requests it
+alwaysApply: false
+---
+
+# Implementation Changes Red-Team Review (Step 5)
+
+When the user says **"red-team review the implementation"** (or equivalent, e.g. "implementation changes red-team review", "review the implementation changes", "red-team the code"), treat it as a request to run the workflow in **`docs/prompts/05-implementation-changes-red-team-full-review.md`**.
+
+1. **Read** `docs/prompts/05-implementation-changes-red-team-full-review.md` in full.
+2. **Execute** the review exactly as specified in that prompt (load design and plan, state branch, inspect diff, finding passes, fixes, self-review).
+3. The user will provide the design doc, implementation plan, and the branch (or diff) to review; typically the same branch used when running step 4.
+
+Do not substitute your own review process. Follow the prompt file's instructions. See `docs/prompts/README.md` for the full workflow (steps 1–5).

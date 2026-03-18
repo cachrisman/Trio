@@ -1,0 +1,14 @@
+---
+description: Step 4 of feature docs workflow — execute implementation plan (docs/prompts/04-execute-implementation-plan.md) when user requests it
+alwaysApply: false
+---
+
+# Execute Implementation Plan (Step 4)
+
+When the user says **"execute the implementation plan"** (or equivalent, e.g. "run the implementation plan", "implement the plan", "do the implementation"), treat it as a request to run the workflow in **`docs/prompts/04-execute-implementation-plan.md`**.
+
+1. **Read** `docs/prompts/04-execute-implementation-plan.md` in full.
+2. **Execute** the workflow exactly as specified in that prompt (load context, confirm baseline, execute by step, track progress in the plan's implementation log, final validation, report).
+3. The user will provide the design doc and implementation plan paths (or @-reference the files); optionally other relevant docs.
+
+Do not substitute your own process. Follow the prompt file's instructions. See `docs/prompts/README.md` for the full workflow (steps 1–5).

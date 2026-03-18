@@ -1,0 +1,93 @@
+---
+description: Require and maintain a version number and changelog for Markdown files under docs/.
+globs: docs/**/*.md, .cursor/**/*.mdc
+alwaysApply: false
+---
+
+# Rule: Version Number and Changelog for `docs/`
+
+**Version:** v2
+**Status:** In Use
+**Created:** 2026-03-17 10:30 CET
+**Last updated:** 2026-03-17 11:00 CET
+
+When editing any Markdown file under `docs/`, apply all of the following:
+
+## Required metadata
+
+1. Ensure the document contains a version number.
+2. If no version number exists, add one near the top of the document.
+3. If the document is modified, increment the version number.
+
+## Required changelog
+
+1. Ensure the document contains a `## Changelog` section at the end of the document.
+2. If the changelog section appears elsewhere (e.g. after the title or in the middle), move it to the end of the document.
+3. If no changelog section exists, add one at the end of the document.
+4. Every time the document is changed, add or update a changelog entry; new entries go at the top of the changelog, above older entries.
+
+## Changelog entry requirements
+
+Each changelog entry must include:
+
+- the new version number
+- the timestamp of the edit in ISO format (`YYYY-MM-DD HH:mm TZ`)
+- a brief summary of what changed
+- a brief explanation of why the change was made
+
+The explanation should preserve intent and rationale so that future edits do not accidentally repeat, remove, or reverse earlier decisions.
+
+## Versioning behavior
+
+- Preserve the existing versioning scheme if one already exists.
+- If no scheme exists, start at `v1`.
+- On each change, increment by one version step using the existing scheme.
+- Do not change the version format unless the document already uses a different established format.
+
+## Placement guidance
+
+- Place the version number near the top of the document, after the title or introduction if appropriate.
+- Place the changelog at the end of the document. If the changelog section is found elsewhere in the doc (e.g. after the title or in the middle), move it to the end.
+- When adding a new changelog entry, insert it at the top of the changelog, above older entries.
+
+## Example format
+
+```markdown
+# Document Title
+
+**Version:** v1.3  
+**Status:** In Progress  
+**Created:** 2026-03-13 10:00 CET
+**Last updated:** 2026-03-17
+
+---
+...
+
+---
+
+## Changelog
+
+### v1.3 (2026-03-17 12:00 CET)
+- Clarified the rollout criteria for Phase 1 to reduce ambiguity during implementation.
+- Added the assumptions section to document prior decisions and prevent future rework.
+
+### v1.2 (2026-03-15 11:15 CET)
+- Refined terminology in the API section for consistency with the rest of the document.
+- Reorganized setup instructions to match the current implementation order.
+
+### v1.1 (2026-03-12 16:30 CET)
+- Initial version.
+```
+
+## Editing instruction
+
+Whenever you change a file in `docs/`, always increment the version number and update the changelog section.
+
+## Changelog
+
+### v2 (2026-03-17 11:00 CET)
+- Added **Version** and **Changelog** to this rule file. Reason: rule should follow its own requirements and preserve document history.
+
+### v1 (2026-03-17 10:30 CET)
+- Initial rule: version number and changelog required for `docs/`; newest-first changelog entries with change + reason.
+- Added instruction to move the changelog section to the end of the document when found elsewhere. Reason: ensure consistent placement across all docs.

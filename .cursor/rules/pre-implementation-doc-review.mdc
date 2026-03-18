@@ -1,0 +1,16 @@
+---
+description: Pre-Implementation Doc Review (Step 3)
+alwaysApply: false
+---
+
+# Pre-Implementation Doc Review
+
+This is step 3 of feature docs workflow — to run pre-implementation doc review (docs/prompts/03-pre-implementation-doc-review.md) when user requests it
+
+When the user says **"pre-implementation doc review"** (or equivalent, e.g. "review the design and implementation plan", "review design and plan for consistency", "doc review before implementation"), treat it as a request to run the workflow in **`docs/prompts/03-pre-implementation-doc-review.md`**.
+
+1. **Read** `docs/prompts/03-pre-implementation-doc-review.md` in full.
+2. **Execute** the review exactly as specified in that prompt (three phases: finding passes, edit pass, regression pass; baseline declaration; completion rule; self-review).
+3. The user will provide the document set (design doc, implementation plan, and optionally other related docs); use the paths they provide or the docs they have open.
+
+Do not substitute your own review process. Follow the prompt file's instructions. See `docs/prompts/README.md` for the full workflow (steps 1–5).

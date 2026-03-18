@@ -1,5 +1,19 @@
 # Better Stack: Complication dashboard (Phase 0.2) setup
 
+**Version:** 1.3  
+**Last updated:** 2026-03-16
+
+## Changelog
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-03-13 | Initial doc — extract metrics setup, dashboard chart queries, per-event latency Explore pattern |
+| 1.1 | 2026-03-16 | Added Complication Visible Recency sawtooth Explore query (initial version using saves CTE) |
+| 1.2 | 2026-03-16 | Rewrote sawtooth query: switched from saves CTE to `logged_data_age` from GTL event directly; added off-wrist detection (`charging` + `unknown` battery states) via sentinel `-1` pattern; fixed deduplication via `GROUP BY dt` + `max(is_off_wrist)`; fixed sentinel bleed-through with `CASE WHEN matched_data_age = -1` in final SELECT; added 3-hour lookback with `{{start_time}}`-anchored bucket grid |
+| 1.3 | 2026-03-16 | Tightened sawtooth section: exact Explore sawtooth cannot be represented natively in the dashboard metrics model; a proxy or externally precomputed series may still be possible |
+
+---
+
 ## Why "No source variables" and "Missing columns: raw"?
 
 Better Stack **dashboards do not query raw logs**. They query a **unified metrics table**:
@@ -148,3 +162,95 @@ Dashboard ID **689533**. All charts use `FROM {{source}}` (or `{{source:trio}}`)
 - **Tags/labels:** The metrics pipeline applies `arrayElement` to any `tags['key']` or `label('key')` access; string tag values cause Code 43. The dashboard uses **only pre-aggregated metric columns** (no labels, no `name` filter), e.g. `sumMerge(complication_reload_requested_count_sum)`.
 - For per-event latency inspection (e.g. worst latencies, scatter), the metrics table does not store full raw log rows; use **Explore** (raw logs) with the same filters.
 - **Historical coverage:** `{{source}}` typically includes both recent and historical data that Better Stack has aggregated; exact coverage depends on your plan and retention.
+
+---
+
+## Complication Visible Recency (Sawtooth) — Explore only
+
+The **exact** Explore sawtooth (per-minute interpolated recency, off-wrist flat) **cannot be represented natively** in the dashboard metrics model: dashboard charts use bucket-aggregated metrics and stateless aggregation (sum/count/avg/max/quantiles), while the sawtooth requires point-in-time logic (ASOF JOIN) and interpolation. This chart therefore lives in **Explore** (raw logs) permanently. A **proxy** (e.g. 5-minute bucket metric from instrumentation) or an **externally precomputed** series may still be possible for the dashboard; see `docs/in-progress/complication-freshness/sawtooth-dashboard-options.md` and `sawtooth-dashboard-instrumentation-design.md` for options.
+
+**What it shows:** The data age visible on the watch complication at any given minute — i.e. direct user experience. Produces a sawtooth: age grows at 1 s/s between `getTimeline` calls, drops at each refresh. Off-wrist periods (charging, watch extension restarts) show as a zero line.
+
+**UI time range:** The query responds to the Explore time picker via `{{start_time}}`/`{{end_time}}`. The `time_bounds` CTE is required to make BetterStack wire up the time picker variables in a complex multi-CTE query — without it the picker renders but does not trigger a re-query.
+
+**Max range:** 3 days (`numbers(4320)` = 4320 one-minute buckets).
+
+```sql
+WITH
+  time_bounds AS (
+    SELECT
+      toUnixTimestamp({{start_time}}) AS t_start,
+      toUnixTimestamp({{end_time}}) AS t_end
+  ),
+  gtl AS (
+    SELECT
+      dt AS gtl_dt,
+      toUnixTimestamp(dt) AS gtl_epoch,
+      max(
+        JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%battery_state=charging%'
+        OR JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%battery_state=unknown%'
+      ) AS is_off_wrist,
+      argMaxIf(
+        toInt64OrNull(extract(JSONExtract(raw, 'message', 'Nullable(String)'), 'data_age_seconds=([0-9]+)')),
+        toInt64OrNull(extract(JSONExtract(raw, 'message', 'Nullable(String)'), 'data_age_seconds=([0-9]+)')),
+        NOT (
+          JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%battery_state=charging%'
+          OR JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%battery_state=unknown%'
+        )
+      ) AS logged_data_age
+    FROM {{source}}
+    CROSS JOIN time_bounds
+    WHERE dt BETWEEN {{start_time}} - INTERVAL 3 HOUR AND {{end_time}}
+      AND JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%event=complication_get_timeline_called%'
+    GROUP BY dt
+  ),
+  gtl_with_age AS (
+    SELECT
+      gtl_dt,
+      gtl_epoch,
+      if(is_off_wrist, -1, logged_data_age) AS data_age_seconds,
+      1 AS _k
+    FROM gtl
+    WHERE is_off_wrist = 1 OR logged_data_age IS NOT NULL
+  ),
+  min_max AS (
+    SELECT
+      toUnixTimestamp({{start_time}}) AS min_ep,
+      max(gtl_epoch) AS max_ep
+    FROM gtl_with_age
+  ),
+  min_max_with_count AS (
+    SELECT min_ep, max_ep, toUInt32((max_ep - min_ep) / 60) + 1 AS n_buckets
+    FROM min_max
+  ),
+  buckets AS (
+    SELECT
+      toDateTime(m.min_ep - m.min_ep % 60 + number * 60, 'UTC') AS bucket_dt,
+      m.min_ep - m.min_ep % 60 + number * 60 AS bucket_epoch,
+      1 AS _k
+    FROM min_max_with_count m
+    CROSS JOIN numbers(4320)
+    WHERE number < m.n_buckets
+  ),
+  result AS (
+    SELECT
+      b.bucket_dt AS time,
+      g.data_age_seconds AS matched_data_age,
+      g.data_age_seconds + (b.bucket_epoch - g.gtl_epoch) AS value
+    FROM buckets b
+    ASOF LEFT JOIN gtl_with_age g ON b._k = g._k AND b.bucket_epoch >= g.gtl_epoch
+  )
+SELECT time, CASE WHEN matched_data_age = -1 THEN 0 ELSE if(value < 0, 0, value) END AS value
+FROM result
+ORDER BY time ASC
+```
+
+**Design notes:**
+
+- **Off-wrist detection:** Both `battery_state=charging` and `battery_state=unknown` are treated as off-wrist. `unknown` appears exclusively on `provider_restart=true` GTL events (watch extension cold restart), always off-wrist. Off-wrist epochs get `data_age_seconds = -1` as a sentinel.
+- **Deduplication:** Every GTL event is logged twice (two subsystems). `GROUP BY dt` with `max(is_off_wrist)` ensures that if any duplicate at a given timestamp is off-wrist, the whole epoch is treated as off-wrist. `argMaxIf` picks `logged_data_age` only from non-off-wrist rows.
+- **Final SELECT:** `CASE WHEN matched_data_age = -1 THEN 0` checks the sentinel *before* arithmetic. Using `if(value < 0, 0, value)` alone is insufficient — `(bucket_epoch - gtl_epoch)` can push a `-1` sentinel positive if the bucket is far enough from the GTL epoch, allowing charging periods to bleed through as teeth.
+- **3-hour lookback:** `gtl` fetches from `{{start_time}} - INTERVAL 3 HOUR` so that if the window starts mid-tooth, the GTL that established the current age is included. `min_max` anchors `min_ep` to `{{start_time}}` so the bucket grid starts at the UI window, not 3 hours earlier.
+- **`logged_data_age`:** Uses `data_age_seconds` logged directly in the GTL event rather than recomputing from saves. More accurate — avoids cross-device App Group read issues that inflate computed values.
+- **`numbers(4320)`** supports up to 3 days. Do not increase beyond this without considering query cost.
+- **`time_bounds` CTE** is required for the Explore UI time picker to wire up `{{start_time}}`/`{{end_time}}` in a multi-CTE query. Without it the picker renders but does not trigger re-query.

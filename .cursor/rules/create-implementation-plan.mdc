@@ -1,0 +1,14 @@
+---
+description: Step 2 of feature docs workflow — create implementation plan from design (docs/prompts/02-create-implementation-plan-from-design.md) when user requests it
+alwaysApply: false
+---
+
+# Create Implementation Plan (Step 2)
+
+When the user says **"create an implementation plan"** (or equivalent, e.g. "create implementation plan from design", "write an implementation plan", "draft the implementation plan"), treat it as a request to run the workflow in **`docs/prompts/02-create-implementation-plan-from-design.md`**.
+
+1. **Read** `docs/prompts/02-create-implementation-plan-from-design.md` in full.
+2. **Execute** the workflow exactly as specified in that prompt (read design, investigate codebase, draft structure, write plan, place output).
+3. The user will provide the design doc path or @-reference the file; the plan is written to `docs/in-progress/<feature>/<implementation-plan>.md` (or the path the user specifies).
+
+Do not substitute your own process. Follow the prompt file's instructions. See `docs/prompts/README.md` for the full workflow (steps 1–5).

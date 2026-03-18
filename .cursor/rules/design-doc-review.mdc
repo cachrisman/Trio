@@ -1,0 +1,14 @@
+---
+description: Step 1 of feature docs workflow — run design doc review (docs/prompts/01-design-doc-review.md) when user requests it
+alwaysApply: false
+---
+
+# Design Doc Review (Step 1)
+
+When the user says **"do a design doc review"** (or equivalent, e.g. "run a design doc review", "design doc review", "review the design doc"), treat it as a request to run the workflow in **`docs/prompts/01-design-doc-review.md`**.
+
+1. **Read** `docs/prompts/01-design-doc-review.md` in full.
+2. **Execute** the review exactly as specified in that prompt (workflow, review standard, finding requirements, output format, completion rule).
+3. The design document to review is the one the user provides or the doc they have open (typically at `docs/in-progress/<feature>/<design-doc>.md`).
+
+Do not substitute your own review process. Follow the prompt file’s instructions for passes, findings, edits, and final output. See `docs/prompts/README.md` for the full workflow (steps 1–5).

@@ -1,0 +1,73 @@
+---
+description: Use full timestamps (date + time + timezone) for doc metadata like Created and Last updated.
+globs: docs/**/*.md, .cursor/**/*.mdc
+alwaysApply: false
+---
+
+# Doc Date and Timestamp Format
+
+**Version:** v3  
+**Created:** 2026-03-17 10:00 CET  
+**Last updated:** 2026-03-17 11:50 CET
+
+For document metadata such as **Created**, **Last updated**, **Date**, or any other date field in `docs/`:
+
+- **Use a full timestamp**, not a date-only value.
+- **Format:** `YYYY-MM-DD HH:mm TZ` (e.g. `2026-03-17 11:32 CET`).
+
+## Mandatory: obtain the real current time
+
+When adding or updating **any** timestamp in a doc (including changelog entries), you **must** use the **actual current time at the moment of the edit**. Do not guess, infer, or make up a time.
+
+**Procedure:** Before writing or updating a timestamp, run a shell command to get the current time and use its **exact output** in the document.
+
+- **CET (Europe/Paris):**  
+  `TZ=Europe/Paris date '+%Y-%m-%d %H:%M CET'`
+- **UTC:**  
+  `date -u '+%Y-%m-%d %H:%M UTC'`
+
+Use whichever timezone the document already uses (e.g. CET); if unclear, prefer CET. Paste the command output directly into **Last updated**, changelog rows, etc. Do not substitute a "plausible" time (e.g. 14:30 when it is 11:32).
+
+**Do not:** use example times from this rule (e.g. 09:21, 14:30) as your value — they are format-only placeholders. **Do not:** use a time you assumed; only use the value returned by the command.
+
+## Creation and historical timestamps: use stat and git log
+
+When **setting or correcting "Created"** for a document, or when **filling in or correcting timestamps for existing changelog entries** (past versions), use the filesystem and git history instead of guessing.
+
+- **Created (file birth):** Run `stat` and/or `git log` to find when the file was first added. Prefer git when the file is in version control (handles renames with `--follow`). Example (from repo root):
+  - `stat -f '%SB' -t '%Y-%m-%d %H:%M' <file>` (macOS) or `stat --format='%y' <file>` (GNU) for birth/modification time
+  - `git log --follow --diff-filter=A --format='%ai' -- <file> | tail -1` for the commit that added the file
+- **Timestamps for previous changelog lines:** Use `git log` to get commit times for the file and map them to version numbers. Example:
+  - `git log --follow --format='%ai' -- <file>` lists commit dates (newest first); use the Nth line for the Nth-most-recent change when matching to v1, v2, etc.
+  - `git log -1 --format='%ai' -- <file>` gives the date of the most recent commit touching the file.
+
+Convert git/stat output to the document’s timezone (e.g. CET) if it differs. Use the result in the required format `YYYY-MM-DD HH:mm TZ`.
+
+### Format examples (values are placeholders — replace with command output)
+
+```markdown
+**Created:** 2026-03-17 10:50 CET
+**Last updated:** 2026-03-17 11:32 CET
+**Date:** 2026-03-17 11:32 CET
+```
+
+Changelog entries must also use the output of the current-time command for the version you are adding or updating:
+
+```markdown
+| Version | Date       | Change |
+|---------|------------|--------|
+| 1.1     | 2026-03-17 11:32 CET | Problem statement: added... |
+```
+
+If you cannot run a command (e.g. no shell), note that limitation and use date-only; in all other cases, **run the command and use its output**.
+
+## Changelog
+
+### v3 (2026-03-17 11:50 CET)
+- Added section **Creation and historical timestamps: use stat and git log** with instructions to use `stat` and `git log` for "Created" and for existing changelog entry timestamps. Reason: avoid guessed creation/history times; use filesystem and git history when backfilling or correcting.
+
+### v2 (2026-03-17 11:38 CET)
+- Added **Version**, **Created**, **Last updated**, and **Changelog** to this rule file. Reason: comply with docs-version-and-changelog and preserve document history.
+
+### v1 (2026-03-17 10:00 CET)
+- Initial rule: full timestamp format and mandatory procedure to run a shell command for current time. Reason: ensure docs use actual current timestamps instead of guessed or placeholder times.
