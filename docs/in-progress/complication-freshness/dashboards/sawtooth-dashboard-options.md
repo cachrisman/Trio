@@ -1,7 +1,8 @@
 # Sawtooth chart on dashboard: options for review
 
-**Version:** 1.2  
-**Last updated:** 2026-03-16
+**Version:** v1.2
+**Created:** 2026-03-16 00:00 CET
+**Last updated:** 2026-03-16 00:00 CET
 
 ## Changelog
 
@@ -196,7 +197,7 @@ If the reviewing agent finds that Better Stack’s product has changed (e.g. new
 ## 6. Implementation plan: instrumentation-based 5-min proxy (v1)
 
 **Status:** Design complete; implementation not started.  
-**Design note:** `docs/in-progress/complication-freshness/sawtooth-dashboard-instrumentation-design.md` (full verdict, schema, example logs, metric definition, validation checklist).
+**Design note:** [sawtooth-dashboard-instrumentation-design.md](sawtooth-dashboard-instrumentation-design.md) (full verdict, schema, example logs, metric definition, validation checklist).
 
 ### Goal
 

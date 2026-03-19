@@ -12,9 +12,9 @@ Treat this as adversarial review of code that may appear correct on the happy pa
 
 ## Inputs
 
-Review the implementation changes in this branch/patch against:
-- `docs/in-progress/complication-freshness/complication-freshness-implementation-guide.md`
-- `docs/in-progress/complication-freshness/complication-freshness-remediation-plan.md`
+Review the implementation changes in this branch/patch against the relevant design and implementation plan docs under `docs/in-progress/complication-freshness/`:
+- Top-level overview: `README.md`, `problem-and-strategy.md`
+- Per-group design and implementation plans in the relevant subfolder (e.g. `transfer-optimization/`, `alternative-delivery/`, `observability/`, `healthkit-improvements/`)
 
 You must verify both:
 1. Whether the implementation is technically sound
@@ -51,7 +51,7 @@ Continue until:
 - the later of those passes produces at most a small number of genuinely low-value minor findings.
 
 Each pass:
-1. Read `complication-freshness-implementation-guide.md` and `complication-freshness-remediation-plan.md` fully.
+1. Read the relevant group's design doc and implementation plan fully (e.g. `transfer-optimization/transfer-optimization-design.md` and `transfer-optimization/transfer-optimization-implementation-plan.md`).
 2. Inspect the implementation diff.
 3. Inspect the full affected files, not just changed hunks.
 4. Trace all related helpers, state holders, call sites, delegate paths, observers, async tasks, persistence, logging, and tests.

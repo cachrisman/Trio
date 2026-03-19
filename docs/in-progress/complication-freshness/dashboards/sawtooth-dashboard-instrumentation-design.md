@@ -1,6 +1,8 @@
 # Complication visible recency: instrumentation-based dashboard design
 
-**Version:** 1.3  
+**Version:** v1.3
+**Created:** 2026-03-16 00:00 CET
+**Last updated:** 2026-03-16 00:00 CET
 **Status:** Design for review
 
 ## Changelog
@@ -11,7 +13,7 @@
 | 1.1 | 2026-03-16 | Tightened correctness: visible_recency_at_bucket_end_seconds is a proxy/estimate, not guaranteed ground truth; added §6.1 multiple GTLs per bucket and §6.2 dt vs GTL alignment; first-call labeled as bootstrap approximation; off-wrist null gaps and visual interpretation risk; validation items for dt alignment and GTL-per-bucket confirmation. |
 | 1.2 | 2026-03-16 | De-emphasised null-gap “visual interpretation” as a risk (not important for this use). Retroactive metric processing: clarified that Better Stack UI reprocessing is possible within data retention (current plan 8 days). |
 | 1.3 | 2026-03-16 | Added §6.3 Data analysis findings: dt vs GTL alignment 100% (65/65) over 2026-03-15–16; GTL-per-bucket distribution (130 buckets, 51.5% single logical GTL, 4.6% with 2+ logical GTLs). |
-**Depends on:** `sawtooth-dashboard-options.md`, `betterstack-complication-dashboard-setup.md`, Trio GTL logging in `TrioComplicationDataStore` / `TrioWatchComplication`.
+**Depends on:** [sawtooth-dashboard-options.md](sawtooth-dashboard-options.md), `docs/completed/betterstack/betterstack-complication-dashboard-setup.md` (repo root), Trio GTL logging in `TrioComplicationDataStore` / `TrioWatchComplication`.
 
 ---
 
