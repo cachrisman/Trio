@@ -1,9 +1,9 @@
 # Transfer Optimization — Design (R1 + R2 + R3)
 
-**Version:** v1.0
+**Version:** v1.2
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-19 11:33 CET
-**Status:** COMPLETED — all steps shipped (builds 132-138)
+**Last updated:** 2026-03-19 15:08 CET
+**Status:** COMPLETED — all steps shipped (builds 132-138); reachability-gate bug fix shipped (build 142)
 
 ## Overview
 
@@ -422,6 +422,70 @@ Step 3b is implemented and deployed **after** Step 3 (R2b) and **before** Step 4
 
 **Logging pipeline fixes (2026-03-13):** Builds 137-138 deployed with cloud logging pipeline fixes (see `docs/completed/logging-fixes/`). These fixes are directly relevant to the Step 4 decision gate because they resolve the build-mislabeling problem that made avg C per-build measurements unreliable. Before build 137, `CloudLogUploader` stamped all events with the phone's `Bundle.main` build at upload time — backlogged watch/complication logs (up to 7 days old) were attributed to the wrong build. Key fixes: `[b:BUILD]` embedded in every log line at write time; drain retention reduced from 7d to 48h; upgrade-time flush on both watch and phone; drain file ACK gap fixed via `transferUserInfo`-based confirmation pathway. The reliable observation window for the Step 4 avg C gate starts from build 137 deployment (2026-03-12).
 
+### Bug fix: `transferUserInfo` fallback gated behind `!isReachable`
+
+**Discovered:** 2026-03-19 (code audit of `sendDataToWatch`)
+
+#### Problem
+
+The Step 3b code sketch above (and the shipped implementation) nests the budget-exhausted `transferUserInfo` fallback inside the `!isReachable` compound condition:
+
+```swift
+if !session.isReachable, readingEpochPresent, !isDuplicateDispatch {
+    if session.remainingComplicationUserInfoTransfers > 0 {
+        // age gate -> transferCurrentComplicationUserInfo
+    } else {
+        // budget-exhausted -> transferUserInfo   <-- UNREACHABLE when isReachable == true
+    }
+}
+```
+
+The `!isReachable` gate is correct for the budgeted `transferCurrentComplicationUserInfo` path (when the watch is foregrounded, the complication isn't visible, so budget should be conserved). But the budget-exhausted fallback serves a different purpose: ensuring *some* background delivery is queued for complication refresh even when budget is zero. Gating it on `!isReachable` means that when the watch is reachable and budget is exhausted, `sendMessage` fires (updating the foreground app) but no `transferUserInfo` is enqueued. Once the watch wrist-drops, the complication has no pending delivery.
+
+#### Evidence
+
+An audit of `sendDataToWatch` traced the execution for `isReachable == true, remaining == 0, !isDuplicateDispatch`:
+
+1. `sendMessage(fullMessage)` fires (budget-free)
+2. Log: `complication_transfer_skipped_reachable remaining=0`
+3. `if !session.isReachable` — FALSE, entire complication block skipped
+4. No `transferUserInfo` enqueued. No `lastDispatchedGateKey` update.
+5. The `complication_transfer_skipped_reachable` log was misleading — it said "skipped" for the budget-exhausted case as if skipping were intentional, when in fact no fallback was available.
+
+#### Corrected design
+
+Extract the budget-exhausted fallback into an independent block that runs regardless of reachability. The budgeted path stays inside `!isReachable`:
+
+```swift
+// Budgeted complication transfer — only when unreachable + budget available
+if !session.isReachable, readingEpochPresent, !isDuplicateDispatch, budgetSnapshot > 0 {
+    // age gate -> transferCurrentComplicationUserInfo (unchanged)
+}
+
+// Budget-exhausted fallback — runs regardless of reachability
+if budgetSnapshot == 0, readingEpochPresent, !isDuplicateDispatch {
+    cancelStaleQueuedTransfers()
+    session.transferUserInfo([WatchMessageKeys.watchState: complicationMessage])
+    lastDispatchedGateKey = gateKey
+}
+```
+
+Split the `complication_transfer_skipped_reachable` log into two cases:
+
+| Condition | Log |
+|---|---|
+| reachable + budget > 0 | `complication_transfer_skipped_reachable remaining=N` |
+| reachable + budget == 0 | `complication_budget_exhausted_reachable remaining=0 — userInfo fallback will enqueue` |
+
+**Behavior matrix (post-fix):**
+
+| Scenario | `sendMessage` | `transferCurrentComplicationUserInfo` | `transferUserInfo` | `lastDispatchedGateKey` updated |
+|---|---|---|---|---|
+| reachable + budget > 0 | yes | no | no | no |
+| reachable + budget == 0 | yes | no | yes | yes |
+| unreachable + budget > 0 | no | yes (if age gate passes) | no | only if age gate passes |
+| unreachable + budget == 0 | no | no | yes | yes |
+
 ### R2c — Settings publisher debounce tuning ⚠️ Deprioritized
 
 > **Status:** Defer until after the R2a observation window. If the attribution data shows that settings publishers (`overrideStored`, `tempTargetStored`) are causing a meaningful share of multi-C readings, implement this. If R2d (pipeline split) is pursued, this becomes unnecessary — the settings triggers would route to the UI-only channel and never touch the complication budget.
@@ -727,6 +791,16 @@ if session.isReachable {
 ---
 
 ## Changelog
+
+### v1.2 (2026-03-19 15:08 CET)
+
+- Updated status to reflect build 142 deployment and BetterStack validation.
+- Reason: fix was shipped in build 142 and confirmed working in production logs.
+
+### v1.1 (2026-03-19 15:03 CET)
+
+- Added "Bug fix: `transferUserInfo` fallback gated behind `!isReachable`" section after Step 3b.
+- Reason: document the bug where the budget-exhausted fallback was unreachable when `isReachable == true`, the audit evidence, and the corrected two-block design.
 
 ### v1.0 (2026-03-19 11:33 CET)
 

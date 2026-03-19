@@ -1,8 +1,8 @@
 # Transfer Optimization — Implementation Log
 
-**Version:** v1.0
+**Version:** v1.2
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-19 11:33 CET
+**Last updated:** 2026-03-19 15:08 CET
 
 ---
 
@@ -148,7 +148,63 @@ BetterStack query run against build ≥ 137 data (2026-03-12 onward), S3 + hot s
 
 ---
 
+### Bug fix — Reachability gate on `transferUserInfo` fallback (2026-03-19)
+
+**Commit:** `a33ddc4b6` on `feature/watch-complication-improvements`
+**Patch:** `09-watch-complication-improvements.patch` (regenerated 2026-03-19 11:37 CET)
+**Build:** 142 — deployed
+
+**Discovery:** A code audit of `sendDataToWatch` revealed that the budget-exhausted `transferUserInfo` fallback was nested inside `if !session.isReachable, readingEpochPresent, !isDuplicateDispatch { ... }`. When `isReachable == true` and budget was exhausted, `sendMessage` fired but no `transferUserInfo` was enqueued for background complication refresh.
+
+**Audit findings (6 questions answered):**
+
+1. Three `isReachable` references in `sendDataToWatch`, all if-statements. The main reachability gate at line 821 controlled all complication transfer paths.
+2. `transferUserInfo` was inside the `!isReachable` block, in the `else` clause of `if budgetSnapshot > 0`. Unreachable when `isReachable == true`.
+3. `cancelStaleQueuedTransfers()` had two call sites: one inside the `!isReachable` block (budget-exhausted), one outside (queue-deep drain).
+4. No path existed for `isReachable == true` + `remaining == 0` + `!isDuplicateDispatch` to enqueue a `transferUserInfo`.
+5. The `complication_transfer_skipped_reachable` log fired for the budget-exhausted case, misleadingly implying the skip was intentional.
+6. Full trace for the buggy scenario: `sendMessage` fires, three log lines, entire complication block skipped, `lastDispatchedGateKey` not updated. Zero complication transfers enqueued.
+
+**Changes (single file: `AppleWatchManager.swift`):**
+
+1. **Hoisted `budgetSnapshot`** above the `isReachable` block so logging references it.
+2. **Split `complication_transfer_skipped_reachable` log** into:
+   - `complication_transfer_skipped_reachable` (budget > 0)
+   - `complication_budget_exhausted_reachable` (budget == 0)
+3. **Flattened `!isReachable` block** — now contains only the budgeted path with `budgetSnapshot > 0` in the compound condition.
+4. **Extracted budget-exhausted fallback** into an independent block: `if budgetSnapshot == 0, readingEpochPresent, !isDuplicateDispatch { ... }` — no reachability condition.
+
+**Not changed:** `transferCurrentComplicationUserInfo` stays inside `!isReachable`. `cancelStaleQueuedTransfers()` remains immediately before `transferUserInfo`. Queue-deep drain block untouched. Age gate logic untouched.
+
+**BetterStack validation (build 142, 2026-03-18/19 UTC):**
+
+Two confirmed instances of `complication_budget_exhausted_reachable` in production:
+
+**Instance 1 — 2026-03-18 22:47:07 UTC:** Full sequence in the same second:
+1. `complication_budget_check remaining=0 isReachable=true readingEpochPresent=true isDuplicate=false`
+2. `sendMessage_sent reading_epoch=1773873646`
+3. `complication_budget_exhausted_reachable remaining=0 - userInfo fallback will enqueue`
+4. `Transferred new WatchState snapshot via=userInfo budget_exhausted=true queue_depth=1`
+
+**Instance 2 — 2026-03-18 23:15:52 UTC:** Identical sequence — budget check (remaining=0, reachable=true), sendMessage, budget-exhausted log, transferUserInfo enqueued with queue_depth=1.
+
+Both instances confirm the fix is working: when `isReachable == true` and budget is exhausted, `sendMessage` fires AND `transferUserInfo` is enqueued in the same call. The `complication_transfer_skipped_reachable` log (budget > 0 variant) also continues to fire correctly — e.g. 2026-03-19 13:36 UTC shows `remaining=43`, confirming it only logs when budget is available.
+
+Queue health remains clean: all budget-exhausted transfers show `queue_depth=1` or `queue_depth=2`, consistent with the R1b drain working as designed.
+
+---
+
 ## Changelog
+
+### v1.2 (2026-03-19 15:08 CET)
+
+- Updated bug fix entry: status changed from "committed" to "deployed (build 142)". Added patch reference, BetterStack validation with two confirmed production instances showing the fix working correctly.
+- Reason: fix was included in patch 09 and deployed as build 142; production logs confirm the reachable + budget-exhausted path now enqueues `transferUserInfo`.
+
+### v1.1 (2026-03-19 15:03 CET)
+
+- Added "Bug fix — Reachability gate on `transferUserInfo` fallback" entry.
+- Reason: record the audit findings, code changes, and next steps for the bug where the budget-exhausted fallback was gated behind `!isReachable`.
 
 ### v1.0 (2026-03-19 11:33 CET)
 

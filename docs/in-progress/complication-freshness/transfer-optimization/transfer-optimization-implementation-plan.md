@@ -1,9 +1,9 @@
 # Transfer Optimization — Implementation Plan (Steps 1-4)
 
-**Version:** v1.0
+**Version:** v1.2
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-19 11:33 CET
-**Status:** COMPLETED — all steps shipped
+**Last updated:** 2026-03-19 15:08 CET
+**Status:** COMPLETED — all steps shipped; reachability-gate bug fix shipped (build 142)
 
 **Design:** [transfer-optimization-design.md](transfer-optimization-design.md)
 
@@ -184,6 +184,59 @@ BetterStack validation query must filter `transfer_path IN ('complication', 'use
 
 ---
 
+### Bug fix — Reachability gate on `transferUserInfo` fallback — SHIPPED (build 142, 2026-03-19)
+
+**File:** `AppleWatchManager.swift` — `sendDataToWatch` only
+
+**Problem:** The budget-exhausted `transferUserInfo` fallback was nested inside the `!isReachable` gate (see design doc Step 3b code sketch). When `isReachable == true` and budget was exhausted, no background delivery was enqueued for complication refresh.
+
+**What to implement:**
+
+1. **Hoist `budgetSnapshot`** above the `isReachable` block so logging can reference it.
+
+2. **Split the `complication_transfer_skipped_reachable` log** into budget-available vs budget-exhausted:
+   ```swift
+   if readingEpochPresent, !isDuplicateDispatch {
+       if budgetSnapshot > 0 {
+           debug(.watchManager, "ℹ️ complication_transfer_skipped_reachable remaining=\(budgetSnapshot)")
+       } else {
+           debug(.watchManager, "ℹ️ complication_budget_exhausted_reachable remaining=0 — userInfo fallback will enqueue")
+       }
+   }
+   ```
+
+3. **Flatten the `!isReachable` block** to only contain the budgeted path. Add `budgetSnapshot > 0` to the compound condition:
+   ```swift
+   if !session.isReachable, readingEpochPresent, !isDuplicateDispatch, budgetSnapshot > 0 {
+       // age gate -> transferCurrentComplicationUserInfo (unchanged)
+   }
+   ```
+
+4. **Extract the budget-exhausted fallback** into an independent block with no reachability condition:
+   ```swift
+   if budgetSnapshot == 0, readingEpochPresent, !isDuplicateDispatch {
+       cancelStaleQueuedTransfers()
+       session.transferUserInfo([WatchMessageKeys.watchState: complicationMessage])
+       lastDispatchedGateKey = gateKey
+       // log: via=userInfo budget_exhausted=true
+   }
+   ```
+
+**Constraints:**
+- Do not move `transferCurrentComplicationUserInfo` — stays inside `!isReachable`
+- Keep `cancelStaleQueuedTransfers()` immediately before `transferUserInfo`
+- Keep `lastDispatchedGateKey = gateKey` only in branches that actually enqueue a transfer
+- Do not change the queue-deep drain block
+
+**Acceptance criteria:**
+For `isReachable == true`, `budgetSnapshot == 0`, `readingEpochPresent == true`, `isDuplicateDispatch == false`:
+- `sendMessage` fires
+- `transferUserInfo(complicationMessage)` is enqueued
+- `lastDispatchedGateKey` is updated
+- No misleading "skipped reachable" log emitted
+
+---
+
 ## Quick Reference: New Properties on `BaseWatchManager`
 
 | Property | Type | Initial | Purpose |
@@ -212,6 +265,16 @@ private func currentComplicationAgeSeconds() -> TimeInterval  // Step 3b: from A
 ---
 
 ## Changelog
+
+### v1.2 (2026-03-19 15:08 CET)
+
+- Updated status to SHIPPED (build 142). BetterStack confirms fix is live.
+- Reason: fix was included in patch 09 and deployed as build 142.
+
+### v1.1 (2026-03-19 15:03 CET)
+
+- Added "Bug fix — Reachability gate on `transferUserInfo` fallback" step after Step 4.
+- Reason: plan the surgical fix for the budget-exhausted fallback being unreachable when `isReachable == true`.
 
 ### v1.0 (2026-03-19 11:33 CET)
 
