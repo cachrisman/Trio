@@ -70,6 +70,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private let processedIdsTTL: TimeInterval = 7 * 24 * 60 * 60 // 7 days
     private let pendingAcksKey = "watchPendingAcks"
 
+    // Delegate-triggered state push debounce (crash guard — absorbs rapid WCSession delegate storms)
+    private var pendingDelegateWorkItem: DispatchWorkItem?
+    private var delegateCoalesceCount = 0
+
     typealias PumpEvent = PumpEventStored.EventType
 
     let backgroundContext = CoreDataStack.shared.newTaskContext()
@@ -202,13 +206,26 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         )
     }
 
-    /// Attempts to reestablish the Watch connection if it becomes unreachable
-    private func retryConnection() {
-        guard let session = session else { return }
+    /// Cancel-and-replace debounce for delegate-triggered state pushes.
+    /// Collapses N rapid callbacks (e.g. watch reboot storm) into one push after a 0.5s quiet window.
+    private func scheduleDelegateTriggeredUpdate(source: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingDelegateWorkItem?.cancel()
+            self.delegateCoalesceCount += 1
 
-        if !session.isReachable {
-            debug(.watchManager, "📱 Attempting to reactivate session...")
-            session.activate()
+            let count = self.delegateCoalesceCount
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                debug(.watchManager, "📡 delegate_coalescer_fired source=\(source) coalesced=\(count)")
+                self.delegateCoalesceCount = 0
+                Task {
+                    let state = await self.setupWatchState()
+                    await self.sendDataToWatch(state)
+                }
+            }
+            self.pendingDelegateWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
         }
     }
 
@@ -909,6 +926,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             return
         }
 
+        guard activationState == .activated else {
+            debug(.watchManager, "📱 Ignoring activation callback — state is \(activationState.rawValue), not .activated")
+            return
+        }
+
         debug(.watchManager, "📱 Phone session activated state=\(activationState.rawValue) isReachable=\(session.isReachable) isPaired=\(session.isPaired) isWatchAppInstalled=\(session.isWatchAppInstalled) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
 
         // R2b: clear dispatch gate on activation so the first post-launch transfer always fires
@@ -920,14 +942,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             cancelStaleQueuedTransfers()
         }
 
-        DispatchQueue.main.async {
-            self.pendingSendWorkItem?.cancel()
-            self.coalescerFirstScheduledAt = nil
-        }
-        Task {
-            let state = await self.setupWatchState()
-            await self.sendDataToWatch(state)
-        }
+        scheduleDelegateTriggeredUpdate(source: "activationCompleted")
     }
 
     // MARK: - Processed IDs Management
@@ -1352,22 +1367,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         debug(.watchManager, "📱 Phone reachability changed: isReachable=\(session.isReachable) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
 
         if session.isReachable {
-            DispatchQueue.main.async {
-                self.pendingSendWorkItem?.cancel()
-                self.coalescerFirstScheduledAt = nil
-            }
-            Task {
-                let state = await self.setupWatchState()
-                await self.sendDataToWatch(state)
-            }
+            scheduleDelegateTriggeredUpdate(source: "reachabilityChanged")
 
-            // Send pending ACKs when watch becomes reachable
             sendPendingAcksIfReachable()
         } else {
-            // Try to reconnect after a short delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                self?.retryConnection()
-            }
+            debug(.watchManager, "📱 Watch became unreachable — waiting for system reconnection")
         }
     }
 
