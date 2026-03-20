@@ -188,13 +188,16 @@ actor WatchLogger {
         let lineCount = logs.count
 
         if originalUTF8Count > logSizeCap {
-            logs.append("⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(lineCount)")
-            logsToSend = logs.joined(separator: "\n")
+            let marker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(lineCount)"
+            let markerBytes = marker.utf8.count + 1
+            let contentCap = max(0, logSizeCap - markerBytes)
 
-            let cappedData = logsToSend.data(using: .utf8)?.prefix(logSizeCap)
+            let cappedData = logsToSend.data(using: .utf8)?.prefix(contentCap)
                 ?? Data()
-            logsToSend = String(data: cappedData, encoding: .utf8)
-                ?? String(logsToSend.prefix(logSizeCap))
+            let truncatedContent = String(data: cappedData, encoding: .utf8)
+                ?? String(logsToSend.prefix(contentCap))
+
+            logsToSend = marker + "\n" + truncatedContent
         }
 
         let payloadId = UUID().uuidString
