@@ -572,6 +572,14 @@ enum BackgroundTaskWindowCounter {
         DispatchQueue.main.async { [self] in
             // R5d: compute gap BEFORE updating timestamp
             let gap = lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            let isSleepGap = gap > 600
+
+            // R5d ordering: when a sleep gap is detected, save the snapshot synchronously
+            // so forceWidgetReloadIfStale reads fresh App Group data. Normal-cadence
+            // deliveries use the deferred path; shouldUpdate dedup prevents double-writes.
+            if isSleepGap {
+                saveComplicationSnapshot(from: payload)
+            }
 
             if pendingConnectivityTasks.isEmpty {
                 let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
@@ -606,13 +614,14 @@ enum BackgroundTaskWindowCounter {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
             }
 
-            // R5d: update timestamp AFTER save dispatch
+            // R5d: update timestamp AFTER save
             lastDataReceivedAt = Date()
 
-            // R5d: sleep-gap forced reload
-            if gap > 600 {
+            // R5d: sleep-gap forced reload (snapshot already saved synchronously above)
+            if isSleepGap {
+                let gapDisplay = gap.isInfinite ? "first_receive" : "\(Int(gap))"
                 Task {
-                    await WatchLogger.shared.log("💤 sleep_gap_detected gap_seconds=\(Int(gap))")
+                    await WatchLogger.shared.log("💤 sleep_gap_detected gap_seconds=\(gapDisplay)")
                 }
                 forceWidgetReloadIfStale(receivedGap: gap)
             }
@@ -680,8 +689,9 @@ enum BackgroundTaskWindowCounter {
             self.saveComplicationSnapshot(from: payload)
             self.lastDataReceivedAt = Date()
             if gap > 600 {
+                let gapDisplay = gap.isInfinite ? "first_receive" : "\(Int(gap))"
                 Task {
-                    await WatchLogger.shared.log("💤 sleep_gap_detected_context gap_seconds=\(Int(gap))")
+                    await WatchLogger.shared.log("💤 sleep_gap_detected_context gap_seconds=\(gapDisplay)")
                 }
                 self.forceWidgetReloadIfStale(receivedGap: gap)
             }
@@ -1060,8 +1070,8 @@ enum BackgroundTaskWindowCounter {
         TrioComplicationDataStore.shared.forceReload(scheduleRetry: false)
     }
 
-    /// R5d: after a detected sleep gap, read the latest snapshot and force a widget reload
-    /// if the snapshot is stale relative to the gap. Rate-limited to 5 minutes.
+    /// R5d: after a detected sleep gap, force a widget reload. Rate-limited to 5 minutes.
+    /// Stale-backlog detection is diagnostic only — the reload always fires.
     private func forceWidgetReloadIfStale(receivedGap: TimeInterval) {
         let store = TrioComplicationDataStore.shared
 
@@ -1074,29 +1084,32 @@ enum BackgroundTaskWindowCounter {
             return
         }
 
+        // Diagnostic snapshot read: measures I/O latency and detects stale-backlog scenarios.
+        // No snapshot-age guard — callers save before calling this, so latestSnapshot() reflects
+        // just-saved data. A freshness guard would block the reload in precisely the scenario
+        // this function exists for. The rate limiter above is the correct storm guard.
         let readStart = CFAbsoluteTimeGetCurrent()
         let snapshot = store.latestSnapshot()
         let snapshotReadMs = Int((CFAbsoluteTimeGetCurrent() - readStart) * 1000)
+        let snapshotEpoch = snapshot.map { Int($0.readingDate.timeIntervalSince1970) } ?? -1
+        let snapshotAgeSeconds = snapshot.map { Int(Date().timeIntervalSince($0.readingDate)) }
+        let snapshotAgeDisplay = snapshotAgeSeconds.map { "\($0)s" } ?? "no_snapshot"
+        let gapDisplay = receivedGap.isInfinite ? "first_receive" : "\(Int(receivedGap))"
 
-        guard let snapshot = snapshot else {
-            Task {
-                await WatchLogger.shared.log("💤 sleep_gap_reload_skipped reason=no_snapshot read_ms=\(snapshotReadMs)")
-            }
-            return
+        let isStaleBacklog: Bool
+        if let age = snapshotAgeSeconds, !receivedGap.isInfinite {
+            isStaleBacklog = age > Int(receivedGap - 60)
+        } else {
+            isStaleBacklog = true
         }
-
-        let snapshotAge = Date().timeIntervalSince(snapshot.readingDate)
-
-        // Stale if snapshot age exceeds (gap - 60s buffer)
-        guard snapshotAge > (receivedGap - 60) else {
+        if isStaleBacklog {
             Task {
-                await WatchLogger.shared.log("💤 sleep_gap_reload_skipped reason=snapshot_fresh snapshot_age=\(Int(snapshotAge))s gap=\(Int(receivedGap))s read_ms=\(snapshotReadMs)")
+                await WatchLogger.shared.log("⚠️ sleep_gap_reload_stale_backlog reading_epoch=\(snapshotEpoch) snapshot_age=\(snapshotAgeDisplay) gap=\(gapDisplay)s read_ms=\(snapshotReadMs)")
             }
-            return
-        }
-
-        Task {
-            await WatchLogger.shared.log("💤 sleep_gap_reload_firing snapshot_age=\(Int(snapshotAge))s gap=\(Int(receivedGap))s read_ms=\(snapshotReadMs)")
+        } else {
+            Task {
+                await WatchLogger.shared.log("💤 sleep_gap_reload_firing reading_epoch=\(snapshotEpoch) snapshot_age=\(snapshotAgeDisplay) gap=\(gapDisplay)s read_ms=\(snapshotReadMs)")
+            }
         }
 
         store.setLastWidgetReloadAt(Date())
