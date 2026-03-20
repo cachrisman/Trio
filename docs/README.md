@@ -1,12 +1,16 @@
 # Docs
 
-**Version:** v2  
+**Version:** v3  
 **Created:** 2026-03-12 17:34 CET  
-**Last updated:** 2026-03-19 10:53 CET
+**Last updated:** 2026-03-20 09:37 CET
 
 ---
 
 This `docs/` folder contains the written artifacts, standards, and agent prompts used to design, plan, implement, review, and document work in this repo.
+
+### Multi-root workspaces (Cursor / VS Code)
+
+If this repo is opened **together** with other folders (e.g. `Trio`, `cgm-remote-monitor`) in one workspace, editor-injected rules such as **AGENTS.md** apply **per folder root**, not across the whole workspace. Work under **`Trio-dev/`** follows **`Trio-dev/AGENTS.md`** (patches, builds, Better Stack process). Changes in another root follow **that** repo’s `AGENTS.md` if it exists. This `docs/` tree does not automatically govern sibling workspace folders.
 
 ## Folder map
 
@@ -105,6 +109,9 @@ Start here:
 ---
 
 ## Changelog
+
+### v3 (2026-03-20 09:37 CET)
+- Added **Multi-root workspaces** note: `AGENTS.md` and similar rules are scoped to each workspace root; `docs/` here does not automatically apply to sibling repos in a multi-root workspace.
 
 ### v2 (2026-03-19 10:53 CET)
 - Updated `docs/prompts/` section to reflect the full 01–05 feature workflow with Cursor rule trigger phrases, matching `docs/prompts/README.md`. Moved `feedback-crosswalk-prompt.md` and `postmortem.md` under `prompts/others/` and added the other prompts in that subfolder.

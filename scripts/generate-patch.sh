@@ -454,7 +454,7 @@ if [ "$REPO_BASENAME" != "Trio-dev" ]; then
   print_error "This script must be run from the dev worktree (recommended path: ../Trio-dev)."
   print_info "Re-run from the dev worktree with the same arguments:"
   echo ""
-  echo "  cd ../Trio-dev && ./scripts/generate-patch.sh$(shell_quote_args "${ORIGINAL_ARGS[@]}")"
+  echo "  cd ../Trio-dev && ./scripts/generate-patch.sh$(shell_quote_args ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"})"
   echo ""
   exit 1
 fi
@@ -926,6 +926,7 @@ else
 fi
 
 # Deduplicate indices
+[ ${#want[@]} -gt 0 ] || die "No files selected (empty selection)"
 idx_tmp=$(mktemp)
 printf '%s\n' "${want[@]}" | awk '!seen[$0]++' > "$idx_tmp"
 
@@ -939,7 +940,7 @@ done < "$idx_tmp"
 rm -f "$idx_tmp"
 
 SELECTED_PATHS=()
-for idx in "${SELECTED_INDICES[@]}"; do
+for idx in ${SELECTED_INDICES[@]+"${SELECTED_INDICES[@]}"}; do
     start=${ENTRY_OFFSETS[$idx]}
     len=${ENTRY_LENGTHS[$idx]}
     for ((k=0; k<len; k++)); do

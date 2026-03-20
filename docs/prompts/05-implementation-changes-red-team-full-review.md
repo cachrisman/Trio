@@ -1,9 +1,9 @@
 # Implementation Changes Red-Team Review
 
-**Version:** 1.5  
+**Version:** 1.6  
 **Status:** In Use  
 **Created:** 2026-03-16 00:22 CET  
-**Last updated:** 2026-03-17 14:15 CET  
+**Last updated:** 2026-03-20 13:30 CET  
 
 ---
 
@@ -68,6 +68,7 @@ Check for:
 - implementation does not actually satisfy the intended design (compare to design doc and plan)
 - diff is locally plausible but inconsistent with surrounding architecture
 - hidden coupling to unrelated behavior; feature interaction regressions
+- **cross-patch type resolution:** when changes span multiple patches, verify that all symbols referenced across patch boundaries (types, extensions, notification names) resolve to the intended target in the *post-all-patches-applied* state. Check for in-scope protocols, typealiases, or module-level names that shadow Foundation/system types (e.g., a project-local `protocol NotificationCenter` shadowing `Foundation.NotificationCenter`). The feature branch compiles in isolation, but the patched build combines code from multiple patches where type resolution may differ.
 
 ### Data and state handling
 - stale cached data; inconsistent persistence or schema mismatch
@@ -198,6 +199,7 @@ If the self-review finds a missed issue or an unfixed blocker/major, address it 
 
 | Version | Date       | Change |
 |---------|------------|--------|
+| 1.6     | 2026-03-20 13:30 CET | Architecture and integration: added cross-patch type resolution check — verify symbols referenced across patch boundaries resolve correctly in the post-all-patches-applied state, not just on the feature branch in isolation. Catches protocol/typealias shadowing of Foundation types. |
 | 1.5     | 2026-03-17 14:15 CET | Default: review + report + apply fixes (fix-and-update); review-only when user explicitly requests. Pass quality: do not restate prior findings for pass count; each pass adds new scrutiny, confirms resolutions, or identifies proof gaps. |
 | 1.4     | 2026-03-17 13:00 CET | Completion rule: Self-review must be completed and passed before concluding the implementation is clean. |
 | 1.3     | 2026-03-17 12:33 CET | Required workflow step 1: fold in load design/plan, state branch, use as spec; then inspect diff. |

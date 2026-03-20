@@ -1,4 +1,4 @@
-# AGENTS.md — v9
+# AGENTS.md — v12
 
 Instructions for AI agents working in this repository.
 
@@ -10,7 +10,7 @@ Read first:
 ## Non-negotiable safety rules
 
 1) **Never upload to TestFlight unless explicitly instructed.**
-   - Default to **build-only** for local builds.
+   - When the user requests a build, ask for flags — do not assume `--build-only` or any other flag (see "When the user instructs a build").
    - Do not run `fastlane release` unless explicitly requested.
 
 2) **Never print or inspect secrets** (including `.trio-env`, signing secrets, API keys, tokens).
@@ -48,8 +48,14 @@ pass before presenting your result:
 5. Confirm your changes match the original request — no scope creep, nothing missing
 6. For patch-related changes: confirm the patch still applies cleanly and
    `scripts/patch-test.sh` would pass (run it if in doubt)
-7. If you find an issue, fix it silently and restart the review from step 1
-8. Only present your result once the review passes cleanly
+7. For cross-patch type dependencies (patch N references a type, extension, or
+   notification name defined in patch M): verify the referenced symbol doesn't
+   collide with any in-scope protocol, typealias, or module-level name. Common
+   shadowed names in this codebase: `NotificationCenter` (shadowed by a protocol
+   in `Trio/Sources/Services/Notifications/NotificationCenter.swift`). When in
+   doubt, use fully qualified names (e.g., `Foundation.NotificationCenter.default`).
+8. If you find an issue, fix it silently and restart the review from step 1
+9. Only present your result once the review passes cleanly
 
 Never present a result from a multi-file or patch-modifying change without first
 completing this protocol.
@@ -59,6 +65,7 @@ completing this protocol.
 - **`git clean -fd` (or scripts that run it) removes untracked files.** Procedures that "reset to clean dev" or "test patches from clean state" often run `git reset --hard` and `git clean -fd` in the repo. Any untracked file (e.g. `docs/in-progress/<initiative>/02-implementation-plan.md`) will be **permanently removed** unless it was stashed or committed elsewhere.
 - **Before running patch-test or any workflow that might clean the worktree:** Stash untracked files with `git stash -u -m "WIP untracked before clean"` so they can be restored with `git stash pop` afterward.
 - **Mid-stack patch update:** Step 0 in `docs/process/feature-branch-workflow-optimization.md` uses `git stash -u`; after step 6 (cleanup), run `git stash pop` to restore stashed changes including untracked files.
+- **Untracked patch files and stash-pop conflicts:** When a new patch file (e.g. `patches/10-name.patch`) exists as an untracked file and you need to stash before a workflow that regenerates it, move the untracked patch to `/tmp/` before `git stash -u` and restore it afterward. Otherwise, `git stash pop` will fail with "already exists, no checkout" because the regenerated file conflicts with the stashed untracked version.
 
 ## Tracking docs on `dev` (docs are committed with completed patch work)
 
@@ -70,6 +77,17 @@ Plan/design docs and prompts live in `docs/` on the **`dev`** branch. During act
 - **When the feature is complete:** commit the docs update in the same completion set as the patch change:
   - Either one commit that includes both docs + patch updates, or two adjacent commits (docs + patch) pushed together.
 - **Docs should reflect reality** at completion time: final plan, implementation log, effectiveness analysis (if applicable), and any important decisions/tradeoffs.
+
+## Patch commit lifecycle
+
+Regenerated and new patch files follow the same lifecycle as docs: **keep them as uncommitted modifications on `dev` during development.** The build system (`ci/local-build.sh`) picks up uncommitted patch changes via stash reapply when you run from `dev`.
+
+**Do not commit patch files to `dev` until the user explicitly requests it.** The commit to `dev` is the "milestone complete" step — only after:
+1. Build succeeds (`ci/local-build.sh --base-branch dev --build-only`)
+2. Deploy happens (TestFlight upload)
+3. BetterStack verification confirms expected behavior in production
+
+As of v1.7, `mid-stack-update.sh` auto-restores the committed version of a dirty target patch (no manual intervention needed). If a tooling precondition still requires a commit (rare), **ask the user** before committing. Do not commit patches to satisfy script preconditions without permission.
 
 ## Non-negotiable rules for working with patches
 
@@ -126,12 +144,26 @@ ci/local-build.sh --base-branch dev --build-only
 
 When asked to run a build, do the following.
 
-### 1) Run the build in the background
+### 1) Upstream sync (automatic)
 
-- Invoke `ci/local-build.sh` with the appropriate flags (e.g. `--base-branch dev --build-only` or `--build-current --build-only`) as a **background process**. Do not run it in the foreground so the agent can continue to monitor and respond.
+- For `--base-branch dev` builds, `local-build.sh` automatically fetches
+  `upstream/dev`, merges if behind, and pushes to `origin/dev`. No manual
+  steps needed. The script logs sync status; merge failures are non-fatal
+  (it aborts and continues with current `dev`).
+- To skip: `--no-sync-upstream`. To force for non-dev base branches: `--sync-upstream`.
+- If you see the build log report a merge conflict, tell the user — they may
+  want to resolve it before rebuilding.
+
+### 2) Ask the user for build flags
+
+- **Do not assume flags.** Ask the user what command and flags to use (e.g. `--build-only`, `--include-untracked`, build+deploy, etc.) rather than defaulting to `--build-only`. If the user provides a specific command, use it exactly.
+
+### 3) Run the build in the background
+
+- Invoke `ci/local-build.sh` with the user's chosen flags as a **background process**. Do not run it in the foreground so the agent can continue to monitor and respond.
 - **Do not** capture or redirect log output yourself. The script already writes all output to a timestamped log file under `build/artifacts/`.
 
-### 2) Provide a command to watch the build log
+### 4) Provide a command to watch the build log
 
 - The build script creates a log file at `build/artifacts/ci-local-build-YYYYMMDD-HHMMSS.log` (e.g. `ci-local-build-20260303-115620.log`).
 - After starting the build, either list `build/artifacts/` to get the new log filename, or give the user a command that works for the latest log. Example (from repo root):
@@ -148,12 +180,12 @@ When asked to run a build, do the following.
 
 - Tell the user they can run that command in a terminal to watch the build output live.
 
-### 3) Monitor build progress
+### 5) Monitor build progress
 
 - Periodically check the build log (or process status) to see when the build completes or fails.
 - If the build is still running, you can report progress based on the log (e.g. "Build in progress, currently running …").
 
-### 4) If an error is detected
+### 6) If an error is detected
 
 - **Investigate immediately:** Read the relevant part of the log (e.g. around failure messages, ❌ markers, or "error:" / "ARCHIVE FAILED") to identify the cause.
 - **Propose a fix** and, if the fix is **relatively minor** (e.g. a clear typo, one-file change, or small logic fix):
@@ -179,6 +211,47 @@ Run from **Trio-dev** with **`dev`** checked out (see "Run from dev" above):
 
 Prefer `--include-files` over `--all-files` when only specific files changed.
 
+#### When the new patch modifies files also changed by earlier patches
+
+`generate-patch.sh -n -t dev` produces a patch whose context lines match raw
+`dev`. If earlier patches also modify those files, the context won't match the
+post-prior-patches state and `patch-test.sh` will fail.
+
+Correct workflow:
+
+1. **Rebase the feature branch** (in the Trio worktree) onto the feature branch
+   of the highest-numbered overlapping patch. This gives the feature branch the
+   correct cumulative file state. Resolve conflicts during the rebase — this is
+   the right place for conflict resolution, not in tmp branches in Trio-dev.
+
+2. **Build a tmp baseline branch** in Trio-dev (dev + patches 01 through N-1):
+   ```bash
+   git checkout -b tmp/<name>-baseline dev
+   for p in patches/0[1-9]-*.patch; do git am --3way "$p" || break; done
+   ```
+
+3. **Generate the patch against the baseline** (from `dev`):
+   ```bash
+   git checkout dev
+   ./scripts/generate-patch.sh -n \
+     -s feature/<name> \
+     -t tmp/<name>-baseline \
+     -d "short-description" \
+     -o patches/NN-short-description.patch \
+     --include-files "Trio/Sources/Foo.swift,Model/Bar.swift"
+   ```
+
+4. **Clean up** the tmp baseline branch:
+   ```bash
+   git branch -D tmp/<name>-baseline
+   ```
+
+5. **Validate** the full stack: `scripts/patch-test.sh`
+
+Feature branches for patches that overlap with earlier patches **must** include
+the earlier patches' changes in their history (via rebase). Feature branches
+that only touch new files can remain branched from raw `dev`.
+
 ### Update an existing patch (mid-stack) — MANDATORY
 
 **You MUST use `mid-stack-update.sh` for all mid-stack patch updates.** Do not
@@ -188,28 +261,48 @@ only as a reference for understanding what the script does internally.
 
 #### Pre-flight: enumerate ALL new commits
 
-Before running `--cherry-pick`, always determine **every** commit on the feature
-branch that is not yet in the patch. Do not assume the commit you just made is
-the only one — there may be earlier commits added since the last patch update.
-
-```bash
-# From either worktree — list recent feature-branch commits:
-git log --oneline <feature-branch> | head -10
-```
-
-Compare against what is already in the patch (the last cherry-picked or squashed
-state). Include **all** new commits in `--cherry-pick`, earliest first. A common
-mistake is cherry-picking only a fix commit while forgetting the feature commit
-it modifies — this guarantees a conflict.
+As of v1.7, **the script auto-detects candidates** when `--cherry-pick` is
+omitted. Run without `--cherry-pick` to see all commits on the feature branch
+since merge-base with dev, plus a suggested `--cherry-pick` command:
 
 ```bash
 # From Trio-dev worktree, on dev branch:
+./scripts/mid-stack-update.sh --patch <NN>
+# → prints candidate commits and a suggested --cherry-pick command, then exits
+```
+
+Review the candidates. Not all may need cherry-picking — some may already be
+in the current patch. Include only commits added since the last patch update,
+earliest first. A common mistake is cherry-picking only a fix commit while
+forgetting the feature commit it modifies — this guarantees a conflict.
+
+```bash
+# After reviewing candidates, run with the SHAs you want:
 ./scripts/mid-stack-update.sh --patch <NN> --cherry-pick <sha>[,<sha>,...]
 ```
 
+#### Choosing `--cherry-pick` vs `--from-feature-branch`
+
+| Scenario | Mode | Why |
+|----------|------|-----|
+| Added new commits to the feature branch | `--cherry-pick` | Default ~95% of the time. Cherry-picks onto the existing patch baseline. |
+| Previous regeneration was rolled back; need to redo with more commits | `--cherry-pick` | Restore committed version first (see "Dirty patch file" below), then cherry-pick ALL commits since that version. |
+| Feature branch was rebased, force-pushed, or had commits amended/squashed | `--from-feature-branch` | Commit history no longer aligns with the patch baseline. Last resort only. |
+
+**Quick test:** if `git log --oneline <feature-branch>` still contains the
+original commits that were cherry-picked into the patch, use `--cherry-pick`.
+If those commits are gone (rebase/amend), use `--from-feature-branch`.
+
 If the script fails, **fix the script or report the error** — do not fall back
 to the manual workflow. Common failure causes and fixes:
-- **Dirty patch file:** commit or discard changes to the target patch first.
+- **Dirty patch file:** As of v1.7, `mid-stack-update.sh` **auto-restores**
+  the committed version of a modified target patch before proceeding (the most
+  common case — a prior regeneration was rolled back per patch lifecycle). No
+  manual `git checkout --` needed. **Untracked** target patches (new files
+  never committed) still require manual intervention: move it aside
+  (`mv patches/NN-name.patch /tmp/`) before running the script.
+  Do NOT use `--from-feature-branch` just because the working-tree patch is
+  dirty — that's not a baseline divergence.
 - **Branch checked out in other worktree:** switch the other worktree to a
   different branch.
 - **Cherry-pick conflict:** Do NOT fall back to manual patch generation.
@@ -342,6 +435,24 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v12 (2026-03-20)
+- **`mid-stack-update.sh` v1.7 — auto-restore and auto-detect:** Updated "Dirty patch file" bullet — script now auto-restores the committed version of modified target patches (no manual `git checkout --` needed). Updated "Pre-flight" section — script now auto-detects cherry-pick candidates when `--cherry-pick` is omitted, printing all feature branch commits since merge-base with a suggested command. Updated dirty-patch precondition note in "Patch commit lifecycle" to reflect the automation.
+- **`local-build.sh` upstream sync now built-in:** Replaced manual "Check for upstream updates" pre-build step with "Upstream sync (automatic)" noting the script handles fetch/merge/push for `--base-branch dev` by default. Documented `--sync-upstream` / `--no-sync-upstream` flags. Source patch hashes are now logged before worktree setup.
+- **Bash 3.2 empty-array safety:** `mid-stack-update.sh` and `generate-patch.sh` fixed to use `${arr[@]+"${arr[@]}"}` pattern for empty arrays under `set -u` (8 sites total).
+
+### v11 (2026-03-20)
+- **Dirty target patch workflow:** Expanded the "Dirty patch file" bullet under mid-stack updates with a concrete 3-step workflow: restore committed version, move untracked aside, then `--cherry-pick` all new commits. Explicitly warns against using `--from-feature-branch` for stale committed versions.
+- **`--cherry-pick` vs `--from-feature-branch` decision tree:** New table and quick-test heuristic for choosing the correct mid-stack-update mode. `--cherry-pick` is the default ~95% of the time; `--from-feature-branch` only when commit history has diverged (rebase/amend/force-push).
+- **Pre-build upstream sync:** New step 1 in "When the user instructs a build" — fetch `upstream/dev` and merge if ahead, unless user declines. Ensures builds test against the latest upstream state.
+- **Ask for build flags:** "When the user instructs a build" now starts with "Ask the user for build flags" (step 2) instead of assuming `--build-only`. Safety rule 1 updated to match — agents ask for flags rather than defaulting to `--build-only`.
+- **Cross-patch type shadowing check:** New self-review step (7) for cross-patch type dependencies. Documents the `NotificationCenter` protocol shadowing issue in this codebase and instructs agents to use fully qualified names when referencing Foundation types that have in-scope shadows.
+- **Untracked patch stash-pop conflicts:** New bullet in "Untracked files and clean/reset" documenting the pattern of moving untracked patch files to `/tmp/` before stashing to prevent stash-pop conflicts after regeneration.
+
+### v10 (2026-03-20)
+- **Patch commit lifecycle:** New section. Regenerated/new patches remain uncommitted on `dev` during development. The commit to `dev` is the "milestone complete" step — only after build, deploy, and BetterStack verification, and only when the user explicitly requests it. Agents must ask before committing patches to satisfy tooling preconditions.
+- **Generate a NEW patch with overlapping files:** New subsection under "Generate a NEW patch" documenting the correct workflow when the new patch modifies files also changed by earlier patches: rebase the feature branch onto the highest overlapping feature branch, build a tmp baseline (dev + prior patches), and use `generate-patch.sh` with `-t tmp/baseline` directly. Avoids the placeholder + mid-stack-update workaround.
+- **Dirty-patch guidance softened:** The `mid-stack-update.sh` dirty-patch bullet now references the patch lifecycle rule and instructs agents to ask the user before committing, rather than reflexively committing.
 
 ### v9 (2026-03-14)
 - **Mid-stack cherry-pick pre-flight:** Added mandatory pre-flight step to "Update an existing patch (mid-stack)" — before running `--cherry-pick`, enumerate ALL new commits on the feature branch not yet in the patch and include them all, earliest first. Prevents the common mistake of cherry-picking only a fix commit while forgetting the feature commit it modifies.

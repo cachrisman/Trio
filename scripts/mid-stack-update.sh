@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.6)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.7)
 #
 # CHANGELOG:
+#   v1.7  - Auto-restore dirty target patch: when the target patch has
+#           uncommitted modifications (common after a prior regeneration
+#           was rolled back), restore the committed version automatically
+#           instead of refusing to proceed. Untracked target patches still
+#           error (mid-stack-update operates on existing patches only).
+#         - Cherry-pick candidate auto-detection: when --cherry-pick is
+#           omitted, enumerate commits on the feature branch since merge-base
+#           with dev and print a suggested --cherry-pick command. Automates
+#           the pre-flight step from AGENTS.md.
+#         - Bash 3.2 empty-array safety: use ${arr[@]+"${arr[@]}"} pattern
+#           for EXISTING_FILES, PATCH_SCOPE_FILES, and VERIFIABLE_FILES to
+#           prevent "unbound variable" errors with set -u on empty arrays.
 #   v1.6  Dirty baseline preservation: when baseline patches (01..N-1) have
 #         uncommitted modifications, save them before stashing and restore
 #         after so the baseline is built from the working-tree versions.
@@ -246,8 +258,11 @@ done
 # Normalize patch number to 2 digits
 PATCH_NUM=$(printf '%02d' "$((10#$PATCH_NUM))")
 
+# Cherry-pick requirement is checked later (after PATCH_DESC is available)
+# so we can auto-detect candidates from the feature branch.
+CHERRY_PICK_DEFERRED_CHECK=false
 if [ "$DRY_RUN" = false ] && [ -z "$CHERRY_PICKS" ] && [ "$FROM_FEATURE_BRANCH" = false ]; then
-    die "Missing required --cherry-pick <sha>. Use --dry-run to preview without changes, or --from-feature-branch to regenerate from feature branch state."
+    CHERRY_PICK_DEFERRED_CHECK=true
 fi
 
 #===============================================================================
@@ -344,9 +359,49 @@ done < <(
 )
 
 print_info "Files in current patch: ${#EXISTING_FILES[@]}"
-for f in "${EXISTING_FILES[@]}"; do
+for f in ${EXISTING_FILES[@]+"${EXISTING_FILES[@]}"}; do
     echo "    $f"
 done
+
+# When --cherry-pick is not provided, try to enumerate candidates from the
+# feature branch. This automates the "pre-flight" step agents must otherwise
+# do manually (see AGENTS.md § "Pre-flight: enumerate ALL new commits").
+if [ "$CHERRY_PICK_DEFERRED_CHECK" = true ]; then
+    _auto_branch=""
+    if [ -n "$FEATURE_BRANCH" ]; then
+        _auto_branch="$FEATURE_BRANCH"
+    else
+        _candidate="feature/$PATCH_DESC"
+        if git rev-parse --verify "$_candidate" >/dev/null 2>&1; then
+            _auto_branch="$_candidate"
+        fi
+    fi
+
+    if [ -n "$_auto_branch" ]; then
+        _merge_base=$(git merge-base dev "$_auto_branch" 2>/dev/null || true)
+        if [ -n "$_merge_base" ]; then
+            _candidates=$(git log --oneline --reverse "$_merge_base..$_auto_branch" 2>/dev/null || true)
+            if [ -n "$_candidates" ]; then
+                echo ""
+                print_info "No --cherry-pick specified. Commits on '$_auto_branch' since merge-base with dev:"
+                echo ""
+                echo "$_candidates" | sed 's/^/    /'
+                echo ""
+                _shas=$(git log --reverse --format='%h' "$_merge_base..$_auto_branch" 2>/dev/null \
+                    | tr '\n' ',' | sed 's/,$//')
+                print_info "Suggested command (all commits, earliest first):"
+                echo "  ./scripts/mid-stack-update.sh --patch $PATCH_NUM --cherry-pick $_shas"
+                echo ""
+                die "Review the commits above and provide --cherry-pick with the SHAs to include.
+  Not all commits may need cherry-picking — some may already be in the current
+  patch. Include only commits added since the last patch update."
+            fi
+        fi
+    fi
+
+    die "Missing required --cherry-pick <sha>. Use --dry-run to preview without changes,
+  or --from-feature-branch to regenerate from feature branch state."
+fi
 
 # Parse cherry-pick SHAs
 CHERRY_PICK_SHAS=()
@@ -449,7 +504,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "  $([ "$FROM_FEATURE_BRANCH" = true ] && echo "8" || echo "9"). Cleanup tmp branches, pop stash"
     echo ""
     echo "Include-files list (${#EXISTING_FILES[@]} from patch + ${extra_count} extra):"
-    for f in "${EXISTING_FILES[@]}"; do echo "    $f"; done
+    for f in ${EXISTING_FILES[@]+"${EXISTING_FILES[@]}"}; do echo "    $f"; done
     if [ "$extra_count" -gt 0 ]; then
         for f in "${EXTRA_FILE_LIST[@]}"; do echo "    $f (extra)"; done
     fi
@@ -547,13 +602,27 @@ trap cleanup EXIT INT TERM
 
 print_step "Check for uncommitted changes"
 
-# Refuse to proceed if the target patch file has uncommitted modifications.
-# Stash-pop after regeneration would conflict with or overwrite the new patch.
+# Handle uncommitted changes to the target patch file.
+# The script will regenerate this file, so its current content doesn't matter —
+# but stash-pop would conflict if the dirty version is in the stash.
 PATCH_RELPATH="patches/$PATCH_BASENAME"
-if git status --porcelain -- "$PATCH_RELPATH" 2>/dev/null | grep -q .; then
-    die "Target patch file has uncommitted changes: $PATCH_RELPATH
-  Commit or discard those changes first, then re-run.
-  (Stash-pop after regeneration would overwrite the newly generated patch.)"
+TARGET_PATCH_STATUS=$(git status --porcelain -- "$PATCH_RELPATH" 2>/dev/null || true)
+if echo "$TARGET_PATCH_STATUS" | grep -qE '^.M|^M'; then
+    # Modified (tracked): restore committed version so stash won't include it.
+    # This is the common case when a prior regeneration was rolled back per
+    # patch lifecycle (patches stay uncommitted on dev).
+    print_info "Target patch has uncommitted changes (prior regeneration rolled back?)"
+    print_info "Restoring committed version before proceeding..."
+    git checkout -- "$PATCH_RELPATH" || die "Failed to restore committed version of $PATCH_RELPATH"
+    print_success "Restored committed version of $PATCH_BASENAME"
+elif echo "$TARGET_PATCH_STATUS" | grep -qE '^\?\?'; then
+    # Untracked (new file): this is a new patch that was never committed.
+    # mid-stack-update operates on existing patches; an untracked target is
+    # unexpected. Die with a clear message.
+    die "Target patch file is untracked (new): $PATCH_RELPATH
+  mid-stack-update.sh updates existing patches. For a new patch that was
+  previously generated but never committed, remove or move it aside first,
+  then re-run."
 fi
 
 if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
@@ -656,7 +725,7 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
     # Build update from current feature branch state for patch-scope files only
     # Use EXTRA_FILE_LIST (already parsed); ensure defined when --extra-files wasn't passed
     [ -z "${EXTRA_FILE_LIST+set}" ] && EXTRA_FILE_LIST=()
-    PATCH_SCOPE_FILES=("${EXISTING_FILES[@]}")
+    PATCH_SCOPE_FILES=(${EXISTING_FILES[@]+"${EXISTING_FILES[@]}"})
     if [ ${#EXTRA_FILE_LIST[@]} -gt 0 ]; then
         for ef in "${EXTRA_FILE_LIST[@]}"; do
             ef_trimmed=$(echo "$ef" | tr -d '[:space:]')
@@ -664,7 +733,7 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
         done
     fi
     print_info "Syncing ${#PATCH_SCOPE_FILES[@]} file(s) from $FEATURE_BRANCH (checkout or delete)"
-    for f in "${PATCH_SCOPE_FILES[@]}"; do
+    for f in ${PATCH_SCOPE_FILES[@]+"${PATCH_SCOPE_FILES[@]}"}; do
         [ -n "$f" ] || continue
         if git show "$FEATURE_BRANCH:$f" >/dev/null 2>&1; then
             git checkout "$FEATURE_BRANCH" -- "$f" 2>/dev/null || die "Failed to checkout $FEATURE_BRANCH -- $f"
@@ -950,7 +1019,7 @@ if [ -n "$FEATURE_BRANCH" ]; then
     # For files ONLY this patch modifies, the update branch and feature branch
     # should produce identical content (both start from dev for these files).
     CONTENT_DRIFT_FILES=()
-    for f in "${VERIFIABLE_FILES[@]}"; do
+    for f in ${VERIFIABLE_FILES[@]+"${VERIFIABLE_FILES[@]}"}; do
         update_blob=$(git rev-parse "$UPDATE_BRANCH:$f" 2>/dev/null) || continue
         feature_blob=$(git rev-parse "$FEATURE_BRANCH:$f" 2>/dev/null) || continue
         if [ "$update_blob" != "$feature_blob" ]; then

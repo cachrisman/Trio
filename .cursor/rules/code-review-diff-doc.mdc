@@ -1,0 +1,58 @@
+---
+description: Generate a code review diff document when the user says "make a code review diff doc", "generate a diff review doc", "code review doc", or similar phrasing requesting a reviewable document of recent implementation changes.
+globs:
+  - docs/code-review/*.md
+---
+
+# Code Review Diff Document
+
+When the user asks you to "make a code review diff doc" (or similar), produce a markdown document at `docs/code-review/<build-or-feature-name>-code-review.md` that combines human-readable change summaries with the full unified diffs, organized by patch/branch.
+
+## How to gather the diffs
+
+For each branch that has implementation changes:
+
+1. Identify the commit(s) containing the work. Use `git log --oneline <branch> -N` to find the relevant SHAs.
+2. Generate the diff for only those commits: `git diff <parent>...<commit>` (not the entire branch history against `dev`).
+3. Collect `git diff --stat` output for the file-change/insertion/deletion counts.
+
+If changes span multiple branches/patches, produce one section per patch in stack order (lowest patch number first).
+
+## Document structure
+
+```markdown
+# <Title> — Code Review
+
+## Patch NN: `<branch-name>` — short description
+
+**N files changed, +X / -Y** (commit `<short-sha>`)
+
+### `FileName.swift` — Item label or short description
+- Bullet summarizing change 1
+- Bullet summarizing change 2
+
+### `AnotherFile.swift` — Item label
+- Bullet summarizing change
+
+` ` `
+<full unified diff output for this patch, unmodified>
+` ` `
+
+================
+
+## Patch MM: `<next-branch>` — short description
+
+... (repeat pattern)
+```
+
+## Rules
+
+1. **Summaries first, then diff.** Each patch section starts with per-file bullet summaries, followed by the raw unified diff in a single fenced code block.
+2. **One code block per patch.** Combine all file diffs for a patch into one block (as `git diff` naturally outputs them).
+3. **Use `================` separators** between patch sections for visual clarity.
+4. **Reference plan items.** If an implementation plan exists, tag summaries with the plan item IDs (e.g., "Item 1A", "Item 5B") so reviewers can cross-reference.
+5. **Include only implementation commits.** Exclude merge commits, doc-only commits, or unrelated changes unless the user explicitly asks for them.
+6. **Diff fidelity.** Do not edit, truncate, or reformat the diff output. Paste it verbatim from `git diff`.
+7. **Commit hashes.** Include the short SHA in the patch header so the reviewer can `git show` it.
+8. **Stats line.** Include file count and insertion/deletion counts (from `git diff --stat`) in the header.
+9. **Do not include the user's prompt** in the document. Start directly with the title heading.

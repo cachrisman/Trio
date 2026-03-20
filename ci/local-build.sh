@@ -21,6 +21,10 @@ Options:
   --ipa-path <path>          Path to existing IPA file (used with --release-only)
   --sync-all                 Allow sync_project_files.rb to scan full globs
   --sync-explicit-only       Only sync explicit file list (default)
+  --sync-upstream            Fetch upstream/dev and merge before building
+                             (automatic for --base-branch dev, use this flag
+                             to enable for other base branches)
+  --no-sync-upstream         Skip upstream sync even for --base-branch dev
   --worktree-parent <path>   Parent dir for temporary worktrees
   --preserve-worktree        Preserve worktree after build (for debugging)
   -h, --help                 Show this help
@@ -55,6 +59,7 @@ INCLUDE_PROJECT_FILE=0
 SYNC_EXPLICIT_ONLY=""
 IPA_PATH=""
 PRESERVE_WORKTREE=0
+SYNC_UPSTREAM=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -107,6 +112,12 @@ while [[ $# -gt 0 ]]; do
     --worktree-parent)
       shift
       WORKTREE_PARENT="${1:-}"
+      ;;
+    --sync-upstream)
+      SYNC_UPSTREAM=1
+      ;;
+    --no-sync-upstream)
+      SYNC_UPSTREAM=0
       ;;
     --preserve-worktree)
       PRESERVE_WORKTREE=1
@@ -982,6 +993,72 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     fi
   fi
   echo "[build] Base ref for build: $base_ref"
+
+  # Upstream sync: for --base-branch dev, default to syncing upstream/dev.
+  # For other base branches, only sync if --sync-upstream is explicitly set.
+  # Skip entirely for --build-current or detached HEAD.
+  _do_sync=false
+  if [[ "$SYNC_UPSTREAM" = "1" ]]; then
+    _do_sync=true
+  elif [[ -z "$SYNC_UPSTREAM" && "$base_ref" = "dev" && "$BUILD_CURRENT" != "1" ]]; then
+    _do_sync=true
+  fi
+
+  if [[ "$_do_sync" = true && "$base_ref" != "$orig_commit" ]]; then
+    if git remote get-url upstream >/dev/null 2>&1; then
+      echo "[build] Fetching upstream/dev..."
+      if git fetch upstream dev 2>&1 | sed 's/^/    /'; then
+        _local_dev=$(git rev-parse dev 2>/dev/null || true)
+        _upstream_dev=$(git rev-parse upstream/dev 2>/dev/null || true)
+        if [[ -n "$_local_dev" && -n "$_upstream_dev" && "$_local_dev" != "$_upstream_dev" ]]; then
+          _behind=$(git rev-list --count "dev..upstream/dev" 2>/dev/null || echo "?")
+          echo "[build] Local dev is $_behind commit(s) behind upstream/dev. Merging..."
+          if git merge upstream/dev --no-edit 2>&1 | sed 's/^/    /'; then
+            echo "[build] ✅ Merged upstream/dev into local dev"
+            echo "[build] Pushing updated dev to origin..."
+            git push origin dev 2>&1 | sed 's/^/    /' || {
+              echo "[build] ⚠️  Push to origin failed (non-fatal, continuing build)"
+            }
+          else
+            echo "[build] ❌ Merge of upstream/dev failed. Aborting merge and continuing with current dev."
+            git merge --abort 2>/dev/null || true
+          fi
+        else
+          echo "[build] ✅ Local dev is up-to-date with upstream/dev"
+        fi
+      else
+        echo "[build] ⚠️  Failed to fetch upstream (non-fatal, continuing with current dev)"
+      fi
+    else
+      echo "[build] ⚠️  No 'upstream' remote configured; skipping sync"
+    fi
+  elif [[ "$SYNC_UPSTREAM" = "0" ]]; then
+    echo "[build] Upstream sync: disabled (--no-sync-upstream)"
+  fi
+
+  # Log source patch hashes for provenance (before worktree setup).
+  # Even if worktree creation fails, the log records which patches were on disk.
+  _src_patches_dir="$ROOT_DIR/patches"
+  if [[ -d "$_src_patches_dir" && "$SKIP_PATCHES" != "1" ]]; then
+    _src_patch_list=$(cd "$_src_patches_dir" 2>/dev/null && ls -1 *.patch 2>/dev/null | sort)
+    if [[ -n "$_src_patch_list" ]]; then
+      echo "[build] Source patches (on-disk at build start):"
+      echo ""
+      printf "  %-45s  %s\n" "PATCH" "SHA256"
+      printf "  %-45s  %s\n" "-----" "------"
+      while IFS= read -r _sp; do
+        [[ -n "$_sp" ]] || continue
+        _sp_path="$_src_patches_dir/$_sp"
+        _sp_hash="$(shasum -a 256 "$_sp_path" 2>/dev/null | cut -c1-12)"
+        _sp_dirty=""
+        if git status --porcelain -- "patches/$_sp" 2>/dev/null | grep -q .; then
+          _sp_dirty=" (modified)"
+        fi
+        printf "  %-45s  %s%s\n" "$_sp" "$_sp_hash" "$_sp_dirty"
+      done <<< "$_src_patch_list"
+      echo ""
+    fi
+  fi
 
   cleanup_enabled=true
   status_summary="$(git status --short 2>/dev/null || echo "")"

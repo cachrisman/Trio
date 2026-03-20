@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v13 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v15 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -144,6 +144,40 @@ Notes:
 - The `--include-files` flag explicitly lists which files to include (recommended for safety).
 - Patch generation is intentionally **forbidden** from including infra/tooling paths (e.g. `scripts/`, `ci/`, `.github/`, `fastlane/`, `patches/`). Those changes must be committed directly to `dev`.
 
+### When the new patch modifies files also changed by earlier patches
+
+`-t dev` produces a patch whose context lines match raw `dev`. If earlier patches also modify those files, the context won't match the post-prior-patches state and `patch-test.sh` will fail.
+
+Correct workflow:
+
+1. **Rebase the feature branch** (in the Trio worktree) onto the feature branch of the highest-numbered overlapping patch. This gives the feature branch the correct cumulative file state. Resolve conflicts during the rebase.
+
+2. **Build a tmp baseline branch** (dev + patches 01 through N-1):
+   ```bash
+   cd ../Trio-dev
+   git checkout -b tmp/<name>-baseline dev
+   for p in patches/0[1-9]-*.patch; do git am --3way "$p" || break; done
+   ```
+
+3. **Generate the patch against the baseline** (from `dev`):
+   ```bash
+   git checkout dev
+   ./scripts/generate-patch.sh -n \
+     -s feature/<name> \
+     -t tmp/<name>-baseline \
+     -d "short-description" \
+     -o patches/NN-short-description.patch \
+     --include-files "path/to/File1.swift,path/to/File2.swift"
+   ```
+
+4. **Clean up** and validate:
+   ```bash
+   git branch -D tmp/<name>-baseline
+   scripts/patch-test.sh
+   ```
+
+Feature branches for patches that overlap with earlier patches **must** include the earlier patches' changes in their history (via rebase). Feature branches that only touch new files can remain branched from raw `dev`.
+
 ---
 
 ## Updating an existing patch (mid-stack)
@@ -253,7 +287,7 @@ patch — do that after reviewing.
 
 #### Safety guarantees
 
-- **Refuses to run** if the target patch file has uncommitted changes (stash-pop after regeneration would overwrite the new patch).
+- **Auto-restores dirty target patches** (v1.7): if the target patch has uncommitted modifications (common after a rolled-back regeneration), the script restores the committed version automatically. Untracked target patches (new files never committed) still error with a clear message.
 - **Aborts in-progress operations** (cherry-pick, am, merge) during cleanup, so `git checkout dev` can always succeed.
 - **Detects leftover tmp branches** checked out in another worktree and prints an actionable error instead of failing cryptically.
 - **Drift check** compares the regenerated patch against the feature branch (auto-detected or via `--feature-branch`). Reports files on the feature branch missing from the patch, excluding files already covered by prior patches. Preserves tmp branches for investigation when drift is found.
@@ -304,7 +338,7 @@ parent state. Diagnose as follows:
 | Omitting a feature branch commit | Silent functionality loss in patch | Use `mid-stack-update.sh` drift check (auto-compares against feature branch) |
 | Uncommitted edits on target patch file | Stash-pop overwrites the regenerated patch | `mid-stack-update.sh` refuses to run if patch file is dirty |
 | Cherry-pick conflict triggers manual workaround | Bypasses script safety checks; may produce a patch with subtle state divergence from the feature branch | Diagnose: compare parent commit state vs patched state; usually caused by missing intermediate commits — include them in `--cherry-pick` (see "Troubleshooting cherry-pick conflicts") |
-| Editing `docs/*.md` while on `dev` | Edits go to an untracked copy; lost on branch switch or `git clean` | Plan docs live on `docs` branch — switch to `docs` first |
+| Committing patches to `dev` before build+deploy+verify | Premature "milestone complete" marker; hard to back out | Keep patches uncommitted until lifecycle is complete (see "Commit the patch file" above) |
 
 ---
 
@@ -328,10 +362,18 @@ If validation fails:
 - regenerate the patch (via `generate-patch.sh`)
 - re-run `scripts/patch-test.sh`
 
-### 4) Commit the patch file to fork `dev` (only after successful testing)
+### 4) Commit the patch file to fork `dev` (milestone complete)
+
+Patch files remain as **uncommitted modifications** on `dev` during development. The build system picks them up via stash reapply. Do not commit until the full lifecycle is complete:
+
+1. `patch-test.sh` passes
+2. Build succeeds (`ci/local-build.sh --base-branch dev --build-only`)
+3. Deploy (TestFlight upload)
+4. BetterStack verification confirms expected behavior
+
+Only then, when explicitly instructed:
 
 ```bash
-# After successful patch testing, commit the patch file
 git checkout dev
 git add patches/NN-<desc>.patch
 git commit -m "patches: add NN-<desc>"
@@ -497,6 +539,14 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v15
+- **`mid-stack-update.sh` v1.7 safety guarantees:** Updated "Refuses to run" to "Auto-restores dirty target patches" — modified target patches are now auto-restored to committed version; only untracked targets still error.
+
+### v14
+- **Patch commit lifecycle:** Updated "4) Commit the patch file" from "after successful testing" to "milestone complete" — patches remain uncommitted during development; commit only after build + deploy + BetterStack verification.
+- **New patch with overlapping files:** New subsection under "2) Generate a NEW patch" documenting the correct workflow when a new patch modifies files also changed by earlier patches: rebase the feature branch, build a tmp baseline, and use `generate-patch.sh` with `-t tmp/baseline` directly.
+- **Common mistakes table:** Replaced stale "editing docs on `docs` branch" row (docs branch was removed in AGENTS.md v8) with "committing patches to dev before build+deploy+verify."
 
 ### v13
 - **Troubleshooting cherry-pick conflicts:** New subsection under "Automated mid-stack update" documenting how to diagnose cherry-pick failures in `mid-stack-update.sh`. Root cause is almost always missing intermediate commits on the feature branch that were never incorporated into the patch. Includes a 4-step diagnostic procedure (identify parent, compare states, find mismatches, include missing commits).
