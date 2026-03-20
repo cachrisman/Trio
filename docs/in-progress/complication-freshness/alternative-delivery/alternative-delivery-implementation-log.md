@@ -1,7 +1,8 @@
 # Alternative Delivery — Implementation Log
 
-**Version:** 1.0
+**Version:** 1.1
 **Date:** 2026-03-19 11:33 CET
+**Last updated:** 2026-03-20 22:10 CET
 
 ---
 
@@ -49,6 +50,30 @@
 
 ---
 
+### Build 143 — R4 handler upgrade with R5d integration (2026-03-19/20)
+
+**Commits:** `eea6d5ba3` (build 143 patch-09 changes) on `feature/watch-complication-improvements`
+**Patch:** `09-watch-complication-improvements.patch` (mid-stack update)
+**Build:** 143 (v0.6.0) — deployed to TestFlight 2026-03-19 ~21:09 UTC
+
+**What was done:**
+
+The standalone R4 `didReceiveApplicationContext` handler shipped in build 142 was upgraded with R5d three-constraint ordering:
+
+1. Compute `gap` from `lastDataReceivedAt` BEFORE updating the timestamp
+2. `saveComplicationSnapshot(from: payload)` — save the incoming data
+3. Update `lastDataReceivedAt = Date()`
+4. If `gap > 600` → log `sleep_gap_detected_context gap_seconds=<n>` and call `forceWidgetReloadIfStale(receivedGap:)`
+
+This brings `didReceiveApplicationContext` to parity with `didReceiveUserInfo` — both channels now participate in sleep-gap detection and forced reload. The `forceWidgetReloadIfStale` helper (shared with `didReceiveUserInfo`) provides the 5-minute rate limiter and snapshot diagnostic read.
+
+**Files touched:**
+- `Trio Watch App Extension/WatchState.swift` — R4 handler upgrade (lines ~633-642 replaced with ~15-line R5d-integrated version)
+
+**Deviations from build 142:** None — the build 142 handler was additive (standalone `saveComplicationSnapshot` call). The upgrade wraps the same save in the R5d gap-detection pattern, adding only the gap computation, timestamp update, and conditional forced reload.
+
+---
+
 ### Step 5 / R4 — applicationContext safety net (2026-03-18 22:54 CET)
 
 **Status:** Code review passed. Deployed as build 142 — see entry above for validation results.
@@ -80,6 +105,9 @@
 ---
 
 ## Changelog
+
+### v1.1 (2026-03-20 22:10 CET)
+- Added build 143 entry: R4 handler upgrade with R5d three-constraint ordering integration (gap detection, forced reload).
 
 ### v1.0 (2026-03-19 11:33 CET)
 - Initial version. Extracted build 140 (R6) log entry from `complication-freshness-remediation-plan.md` and Step 5/R4 implementation log entry from `complication-freshness-implementation-guide.md`. Added new build 142 entry documenting R4 validation results. Reason: docs reorganization — consolidate alternative delivery channel implementation log entries into a standalone document.

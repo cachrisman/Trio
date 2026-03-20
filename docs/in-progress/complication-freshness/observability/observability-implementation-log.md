@@ -1,8 +1,8 @@
 # Observability Hardening — Implementation Log
 
-**Version:** v1.0
+**Version:** v1.1
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-19 11:33 CET
+**Last updated:** 2026-03-20 22:10 CET
 
 ---
 
@@ -82,19 +82,37 @@ Both events are complication-extension / WidgetKit only (not HealthKit observer 
 
 ---
 
-### R5d — Sleep-gap forced reload — NOT YET IMPLEMENTED
+### R5d — Sleep-gap forced reload (build 143, 2026-03-19/20)
 
-**Status:** Pending. This is the only remaining R5 sub-step.
+**Commits:** `eea6d5ba3` (build 143 patch-09 changes), `b26136f0e` (red-team review fixes) on `feature/watch-complication-improvements`
+**Patch:** `09-watch-complication-improvements.patch` regenerated via `mid-stack-update.sh --patch 09 --cherry-pick eea6d5ba3,b26136f0e,f5b30820a`
+**Build:** 143 (v0.6.0) — deployed to TestFlight 2026-03-19 ~21:09 UTC
 
-**What it will do:** Rename `lastUserInfoReceivedAt` to `lastDataReceivedAt`, persist to App Group UserDefaults, add `forceWidgetReloadIfStale(receivedGap:)` with 5-minute rate limiter, and add gap detection in both `didReceiveUserInfo` and `didReceiveApplicationContext` handlers.
+**What was done:**
 
-**Why it's still pending:** R5d was part of the Step 6 plan but was not included in the build 141 commit. The `lastUserInfoReceivedAt` property remains in-memory (`private var Date?`, WatchState.swift line 103), not renamed or persisted. No `forceWidgetReloadIfStale` function or `sleep_gap_detected` logging exists in the codebase.
+1. **Rename + persist `lastDataReceivedAt`:** Removed `private var lastUserInfoReceivedAt: Date?` (in-memory). Added computed property `lastDataReceivedAt` backed by App Group UserDefaults (`double(forKey: "lastDataReceivedAt")`). Survives app restart and WCSession reconnection.
 
-**Design:** See [observability-design.md](observability-design.md#r5d--sleep-gap-forced-reload) for the full spec.
+2. **Three-constraint ordering in `didReceiveUserInfo`:** In the main-queue block: (a) compute gap BEFORE updating timestamp, (b) `saveComplicationSnapshot`, (c) update `lastDataReceivedAt = Date()`, (d) if `gap > 600` → log `sleep_gap_detected` and call `forceWidgetReloadIfStale(receivedGap:)`.
+
+3. **`forceWidgetReloadIfStale(receivedGap:)`:** New private method with: 5-minute rate limiter via persisted `lastWidgetReloadAt`, snapshot diagnostic read with `snapshotReadMs` timing, `WidgetCenter.shared.reloadTimelines(ofKind:)` dispatch, structured logging (`forced_widget_reload_after_gap` or `forced_reload_skipped_rate_limit`).
+
+4. **`didReceiveApplicationContext` upgrade:** Same three-constraint ordering as `didReceiveUserInfo`. Logs `sleep_gap_detected_context` when gap > 600s.
+
+**Red-team review fixes (applied in `b26136f0e`):**
+
+- **RT-1 (blocker):** Removed stale-backlog guard from `forceWidgetReloadIfStale` that inverted the design by suppressing reload when snapshot was fresh.
+- **RT-2 (ordering):** Added synchronous `saveComplicationSnapshot` in `didReceiveUserInfo` sleep-gap path so `forceWidgetReloadIfStale` reads fresh App Group data.
+- **RT-4 (crash):** Safe-formatted all `Int(gap)` / `Int(snapshotAge)` to prevent `Int(.infinity)` crash when `lastDataReceivedAt` is nil on first-ever receive.
+- **RT-5 (logging):** Use `fromUserInfo:false` for pre-branch save to avoid double R5c logging.
+
+**Design:** See [observability-design.md §R5d](observability-design.md#r5d--sleep-gap-forced-reload) for the full spec.
 
 ---
 
 ## Changelog
+
+### v1.1 (2026-03-20 22:10 CET)
+- R5d section: replaced "NOT YET IMPLEMENTED" with full implementation log for build 143. Includes rename/persist, three-constraint ordering, `forceWidgetReloadIfStale`, `didReceiveApplicationContext` upgrade, and red-team review fixes (RT-1/2/4/5).
 
 ### v1.0 (2026-03-19 11:33 CET)
 - Initial version. Reconstructed from commits on `feature/watch-complication-improvements`, remediation plan changelog v1.50–v1.51, and code inspection during docs reorganization.

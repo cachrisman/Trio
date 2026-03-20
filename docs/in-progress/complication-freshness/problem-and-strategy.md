@@ -1,8 +1,8 @@
 # Complication Freshness — Problem and Strategy
 
-**Version:** 1.4
+**Version:** 1.5
 **Created:** 2026-03-19 11:30 CET
-**Last updated:** 2026-03-19 22:54 CET
+**Last updated:** 2026-03-20 22:10 CET
 
 ---
 
@@ -84,7 +84,12 @@ R6   (HealthKit background delivery on watch)                        ✅ SHIPPED
 R6.1 (HealthKit improvements)                                        ✅ SHIPPED (build 141)
 R4   (applicationContext safety net)                                  ✅ SHIPPED (build 142)
 R5b + R5c + R5f  (observability)                                     ✅ SHIPPED (build 141)
-R5d  (sleep-gap forced reload)                                       pending (Step 6)
+R5d  (sleep-gap forced reload)                                       ✅ SHIPPED (build 143)
+
+        | readingDate wall-clock fallback fixes also in build 143
+        | R4 handler upgraded with R5d three-constraint ordering in build 143
+        | Watch log flush observability (patches 06+09) in build 143
+        | WCSession crash guard (patch 10) in build 143
 ```
 
 ---
@@ -115,14 +120,18 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 | R4 — updateApplicationContext safety net | 142 | Budget-free parallel channel during exhaustion or deep queue; standalone watch handler (R5d integration pending) |
 | Bug fix — reachable + budget=0 transfer skip | 142 | `transferUserInfo` fallback was gated inside `!isReachable`; extracted to independent block. BetterStack-confirmed in production (two instances, 2026-03-18/19). See `transfer-optimization-implementation-log.md`. |
 | Monotonic snapshot acceptance guard on watch | 130 (FP-Phase 3) | `saveOnMain` rejects older snapshots via `shouldUpdate` (±1s tolerance) + `lastValidTimestamp` persisted fallback. Channel-agnostic; all delivery paths funnel through `save()`. Confirmed by code audit 2026-03-19. |
+| readingDate wall-clock fallback fixes (1A/1B/1C) | 143 | 3 code paths substituting `Date()` for nil CGM dates — `saveComplicationSnapshot` fallback now returns early, `didReceiveUserInfo` removes `?? dateValue` fallback, `setupWatchState` filters nil-date entries via compactMap. See investigation report §2. |
+| R5d — sleep-gap forced reload | 143 | `lastDataReceivedAt` renamed + App Group persisted, `forceWidgetReloadIfStale(receivedGap:)` with 5-min rate limiter. Three-constraint ordering (gap → save → update) in both `didReceiveUserInfo` and `didReceiveApplicationContext`. Red-team review fixes applied (RT-1 thru RT-5). |
+| R4 handler upgrade (R5d integration) | 143 | `didReceiveApplicationContext` upgraded from standalone to R5d three-constraint ordering (gap detection → save → timestamp update → forced reload if stale). |
+| Watch log flush observability (4A/4B/4C) | 143 | Truncation logging in `WatchLogger.flushToPhone()`, phone-side upload nudge via `trioWatchLogsAppended` notification, Flush Logs debug button replacing Burst Save x14. |
+| WCSession crash guard (5A/5B) | 143 | Delegate callback debounce (0.5s coalescer), activation state guard, reachability debounce, `retryConnection()` removal, `loadServices()` force-unwrap → guard-let. New patch 10. |
+| Bug fix — Foundation.NotificationCenter shadowing | 143 | Custom `protocol NotificationCenter` shadows `Foundation.NotificationCenter`; qualified 4 call sites in `AppleWatchManager.swift` with `Foundation.` prefix. |
 
 ---
 
 ### Pending (planned, fully specced)
 
-| Item | Priority | Notes |
-|---|---|---|
-| R5d — sleep-gap forced reload (Step 6) | **P0** | `lastDataReceivedAt` rename + App Group persistence + `forceWidgetReloadIfStale(receivedGap:)`. Completes R4 watch handler with three-constraint ordering. Full spec in `observability-design.md §R5d`. Not yet in `WatchState.swift` — confirmed by code audit 2026-03-19. |
+*None — all planned items shipped as of build 143.*
 
 ---
 
@@ -132,7 +141,7 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 
 | Item | Priority | Notes |
 |---|---|---|
-| readingDate wall-clock fallback bug | P0 before baseline remeasurement | 3 code paths set `readingDate` to `Date()` / build time instead of CGM epoch when primary sources are nil: `saveComplicationSnapshot` fallback 2 (L917-921), `didReceiveUserInfo` nil-glucoseValues fallback (L518), `setupWatchState` nil `glucose.date` (L347). Causes artificially fresh `data_age_seconds`, masking real staleness. Fix: return early / skip rather than substituting wall-clock time. Should be fixed before post-R5d baseline re-measurement. See investigation report 2026-03-19. |
+| ~~readingDate wall-clock fallback bug~~ | ~~P0~~ → **Shipped (143)** | Fixed in build 143 (Items 1A/1B/1C). See Shipped table. |
 | Post-dead-zone recovery: pull request after stall drain | Medium | In `didFinishUserInfoTransfer` success path, check staleness of `lastDataReceivedAt`; if still stale, send `requestWatchUpdate`. Addresses 66-minute dead-zone recovery gap observed 2026-03-17. |
 | Proactive transfer on iOS app foreground | Medium | On `applicationDidBecomeActive` / `sceneDidBecomeActive`, call `setupWatchState()` + `sendDataToWatch()` only when the current snapshot is stale or no recent successful transfer exists. Addresses the “I just opened Trio on my phone, my watch should update” mental model without reintroducing budget spam. Deferred — re-evaluate after R4 and R5d observation windows close. |
 | HK trend metadata on iPhone writes | Medium | Add `"com.trio.trend": glucoseSample.direction?.rawValue ?? ""` to HK metadata in `uploadGlucose(_:)`. Eliminates transient trend regression (`""` overwriting real trend) in dual-delivery normal operation. Specced in `alternative-delivery-design.md §R6`. Verify HealthKit consumer apps before shipping. |
@@ -177,7 +186,7 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 
 | Item | Priority | Notes |
 |---|---|---|
-| Post-R4 + R5d freshness baseline re-measurement | **P0 (gated on R5d)** | Re-measure `save_age` p90, `reload_age` p90, `receive_lag` p50/p90, and `data_age` at `getTimeline` after both R4 and R5d have 48h of data. Determines whether further transport changes are warranted. Must run immediately after the R5d observation window closes — this is the gate for the entire remaining backlog. |
+| Post-R4 + R5d freshness baseline re-measurement | **P0 — NOW UNBLOCKED** | R5d shipped in build 143 (deployed 2026-03-19 ~21:09 UTC). Re-measure `save_age` p90, `reload_age` p90, `receive_lag` p50/p90, and `data_age` at `getTimeline` after R5d has 48h of data (earliest: 2026-03-21 ~21:09 UTC). Determines whether further transport changes are warranted. This is the gate for the entire remaining backlog. |
 
 ---
 
@@ -198,6 +207,14 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 ---
 
 ## Changelog
+
+### v1.5 (2026-03-20 22:10 CET)
+- Build 143 deployment update (deployed 2026-03-19 ~21:09 UTC, confirmed via Better Stack).
+- Implementation Sequence: R5d marked ✅ SHIPPED (build 143); added notes for readingDate fixes, R4 handler upgrade, watch log flush, and WCSession crash guard (all build 143).
+- Shipped table: Added 6 new rows — readingDate 1A/1B/1C fixes, R5d sleep-gap forced reload, R4 handler upgrade, watch log flush 4A/4B/4C, WCSession crash guard 5A/5B, Foundation.NotificationCenter shadowing fix.
+- Pending section: Cleared (all planned items now shipped).
+- Backlog: readingDate wall-clock bug struck through (shipped). Post-R4+R5d re-measurement upgraded to "NOW UNBLOCKED" with earliest measurement date 2026-03-21.
+- Reason: reflect build 143 deployment completing the R1-R6 planned remediation sequence.
 
 ### v1.4 (2026-03-19 22:54 CET)
 - Backlog (Observability): added item to emit `📤 Transferred new WatchState snapshot via=updateApplicationContext` alongside existing R4 `context_*` logs so Better Stack `transfer_via` can bucket `updateApplicationContext` like `sendMessage` / complication userInfo / `userInfo`.

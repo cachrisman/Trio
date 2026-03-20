@@ -1,0 +1,227 @@
+From fd97d9ea3d6e82760a3e68d22771c95df790a13f Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Fri, 20 Mar 2026 12:56:35 +0100
+Subject: [PATCH] feat: watch-session-crash-guard
+
+---
+ Trio/Sources/Application/TrioApp.swift        | 49 +++++++------
+ .../WatchManager/AppleWatchManager.swift      | 68 +++++++++++--------
+ 2 files changed, 67 insertions(+), 50 deletions(-)
+
+diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
+index 6684460f4..7ace0f37c 100644
+--- a/Trio/Sources/Application/TrioApp.swift
++++ b/Trio/Sources/Application/TrioApp.swift
+@@ -65,29 +65,36 @@ extension Notification.Name {
+     }
+ 
+     private func loadServices() {
+-        resolver.resolve(AppearanceManager.self)!.setupGlobalAppearance()
+-        _ = resolver.resolve(DeviceDataManager.self)!
+-        _ = resolver.resolve(APSManager.self)!
+-        _ = resolver.resolve(FetchGlucoseManager.self)!
+-        _ = resolver.resolve(FetchTreatmentsManager.self)!
+-        _ = resolver.resolve(CalendarManager.self)!
+-        _ = resolver.resolve(UserNotificationsManager.self)!
+-        _ = resolver.resolve(WatchManager.self)!
+-        _ = resolver.resolve(ContactImageManager.self)!
+-        _ = resolver.resolve(HealthKitManager.self)!
+-        _ = resolver.resolve(WatchManager.self)!
+-        _ = resolver.resolve(GarminManager.self)!
+-        _ = resolver.resolve(ContactImageManager.self)!
+-        _ = resolver.resolve(BluetoothStateManager.self)!
+-        _ = resolver.resolve(PluginManager.self)!
+-        _ = resolver.resolve(AlertPermissionsChecker.self)!
+-        _ = resolver.resolve(CloudLogUploadService.self)!
+-        let launchBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+-        debug(.service, "[DEPLOY] event=app_launch platform=ios build=\(launchBuild)")
++        if let appearance = resolveOrLog(AppearanceManager.self) {
++            appearance.setupGlobalAppearance()
++        }
++        resolveOrLog(DeviceDataManager.self)
++        resolveOrLog(APSManager.self)
++        resolveOrLog(FetchGlucoseManager.self)
++        resolveOrLog(FetchTreatmentsManager.self)
++        resolveOrLog(CalendarManager.self)
++        resolveOrLog(UserNotificationsManager.self)
++        resolveOrLog(WatchManager.self)
++        resolveOrLog(ContactImageManager.self)
++        resolveOrLog(HealthKitManager.self)
++        resolveOrLog(GarminManager.self)
++        resolveOrLog(BluetoothStateManager.self)
++        resolveOrLog(PluginManager.self)
++        resolveOrLog(AlertPermissionsChecker.self)
++        resolveOrLog(CloudLogUploadService.self)
+         if #available(iOS 16.2, *) {
+-            _ = resolver.resolve(LiveActivityManager.self)!
++            resolveOrLog(LiveActivityManager.self)
++        }
++        resolveOrLog(IOBService.self)
++    }
++
++    @discardableResult
++    private func resolveOrLog<T>(_ type: T.Type) -> T? {
++        guard let service = resolver.resolve(type) else {
++            warning(.default, "loadServices: failed to resolve \(type) — skipping")
++            return nil
+         }
+-        _ = resolver.resolve(IOBService.self)!
++        return service
+     }
+ 
+     init() {
+diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+index 913988c66..5782a6d6f 100644
+--- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
++++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+@@ -70,6 +70,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     private let processedIdsTTL: TimeInterval = 7 * 24 * 60 * 60 // 7 days
+     private let pendingAcksKey = "watchPendingAcks"
+ 
++    // Delegate-triggered state push debounce (crash guard — absorbs rapid WCSession delegate storms)
++    private var pendingDelegateWorkItem: DispatchWorkItem?
++    private var delegateCoalesceCount = 0
++
+     typealias PumpEvent = PumpEventStored.EventType
+ 
+     let backgroundContext = CoreDataStack.shared.newTaskContext()
+@@ -202,13 +206,26 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         )
+     }
+ 
+-    /// Attempts to reestablish the Watch connection if it becomes unreachable
+-    private func retryConnection() {
+-        guard let session = session else { return }
+-
+-        if !session.isReachable {
+-            debug(.watchManager, "📱 Attempting to reactivate session...")
+-            session.activate()
++    /// Cancel-and-replace debounce for delegate-triggered state pushes.
++    /// Collapses N rapid callbacks (e.g. watch reboot storm) into one push after a 0.5s quiet window.
++    private func scheduleDelegateTriggeredUpdate(source: String) {
++        DispatchQueue.main.async { [weak self] in
++            guard let self else { return }
++            self.pendingDelegateWorkItem?.cancel()
++            self.delegateCoalesceCount += 1
++
++            let count = self.delegateCoalesceCount
++            let workItem = DispatchWorkItem { [weak self] in
++                guard let self else { return }
++                debug(.watchManager, "📡 delegate_coalescer_fired source=\(source) coalesced=\(count)")
++                self.delegateCoalesceCount = 0
++                Task {
++                    let state = await self.setupWatchState()
++                    await self.sendDataToWatch(state)
++                }
++            }
++            self.pendingDelegateWorkItem = workItem
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+         }
+     }
+ 
+@@ -331,6 +348,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+                 // Map glucose values
+                 watchState.glucoseValues = glucoseObjects.compactMap { glucose in
++                    guard let date = glucose.date else { return nil }
++
+                     let glucoseValue = self.units == .mgdL
+                         ? Double(glucose.glucose)
+                         : Double(truncating: Decimal(glucose.glucose).asMmolL as NSNumber)
+@@ -344,7 +363,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                     )
+ 
+                     return WatchGlucoseObject(
+-                        date: glucose.date ?? Date(),
++                        date: date,
+                         glucose: glucoseValue,
+                         color: glucoseColor.toHexString()
+                     )
+@@ -907,6 +926,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             return
+         }
+ 
++        guard activationState == .activated else {
++            debug(.watchManager, "📱 Ignoring activation callback — state is \(activationState.rawValue), not .activated")
++            return
++        }
++
+         debug(.watchManager, "📱 Phone session activated state=\(activationState.rawValue) isReachable=\(session.isReachable) isPaired=\(session.isPaired) isWatchAppInstalled=\(session.isWatchAppInstalled) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
+ 
+         // R2b: clear dispatch gate on activation so the first post-launch transfer always fires
+@@ -918,14 +942,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             cancelStaleQueuedTransfers()
+         }
+ 
+-        DispatchQueue.main.async {
+-            self.pendingSendWorkItem?.cancel()
+-            self.coalescerFirstScheduledAt = nil
+-        }
+-        Task {
+-            let state = await self.setupWatchState()
+-            await self.sendDataToWatch(state)
+-        }
++        scheduleDelegateTriggeredUpdate(source: "activationCompleted")
+     }
+ 
+     // MARK: - Processed IDs Management
+@@ -1093,6 +1110,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             if type == "watchLogs" {
+                 if let logData = message["data"] as? String {
+                     SimpleLogReporter.appendToWatchLog(logData)
++                    Foundation.NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
+                 }
+             } else if type == "watchError" {
+                 if let errorData = message["data"] as? [String: Any] {
+@@ -1118,6 +1136,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                 if type == "watchLogs" {
+                     if let logData = message["data"] as? String {
+                         SimpleLogReporter.appendToWatchLog(logData)
++                        Foundation.NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
+                     }
+                 } else if type == "watchError" {
+                     if let errorData = message["data"] as? [String: Any] {
+@@ -1130,6 +1149,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             // Legacy message format
+             if let logs = message["watchLogs"] as? String {
+                 SimpleLogReporter.appendToWatchLog(logs)
++                Foundation.NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
+             }
+ 
+             // Handle watch errors forwarded for Crashlytics logging
+@@ -1293,6 +1313,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             if type == "watchLogs" {
+                 if let logData = userInfo["data"] as? String {
+                     SimpleLogReporter.appendToWatchLog(logData)
++                    Foundation.NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
+                 }
+             } else if type == "watchError" {
+                 if let errorData = userInfo["data"] as? [String: Any] {
+@@ -1346,22 +1367,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         debug(.watchManager, "📱 Phone reachability changed: isReachable=\(session.isReachable) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
+ 
+         if session.isReachable {
+-            DispatchQueue.main.async {
+-                self.pendingSendWorkItem?.cancel()
+-                self.coalescerFirstScheduledAt = nil
+-            }
+-            Task {
+-                let state = await self.setupWatchState()
+-                await self.sendDataToWatch(state)
+-            }
++            scheduleDelegateTriggeredUpdate(source: "reachabilityChanged")
+ 
+-            // Send pending ACKs when watch becomes reachable
+             sendPendingAcksIfReachable()
+         } else {
+-            // Try to reconnect after a short delay
+-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+-                self?.retryConnection()
+-            }
++            debug(.watchManager, "📱 Watch became unreachable — waiting for system reconnection")
+         }
+     }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
