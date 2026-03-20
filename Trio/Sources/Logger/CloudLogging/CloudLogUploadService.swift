@@ -1,6 +1,10 @@
 import Foundation
 import UIKit
 
+extension Notification.Name {
+    static let trioWatchLogsAppended = Notification.Name("trioWatchLogsAppended")
+}
+
 /// App lifecycle + periodic trigger wrapper.
 ///
 /// - Manual trigger: `uploadNow()`
@@ -135,6 +139,17 @@ final class CloudLogUploadService {
         observers.append(
             center.addObserver(
                 forName: UIApplication.didEnterBackgroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.uploadNow()
+            }
+        )
+
+        // Watch log nudge: upload promptly when watch logs arrive
+        observers.append(
+            center.addObserver(
+                forName: .trioWatchLogsAppended,
                 object: nil,
                 queue: .main
             ) { [weak self] _ in

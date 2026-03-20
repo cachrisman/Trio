@@ -182,7 +182,15 @@ actor WatchLogger {
 
         var logsToSend = logs.joined(separator: "\n")
 
-        if logsToSend.utf8.count > logSizeCap {
+        // logSizeCap (16KB) limits in-memory flush payloads sent via WCSession.
+        // Per-payload drain files can be up to 64KB (maxDrainFileSize).
+        let originalUTF8Count = logsToSend.utf8.count
+        let lineCount = logs.count
+
+        if originalUTF8Count > logSizeCap {
+            logs.append("⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(lineCount)")
+            logsToSend = logs.joined(separator: "\n")
+
             let cappedData = logsToSend.data(using: .utf8)?.prefix(logSizeCap)
                 ?? Data()
             logsToSend = String(data: cappedData, encoding: .utf8)
