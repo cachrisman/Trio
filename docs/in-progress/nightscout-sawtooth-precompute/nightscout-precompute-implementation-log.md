@@ -1,8 +1,8 @@
 # Nightscout sawtooth precompute — implementation log
 
-**Version:** 1.0  
-**Last updated:** 2026-03-17  
-**Plan reference:** `nightscout-precompute-implementation-plan.md` (implementation plan)
+**Version:** 1.2  
+**Last updated:** 2026-03-20 21:58 CET  
+**Plan reference:** `nightscout-precompute-implementation-plan.md` (v1.13+)
 
 This document records what was built and what changed compared to the implementation plan. Implementation lives in **cgm-remote-monitor** (Nightscout): `bin/sawtooth-precompute.js` (one-shot), `bin/sawtooth-clock.js` (Heroku clock loop), `lib/sawtooth-precompute/*.js`.
 
@@ -25,7 +25,7 @@ This document records what was built and what changed compared to the implementa
 - **F4 (corrupt state):** `loadStateFile()` throws on read/parse failure instead of returning 0 (fail closed).
 - **F5 (Mongo overlap):** Lease document (`_id: 'lease'`, pid, ts) acquired before load, released in `close()`; duplicate instance fails with "lease held."
 - **F6 (lock retry):** Busy wait replaced with `await sleep(ms)`; `acquireFileLock()` async.
-- **F7 (observability):** Single log line: `gtl_rows=N parsed=P deduped=D skipped_no_anchor=S emitted=E`.
+- **F7 (observability):** Single log line: `gtl_rows=N parsed=P deduped=D skipped_no_anchor=S emitted=E`. *(Superseded by §14.7 — success path now one `pushed` line including those counters plus `end_minute` and anchor/emit-delay fields.)*
 - **F8 (dedupe):** Comment added: "any off-wrist wins" and mixed-group semantics per design §4.2.
 
 ---
@@ -69,8 +69,55 @@ This document records what was built and what changed compared to the implementa
 
 ---
 
+## 14.7 Observability, README versioning, agent docs (2026-03-20)
+
+- **Success logging:** Removed per-run `sawtooth-precompute start` and the separate post-query `gtl_rows=…` line. After checkpoint succeeds, **one** `sawtooth-precompute pushed …` line includes `gtl_rows`, `parsed`, `deduped`, `skipped_no_anchor`, `minutes`, `end_minute`, `anchor_gtl_epoch`, `anchor_gtl_age_seconds`, `emit_delay_actual_seconds` (sentinel `-1` on anchor fields when nothing emitted). `wall_at_push` is sampled immediately before the log.
+- **Skip:** Unchanged: `sawtooth-precompute skip (nothing to do)`.
+- **README (`lib/sawtooth-precompute/README.md`):** Document-only **Version** / **Last updated** at top and **Changelog** at bottom (not a runtime semver). Observability section documents the line shape and example Better Stack metric extractions (`gtl_rows` and `minutes` parsed from the same `pushed` line).
+- **Repo root:** `AGENTS.md` and `docs/betterstack-guide.md` added in cgm-remote-monitor for Cursor/agent habits (secrets, MCP, ClickHouse notes) without referencing other product repos by name.
+
+---
+
+## 14.8 Dynamic emit delay, off-wrist fix, query retry (2026-03-20)
+
+Several runtime improvements shipped in cgm-remote-monitor `lib/sawtooth-precompute/` (README v2–v5). These change behavior relative to the original design's fixed emit delay and off-wrist semantics.
+
+### Dynamic emit delay (`run.js`)
+
+- **Replaced** the fixed `emit_delay_seconds` with a rolling-max-based dynamic delay. Each run measures `data_horizon_lag` = `wall_now - max(dt)` across all GTL rows returned by the query. Observations are stored in an in-memory rolling window (`lagObservations`) over `SAWTOOTH_LAG_WINDOW_SECONDS` (default 3 h). `effective_emit_delay` = `rolling_max(data_horizon_lag) + SAWTOOTH_LAG_BUFFER_SECONDS` (default 120 s). Falls back to `SAWTOOTH_EMIT_DELAY_SECONDS` on cold start (no observations yet).
+- **Drain lag cap** (v3): Observations above `MAX_PLAUSIBLE_DRAIN_LAG = 1800` (30 min) are excluded from the rolling window. Gaps larger than that are WidgetKit freezes (no GTL events fired), not log drain latency. Without this cap, a multi-hour freeze would inflate `effective_emit_delay` for hours after recovery.
+- **Cron vs clock loop**: The dynamic delay requires the persistent clock loop (`sawtooth-clock.js`) to accumulate observations across runs. Cron deployments (new process each run) always use the cold-start fallback since the lag tracker is in-memory and resets on process restart.
+
+### Config parsing fix (`run.js`)
+
+- **`envInt()` helper** replaces `parseInt(env) || DEFAULT`, which incorrectly treated `0` as falsy and fell back to the default. Setting `SAWTOOTH_EMIT_DELAY_SECONDS=0` (backfill) or `SAWTOOTH_LAG_BUFFER_SECONDS=0` now works correctly.
+
+### New env vars
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SAWTOOTH_LAG_WINDOW_SECONDS` | 10800 | Rolling window (seconds) for data-horizon-lag observations. |
+| `SAWTOOTH_LAG_BUFFER_SECONDS` | 120 | Buffer added on top of `lag_window_max` to compute `effective_emit_delay`. |
+
+### New log fields
+
+Both the `pushed` and `skip` log lines now include: `effective_emit_delay`, `data_horizon_lag`, `lag_window_max`, `lag_obs`. See README v5 for field reference and metric extraction expressions.
+
+### Off-wrist detection narrowed (`dedupe.js`)
+
+- **`battery_state=unknown`** no longer triggers `is_off_wrist`. Only `charging` and `full` (both mean the watch is on its charger) do. This diverges from the original design (§4.2) which treated `unknown` as off-wrist; in practice, `unknown` is common during WatchOS complication/provider restarts and was causing false zero periods on the sawtooth.
+- **`battery_state=full`** added as off-wrist (the watch reports `full` when charged and still on the charger).
+
+### Transient query retry (`fetch-gtl-logs.js`)
+
+- `queryGtlLogs` now retries once (`MAX_RETRIES = 1`) with a 5 s delay on transient errors (ETIMEDOUT, ECONNRESET, ECONNREFUSED, HTTP 503, generic timeout) before throwing. Non-transient errors throw immediately. Logs a WARN on retry attempts.
+
+---
+
 ## Changelog
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.2 | 2026-03-20 21:58 CET | §14.8 — dynamic emit delay (rolling max + drain lag cap + config parsing fix), off-wrist narrowed to charging/full (unknown is on-wrist), transient query retry in fetch-gtl-logs; new env vars and log fields. |
+| 1.1 | 2026-03-20 11:15 CET | §14.7 — consolidated `pushed` log, README doc versioning, cgm-remote-monitor AGENTS + betterstack-guide; §14.2 F7 footnote to §14.7. |
 | 1.0 | 2026-03-17 | Extracted from implementation plan §14; standalone implementation log for what was done vs plan. |

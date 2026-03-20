@@ -185,3 +185,20 @@ Run per `docs/prompts/nightscout-precompute-docs-prompt.md`. Exact workflow: bas
 | Versioning / changelog / cross-references | Yes | Pass — design v1.14, plan v1.5; changelog updated; design reference in plan header v1.14. |
 
 **Why further passes are unlikely to surface more than low-value nits:** Two full finding passes plus regression pass covered internal and cross-doc consistency, repo grounding, and all eight focus areas. Remaining nits would be stylistic or optional cross-ref wording (e.g. §5→§8). No open placeholders, no "see below" to missing sections, no overclaiming "validated" where uncertainty remains.
+
+---
+
+## Maintenance note (2026-03-20)
+
+Shipped **cgm-remote-monitor** `run.js` logging differs from Phase 6 / §9 as written during this red-team session: there is **no** per-run `sawtooth-precompute start` line and **no** separate `gtl_rows=N` line before success. Instead, after checkpoint, a **single** `sawtooth-precompute pushed …` line carries pipeline counters, `minutes`, `end_minute`, and anchor / emit-delay fields. Use **implementation plan §9 (v1.13+)**, **design §7 (v1.16)**, **implementation log §14.7–14.8**, and **cgm-remote-monitor `lib/sawtooth-precompute/README.md`** as the authoritative description of the current log contract. The attestation table above reflects the **pre-shipment** doc set.
+
+### Post-shipment semantic changes (2026-03-20 evening)
+
+Several changes shipped after this review that affect the findings above:
+
+- **Off-wrist semantics diverged from Explore:** `battery_state=unknown` is now treated as **on-wrist** (was off-wrist in the original design and Explore query). `battery_state=full` added as off-wrist. This affects design §4.2, §5, and this review's grounding in Explore semantics (§2). The change is intentional — `unknown` during provider restarts caused false zero periods.
+- **Dynamic emit delay:** Fixed `emit_delay_seconds` replaced with rolling-max-based dynamic delay (design §4.5, implementation log §14.8). The algorithm pseudocode in design §10 still shows the fixed version but §4.5 now documents the dynamic mechanism.
+- **Transient query retry:** `fetch-gtl-logs.js` retries once on transient network errors (implementation plan §5 Phase 2.1, implementation log §14.8).
+- **New log fields:** `effective_emit_delay`, `data_horizon_lag`, `lag_window_max`, `lag_obs` on both `pushed` and `skip` lines.
+
+These changes are documented in implementation plan v1.13, design v1.16, and implementation log v1.2 §14.8.

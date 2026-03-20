@@ -1,15 +1,15 @@
 # Nightscout sawtooth precompute — implementation plan
 
-**Version:** 1.11  
+**Version:** 1.13  
 **Status:** Implementation plan (converts approved design into build plan)  
-**Last updated:** 2026-03-19 14:26 CET  
-**Design reference:** `nightscout-sawtooth-precompute-service.md` (v1.14)
+**Last updated:** 2026-03-20 21:58 CET  
+**Design reference:** `nightscout-precompute-design.md` (v1.16)
 
 ---
 
 ## 1. Verdict
 
-The design in `nightscout-sawtooth-precompute-service.md` is implementation-ready. This plan converts it into a concrete build: one standalone Node script run by cron every minute, **checkpoint in file or MongoDB** (v1 supports both; use MongoDB when `MONGODB_URI` is set — e.g. on Heroku — via a dedicated collection in Nightscout's existing DB), query to existing Trio Better Stack logs (with S3 union when window &gt; ~40 min), reconstruction in memory, batch push to the existing **Trio Complication Recency** Prometheus-push source. The Prometheus source must exist (create per design §6 if not already present). No Trio app changes. No redesign of the two-source Better Stack model, emit delay, or checkpoint semantics.
+The design in `nightscout-precompute-design.md` is implementation-ready. This plan converts it into a concrete build: one standalone Node script run by cron every minute, **checkpoint in file or MongoDB** (v1 supports both; use MongoDB when `MONGODB_URI` is set — e.g. on Heroku — via a dedicated collection in Nightscout's existing DB), query to existing Trio Better Stack logs (with S3 union when window &gt; ~40 min), reconstruction in memory, batch push to the existing **Trio Complication Recency** Prometheus-push source. The Prometheus source must exist (create per design §6 if not already present). No Trio app changes. No redesign of the two-source Better Stack model, emit delay, or checkpoint semantics.
 
 ---
 
@@ -43,7 +43,7 @@ The design in `nightscout-sawtooth-precompute-service.md` is implementation-read
   3. Compute window: `window_start = max(0, last_emitted_minute_epoch - lookback_seconds)`, `window_end = now` (wall-clock seconds).
   4. POST to Better Stack Query API (Trio logs): SQL over Trio logs with time bound `[window_start, window_end]`, filter GTL events; **include S3 union** when window spans &gt; ~40 min (required for 3h lookback — hot tier holds only ~30–40 min). Get rows with `dt` (Unix seconds) and `message`.
   5. Parse each row: from `message` extract `data_age_seconds`, `battery_state`, `get_timeline_at_epoch_seconds`.
-  6. Dedupe by `dt`; per group: `is_off_wrist`, `data_age_seconds` (argMax tie-break), `gtl_epoch` (parsed; if disagree use max and log WARN). Filter to rows where `is_off_wrist === true` OR `data_age_seconds != null`. Sort by `gtl_epoch`.
+  6. Dedupe by `dt`; per group: `is_off_wrist` (charging or full), `data_age_seconds` (argMax tie-break), `gtl_epoch` (parsed; if disagree use max and log WARN). Filter to rows where `is_off_wrist === true` OR `data_age_seconds != null`. Sort by `gtl_epoch`.
   7. For each minute in `(last_emitted_minute_epoch, end_minute]`: ASOF last GTL with `gtl_epoch <= minute_epoch`; value = 0 if off-wrist, else `data_age_seconds + (minute_epoch - gtl_epoch)` (clamp ≥ 0). Skip minute if no anchor (sparse GTL).
   8. POST to Better Stack ingest: one request with array of `{ name, gauge: { value }, dt }` (Unix integer), Bearer token for Trio Complication Recency source.
   9. If all pushes succeed: set `last_emitted_minute_epoch = end_minute`, save checkpoint. On any push failure: do not advance checkpoint; next run retries same range.
@@ -116,14 +116,14 @@ data/
 
 ### Phase 2: Better Stack query client
 
-- [ ] **2.1** Implement `lib/sawtooth-precompute/fetch-gtl-logs.js`: Use the **single canonical contract** in §8.1 (URL, method, headers, auth, body, response format). POST to `https://${BETTERSTACK_QUERY_HOST}` with query param `output_format_pretty_row_numbers=0` if applicable. Basic auth from env. Body: SQL string. Timeout e.g. 30 s. On non-2xx or parse error: throw (caller will not advance checkpoint).
+- [ ] **2.1** Implement `lib/sawtooth-precompute/fetch-gtl-logs.js`: Use the **single canonical contract** in §8.1 (URL, method, headers, auth, body, response format). POST to `https://${BETTERSTACK_QUERY_HOST}` with query param `output_format_pretty_row_numbers=0` if applicable. Basic auth from env. Body: SQL string. Timeout e.g. 30 s. On non-2xx or parse error: throw (caller will not advance checkpoint). **Retry once** on transient errors (ETIMEDOUT, ECONNRESET, ECONNREFUSED, HTTP 503, timeout) with a 5 s delay before throwing; non-transient errors throw immediately. Log WARN on retry.
 - [ ] **2.2** SQL template: use exact table and filter from design §4.9. Hot tier holds only ~30–40 minutes (AGENTS.md); with 3h lookback, most of the window is outside hot tier, so **v1 must use the S3 union** for the GTL query whenever `(window_end - window_start) > 2400` (40 min in seconds), or always use the union for simplicity. Use `toUnixTimestamp(dt) AS dt` and `message`; parameterize `window_start` and `window_end` (Unix seconds). Example: `SELECT toUnixTimestamp(dt) AS dt, JSONExtract(raw, 'message', 'Nullable(String)') AS message FROM remote(t491594_trio_logs) WHERE dt BETWEEN toDateTime(${window_start}) AND toDateTime(${window_end}) AND ... UNION ALL SELECT ... FROM s3Cluster(primary, t491594_trio_s3) WHERE _row_type = 1 AND dt BETWEEN ...` (same time bounds and filter; see design §4.1, §4.9 and AGENTS.md for full union pattern).
 - [ ] **2.3** Parse response: Use **one** response format as specified in §8.1 (e.g. JSON or the format the Query API returns). Parser yields array of `{ dt: number, message: string }`. If response is empty or no rows, return `[]`. On parse error or unexpected Content-Type: **throw** (do not implement fallback parsers for TSV/CSV/JSON; pick one and fail fast).
 
 ### Phase 3: Message parsing and dedupe
 
 - [ ] **3.1** Implement `lib/sawtooth-precompute/parse-message.js`: input `message` string; extract `data_age_seconds` (regex e.g. `data_age_seconds=(\d+)`), `battery_state` (e.g. `battery_state=charging|unplugged|unknown`), `get_timeline_at_epoch_seconds` (e.g. `get_timeline_at_epoch_seconds=(\d+)`). Return `{ data_age_seconds: number | null, battery_state: string | null, get_timeline_at_epoch_seconds: number | null }` or null if not GTL-like.
-- [ ] **3.2** Implement `lib/sawtooth-precompute/dedupe.js`: input array of `{ dt, data_age_seconds, battery_state, get_timeline_at_epoch_seconds }` (from raw rows + parse). Group by `dt`. Per group: `is_off_wrist = (battery_state === 'charging' || battery_state === 'unknown')`; `data_age_seconds` = value from one on-wrist row (argMax: prefer non-null, then max); `gtl_epoch` = parsed `get_timeline_at_epoch_seconds`; if group has multiple different `get_timeline_at_epoch_seconds`, use `max(gtl_epoch)` and log WARN. Output rows where `is_off_wrist === true` OR `data_age_seconds != null`. Sort output by `gtl_epoch`.
+- [ ] **3.2** Implement `lib/sawtooth-precompute/dedupe.js`: input array of `{ dt, data_age_seconds, battery_state, get_timeline_at_epoch_seconds }` (from raw rows + parse). Group by `dt`. Per group: `is_off_wrist = (battery_state === 'charging' || battery_state === 'full')` — `unknown` is treated as on-wrist (common during provider restarts; see design §4.2); `data_age_seconds` = value from one on-wrist row (argMax: prefer non-null, then max); `gtl_epoch` = parsed `get_timeline_at_epoch_seconds`; if group has multiple different `get_timeline_at_epoch_seconds`, use `max(gtl_epoch)` and log WARN. Output rows where `is_off_wrist === true` OR `data_age_seconds != null`. Sort output by `gtl_epoch`.
 
 ### Phase 4: Reconstruction and push
 
@@ -138,7 +138,7 @@ data/
 
 ### Phase 6: Logging and cron
 
-- [ ] **6.1** Logging: at start log "sawtooth-precompute start"; after early exit (nothing to do) log "sawtooth-precompute skip (nothing to do)"; after GTL query log "sawtooth-precompute gtl_rows=N"; on empty GTL log WARN "sawtooth-precompute empty GTL list, advancing checkpoint"; after push log "sawtooth-precompute pushed minutes=N"; on query or push error log error and message. Use console.log/console.error so cron log captures it.
+- [ ] **6.1** Logging (shipped shape): **no** per-run `start` line. On emit ceiling unchanged log `sawtooth-precompute skip (nothing to do)`. After successful checkpoint for a run that had work to do, log **one** line: `sawtooth-precompute pushed gtl_rows=… parsed=… deduped=… skipped_no_anchor=… minutes=… end_minute=… anchor_gtl_epoch=… anchor_gtl_age_seconds=… emit_delay_actual_seconds=…` (see §9). On empty GTL (query OK, zero rows after parse/dedupe) log WARN `sawtooth-precompute WARN empty GTL list, advancing checkpoint` before the success line. On query or push error log `sawtooth-precompute ERROR …`. Use `console.log` / `console.warn` / `console.error` so the process log / Heroku drain captures output.
 - [ ] **6.2** Cron: document crontab entry `* * * * * cd /path/to/cgm-remote-monitor && node bin/sawtooth-precompute.js >> /path/to/logs/sawtooth-precompute.log 2>&1` (or equivalent). **Only one instance must run.** Cron does **not** guarantee serialization — a long-running or stuck run can overlap the next. **File backend:** Lock file (Phase 1.3) is **required**. **MongoDB backend:** Single-writer is a deployment invariant; ensure only one cron instance is configured.
 
 ### Phase 7: Cold start and backfill
@@ -164,7 +164,7 @@ Same as design §5 and §10, with concrete types and failure behavior.
 2. **Window:** `window_start = Math.max(0, last_emitted_minute_epoch - lookback_seconds)`; `window_end = wall_now`.
 3. **Query GTL:** POST SQL to Better Stack with `dt BETWEEN toDateTime(window_start) AND toDateTime(window_end)` and GTL filter. If HTTP error or parse error: log error, exit without advancing checkpoint. Response → array of `{ dt, message }`.
 4. **Parse:** For each row, parse message → `data_age_seconds`, `battery_state`, `get_timeline_at_epoch_seconds`. Drop rows that fail to parse or lack GTL fields.
-5. **Dedupe:** Group by `dt`. Per group: is_off_wrist, data_age_seconds (argMax among on-wrist), gtl_epoch (parsed; if disagree use max, log WARN). Filter to `is_off_wrist || data_age_seconds != null`. Sort by gtl_epoch.
+5. **Dedupe:** Group by `dt`. Per group: is_off_wrist (charging or full; unknown = on-wrist), data_age_seconds (argMax among on-wrist), gtl_epoch (parsed; if disagree use max, log WARN). Filter to `is_off_wrist || data_age_seconds != null`. Sort by gtl_epoch.
 6. **Empty:** If deduped list length === 0: log WARN "empty GTL list"; set `points = []`; will still advance checkpoint to `to_minute` after step 8.
 7. **ASOF:** `from_minute = last_emitted_minute_epoch + 60`; `to_minute = end_minute_epoch`. For minute_epoch = from_minute to to_minute step 60: find last GTL with gtl_epoch <= minute_epoch; if none, skip; else value = 0 if off_wrist else max(0, data_age_seconds + (minute_epoch - gtl_epoch)); append { minute_epoch, value } to points.
 8. **Push:** If points.length > 0: POST array of gauges to ingest host; on non-2xx throw (do not advance). If points.length === 0 (empty GTL case): no POST.
@@ -202,7 +202,7 @@ function run():
   // empty GTL: points=[] so pushGauges skipped; checkpoint still advances per design §4.8
   state.last_emitted_minute_epoch = to_minute
   saveState(state)
-  log "pushed minutes=" + points.length
+  log single "pushed" line with gtl_rows, parsed, deduped, skipped_no_anchor, minutes, end_minute, anchor_gtl_epoch, anchor_gtl_age_seconds, emit_delay_actual_seconds (see §9)
 ```
 
 ---
@@ -217,7 +217,9 @@ function run():
 | `BETTERSTACK_INGEST_HOST` | Yes | — | Ingest host for metrics push (set from env; no default). Current known value for this source: `s2301525.eu-fsn-3.betterstackdata.com` — see .env example. |
 | `BETTERSTACK_RECENCY_SOURCE_TOKEN` | Yes | — | Bearer token for source **Trio Complication Recency** (source id `trio_complication_recency_2`). |
 | `SAWTOOTH_LOOKBACK_SECONDS` | No | 10800 | Lookback for GTL window (3 h). |
-| `SAWTOOTH_EMIT_DELAY_SECONDS` | No | 120 | Emit delay; do not emit minutes newer than last complete minute minus this. |
+| `SAWTOOTH_EMIT_DELAY_SECONDS` | No | 120 | Cold-start emit delay (seconds); used until the dynamic lag tracker has observations. |
+| `SAWTOOTH_LAG_WINDOW_SECONDS` | No | 10800 | Rolling window (seconds) for data-horizon-lag observations (3 h). |
+| `SAWTOOTH_LAG_BUFFER_SECONDS` | No | 120 | Buffer added on top of `lag_window_max` to compute `effective_emit_delay`. |
 | `SAWTOOTH_STATE_FILE` | No | `data/sawtooth-precompute-state.json` | Path to checkpoint file when backend=file (relative to CWD or absolute). |
 | `SAWTOOTH_STATE_BACKEND` | No | inferred | `file` or `mongo`. If unset: use `mongo` when `MONGODB_URI` is set, else `file`. Use `mongo` on Heroku (Nightscout already sets `MONGODB_URI`). |
 | `SAWTOOTH_STATE_COLLECTION` | No | `sawtooth_precompute_state` | MongoDB collection name when backend=mongo. Dedicated collection; one document (see §8.5). |
@@ -233,6 +235,8 @@ BETTERSTACK_INGEST_HOST=s2301525.eu-fsn-3.betterstackdata.com
 BETTERSTACK_RECENCY_SOURCE_TOKEN=your_recency_source_token
 SAWTOOTH_LOOKBACK_SECONDS=10800
 SAWTOOTH_EMIT_DELAY_SECONDS=120
+SAWTOOTH_LAG_WINDOW_SECONDS=10800
+SAWTOOTH_LAG_BUFFER_SECONDS=120
 SAWTOOTH_STATE_FILE=data/sawtooth-precompute-state.json
 # Optional: use MongoDB for checkpoint (e.g. on Heroku); Nightscout already sets MONGODB_URI
 # SAWTOOTH_STATE_BACKEND=mongo
@@ -323,17 +327,31 @@ WHERE dt BETWEEN toDateTime(1710000000) AND toDateTime(1710010800)
 
 ## 9. Logging and observability
 
-- **Start:** Log one line: e.g. `sawtooth-precompute start`.
-- **Early exit (nothing to do):** Log `sawtooth-precompute skip (nothing to do)`.
-- **After GTL query:** Log `sawtooth-precompute gtl_rows=N` (N = raw row count).
-- **Empty GTL:** Log `sawtooth-precompute WARN empty GTL list, advancing checkpoint`.
-- **Dedupe tie-break:** Log `sawtooth-precompute WARN gtl_epoch tie-break applied for dt=...`.
-- **After push:** Log `sawtooth-precompute pushed minutes=N`.
-- **On query failure:** Log `sawtooth-precompute ERROR query failed: <message>`; exit without advancing.
-- **On push failure:** Log `sawtooth-precompute ERROR push failed: <message>`; exit without advancing.
-- **No uncaught throws:** Wrap run() in try/catch; log and process.exit(1) so cron sees failure.
+**Principles:** Minimize log volume (one success line per productive run). Prefer **cron / worker log drain** (e.g. Heroku) for timestamps: server receive time on that source supports lag metrics derived from the structured fields below.
 
-Observability: count of minutes pushed per run; presence of WARN/ERROR in logs; checkpoint last update (file: mtime; Mongo: updated_at) for "last success" signal.
+- **Early exit (nothing to do):** `sawtooth-precompute skip (nothing to do) effective_emit_delay=… lag_window_max=… lag_obs=…` — no GTL query in that run.
+- **Cold start:** WARN `sawtooth-precompute WARN cold start (checkpoint=0); …` when checkpoint is zero (unchanged).
+- **Empty GTL (query OK, no usable rows):** WARN `sawtooth-precompute WARN empty GTL list, advancing checkpoint` before state advances (unchanged).
+- **Dedupe tie-break:** WARN `sawtooth-precompute WARN gtl_epoch tie-break applied for dt=...` (unchanged).
+- **Successful run (after all checkpoint writes for the range):** **Single** line, prefix `sawtooth-precompute pushed`, including:
+  - `gtl_rows` — raw rows from Query API  
+  - `parsed` — rows that passed `parseMessage`  
+  - `deduped` — rows after `dedupeByDt`  
+  - `skipped_no_anchor` — minute buckets with no ASOF anchor  
+  - `minutes` — count of gauge points pushed this run (0 allowed)  
+  - `end_minute` — emit ceiling `to_minute` (Unix seconds, minute-aligned)  
+  - `anchor_gtl_epoch` — `gtl_epoch` of anchor for the **last emitted** minute, or `-1` if none  
+  - `anchor_gtl_age_seconds` — `round(wall_at_log - anchor_gtl_epoch)` or `-1` if no anchor  
+  - `emit_delay_actual_seconds` — `round(wall_at_log - end_minute)` (actual lag vs emitted minute)  
+  - `effective_emit_delay` — emit delay used for this run (dynamic or cold-start fallback)  
+  - `data_horizon_lag` — `wall_now - max(dt)` across all GTL rows; `-1` if no rows  
+  - `lag_window_max` — rolling max of data_horizon_lag over the lag window; `-1` on cold start  
+  - `lag_obs` — number of lag observations in the rolling window  
+  `wall_at_log` is taken immediately before the log (after async work), so ages reflect end-of-run wall clock.
+- **Query / push / state failures:** `sawtooth-precompute ERROR …` with context; do not advance checkpoint (unchanged).
+- **Entrypoint:** Uncaught errors still logged; `bin/sawtooth-precompute.js` exits non-zero on failure.
+
+**Observability:** Parse the `pushed` line for dashboards/alerts (Better Stack metric extraction on the **cron/worker** log source if used). Filter `anchor_gtl_age_seconds >= 0` when averaging so sentinel `-1` rows do not skew stats. README in cgm-remote-monitor lists example extraction expressions. Checkpoint `updated_at` / file mtime remains the ground truth for last successful persistence.
 
 ---
 
@@ -356,7 +374,7 @@ Observability: count of minutes pushed per run; presence of WARN/ERROR in logs; 
    **File backend:** Write `data/sawtooth-precompute-state.json` with `last_emitted_minute_epoch` = floor(now/60)*60 - 3600 (or desired backfill start).  
    **MongoDB backend:** Either (a) insert checkpoint once, e.g. `mongosh "$MONGODB_URI" --eval 'db.getCollection("sawtooth_precompute_state").updateOne({ _id: "checkpoint" }, { $set: { last_emitted_minute_epoch: Math.floor(Date.now()/1000/60)*60 - 3600, updated_at: new Date() } }, { upsert: true })'` (adjust for your shell and mongosh syntax), or (b) rely on cold start (`last_emitted_minute_epoch = 0`) and let the first run advance from 0 — for a bounded first run, prefer (a).
 4. Enable cron: `* * * * * cd /path/to/cgm-remote-monitor && node bin/sawtooth-precompute.js >> logs/sawtooth-precompute.log 2>&1`. Ensure only one instance runs (§6.2).
-5. Verify: after 2+ minutes, check log for "pushed minutes=N"; check Better Stack dashboard for source Trio Complication Recency and metric `complication_visible_recency_seconds`.
+5. Verify: after 2+ minutes, check log for `sawtooth-precompute pushed` with expected `minutes=` and pipeline counters; check Better Stack dashboard for source Trio Complication Recency and metric `complication_visible_recency_seconds`.
 
 **Rollback**
 
@@ -402,6 +420,8 @@ It covers: initial implementation (§14.1), review rounds 1–3 (F1–F8, two-ph
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.13 | 2026-03-20 21:58 CET | **Post-implementation updates:** §3 step 6, §5 Phase 3.2, §6 step 5 — off-wrist semantics: `charging` or `full` (not `unknown`; see design §4.2 v1.16). §5 Phase 2.1 — transient query retry (1 retry, 5 s delay). §7 — new env vars `SAWTOOTH_LAG_WINDOW_SECONDS`, `SAWTOOTH_LAG_BUFFER_SECONDS`; `SAWTOOTH_EMIT_DELAY_SECONDS` described as cold-start fallback. §9 — new log fields on `pushed` and `skip` lines (`effective_emit_delay`, `data_horizon_lag`, `lag_window_max`, `lag_obs`). Design reference updated to v1.16. |
+| 1.12 | 2026-03-20 11:15 CET | **Logging aligned with shipped `run.js`:** §6.1 Phase 6, §9, pseudocode tail, rollout verify — single consolidated `pushed` line (`gtl_rows`, `parsed`, `deduped`, `skipped_no_anchor`, `minutes`, `end_minute`, anchor + emit-delay fields); removed `start` / separate `gtl_rows` success lines. **Design reference** filename corrected to `nightscout-precompute-design.md` (v1.15). |
 | 1.11 | 2026-03-19 14:26 CET | §14 Implementation log: detailed subsections 14.1–14.6 extracted to [implementation-log.md](implementation-log.md); plan §14 now points to that file only. |
 | 1.10 | 2026-03-17 10:53 CET | Changelog moved to end of document (per docs-version-and-changelog rule). Last updated set from file mtime. |
 | 1.9 | 2026-03-16 | §14.6: Heroku scheduler replaced with Node clock loop (bin/sawtooth-clock.js): wall-clock-aligned, no overlap, SIGTERM handling; Procfile and README updated. |

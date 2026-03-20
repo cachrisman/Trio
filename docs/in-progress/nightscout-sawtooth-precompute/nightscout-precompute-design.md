@@ -1,8 +1,8 @@
 # Nightscout-side precompute service for Trio complication visible recency (sawtooth)
 
-**Version:** 1.14  
-**Status:** Design — implementation-ready; Better Stack ingest and dashboard query validated (§6.1)  
-**Last updated:** 2026-03-16
+**Version:** 1.16  
+**Status:** Design — implemented and deployed; Better Stack ingest and dashboard query validated (§6.1)  
+**Last updated:** 2026-03-20 21:58 CET
 
 ## Changelog
 
@@ -10,6 +10,8 @@ Newest-first. When updating this document, increment the version number and add 
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.16 | 2026-03-20 21:58 CET | **Post-implementation updates:** §2, §4.2, §4.9, §5 — off-wrist semantics changed: `unknown` is now on-wrist, `full` added as off-wrist (see implementation log §14.8). §4.5 — dynamic emit delay documented (rolling max of data-horizon lag + buffer replaces fixed delay; drain lag cap at 30 min). §5 inputs — `effective_emit_delay` noted. §7 logging — new fields (`effective_emit_delay`, `data_horizon_lag`, `lag_window_max`, `lag_obs`); WARN for transient query retries. §11 dedupe — "charging or full". Status changed to "implemented and deployed". |
+| 1.15 | 2026-03-20 11:15 CET | §7 Nightscout logging: success path is **one** structured `pushed` line (pipeline counters + `minutes` + `end_minute` + anchor/emit-lag fields); no separate per-run `start` / `gtl_rows` lines. §13 References: cgm-remote-monitor `AGENTS.md`, `docs/betterstack-guide.md`, sawtooth README for operational logging and metric extraction. |
 | 1.14 | 2026-03-16 | Red-team review (prompt workflow): §11 fetch-gtl-logs row — clarify fetch returns `{ dt, message }`, parse/dedupe produce GTL shape (align with implementation plan module boundaries). |
 | 1.13 | 2026-03-16 | **ChatGPT/Claude feedback:** §1 Verdict — v1 recommendation = cron + standalone + checkpoint file **or** MongoDB (by env), not "local checkpoint file" only; in-process noted as conceptually possible but not v1 target. §4.9: Inline comment in SQL sketch that for lookback &gt; ~40 min use full S3 union. §7: Headline v1 = standalone cron; checkpoint backend = file (persistent disk) or MongoDB (Heroku/ephemeral). Changelog reordered newest-first. |
 | 1.12 | 2026-03-16 | §9, §11: v1 checkpoint is **file or MongoDB** (chosen by env). When `MONGODB_URI` is set (e.g. Heroku), use Nightscout's existing DB and a dedicated collection; implementation plan §3.1, §8.5. |
@@ -44,8 +46,8 @@ Newest-first. When updating this document, increment the version number and add 
 
 The canonical definition is the **Better Stack Explore** query in `docs/completed/betterstack/betterstack-complication-dashboard-setup.md` (section "Complication Visible Recency (Sawtooth) — Explore only"). Summary:
 
-- **Input:** Raw log rows with `event=complication_get_timeline_called`, `data_age_seconds=N`, and `battery_state=charging|unplugged|unknown`.
-- **Off-wrist:** `battery_state=charging` OR `battery_state=unknown` → treat as off-wrist; value for that GTL epoch is **0** (sentinel `-1` in the query, then `CASE WHEN matched_data_age = -1 THEN 0`).
+- **Input:** Raw log rows with `event=complication_get_timeline_called`, `data_age_seconds=N`, and `battery_state=charging|full|unplugged|unknown`.
+- **Off-wrist:** `battery_state=charging` OR `battery_state=full` → treat as off-wrist (watch is on its charger); value for that GTL epoch is **0**. `battery_state=unknown` is treated as **on-wrist** — it is common during WatchOS complication/provider restarts and treating it as off-wrist caused false zero periods. *(Updated from original Explore semantics which treated `unknown` as off-wrist.)*
 - **Deduplication:** Each logical GTL is logged **twice**. The query uses `GROUP BY dt` and, per group: `max(is_off_wrist)`; `argMaxIf(logged_data_age, ..., NOT is_off_wrist)` so one row per distinct `dt`.
 - **Per-minute value:** For minute bucket with epoch `bucket_epoch`, find the **most recent** GTL with `gtl_epoch <= bucket_epoch` (ASOF). Then  
   `value = data_age_seconds + (bucket_epoch - gtl_epoch)`  
@@ -82,8 +84,8 @@ So the design must use a **time-bounded query** (e.g. GTLs from `window_start` t
 
 - **Dedupe key:** Group log rows by **`dt`** (log timestamp) only. This matches Explore’s `GROUP BY dt`.
 - **Per-group fields:** For each group:  
-  `is_off_wrist = max(charging OR unknown)`;  
-  `data_age_seconds = argMaxIf(extracted_data_age, extracted_data_age, NOT is_off_wrist)` (or leave null if all off-wrist).  
+  `is_off_wrist = max(charging OR full)`;  
+  `data_age_seconds = argMaxIf(extracted_data_age, extracted_data_age, NOT is_off_wrist)` (or leave null if all off-wrist). `battery_state=unknown` is treated as on-wrist (see §2).  
   **`gtl_epoch`** for the deduped row is taken from the parsed **`get_timeline_at_epoch_seconds`** (or equivalent) in the log message. If the Explore query uses `toUnixTimestamp(dt)` then `dt` and the parsed epoch should align; if the log also contains an explicit epoch field, use that for ASOF so computation matches the intended event time.
 - **Tie-break when grouped rows disagree on `gtl_epoch`:** If rows in the same `dt` group have different parsed `get_timeline_at_epoch_seconds` values (e.g. corruption or multi-source), use a defined tie-break: **take `max(gtl_epoch)`** for that group and **log a warning**, or drop the group and log. Do not leave the tie-break implicit.
 - **Filter to match Explore:** After dedupe, keep only rows where `is_off_wrist === true` OR `data_age_seconds != null`. The Explore query’s `gtl_with_age` CTE keeps exactly those (`WHERE is_off_wrist = 1 OR logged_data_age IS NOT NULL`). On-wrist rows with null data_age must not be used as anchors.
@@ -100,7 +102,8 @@ So the design must use a **time-bounded query** (e.g. GTLs from `window_start` t
 ### 4.5 Missed runs / delayed ingestion / backfill
 
 - **Missed run:** If the job doesn’t run at T+1 min (e.g. cron skip, process down), the next run should still have `last_emitted_minute_epoch` in state. Query window spans from that checkpoint minus lookback to "now." Compute **all** minutes from `last_emitted_minute_epoch + 60` through the **emit ceiling** (see below) and emit them in order. No special "catch-up" beyond emitting multiple points in one run.
-- **Delayed ingestion and emit delay:** A GTL that occurred at 10:00 may land in Better Stack at 10:05. If we already emitted 10:00–10:04 using an older anchor, those points are wrong and **cannot be corrected**. The mitigation must be **concrete in the algorithm**: do **not** emit through "last complete minute"; instead emit only through **last complete minute minus an emit delay** (e.g. 120 or 180 seconds). So the **emit ceiling** is `end_minute_epoch = floor(now_epoch / 60) * 60 - 60 - emit_delay_seconds` (with `emit_delay_seconds` configurable, e.g. 120). That way minute M is emitted only after M + (delay/60) minutes have passed, giving late-arriving logs time to land. The algorithm in §5 and the pseudocode in §10 use this ceiling.
+- **Delayed ingestion and emit delay:** A GTL that occurred at 10:00 may land in Better Stack at 10:05. If we already emitted 10:00–10:04 using an older anchor, those points are wrong and **cannot be corrected**. The mitigation must be **concrete in the algorithm**: do **not** emit through "last complete minute"; instead emit only through **last complete minute minus an emit delay**. So the **emit ceiling** is `end_minute_epoch = floor(now_epoch / 60) * 60 - 60 - effective_emit_delay` (see below). That way minute M is emitted only after sufficient time has passed for late-arriving logs to land. The algorithm in §5 and the pseudocode in §10 use this ceiling.
+- **Dynamic emit delay (implemented):** Rather than a fixed delay, the deployed implementation measures `data_horizon_lag` = `wall_now - max(dt)` each run (how far behind the precompute's view is) and tracks a rolling max over `SAWTOOTH_LAG_WINDOW_SECONDS` (default 3 h). `effective_emit_delay` = `rolling_max + SAWTOOTH_LAG_BUFFER_SECONDS` (default 120 s). Falls back to `SAWTOOTH_EMIT_DELAY_SECONDS` (default 120 s) on cold start. Observations above 30 min (`MAX_PLAUSIBLE_DRAIN_LAG = 1800`) are excluded from the rolling window — those are WidgetKit freezes, not drain lag. The dynamic delay requires the persistent clock loop (`sawtooth-clock.js`); cron always uses the cold-start fallback. See cgm-remote-monitor README for details.
 - **Backfill:** For a one-time backfill of historical days, run the job (or a batch script) with a synthetic "now" and "last_emitted" so the window covers the desired range; query S3 for that range and emit one gauge per minute. For backfill, `emit_delay_seconds` can be 0 so all minutes in the range are filled.
 
 ### 4.6 Idempotency and partial failure
@@ -129,7 +132,7 @@ The Node script cannot use MCP; it must call the Better Stack Query API (or Clic
 
 - **Tables:** Hot tier holds ~30–40 min only. When the query window spans beyond that (e.g. 3h lookback), use the S3 union as in AGENTS.md: `FROM remote(t491594_trio_logs) WHERE ... UNION ALL SELECT ... FROM s3Cluster(primary, t491594_trio_s3) WHERE _row_type = 1 AND dt BETWEEN ...` (same time bounds and filter). Hot-tier-only is only valid for very small windows (e.g. &lt; 40 min).
 - **Filter:** Restrict to GTL events, e.g. `JSONExtract(raw, 'message', 'Nullable(String)') LIKE '%event=complication_get_timeline_called%'` (or the equivalent for your log shape).
-- **Columns to select / extract:** `dt`; from the log message (or `raw`): `data_age_seconds` (e.g. regex or `JSONExtract`), `battery_state` (charging / unplugged / unknown), `get_timeline_at_epoch_seconds` (or equivalent epoch field). The application will dedupe by `dt`, compute `is_off_wrist` (charging OR unknown), and apply the tie-breaks in §4.2.
+- **Columns to select / extract:** `dt`; from the log message (or `raw`): `data_age_seconds` (e.g. regex or `JSONExtract`), `battery_state` (charging / full / unplugged / unknown), `get_timeline_at_epoch_seconds` (or equivalent epoch field). The application will dedupe by `dt`, compute `is_off_wrist` (charging OR full; see §4.2), and apply the tie-breaks in §4.2.
 - **Time bound:** `dt BETWEEN toDateTime(window_start_epoch) AND toDateTime(window_end_epoch)` with `window_start_epoch` and `window_end_epoch` from §5 step 2.
 
 Example sketch (parameterize `window_start`, `window_end`. **For lookback &gt; ~40 min (e.g. 3h default), replace with full S3 union per Tables bullet above** — this sketch shows hot tier only):
@@ -154,7 +157,7 @@ The sketch returns `dt` as **Unix seconds** (for consistent dedupe key type) and
 
 - `now_epoch` (UTC, seconds).
 - `last_emitted_minute_epoch` (persisted state; 0 or epoch of last minute we pushed).
-- `emit_delay_seconds` (configurable, e.g. 120 or 180): do not emit minutes newer than `now - 60 - emit_delay_seconds` so late-arriving GTL logs have time to land (§4.5).
+- `emit_delay_seconds` (configurable, e.g. 120; cold-start fallback) or `effective_emit_delay` (dynamic; see §4.5): do not emit minutes newer than `now - 60 - effective_emit_delay` so late-arriving GTL logs have time to land.
 - Lookback seconds (e.g. 3 * 3600).
 - Better Stack: GTL log query API; metrics push API (Prometheus source token).
 
@@ -169,7 +172,7 @@ The sketch returns `dt` as **Unix seconds** (for consistent dedupe key type) and
 2. **Window:**  
    `window_start = max(0, last_emitted_minute_epoch - lookback_seconds)` (floor at 0 per §4.1).  
    `window_end` = current wall-clock time in seconds (not floored), so the GTL query includes logs that landed in the current partial minute. Use minute-aligned time only for the emit ceiling (step 1).
-3. **Query GTL rows:** Call Better Stack Query API (POST, basic auth; §6, §7) for Trio **logs**, time bounds `[window_start, window_end]`, filter and columns per **§4.9** (reference SQL template). Select: `dt`, extract `data_age_seconds` and **`get_timeline_at_epoch_seconds`** (or equivalent), detect `battery_state=charging` and `battery_state=unknown`. **If the query fails** (HTTP/parse/timeout), do not advance checkpoint; exit and retry next run (§4.8). Dedupe in application: group by **`dt`** only; per group compute `is_off_wrist`, `data_age_seconds` (argMax tie-break as Explore), and **`gtl_epoch`** from the parsed epoch field — if rows in the group disagree on `gtl_epoch`, use **max(gtl_epoch)** and log a warning (§4.2). **Filter:** keep only rows where `is_off_wrist === true` OR `data_age_seconds != null`. Sort by `gtl_epoch`. Result: list `GTL[]` of `{ gtl_epoch, data_age_seconds, is_off_wrist }`.
+3. **Query GTL rows:** Call Better Stack Query API (POST, basic auth; §6, §7) for Trio **logs**, time bounds `[window_start, window_end]`, filter and columns per **§4.9** (reference SQL template). Select: `dt`, extract `data_age_seconds` and **`get_timeline_at_epoch_seconds`** (or equivalent), detect `battery_state=charging` and `battery_state=full`. **If the query fails** (HTTP/parse/timeout), do not advance checkpoint; exit and retry next run (§4.8). Dedupe in application: group by **`dt`** only; per group compute `is_off_wrist`, `data_age_seconds` (argMax tie-break as Explore), and **`gtl_epoch`** from the parsed epoch field — if rows in the group disagree on `gtl_epoch`, use **max(gtl_epoch)** and log a warning (§4.2). **Filter:** keep only rows where `is_off_wrist === true` OR `data_age_seconds != null`. Sort by `gtl_epoch`. Result: list `GTL[]` of `{ gtl_epoch, data_age_seconds, is_off_wrist }`.
 4. **Minute range to compute:** `from_minute = last_emitted_minute_epoch + 60`; `to_minute = end_minute_epoch` (inclusive). For each minute_epoch in `[from_minute, to_minute]` step 60:
    - **ASOF:** Find the last GTL with `gtl_epoch <= minute_epoch`. If none, skip this minute (or treat as 0; see §8 Sparse GTL coverage).
    - **Value:** If that GTL is off-wrist → `value = 0`. Else `value = data_age_seconds + (minute_epoch - gtl_epoch)`. Clamp to 0 if negative.
@@ -178,7 +181,7 @@ The sketch returns `dt` as **Unix seconds** (for consistent dedupe key type) and
    Use **Unix integer** for `dt` (simpler; avoids timezone serialization bugs). RFC 3339 is also valid per §6.1. Use the **Prometheus source** token (see §7).
 6. **Checkpoint:** Only after **all** gauge POSTs for this run succeed, set `last_emitted_minute_epoch = to_minute` and persist. On any push failure, do not update the checkpoint (§4.6). **Empty GTL list:** If the query succeeded but returned 0 rows, see §4.8: for v1 recommend advancing the checkpoint (to avoid infinite retry) but **log at WARN**; do not advance if the query **failed**.
 
-**Deduplication (step 3) detail:** For each distinct `dt`, collect all rows. `is_off_wrist = true` if any row has charging or unknown. `data_age_seconds =` value from the row where `NOT is_off_wrist` (argMax of extracted_data_age among those rows), else null. **`gtl_epoch`** = parsed `get_timeline_at_epoch_seconds` from the chosen row; if rows in the group disagree on that value, use **max(gtl_epoch)** and log a warning. If all off-wrist, keep one row with `is_off_wrist=true`, `data_age_seconds=null` (or -1 for sentinel). Then **filter** the list: keep only rows with `is_off_wrist === true` OR `data_age_seconds != null`.
+**Deduplication (step 3) detail:** For each distinct `dt`, collect all rows. `is_off_wrist = true` if any row has charging or full. `data_age_seconds =` value from the row where `NOT is_off_wrist` (argMax of extracted_data_age among those rows), else null. **`gtl_epoch`** = parsed `get_timeline_at_epoch_seconds` from the chosen row; if rows in the group disagree on that value, use **max(gtl_epoch)** and log a warning. If all off-wrist, keep one row with `is_off_wrist=true`, `data_age_seconds=null` (or -1 for sentinel). Then **filter** the list: keep only rows with `is_off_wrist === true` OR `data_age_seconds != null`.
 
 ---
 
@@ -240,7 +243,7 @@ ORDER BY time
 - **Config/env:** `lib/server/env.js` reads `process.env`; `env.settings` from `lib/settings`; `env.extendedSettings` for plugin-specific config (e.g. `env.extendedSettings.bridge`). New config: e.g. `BETTERSTACK_*` or an `extendedSettings.sawtoothPrecompute` object. **Pin for GTL log query at runtime:** `BETTERSTACK_QUERY_HOST` (connect host), `BETTERSTACK_QUERY_USER`, `BETTERSTACK_QUERY_PASSWORD` (or equivalent for Query API v2 basic auth); see §6 table and §4.9. For ingest: Prometheus source token, ingest host; lookback seconds; emit delay.
 - **Scheduling:** No cron or job queue in the repo. Options: (1) **System cron** runs a standalone script (e.g. `node bin/sawtooth-precompute.js`) every minute; (2) **In-process:** a new "plugin" or server module that calls `setInterval(runPrecompute, 60_000)` after boot (similar to `lib/plugins/bridge.js` and `lib/bus.js`). The bus emits `tick` at `settings.heartbeat` seconds (configurable); that could drive the job only if heartbeat is 60s, which may conflict with other uses.
 - **Deployment:** If the job runs inside Nightscout, it shares the same process and env; no extra deployment. If cron-driven, the host must have cron and the script must have access to env (e.g. `.env` or `env-cmd` as in `package.json` scripts).
-- **Logging/errors:** Plugins use `console.log` / `console.error`. For production, the job should log start/end, minute range emitted, **count of minutes pushed**, and any query/push errors (including non-success HTTP response from push). Do not throw uncaught so cron or setInterval continues.
+- **Logging/errors:** Plugins use `console.log` / `console.error`. For production, the job should emit **one structured success line per run** after the checkpoint commits: `sawtooth-precompute pushed` with `gtl_rows`, `parsed`, `deduped`, `skipped_no_anchor`, `minutes` (gauge points pushed), `end_minute`, `anchor_gtl_epoch`, `anchor_gtl_age_seconds`, `emit_delay_actual_seconds`, `effective_emit_delay`, `data_horizon_lag`, `lag_window_max`, `lag_obs` (see cgm-remote-monitor `lib/sawtooth-precompute/README.md` for field reference). Log `sawtooth-precompute skip (nothing to do) effective_emit_delay=… lag_window_max=… lag_obs=…` when the emit ceiling has not advanced; WARN for cold start, empty GTL list, and transient query retries; ERROR for query/push/state failures. Sentinel `-1` on anchor and lag fields when no data available (filter in metric rules). Do not throw uncaught so cron or the clock process continues.
 
 **Recommended placement:**
 
@@ -325,7 +328,7 @@ function runPrecompute():
 | `bin/sawtooth-precompute.js` | Standalone entrypoint for cron. Loads env, calls `lib/sawtooth-precompute/run.js`, exits. |
 | `lib/sawtooth-precompute/run.js` | Core: load state, window, call fetchGtlLogs, dedupe, ASOF loop, pushGauges, save state. |
 | `lib/sawtooth-precompute/fetch-gtl-logs.js` | Better Stack logs query: use SQL template in **§4.9**, call Query API (env: BETTERSTACK_QUERY_HOST, BETTERSTACK_QUERY_USER, BETTERSTACK_QUERY_PASSWORD); returns rows as `{ dt, message }`. Parse-message and dedupe (downstream) produce `{ gtl_epoch, data_age_seconds, is_off_wrist }`. |
-| `lib/sawtooth-precompute/dedupe.js` | `dedupeByDt(rows)` → one row per `dt` with is_off_wrist, data_age_seconds, and gtl_epoch (from parsed get_timeline_at_epoch_seconds; tie-break §4.2). |
+| `lib/sawtooth-precompute/dedupe.js` | `dedupeByDt(rows)` → one row per `dt` with is_off_wrist (charging or full), data_age_seconds, and gtl_epoch (from parsed get_timeline_at_epoch_seconds; tie-break §4.2). |
 | `lib/sawtooth-precompute/push-metrics.js` | POST to Better Stack `/metrics` with Bearer token, gauge + dt. Use **Unix integer** for `dt` (see §5 step 5). |
 | `lib/sawtooth-precompute/state.js` | loadState() / saveState(); backend = **file** or **MongoDB** from env (§9). When `MONGODB_URI` is set, use Mongo with dedicated collection (implementation plan §3.1, §8.5). |
 | `data/sawtooth-precompute-state.json` | Checkpoint file when backend=file (create dir if missing). When backend=Mongo, no file. |
@@ -347,7 +350,7 @@ If the job is **in-process only**, `bin/sawtooth-precompute.js` can be omitted a
 
 - Explore sawtooth query: `docs/completed/betterstack/betterstack-complication-dashboard-setup.md` (§ Complication Visible Recency (Sawtooth) — Explore only).
 - Dashboard constraints: `docs/in-progress/complication-freshness/sawtooth-dashboard-options.md` (§1–2).
-- Better Stack guide: `docs/process/betterstack-guide.md`.
+- Better Stack guide (this repo): `docs/process/betterstack-guide.md` — metrics API, dashboards, MCP query patterns.
+- **Nightscout / cgm-remote-monitor (deployed job):** root `AGENTS.md` and `docs/betterstack-guide.md` (agent + MCP habits); `lib/sawtooth-precompute/README.md` (env, Heroku worker, **observability** — log line shape, example Better Stack metric extractions, README doc version/changelog).
 - Better Stack metrics ingestion: https://betterstack.com/docs/logs/ingesting-data/http/metrics (timestamp override, gauge). Dashboard SQL for Prometheus-like metrics: https://betterstack.com/docs/logs/dashboards/sql-queries#prometheus-like-metrics. Unifying schema: https://betterstack.com/docs/logs/unifying-metrics-schema.
-- AGENTS.md: Better Stack MCP (telemetry_create_cloud_connection_tool, telemetry_query), hot vs S3, table names.
 - Better Stack Query API (run SQL over logs): https://betterstack.com/docs/logs/query-api/v2/dashboards/ (POST, basic auth, ClickHouse SQL).
