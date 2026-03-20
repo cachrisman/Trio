@@ -100,7 +100,15 @@ enum BackgroundTaskWindowCounter {
 
     /// Connectivity background tasks held until userInfo processing finishes. Main queue only.
     private var pendingConnectivityTasks: [WKRefreshBackgroundTask] = []
-    private var lastUserInfoReceivedAt: Date?
+    /// R5d — persisted via App Group UserDefaults for sleep-gap detection across process restarts.
+    private var lastDataReceivedAt: Date? {
+        get { TrioComplicationDataStore.shared.lastDataReceivedAt() }
+        set {
+            if let date = newValue {
+                TrioComplicationDataStore.shared.setLastDataReceivedAt(date)
+            }
+        }
+    }
     /// R5c — set in didReceiveUserInfo and passed through to saveComplicationSnapshot for decode_ms (reading_epoch there is derived from the payload being saved to avoid misattribution).
     private var lastUserInfoReceiveTimestamp: Date?
     private var quietWindowWorkItem: DispatchWorkItem?
@@ -531,7 +539,7 @@ enum BackgroundTaskWindowCounter {
 
         let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
 
-        let readingDate = latestGlucoseDate(from: payload) ?? dateValue(from: payload[WatchMessageKeys.date])
+        let readingDate = latestGlucoseDate(from: payload)
         guard let readingDate = readingDate else {
             Task {
                 await WatchLogger.shared.log("Invalid snapshot received (missing date)")
@@ -562,6 +570,9 @@ enum BackgroundTaskWindowCounter {
         }
 
         DispatchQueue.main.async { [self] in
+            // R5d: compute gap BEFORE updating timestamp
+            let gap = lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+
             if pendingConnectivityTasks.isEmpty {
                 let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
                 Task {
@@ -570,7 +581,6 @@ enum BackgroundTaskWindowCounter {
                 scheduleUIUpdate(with: payload, fromUserInfo: true, userInfoReceiveTimestamp: lastUserInfoReceiveTimestamp)
             } else {
                 pendingData.merge(payload) { _, new in new }
-                lastUserInfoReceivedAt = Date()
                 quietWindowWorkItem?.cancel()
                 finalizeWorkItem?.cancel()
                 let receiveTs = lastUserInfoReceiveTimestamp
@@ -594,6 +604,17 @@ enum BackgroundTaskWindowCounter {
                 }
                 quietWindowWorkItem = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+            }
+
+            // R5d: update timestamp AFTER save dispatch
+            lastDataReceivedAt = Date()
+
+            // R5d: sleep-gap forced reload
+            if gap > 600 {
+                Task {
+                    await WatchLogger.shared.log("💤 sleep_gap_detected gap_seconds=\(Int(gap))")
+                }
+                forceWidgetReloadIfStale(receivedGap: gap)
             }
         }
     }
@@ -647,6 +668,7 @@ enum BackgroundTaskWindowCounter {
     }
 
     // R4: applicationContext safety net — parallel delivery channel from iOS during budget exhaustion.
+    // R5d: integrated sleep-gap detection (same three-constraint ordering as didReceiveUserInfo).
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         Task { await WatchLogger.shared.log("📦 didReceiveApplicationContext") }
         guard let payload = applicationContext[WatchMessageKeys.watchState] as? [String: Any] else {
@@ -654,7 +676,15 @@ enum BackgroundTaskWindowCounter {
         }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             self.saveComplicationSnapshot(from: payload)
+            self.lastDataReceivedAt = Date()
+            if gap > 600 {
+                Task {
+                    await WatchLogger.shared.log("💤 sleep_gap_detected_context gap_seconds=\(Int(gap))")
+                }
+                self.forceWidgetReloadIfStale(receivedGap: gap)
+            }
         }
     }
 
@@ -931,9 +961,10 @@ enum BackgroundTaskWindowCounter {
             readingDate = latestDate
         } else if let fallbackDate = dateValue(from: message[WatchMessageKeys.date]) {
             Task {
-                await WatchLogger.shared.log("⚠️ saveComplicationSnapshot: readingEpoch missing; falling back to build-time date — complication freshness unreliable")
+                await WatchLogger.shared.log("⚠️ saveComplicationSnapshot: readingEpoch and glucoseValues both missing; refusing build-time date fallback — skipping save")
             }
-            readingDate = fallbackDate
+            _ = fallbackDate
+            return
         } else {
             Task {
                 await WatchLogger.shared.log("📸 saveComplicationSnapshot SKIPPED: no valid readingDate")
@@ -1027,6 +1058,49 @@ enum BackgroundTaskWindowCounter {
 
         TrioComplicationDataStore.shared.save(snapshot, triggerReload: false)
         TrioComplicationDataStore.shared.forceReload(scheduleRetry: false)
+    }
+
+    /// R5d: after a detected sleep gap, read the latest snapshot and force a widget reload
+    /// if the snapshot is stale relative to the gap. Rate-limited to 5 minutes.
+    private func forceWidgetReloadIfStale(receivedGap: TimeInterval) {
+        let store = TrioComplicationDataStore.shared
+
+        // Rate limiter: 5-minute minimum between forced reloads
+        if let lastReload = store.lastWidgetReloadAt(),
+           Date().timeIntervalSince(lastReload) < 300 {
+            Task {
+                await WatchLogger.shared.log("💤 sleep_gap_reload_skipped reason=rate_limited last_reload_ago=\(Int(Date().timeIntervalSince(lastReload)))s")
+            }
+            return
+        }
+
+        let readStart = CFAbsoluteTimeGetCurrent()
+        let snapshot = store.latestSnapshot()
+        let snapshotReadMs = Int((CFAbsoluteTimeGetCurrent() - readStart) * 1000)
+
+        guard let snapshot = snapshot else {
+            Task {
+                await WatchLogger.shared.log("💤 sleep_gap_reload_skipped reason=no_snapshot read_ms=\(snapshotReadMs)")
+            }
+            return
+        }
+
+        let snapshotAge = Date().timeIntervalSince(snapshot.readingDate)
+
+        // Stale if snapshot age exceeds (gap - 60s buffer)
+        guard snapshotAge > (receivedGap - 60) else {
+            Task {
+                await WatchLogger.shared.log("💤 sleep_gap_reload_skipped reason=snapshot_fresh snapshot_age=\(Int(snapshotAge))s gap=\(Int(receivedGap))s read_ms=\(snapshotReadMs)")
+            }
+            return
+        }
+
+        Task {
+            await WatchLogger.shared.log("💤 sleep_gap_reload_firing snapshot_age=\(Int(snapshotAge))s gap=\(Int(receivedGap))s read_ms=\(snapshotReadMs)")
+        }
+
+        store.setLastWidgetReloadAt(Date())
+        store.forceReload(scheduleRetry: false)
     }
 
     #if os(watchOS)

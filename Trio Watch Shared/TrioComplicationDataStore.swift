@@ -203,6 +203,10 @@ final class TrioComplicationDataStore {
     private static let reloadGenerationKey = "TrioComplication_reloadGeneration"
     private static let lastReloadRequestEpochSecondsKey = "TrioComplication_lastReloadRequestEpochSeconds"
     private static let fingerprintKey = "complication_last_saved_fingerprint"
+    // R5d — last time any data channel delivered data to the watch (persisted for sleep-gap detection)
+    private static let lastDataReceivedAtKey = "TrioComplication_lastDataReceivedAt"
+    private static let lastWidgetReloadAtKey = "TrioComplication_lastWidgetReloadAt"
+
     // R6.1 — HealthKit anchored query state (watch app extension only)
     private static let hkGlucoseAnchorKey = "TrioComplication_hkGlucoseAnchor"
     private static let hkLastReceivedGlucoseEpochKey = "TrioComplication_hkLastReceivedGlucoseEpoch"
@@ -514,6 +518,30 @@ final class TrioComplicationDataStore {
 
     func setHKLastReceivedGlucoseValueMgDl(_ value: Double) {
         appGroupDefaults?.set(value, forKey: Self.hkLastReceivedGlucoseValueMgDlKey)
+    }
+
+    // MARK: - R5d Sleep-Gap State
+
+    /// Epoch of last data delivery from any channel. Returns nil if never set.
+    func lastDataReceivedAt() -> Date? {
+        guard let defaults = appGroupDefaults else { return nil }
+        let epoch = defaults.double(forKey: Self.lastDataReceivedAtKey)
+        return epoch > 0 ? Date(timeIntervalSince1970: epoch) : nil
+    }
+
+    func setLastDataReceivedAt(_ date: Date) {
+        appGroupDefaults?.set(date.timeIntervalSince1970, forKey: Self.lastDataReceivedAtKey)
+    }
+
+    /// Epoch of last forced widget reload. Returns nil if never set.
+    func lastWidgetReloadAt() -> Date? {
+        guard let defaults = appGroupDefaults else { return nil }
+        let epoch = defaults.double(forKey: Self.lastWidgetReloadAtKey)
+        return epoch > 0 ? Date(timeIntervalSince1970: epoch) : nil
+    }
+
+    func setLastWidgetReloadAt(_ date: Date) {
+        appGroupDefaults?.set(date.timeIntervalSince1970, forKey: Self.lastWidgetReloadAtKey)
     }
 
     // MARK: - Phase 3.2 Canonical Comparator

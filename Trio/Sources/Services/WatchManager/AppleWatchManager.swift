@@ -331,6 +331,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
                 // Map glucose values
                 watchState.glucoseValues = glucoseObjects.compactMap { glucose in
+                    guard let date = glucose.date else { return nil }
+
                     let glucoseValue = self.units == .mgdL
                         ? Double(glucose.glucose)
                         : Double(truncating: Decimal(glucose.glucose).asMmolL as NSNumber)
@@ -344,7 +346,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     )
 
                     return WatchGlucoseObject(
-                        date: glucose.date ?? Date(),
+                        date: date,
                         glucose: glucoseValue,
                         color: glucoseColor.toHexString()
                     )
@@ -1089,6 +1091,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             if type == "watchLogs" {
                 if let logData = message["data"] as? String {
                     SimpleLogReporter.appendToWatchLog(logData)
+                    NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
                 }
             } else if type == "watchError" {
                 if let errorData = message["data"] as? [String: Any] {
@@ -1122,6 +1125,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 if type == "watchLogs" {
                     if let logData = message["data"] as? String {
                         SimpleLogReporter.appendToWatchLog(logData)
+                        NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
                     }
                     let confirm: [String: Any] = ["type": "watchLogConfirm", "payloadIds": [payloadId]]
                     self?.session?.transferUserInfo(confirm)
@@ -1136,6 +1140,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             // Legacy message format
             if let logs = message["watchLogs"] as? String {
                 SimpleLogReporter.appendToWatchLog(logs)
+                NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
             }
 
             // Handle watch errors forwarded for Crashlytics logging
@@ -1299,6 +1304,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             if type == "watchLogs" {
                 if let logData = userInfo["data"] as? String {
                     SimpleLogReporter.appendToWatchLog(logData)
+                    NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
                 }
                 let confirm: [String: Any] = ["type": "watchLogConfirm", "payloadIds": [payloadId]]
                 session?.transferUserInfo(confirm)
