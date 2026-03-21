@@ -1,28 +1,28 @@
-From 55fe0c6b9ee72537fcfbd13c71ef840acb91827a Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 20 Mar 2026 11:01:45 +0100
+From 508baed1c5288f9e7fadec5b522cb452c93deb7f Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Sat, 21 Mar 2026 23:27:45 +0100
 Subject: [PATCH] feat: cloud-logging
 
 ---
- Trio Watch App Extension/WatchLogger.swift    | 946 +++++++++++++++---
- Trio Watch Shared/ComplicationLogBuffer.swift | 156 +++
- Trio/Sources/Application/AppDelegate.swift    |  34 +-
- Trio/Sources/Application/TrioApp.swift        |   3 +
- Trio/Sources/Assemblies/ServiceAssembly.swift |   1 +
- .../Helpers/AppTerminationTracker.swift       | 306 ++++++
- .../BetterStackLogtailProvider.swift          |  71 ++
- .../CloudLogging/BetterStackSettings.swift    |  35 +
- .../CloudLogEntryAggregator.swift             |  41 +
- .../CloudLogging/CloudLogLineParsing.swift    | 298 ++++++
- .../CloudLogging/CloudLogProvider.swift       | 127 +++
- .../CloudLogging/CloudLogUploadService.swift  | 185 ++++
- .../CloudLogging/CloudLogUploader.swift       | 440 ++++++++
- .../Modules/Settings/SettingItems.swift       |  11 +
- .../View/CloudLoggingSettingsView.swift       | 150 +++
- .../Settings/View/Subviews/ServicesView.swift |   1 +
- Trio/Sources/Router/Screen.swift              |   3 +
- TrioTests/CloudLogEntryAggregatorTests.swift  |  42 +
- 18 files changed, 2689 insertions(+), 161 deletions(-)
+ Trio Watch App Extension/WatchLogger.swift    | 1030 ++++++++++++++---
+ Trio Watch Shared/ComplicationLogBuffer.swift |  156 +++
+ Trio/Sources/Application/AppDelegate.swift    |   34 +-
+ Trio/Sources/Application/TrioApp.swift        |    3 +
+ Trio/Sources/Assemblies/ServiceAssembly.swift |    1 +
+ .../Helpers/AppTerminationTracker.swift       |  306 +++++
+ .../BetterStackLogtailProvider.swift          |   71 ++
+ .../CloudLogging/BetterStackSettings.swift    |   35 +
+ .../CloudLogEntryAggregator.swift             |   41 +
+ .../CloudLogging/CloudLogLineParsing.swift    |  298 +++++
+ .../CloudLogging/CloudLogProvider.swift       |  127 ++
+ .../CloudLogging/CloudLogUploadService.swift  |  194 ++++
+ .../CloudLogging/CloudLogUploader.swift       |  430 +++++++
+ .../Modules/Settings/SettingItems.swift       |   11 +
+ .../View/CloudLoggingSettingsView.swift       |  150 +++
+ .../Settings/View/Subviews/ServicesView.swift |    1 +
+ Trio/Sources/Router/Screen.swift              |    3 +
+ TrioTests/CloudLogEntryAggregatorTests.swift  |   42 +
+ 18 files changed, 2767 insertions(+), 166 deletions(-)
  create mode 100644 Trio Watch Shared/ComplicationLogBuffer.swift
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
@@ -36,7 +36,7 @@ Subject: [PATCH] feat: cloud-logging
  create mode 100644 TrioTests/CloudLogEntryAggregatorTests.swift
 
 diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
-index 3f9a83de5..c6de5f81b 100644
+index 3f9a83de5..ca9a7dc7c 100644
 --- a/Trio Watch App Extension/WatchLogger.swift	
 +++ b/Trio Watch App Extension/WatchLogger.swift	
 @@ -4,6 +4,7 @@ import WatchConnectivity
@@ -47,12 +47,14 @@ index 3f9a83de5..c6de5f81b 100644
      private var logs: [String] = []
      private let maxEntries = 500
      private let flushInterval: TimeInterval = 3 * 60
-@@ -12,13 +13,20 @@ actor WatchLogger {
+@@ -11,14 +12,21 @@ actor WatchLogger {
+     private var lastFlush = Date()
  
      // Size caps
-     private let logSizeCap = 16 * 1024 // 16 KB
+-    private let logSizeCap = 16 * 1024 // 16 KB
 -    private let maxPerPayloadFiles = 20
 -    private let maxFileAge: TimeInterval = 7 * 24 * 60 * 60 // 7 days
++    private let logSizeCap = 64 * 1024 // 64 KB
 +    private let maxPerPayloadFiles = 10
 +    private let maxFileAge: TimeInterval = 48 * 60 * 60 // 48 hours
  
@@ -103,8 +105,8 @@ index 3f9a83de5..c6de5f81b 100644
 +                error: sanitizeError(error)
 +            )
 +        }
-+    }
-+
+     }
+ 
 +    static func removeFileTracked(atPath path: String) -> RemoveResult {
 +        do {
 +            try FileManager.default.removeItem(atPath: path)
@@ -131,8 +133,8 @@ index 3f9a83de5..c6de5f81b 100644
 +            let nsErr = error as NSError
 +            return nsErr.domain == NSCocoaErrorDomain && nsErr.code == 4
 +        }
-     }
- 
++    }
++
 +    static func sanitizeError(_ error: Error) -> String {
 +        let nsErr = error as NSError
 +        let raw = "\(nsErr.domain)_\(nsErr.code)"
@@ -207,44 +209,120 @@ index 3f9a83de5..c6de5f81b 100644
  
          if shouldFlush {
              await flushToPhone()
-@@ -96,247 +175,374 @@ actor WatchLogger {
+@@ -96,247 +175,448 @@ actor WatchLogger {
      }
  
      private func flushToPhone() async {
 -        guard !logs.isEmpty else {
--            return
--        }
 +        guard !logs.isEmpty else { return }
 +
 +        updateCachedCountsIfStale()
 +        await logFileInventory()
++
++        let allContent = logs.joined(separator: "\n")
++        let originalUTF8Count = allContent.utf8.count
++        let totalLineCount = logs.count
++        let originalLines = logs
++
++        logs.removeAll()
++        lastFlush = Date()
++
++        // Single payload fits within cap — send directly
++        if originalUTF8Count <= logSizeCap {
++            await sendLogPayload(allContent)
+             return
+         }
  
 -        // Capture logsToSend BEFORE sending
-         var logsToSend = logs.joined(separator: "\n")
+-        var logsToSend = logs.joined(separator: "\n")
++        // 4E: Split oversized payloads into sequential chunks (max 4 × logSizeCap)
++        let maxChunks = 4
++        let groupId = UUID().uuidString
++
++        // Content budget per chunk: logSizeCap minus worst-case chunk marker overhead.
++        // Marker byte cost is subtracted so the total chunk payload stays within logSizeCap.
++        let worstCaseMarker = "📦 log_flush_chunk chunk=\(maxChunks)/\(maxChunks) payload_id=\(groupId) lines_in_chunk=\(totalLineCount)"
++        let markerOverhead = worstCaseMarker.utf8.count + 1
++        let contentBudget = max(1, logSizeCap - markerOverhead)
++
++        // Pack lines greedily into chunks (line-boundary-aware)
++        var chunks: [(content: String, lineCount: Int)] = []
++        var currentLines: [String] = []
++        var currentBytes = 0
++        var lineIndex = 0
++
++        while lineIndex < originalLines.count {
++            let line = originalLines[lineIndex]
++            let addedBytes = (currentLines.isEmpty ? 0 : 1) + line.utf8.count
++
++            if currentBytes + addedBytes > contentBudget && !currentLines.isEmpty {
++                chunks.append((
++                    content: currentLines.joined(separator: "\n"),
++                    lineCount: currentLines.count
++                ))
++                currentLines = []
++                currentBytes = 0
++
++                if chunks.count >= maxChunks - 1 {
++                    // Last allowed chunk — pack all remaining lines
++                    let remaining = Array(originalLines[lineIndex...])
++                    let remainingContent = remaining.joined(separator: "\n")
++
++                    if remainingContent.utf8.count <= contentBudget {
++                        chunks.append((content: remainingContent, lineCount: remaining.count))
++                    } else {
++                        // 4A truncation on the last chunk
++                        let truncMarker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(totalLineCount)"
++                        let truncMarkerBytes = truncMarker.utf8.count + 1
++                        let truncBudget = max(0, contentBudget - truncMarkerBytes)
++
++                        var truncLines: [String] = []
++                        var truncBytes = 0
++                        for rl in remaining {
++                            let added = (truncLines.isEmpty ? 0 : 1) + rl.utf8.count
++                            if truncBytes + added > truncBudget { break }
++                            truncLines.append(rl)
++                            truncBytes += added
++                        }
++
++                        let truncContent = truncMarker + "\n" + truncLines.joined(separator: "\n")
++                        chunks.append((content: truncContent, lineCount: truncLines.count))
++                    }
++                    lineIndex = originalLines.count
++                    break
++                }
++                continue
++            }
++
++            currentLines.append(line)
++            currentBytes += addedBytes
++            lineIndex += 1
++        }
++
++        if !currentLines.isEmpty {
++            chunks.append((
++                content: currentLines.joined(separator: "\n"),
++                lineCount: currentLines.count
++            ))
++        }
++
++        let totalChunks = chunks.count
  
 -        // Truncate to size cap
 -        if logsToSend.utf8.count > logSizeCap {
 -            let cappedData = logsToSend.data(using: .utf8)?.prefix(logSizeCap) ?? Data()
 -            logsToSend = String(data: cappedData, encoding: .utf8) ?? String(logsToSend.prefix(logSizeCap))
-+        // logSizeCap (16KB) limits in-memory flush payloads sent via WCSession.
-+        // Per-payload drain files can be up to 64KB (maxDrainFileSize).
-+        let originalUTF8Count = logsToSend.utf8.count
-+        let lineCount = logs.count
-+
-+        if originalUTF8Count > logSizeCap {
-+            let marker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(lineCount)"
-+            let markerBytes = marker.utf8.count + 1
-+            let contentCap = max(0, logSizeCap - markerBytes)
-+
-+            let cappedData = logsToSend.data(using: .utf8)?.prefix(contentCap)
-+                ?? Data()
-+            let truncatedContent = String(data: cappedData, encoding: .utf8)
-+                ?? String(logsToSend.prefix(contentCap))
-+
-+            logsToSend = marker + "\n" + truncatedContent
++        for (index, chunk) in chunks.enumerated() {
++            let chunkNumber = index + 1
++            let chunkMarker = "📦 log_flush_chunk chunk=\(chunkNumber)/\(totalChunks) payload_id=\(groupId) lines_in_chunk=\(chunk.lineCount)"
++            let finalContent = chunkMarker + "\n" + chunk.content
++            await sendLogPayload(finalContent)
          }
++    }
  
 -        // Generate payloadId
++    /// Sends a single log payload (or chunk) to the phone via WCSession.
++    private func sendLogPayload(_ content: String) async {
          let payloadId = UUID().uuidString
  
 -        // Write to per-payload file BEFORE sending
@@ -259,22 +337,24 @@ index 3f9a83de5..c6de5f81b 100644
 +        )
  
 -        let perPayloadFile = logDir.appendingPathComponent("watch_log_\(payloadId).txt")
+-        if let data = logsToSend.data(using: .utf8) {
 +        let perPayloadFile = logDir.appendingPathComponent(
 +            "watch_log_\(payloadId).txt"
 +        )
-         if let data = logsToSend.data(using: .utf8) {
++        if let data = content.data(using: .utf8) {
              try? data.write(to: perPayloadFile)
          }
  
 -        // Clear in-memory logs ONLY after file write
-         logs.removeAll()
-         lastFlush = Date()
- 
+-        logs.removeAll()
+-        lastFlush = Date()
+-
 -        // Create envelope
          let envelope: [String: Any] = [
              "type": "watchLogs",
              "payloadId": payloadId,
-             "data": logsToSend
+-            "data": logsToSend
++            "data": content
          ]
  
 -        // Do NOT activate session - WatchState owns activation
@@ -392,9 +472,8 @@ index 3f9a83de5..c6de5f81b 100644
 +            file.lastPathComponent.hasPrefix("watch_log_")
 +                && file.lastPathComponent.hasSuffix(".txt")
 +                && file.lastPathComponent != "watch_log_daily.txt"
-         }
- 
--        // Apply retention caps
++        }
++
 +        let validFiles = await applyWatchLogRetention(
 +            perPayloadFiles: perPayloadFiles
 +        )
@@ -405,8 +484,9 @@ index 3f9a83de5..c6de5f81b 100644
 +        let pendingPayloads = await getPendingPayloads()
 +        let pendingIds = pendingPayloads.compactMap {
 +            $0["payloadId"] as? String
-+        }
-+
+         }
+ 
+-        // Apply retention caps
 +        if !pendingIds.isEmpty {
 +            let queryEnvelope: [String: Any] = [
 +                "type": "queryAcks",
@@ -717,7 +797,7 @@ index 3f9a83de5..c6de5f81b 100644
  
          let record: [String: Any] = [
              "payloadId": payloadId,
-@@ -344,32 +550,452 @@ actor WatchLogger {
+@@ -344,32 +624,452 @@ actor WatchLogger {
              "filePath": filePath,
              "createdAtEpoch": Date().timeIntervalSince1970
          ]
@@ -2344,10 +2424,10 @@ index 000000000..2187a67d9
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 new file mode 100644
-index 000000000..9284f898c
+index 000000000..abce87784
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,194 @@
 +import Foundation
 +import UIKit
 +
@@ -2359,7 +2439,8 @@ index 000000000..9284f898c
 +///
 +/// - Manual trigger: `uploadNow()`
 +/// - Lifecycle triggers: foreground/background
-+/// - Periodic trigger: every 5 minutes while app is running
++/// - Periodic trigger: every 30 seconds while app is running
++/// - Watch log nudge: immediate upload + timer reset when watch logs arrive
 +final class CloudLogUploadService {
 +    // Settings UI (first-choice config)
 +    static let userDefaultsEnabledKey = "cloudLogging.enabled"
@@ -2473,7 +2554,6 @@ index 000000000..9284f898c
 +    // MARK: - Scheduling
 +
 +    private func start() {
-+        // Foreground + background triggers
 +        let center = Foundation.NotificationCenter.default
 +
 +        observers.append(
@@ -2483,6 +2563,7 @@ index 000000000..9284f898c
 +                queue: .main
 +            ) { [weak self] _ in
 +                self?.uploadNow()
++                self?.resetUploadTimer()
 +            }
 +        )
 +
@@ -2493,10 +2574,13 @@ index 000000000..9284f898c
 +                queue: .main
 +            ) { [weak self] _ in
 +                self?.uploadNow()
++                self?.resetUploadTimer()
 +            }
 +        )
 +
-+        // Watch log nudge: upload promptly when watch logs arrive
++        // Watch log nudge: immediate upload + timer reset.
++        // queue: .main ensures resetUploadTimer() runs on the main thread
++        // regardless of which thread the notification was posted from.
 +        observers.append(
 +            center.addObserver(
 +                forName: .trioWatchLogsAppended,
@@ -2504,13 +2588,11 @@ index 000000000..9284f898c
 +                queue: .main
 +            ) { [weak self] _ in
 +                self?.uploadNow()
++                self?.resetUploadTimer()
 +            }
 +        )
 +
-+        // Periodic trigger (while running)
-+        timer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
-+            self?.uploadNow()
-+        }
++        resetUploadTimer()
 +
 +        // Detect build change and flush immediately so backlogged lines carry the old build
 +        let lastKnownBuildKey = "cloudLogUploadService.lastKnownBuild"
@@ -2519,6 +2601,13 @@ index 000000000..9284f898c
 +        if lastKnownBuild != currentBuild {
 +            uploadNow()
 +            UserDefaults.standard.set(currentBuild, forKey: lastKnownBuildKey)
++        }
++    }
++
++    private func resetUploadTimer() {
++        timer?.invalidate()
++        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
++            self?.uploadNow()
 +        }
 +    }
 +
@@ -2535,10 +2624,10 @@ index 000000000..9284f898c
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
-index 000000000..aa8928169
+index 000000000..231dcec84
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,430 @@
 +import Foundation
 +
 +/// iPhone-only log tailer/uploader.
@@ -2564,8 +2653,6 @@ index 000000000..aa8928169
 +    private let stateKey = "cloudLogUploader.tailState.v1"
 +
 +    private var isUploading = false
-+    private var lastSuccessfulUploadAt: Date?
-+    private let successCooldown: TimeInterval = 30
 +
 +    // MARK: - Better Stack ingestion filter (reduce volume; local logs unchanged)
 +
@@ -2587,11 +2674,6 @@ index 000000000..aa8928169
 +    /// Returns true if this run completed without provider failures.
 +    @discardableResult
 +    func uploadNow() async -> Bool {
-+        if let last = lastSuccessfulUploadAt, Date().timeIntervalSince(last) < successCooldown {
-+            return true
-+        }
-+
-+        // Coalesce to avoid overlapping uploads on lifecycle + timer.
 +        guard !isUploading else { return true }
 +        isUploading = true
 +        defer { isUploading = false }
@@ -2600,9 +2682,6 @@ index 000000000..aa8928169
 +        for pair in pairs {
 +            let ok = await uploadRotatingPair(pair)
 +            if !ok { allSucceeded = false }
-+        }
-+        if allSucceeded {
-+            lastSuccessfulUploadAt = Date()
 +        }
 +        return allSucceeded
 +    }

@@ -1,8 +1,8 @@
 # Observability Hardening — Implementation Log
 
-**Version:** v1.1
+**Version:** v1.2
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-20 22:10 CET
+**Last updated:** 2026-03-21 23:58 CET
 
 ---
 
@@ -109,7 +109,81 @@ Both events are complication-extension / WidgetKit only (not HealthKit observer 
 
 ---
 
+### 4G — Unified `Transferred` log for `updateApplicationContext` (build 144, 2026-03-21)
+
+**Commit:** `8ab401dfc` on `feature/watch-complication-improvements`
+**Patch:** `09-watch-complication-improvements.patch` regenerated via `mid-stack-update.sh --patch 09 --cherry-pick 8ab401dfc`
+
+**What was done:** Added a `📤 Transferred new WatchState snapshot via=updateApplicationContext reading_date_epoch_seconds=... userinfo_budget_exhausted=... queue_depth=...` log line after `session.updateApplicationContext(ctx)` succeeds. This emits the `📤 Transferred` sentence shape that Better Stack's `transfer_via` extraction rule matches, making R4 transfers visible in the "Transfers / bucket" dashboard.
+
+Uses `userinfo_budget_exhausted` (not `budget_exhausted`) because `updateApplicationContext` doesn't consume the complication userInfo budget — the field is contextual, not a constraint.
+
+**File:** `AppleWatchManager.swift`
+
+---
+
+### 4H — `queue_depth` in `complication_budget_check` (build 144, 2026-03-21)
+
+**Commit:** `8ab401dfc` (same commit as 4G)
+**Patch:** `09-watch-complication-improvements.patch`
+
+**What was done:** Appended `queue_depth=\(session.outstandingUserInfoTransfers.count)` to the existing `complication_budget_check` debug log in `sendDataToWatch`. Makes queue depth visible every cycle — prerequisite for dead-zone stall alerting. Field name `queue_depth` is consistent with existing `📤 Transferred` and `context_attempted` log lines.
+
+**File:** `AppleWatchManager.swift`
+
+---
+
+### 4I — Skip retry scheduling when snapshot is fresh (build 144, 2026-03-21)
+
+**Commit:** `8ab401dfc` (same commit as 4G/4H)
+**Patch:** `09-watch-complication-improvements.patch`
+
+**What was done:** In `TrioComplicationDataStore.coalescedReloadOnMain`, added a freshness check before `scheduleRetryAfterReloadOnMain`: if `Date().timeIntervalSince(snapshot.readingDate) < freshnessThreshold` (60s), skip the retry. The `freshnessThreshold` constant keeps the condition and log message in sync. If `latestSnapshot()` returns nil, falls through to schedule the retry (correct behavior for no-data-yet case).
+
+Reduces WidgetKit budget pressure by eliminating unnecessary retries when the complication just rendered fresh data.
+
+**File:** `TrioComplicationDataStore.swift`
+
+---
+
+### Build 143 +48h gate metrics (recorded 2026-03-21 ~22:40 UTC)
+
+Full observation window: 49.5h since build 143 deployment (~21:09 UTC 2026-03-19).
+
+| Metric | n | p50 | p90 | p95 | max | Threshold | Result |
+|--------|---|-----|-----|-----|-----|-----------|--------|
+| `save_age` | 445 | 104s | 324s | 518s | 14,173s | p90 < 300s | Marginal fail (+8%) |
+| `reload_age` | 537 | 208s | 608s | 647s | 14,173s | p90 < 600s | Marginal fail (+1.3%) |
+| `receive_lag` | 194 | 0.09s | 0.77s | 2.3s | 128s | p50<10s, p90<30s | **Pass** |
+| `data_age` at getTimeline | 230 | 322s | 761s | 1,313s | 14,296s | p90 < 600s | Fail (+27%) |
+
+**Assessment:** Transport layer healthy. Marginal failures driven by WidgetKit scheduling latency (p50=244s, p90=504s) — outside our control. The 14,000s+ outliers are overnight sleep gaps. `receive_lag` confirms sub-second phone-to-watch delivery via `sendMessage`.
+
+### R5d post-sleep-gap recovery (validated)
+
+8 `sleep_gap_detected_context` events in the 49.5h window (all via `didReceiveApplicationContext` — no `didReceiveUserInfo` gaps). 7 `sleep_gap_reload_firing` events (1 `stale_backlog` on first receive). No rate-limited skips.
+
+Post-gap `data_age_seconds` at first `complication_get_timeline_called`:
+
+| Gap time | Gap (s) | data_age (s) | WidgetKit latency (s) |
+|----------|---------|--------------|----------------------|
+| Mar 20 20:53 | 646 | 141 | 0 |
+| Mar 21 01:41 | 730 | 269 | 260 |
+| Mar 21 18:08 | 701 | 203 | 128 |
+| Mar 21 18:54 | 771 | 194 | 85 |
+
+**Result:** All post-gap data ages well under 600s (p90 ~248s). R5d forced reload mechanism is working — complication recovers with fresh data after sleep gaps.
+
+**Note:** All gaps detected via `didReceiveApplicationContext`, none via `didReceiveUserInfo`. This is expected: during sleep, complication budget is exhausted, so the phone falls back to `updateApplicationContext`. The `didReceiveApplicationContext` path correctly triggers both gap detection and forced reload (since build 143).
+
+---
+
 ## Changelog
+
+### v1.2 (2026-03-22 00:10 CET)
+- Added 4G (unified Transferred log for updateApplicationContext), 4H (queue_depth in complication_budget_check), 4I (skip retry when snapshot fresh) — all build 144.
+- Added build 143 +48h gate metrics table (49.5h window). Transport healthy; marginal fails driven by WidgetKit latency.
+- Added R5d post-sleep-gap recovery validation: 4 correlated gap→getTimeline pairs, all data_age < 270s. Forced reload mechanism confirmed working.
 
 ### v1.1 (2026-03-20 22:10 CET)
 - R5d section: replaced "NOT YET IMPLEMENTED" with full implementation log for build 143. Includes rename/persist, three-constraint ordering, `forceWidgetReloadIfStale`, `didReceiveApplicationContext` upgrade, and red-team review fixes (RT-1/2/4/5).

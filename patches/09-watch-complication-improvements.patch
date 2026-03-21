@@ -1,6 +1,6 @@
-From 55cb02a81fed2891cc06c133a6e8fb6fc892cfc2 Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Fri, 20 Mar 2026 12:55:41 +0100
+From 925634173e18004bf015f880a3a8d638b4aa45da Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sat, 21 Mar 2026 23:28:32 +0100
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
@@ -17,11 +17,11 @@ Subject: [PATCH] feat: watch-complication-improvements
  .../TrioWatchComplication.swift               |  442 ++++++-
  .../TrioWatchComplicationPreview.swift        |  124 ++
  Trio Watch Shared/ComplicationLogBuffer.swift |  281 ++++-
- .../TrioComplicationDataStore.swift           | 1076 +++++++++++++++++
+ .../TrioComplicationDataStore.swift           | 1082 +++++++++++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  Trio/Sources/Models/WatchMessageKeys.swift    |    6 +-
- .../WatchManager/AppleWatchManager.swift      |  556 +++++++--
- 17 files changed, 3802 insertions(+), 352 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      |  557 +++++++--
+ 17 files changed, 3809 insertions(+), 352 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -3153,10 +3153,10 @@ index 31b8ea095..528bbee31 100644
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..82bb1ca32
+index 000000000..1cc2a5535
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,1076 @@
+@@ -0,0 +1,1082 @@
 +import Foundation
 +import os
 +#if os(watchOS)
@@ -4031,6 +4031,12 @@ index 000000000..82bb1ca32
 +            return
 +        }
 +        if !isRetry {
++            let freshnessThreshold: TimeInterval = 60
++            if let snapshot = latestSnapshot(), Date().timeIntervalSince(snapshot.readingDate) < freshnessThreshold {
++                let age = String(format: "%.1f", Date().timeIntervalSince(snapshot.readingDate))
++                log("⏭️ Retry skipped: snapshot fresh (age=\(age)s < \(Int(freshnessThreshold))s)")
++                return
++            }
 +            scheduleRetryAfterReloadOnMain(minInterval: minInterval)
 +        }
 +    }
@@ -4273,7 +4279,7 @@ index 68e4bdf39..24a31f2ea 100644
      static let maxBolus = "maxBolus"
      static let maxCarbs = "maxCarbs"
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 75c3c182b..14f335016 100644
+index 75c3c182b..428328bef 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -16,6 +16,8 @@ protocol WatchManager {
@@ -4748,7 +4754,7 @@ index 75c3c182b..14f335016 100644
              return
          }
  
-@@ -507,19 +748,139 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -507,19 +748,140 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -4803,7 +4809,7 @@ index 75c3c182b..14f335016 100644
 +        }
 +
 +        let budgetSnapshot = session.remainingComplicationUserInfoTransfers
-+        debug(.watchManager, "🔍 complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch)")
++        debug(.watchManager, "🔍 complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch) queue_depth=\(session.outstandingUserInfoTransfers.count)")
  
 -        // if session is reachable, it means watch App is in the foreground -> send watchState as message
 -        // if session is not reachable, it means it's in background -> send watchState as userInfo
@@ -4892,12 +4898,13 @@ index 75c3c182b..14f335016 100644
 +        do {
 +            try session.updateApplicationContext(ctx)
 +            debug(.watchManager, "📦 context_succeeded reading_epoch=\(readingEpoch)")
++            debug(.watchManager, "📤 Transferred new WatchState snapshot via=updateApplicationContext reading_date_epoch_seconds=\(readingEpoch) userinfo_budget_exhausted=\(budgetExhausted) queue_depth=\(session.outstandingUserInfoTransfers.count)")
 +        } catch {
 +            debug(.watchManager, "📦 context_failed context_update_failed=true error=\(error)")
          }
      }
  
-@@ -548,10 +909,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -548,10 +910,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -4922,7 +4929,7 @@ index 75c3c182b..14f335016 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -723,6 +1095,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -723,6 +1096,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = message["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -4930,7 +4937,7 @@ index 75c3c182b..14f335016 100644
                  }
              } else if type == "watchError" {
                  if let errorData = message["data"] as? [String: Any] {
-@@ -748,6 +1121,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -748,6 +1122,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                  if type == "watchLogs" {
                      if let logData = message["data"] as? String {
                          SimpleLogReporter.appendToWatchLog(logData)
@@ -4938,7 +4945,7 @@ index 75c3c182b..14f335016 100644
                      }
                  } else if type == "watchError" {
                      if let errorData = message["data"] as? [String: Any] {
-@@ -760,6 +1134,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -760,6 +1135,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Legacy message format
              if let logs = message["watchLogs"] as? String {
                  SimpleLogReporter.appendToWatchLog(logs)
@@ -4946,7 +4953,7 @@ index 75c3c182b..14f335016 100644
              }
  
              // Handle watch errors forwarded for Crashlytics logging
-@@ -772,9 +1147,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -772,9 +1148,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              {
                  debug(.watchManager, "📱 Watch requested watch state data update.")
                  guard let self = self else { return }
@@ -4959,7 +4966,7 @@ index 75c3c182b..14f335016 100644
                  Task {
                      let state = await self.setupWatchState()
                      await self.sendDataToWatch(state)
-@@ -896,6 +1271,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -896,6 +1272,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -4974,7 +4981,7 @@ index 75c3c182b..14f335016 100644
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
          // Check if this is an envelope message
          if let type = userInfo["type"] as? String,
-@@ -915,6 +1298,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -915,6 +1299,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = userInfo["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -4982,7 +4989,7 @@ index 75c3c182b..14f335016 100644
                  }
              } else if type == "watchError" {
                  if let errorData = userInfo["data"] as? [String: Any] {
-@@ -965,10 +1349,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -965,10 +1350,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      #endif
  
      func sessionReachabilityDidChange(_ session: WCSession) {
@@ -4998,7 +5005,7 @@ index 75c3c182b..14f335016 100644
              Task {
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
-@@ -1449,11 +1836,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1449,11 +1837,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -5012,7 +5019,7 @@ index 75c3c182b..14f335016 100644
          }
      }
  
-@@ -1464,12 +1848,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1464,12 +1849,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  

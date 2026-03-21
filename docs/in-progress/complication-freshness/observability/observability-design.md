@@ -1,9 +1,9 @@
 # Observability Hardening — Design (R5)
 
-**Version:** v1.0
+**Version:** v1.1
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-19 11:33 CET
-**Status:** IN PROGRESS — R5a shipped (build 133 with R2a), R5e shipped (build 132 with R1), R5b/R5c/R5f shipped (build 141). Only R5d (sleep-gap forced reload) remains pending.
+**Last updated:** 2026-03-21 15:17 CET
+**Status:** COMPLETED — All R5 items shipped. R5a (build 133), R5e (build 132), R5b/R5c/R5f (build 141), R5d (build 143).
 
 See [problem-and-strategy.md](../problem-and-strategy.md) for overall context.
 Implementation plan: [observability-implementation-plan.md](observability-implementation-plan.md)
@@ -236,6 +236,10 @@ In both A and B, `data_age_seconds` must be computed from the snapshot **actuall
 ---
 
 ## Changelog
+
+### v1.1 (2026-03-21 15:17 CET)
+- Status updated from IN PROGRESS to COMPLETED. R5d shipped in build 143 (deployed 2026-03-19).
+- Reason: all R5 items (R5a/R5b/R5c/R5d/R5e/R5f) are now shipped. See observability-implementation-log.md §R5d for full details.
 
 ### v1.0 (2026-03-19 11:33 CET)
 - Initial version. Extracted R5 (Observability Hardening) design content from complication-freshness-remediation-plan.md.

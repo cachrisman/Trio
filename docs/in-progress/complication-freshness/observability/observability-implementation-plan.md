@@ -1,9 +1,9 @@
 # Observability Hardening — Implementation Plan (Step 6)
 
-**Version:** v1.0
+**Version:** v1.1
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-19 11:33 CET
-**Status:** IN PROGRESS — R5b, R5c, R5f shipped (build 141, commit `44d7a7579`). Only R5d (sleep-gap forced reload) remains pending.
+**Last updated:** 2026-03-21 15:17 CET
+**Status:** COMPLETED — All R5 items shipped. R5b/R5c/R5f (build 141), R5d (build 143). See implementation log for R5d details.
 
 Design: [observability-design.md](observability-design.md)
 Implementation log: [observability-implementation-log.md](observability-implementation-log.md)
@@ -66,6 +66,10 @@ In both paths, `data_age_seconds` must be from the snapshot **actually used to b
 ---
 
 ## Changelog
+
+### v1.1 (2026-03-21 15:17 CET)
+- Status updated from IN PROGRESS to COMPLETED. R5d shipped in build 143.
+- Reason: all R5 implementation tasks are complete and validated in production.
 
 ### v1.0 (2026-03-19 11:33 CET)
 - Initial version. Extracted Step 6 (R5 observability hardening implementation) from complication-freshness-implementation-guide.md.

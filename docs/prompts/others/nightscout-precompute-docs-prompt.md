@@ -11,8 +11,8 @@ Treat this as adversarial review of docs that may look complete while still bein
 # Inputs
 
 Review these docs together:
-	•	docs/in-progress/nightscout-sawtooth-precompute/nightscout-sawtooth-precompute-service.md
-	•	docs/in-progress/nightscout-sawtooth-precompute/nightscout-precompute-implementation-plan.md
+	•	docs/completed/nightscout-sawtooth-precompute/nightscout-sawtooth-precompute-service.md
+	•	docs/completed/nightscout-sawtooth-precompute/nightscout-precompute-implementation-plan.md
 
 You must verify both:
 	1.	Whether the design and implementation plan are technically sound

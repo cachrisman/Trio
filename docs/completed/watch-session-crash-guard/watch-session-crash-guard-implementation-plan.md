@@ -1,9 +1,10 @@
 # Implementation Plan: WatchConnectivity Session Crash Guard
 
-Version: 1.5
+Version: 1.6
 Date: 2026-03-15
-Status: Draft
-Design reference: `docs/in-progress/watch-session-crash-guard/01-design.md`
+Status: Shipped (build 143)
+Last updated: 2026-03-21 10:54 CET
+Design reference: `01-watch-session-crash-guard-design.md`
 
 ## Scope
 
@@ -208,6 +209,10 @@ Harden `BaseWatchManager` delegate callbacks and `TrioApp.loadServices()` agains
 - Battery impact of the removed retry loop is negligible (it was only active during disconnection periods), but overall system-level churn is reduced.
 
 ## Changelog
+
+### v1.6 (2026-03-21 10:54 CET)
+- Status updated from Draft to Shipped (build 143). Added Last updated field. Fixed design reference path.
+- Reason: all tasks (A1-A4, B1) implemented and shipped in patch 10 (`10-watch-session-crash-guard.patch`), deployed via build 143. Production telemetry confirms all instrumented code paths active. See `03-watch-session-crash-guard-implementation-log.md` for full validation.
 
 ### v1.5 (2026-03-15)
 - Branch sensitivity: added explicit note under Dependencies on publisher-driven path differing by base branch; preserve existing coalescer and add delegate coalescer separate, or add only delegate coalescer if none exists.

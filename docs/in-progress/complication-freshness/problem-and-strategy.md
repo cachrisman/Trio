@@ -166,7 +166,7 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 | WidgetKit dispatch-to-callback black-box observability | Medium | Local reload management is well-instrumented (`coalescedReloadOnMain` logs debounce, trigger, retry skip/cancel). The blind spot is after dispatch: whether `WidgetCenter.reloadTimelines()` actually caused WidgetKit to call `getTimeline`, or was silently dropped/deferred. Investigation 2026-03-19 found that roughly 45% of logged reload dispatches were not followed by a corresponding `getTimeline` callback in the sampled 48h window (see `docs/investigations/`). Improve correlation between reload generation and `getTimeline` invocation to distinguish "fresh snapshot, stale UI" from "reload silently ignored by platform." |
 | Retry only when snapshot was stale at reload time | Medium | Skip retry scheduling in `coalescedReloadOnMain` when `snapshot_age_seconds < 60` at reload time. Reduces unnecessary WidgetKit budget pressure. Specced in `snapshot-age-improvements-suggestions.md §3.1`. |
 
-*Cross-reference:* Visible recency sawtooth metric reconstruction is specced as a standalone service in `docs/in-progress/nightscout-sawtooth-precompute/`. No Trio app changes required.
+*Cross-reference:* Visible recency sawtooth metric reconstruction is specced as a standalone service in `docs/completed/nightscout-sawtooth-precompute/`. No Trio app changes required.
 
 #### UX / patient safety
 

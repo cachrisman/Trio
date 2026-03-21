@@ -1,9 +1,9 @@
 # Backlog: Watch log flush UX + phone upload trigger + truncation observability
 
-**Version:** v1  
-**Status:** Backlog  
+**Version:** v2  
+**Status:** Shipped (build 143) — see `01-*-design.md`, `02-*-implementation-plan.md`, `03-*-implementation-log.md`  
 **Created:** 2026-03-19 22:17 CET  
-**Last updated:** 2026-03-19 22:17 CET
+**Last updated:** 2026-03-21 14:26 CET
 
 ---
 
@@ -109,6 +109,10 @@ Implementation lives in the **Trio** worktree / patch stack; this doc is trackin
 ---
 
 ## Changelog
+
+### v2 (2026-03-21 14:26 CET)
+- Status updated from Backlog to Shipped (build 143). Added references to full design, implementation plan, and implementation log docs.
+- Reason: all three proposed items (§3.1, §3.2, §3.3.1) shipped in build 143. §3.3.3 (retention/file-cap warnings) was not implemented and is tracked as a follow-up.
 
 ### v1 (2026-03-19 22:17 CET)
 - Initial backlog idea: watch debug **Flush logs**, `NotificationCenter` hook to call `CloudLogUploadService.uploadNow()` after `appendToWatchLog`, and explicit logging for in-memory flush truncation (16 KB) plus optional retention warnings.

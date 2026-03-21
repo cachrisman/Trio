@@ -1,11 +1,8 @@
-From f8d29f172c35ebb23f2d25e1e939e44c954edb8c Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 10 Jan 2026 21:50:26 +0100
-Subject: [PATCH] feat(nightscout): richer algorithm settings
+From cfe61bf21324acf4f6990a12a8fc16abd9d41956 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Sat, 21 Mar 2026 23:54:24 +0100
+Subject: [PATCH] feat: ns-richer-settings
 
-Add NightscoutAlgorithmSettings model with comprehensive algorithm configuration options.
-
-Converted from legacy patch format.
 ---
  .../Models/NightscoutAlgorithmSettings.swift  | 87 +++++++++++++++++++
  Trio/Sources/Models/NightscoutStatus.swift    |  2 +
@@ -120,7 +117,7 @@ index 6212c61b0..2ca345b96 100644
  
  struct OpenAPSStatus: JSON {
 diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
-index 70dfbb3ca..db8582729 100644
+index 70dfbb3ca..760228ab1 100644
 --- a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
 +++ b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
 @@ -551,11 +551,94 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
@@ -200,7 +197,7 @@ index 70dfbb3ca..db8582729 100644
 +            sweetMealFactor: s.sweetMealFactor,
 +            overrideFactor: s.overrideFactor,
 +            individualAdjustmentFactor: s.individualAdjustmentFactor,
-+            timeCap: s.timeCap,
++            timeCap: nil,
 +            minuteInterval: s.minuteInterval,
 +            delay: s.delay,
 +

@@ -1,8 +1,9 @@
 # Design: WatchConnectivity Session Crash Guard
 
-Version: 1.5
+Version: 1.6
 Date: 2026-03-15
-Status: Proposed
+Status: Shipped (build 143)
+Last updated: 2026-03-21 10:54 CET
 
 ## Problem
 
@@ -145,6 +146,10 @@ All changes are internal to the iPhone app's watch manager. No protocol changes,
 5. **Service resolution failures are logged, not crashed**: Temporarily break a service registration in debug and verify the app logs the failure instead of crashing.
 
 ## Changelog
+
+### v1.6 (2026-03-21 10:54 CET)
+- Status updated from Proposed to Shipped (build 143). Added Last updated field.
+- Reason: all four design changes shipped in patch 10 (`10-watch-session-crash-guard.patch`), deployed via build 143. Production telemetry confirms delegate coalescer, retryConnection removal, and unreachable logging all active. See `03-watch-session-crash-guard-implementation-log.md` for full validation.
 
 ### v1.5 (2026-03-15)
 - Context: explicit that publisher-driven update handling varies by branch; design scoped to delegate hardening and compatible with any existing publisher coalescer.

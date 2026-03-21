@@ -1,4 +1,4 @@
-Review `docs/in-progress/nightscout-sawtooth-precompute/nightscout-sawtooth-precompute-service.md` and iteratively fix it until it is materially clean.
+Review `docs/completed/nightscout-sawtooth-precompute/nightscout-sawtooth-precompute-service.md` and iteratively fix it until it is materially clean.
 
 You are expected to do a deep review, not a superficial consistency pass.
 

@@ -9,7 +9,7 @@ The sawtooth metric — `complication_visible_recency_seconds` — is **not** a 
 3. Pushes gauge points to a **separate** BetterStack Prometheus-push source called **Trio Complication Recency** (source id `trio_complication_recency_2`, ingest host `s2301525.eu-fsn-3.betterstackdata.com`)
 4. A dashboard chart on the **main Trio dashboard** (id `914638`) queries that second source to render the sawtooth
 
-The design is in `docs/in-progress/nightscout-sawtooth-precompute/nightscout-sawtooth-precompute-service.md` (v1.14) and the implementation plan is `nightscout-precompute-implementation-plan.md` (v1.10). The algorithm has been validated — an Explore-based manual run produced 717 clean data points over 46h. The question is whether the **live production pipeline** is working: is the service running, are gauges actually being pushed, and is the dashboard chart correctly reading them?
+The design is in `docs/completed/nightscout-sawtooth-precompute/nightscout-sawtooth-precompute-service.md` (v1.14) and the implementation plan is `nightscout-precompute-implementation-plan.md` (v1.10). The algorithm has been validated — an Explore-based manual run produced 717 clean data points over 46h. The question is whether the **live production pipeline** is working: is the service running, are gauges actually being pushed, and is the dashboard chart correctly reading them?
 
 Work through the five audit layers below in order. Document concrete findings at each layer before moving to the next. **Do not propose fixes until all layers are audited.**
 
