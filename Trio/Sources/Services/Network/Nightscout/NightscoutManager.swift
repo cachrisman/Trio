@@ -551,11 +551,94 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
             battery: Int(batteryLevel * 100),
             isCharging: batteryState == .charging || batteryState == .full
         )
+
+        let s = settingsManager.settings
+        let p = settingsManager.preferences
+        let ps = settingsManager.pumpSettings
+
+        let trioSettings = NightscoutAlgorithmSettings(
+            schemaVersion: 1,
+            algorithmVersion: Bundle.main.releaseVersionNumber,
+            units: s.units.rawValue,
+            preferencesTimestamp: p.timestamp,
+
+            closedLoop: s.closedLoop,
+            enableUAM: p.enableUAM,
+            enableSMBAlways: p.enableSMBAlways,
+            enableSMBWithCOB: p.enableSMBWithCOB,
+            enableSMBAfterCarbs: p.enableSMBAfterCarbs,
+            enableSMBWithTemptarget: p.enableSMBWithTemptarget,
+            allowSMBWithHighTemptarget: p.allowSMBWithHighTemptarget,
+            smbDeliveryRatio: p.smbDeliveryRatio,
+            smbInterval: p.smbInterval,
+            maxSMBBasalMinutes: p.maxSMBBasalMinutes,
+            maxUAMSMBBasalMinutes: p.maxUAMSMBBasalMinutes,
+
+            autosensMax: p.autosensMax,
+            autosensMin: p.autosensMin,
+            rewindResetsAutosens: p.rewindResetsAutosens,
+            highTemptargetRaisesSensitivity: p.highTemptargetRaisesSensitivity,
+            lowTemptargetLowersSensitivity: p.lowTemptargetLowersSensitivity,
+            sensitivityRaisesTarget: p.sensitivityRaisesTarget,
+            resistanceLowersTarget: p.resistanceLowersTarget,
+            advTargetAdjustments: p.advTargetAdjustments,
+
+            maxIOB: p.maxIOB,
+            maxCOB: p.maxCOB,
+            maxDailySafetyMultiplier: p.maxDailySafetyMultiplier,
+            currentBasalSafetyMultiplier: p.currentBasalSafetyMultiplier,
+
+            curve: p.curve.rawValue,
+            useCustomPeakTime: p.useCustomPeakTime,
+            insulinPeakTime: p.insulinPeakTime,
+            insulinActionCurve: ps.insulinActionCurve,
+
+            exerciseMode: p.exerciseMode,
+            halfBasalExerciseTarget: p.halfBasalExerciseTarget,
+
+            maxMealAbsorptionTime: p.maxMealAbsorptionTime,
+            min5mCarbimpact: p.min5mCarbimpact,
+            remainingCarbsFraction: p.remainingCarbsFraction,
+            remainingCarbsCap: p.remainingCarbsCap,
+
+            adjustmentFactor: p.adjustmentFactor,
+            adjustmentFactorSigmoid: p.adjustmentFactorSigmoid,
+            sigmoid: p.sigmoid,
+            useNewFormula: p.useNewFormula,
+            useWeightedAverage: p.useWeightedAverage,
+            weightPercentage: p.weightPercentage,
+            tddAdjBasal: p.tddAdjBasal,
+            updateInterval: p.updateInterval,
+            maxDeltaBGthreshold: p.maxDeltaBGthreshold,
+            noisyCGMTargetMultiplier: p.noisyCGMTargetMultiplier,
+            carbsReqThreshold: p.carbsReqThreshold,
+            threshold_setting: p.threshold_setting,
+            suspendZerosIOB: p.suspendZerosIOB,
+            unsuspendIfNoTemp: p.unsuspendIfNoTemp,
+            skipNeutralTemps: p.skipNeutralTemps,
+
+            useFPUconversion: s.useFPUconversion,
+            fattyMeals: s.fattyMeals,
+            fattyMealFactor: s.fattyMealFactor,
+            sweetMeals: s.sweetMeals,
+            sweetMealFactor: s.sweetMealFactor,
+            overrideFactor: s.overrideFactor,
+            individualAdjustmentFactor: s.individualAdjustmentFactor,
+            timeCap: nil,
+            minuteInterval: s.minuteInterval,
+            delay: s.delay,
+
+            maxBolus: ps.maxBolus,
+            maxBasal: ps.maxBasal
+        )
+        // pass trioSettings when building NightscoutStatus(...)
+
         let status = NightscoutStatus(
             device: NightscoutTreatment.local,
             openaps: openapsStatus,
             pump: pump,
-            uploader: uploader
+            uploader: uploader,
+            trioSettings: trioSettings
         )
 
         do {
