@@ -800,7 +800,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
 
         let budgetSnapshot = session.remainingComplicationUserInfoTransfers
-        debug(.watchManager, "🔍 complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch)")
+        debug(.watchManager, "🔍 complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch) queue_depth=\(session.outstandingUserInfoTransfers.count)")
 
         // sendMessage (budget-free watch UI path) — always fires with fullMessage
         if session.isReachable {
@@ -881,6 +881,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         do {
             try session.updateApplicationContext(ctx)
             debug(.watchManager, "📦 context_succeeded reading_epoch=\(readingEpoch)")
+            debug(.watchManager, "📤 Transferred new WatchState snapshot via=updateApplicationContext reading_date_epoch_seconds=\(readingEpoch) userinfo_budget_exhausted=\(budgetExhausted) queue_depth=\(session.outstandingUserInfoTransfers.count)")
         } catch {
             debug(.watchManager, "📦 context_failed context_update_failed=true error=\(error)")
         }

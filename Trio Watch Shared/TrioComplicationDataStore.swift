@@ -872,6 +872,12 @@ final class TrioComplicationDataStore {
             return
         }
         if !isRetry {
+            let freshnessThreshold: TimeInterval = 60
+            if let snapshot = latestSnapshot(), Date().timeIntervalSince(snapshot.readingDate) < freshnessThreshold {
+                let age = String(format: "%.1f", Date().timeIntervalSince(snapshot.readingDate))
+                log("⏭️ Retry skipped: snapshot fresh (age=\(age)s < \(Int(freshnessThreshold))s)")
+                return
+            }
             scheduleRetryAfterReloadOnMain(minInterval: minInterval)
         }
     }
