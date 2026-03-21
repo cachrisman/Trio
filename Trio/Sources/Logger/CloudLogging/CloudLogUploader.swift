@@ -23,8 +23,6 @@ actor CloudLogUploader {
     private let stateKey = "cloudLogUploader.tailState.v1"
 
     private var isUploading = false
-    private var lastSuccessfulUploadAt: Date?
-    private let successCooldown: TimeInterval = 30
 
     // MARK: - Better Stack ingestion filter (reduce volume; local logs unchanged)
 
@@ -46,11 +44,6 @@ actor CloudLogUploader {
     /// Returns true if this run completed without provider failures.
     @discardableResult
     func uploadNow() async -> Bool {
-        if let last = lastSuccessfulUploadAt, Date().timeIntervalSince(last) < successCooldown {
-            return true
-        }
-
-        // Coalesce to avoid overlapping uploads on lifecycle + timer.
         guard !isUploading else { return true }
         isUploading = true
         defer { isUploading = false }
@@ -59,9 +52,6 @@ actor CloudLogUploader {
         for pair in pairs {
             let ok = await uploadRotatingPair(pair)
             if !ok { allSucceeded = false }
-        }
-        if allSucceeded {
-            lastSuccessfulUploadAt = Date()
         }
         return allSucceeded
     }

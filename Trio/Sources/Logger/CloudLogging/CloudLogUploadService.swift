@@ -9,7 +9,8 @@ extension Notification.Name {
 ///
 /// - Manual trigger: `uploadNow()`
 /// - Lifecycle triggers: foreground/background
-/// - Periodic trigger: every 5 minutes while app is running
+/// - Periodic trigger: every 30 seconds while app is running
+/// - Watch log nudge: immediate upload + timer reset when watch logs arrive
 final class CloudLogUploadService {
     // Settings UI (first-choice config)
     static let userDefaultsEnabledKey = "cloudLogging.enabled"
@@ -123,7 +124,6 @@ final class CloudLogUploadService {
     // MARK: - Scheduling
 
     private func start() {
-        // Foreground + background triggers
         let center = Foundation.NotificationCenter.default
 
         observers.append(
@@ -133,6 +133,7 @@ final class CloudLogUploadService {
                 queue: .main
             ) { [weak self] _ in
                 self?.uploadNow()
+                self?.resetUploadTimer()
             }
         )
 
@@ -143,10 +144,13 @@ final class CloudLogUploadService {
                 queue: .main
             ) { [weak self] _ in
                 self?.uploadNow()
+                self?.resetUploadTimer()
             }
         )
 
-        // Watch log nudge: upload promptly when watch logs arrive
+        // Watch log nudge: immediate upload + timer reset.
+        // queue: .main ensures resetUploadTimer() runs on the main thread
+        // regardless of which thread the notification was posted from.
         observers.append(
             center.addObserver(
                 forName: .trioWatchLogsAppended,
@@ -154,13 +158,11 @@ final class CloudLogUploadService {
                 queue: .main
             ) { [weak self] _ in
                 self?.uploadNow()
+                self?.resetUploadTimer()
             }
         )
 
-        // Periodic trigger (while running)
-        timer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
-            self?.uploadNow()
-        }
+        resetUploadTimer()
 
         // Detect build change and flush immediately so backlogged lines carry the old build
         let lastKnownBuildKey = "cloudLogUploadService.lastKnownBuild"
@@ -169,6 +171,13 @@ final class CloudLogUploadService {
         if lastKnownBuild != currentBuild {
             uploadNow()
             UserDefaults.standard.set(currentBuild, forKey: lastKnownBuildKey)
+        }
+    }
+
+    private func resetUploadTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.uploadNow()
         }
     }
 

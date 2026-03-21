@@ -12,7 +12,7 @@ actor WatchLogger {
     private var lastFlush = Date()
 
     // Size caps
-    private let logSizeCap = 16 * 1024 // 16 KB
+    private let logSizeCap = 64 * 1024 // 64 KB
     private let maxPerPayloadFiles = 10
     private let maxFileAge: TimeInterval = 48 * 60 * 60 // 48 hours
 
@@ -180,26 +180,103 @@ actor WatchLogger {
         updateCachedCountsIfStale()
         await logFileInventory()
 
-        var logsToSend = logs.joined(separator: "\n")
+        let allContent = logs.joined(separator: "\n")
+        let originalUTF8Count = allContent.utf8.count
+        let totalLineCount = logs.count
+        let originalLines = logs
 
-        // logSizeCap (16KB) limits in-memory flush payloads sent via WCSession.
-        // Per-payload drain files can be up to 64KB (maxDrainFileSize).
-        let originalUTF8Count = logsToSend.utf8.count
-        let lineCount = logs.count
+        logs.removeAll()
+        lastFlush = Date()
 
-        if originalUTF8Count > logSizeCap {
-            let marker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(lineCount)"
-            let markerBytes = marker.utf8.count + 1
-            let contentCap = max(0, logSizeCap - markerBytes)
-
-            let cappedData = logsToSend.data(using: .utf8)?.prefix(contentCap)
-                ?? Data()
-            let truncatedContent = String(data: cappedData, encoding: .utf8)
-                ?? String(logsToSend.prefix(contentCap))
-
-            logsToSend = marker + "\n" + truncatedContent
+        // Single payload fits within cap — send directly
+        if originalUTF8Count <= logSizeCap {
+            await sendLogPayload(allContent)
+            return
         }
 
+        // 4E: Split oversized payloads into sequential chunks (max 4 × logSizeCap)
+        let maxChunks = 4
+        let groupId = UUID().uuidString
+
+        // Content budget per chunk: logSizeCap minus worst-case chunk marker overhead.
+        // Marker byte cost is subtracted so the total chunk payload stays within logSizeCap.
+        let worstCaseMarker = "📦 log_flush_chunk chunk=\(maxChunks)/\(maxChunks) payload_id=\(groupId) lines_in_chunk=\(totalLineCount)"
+        let markerOverhead = worstCaseMarker.utf8.count + 1
+        let contentBudget = max(1, logSizeCap - markerOverhead)
+
+        // Pack lines greedily into chunks (line-boundary-aware)
+        var chunks: [(content: String, lineCount: Int)] = []
+        var currentLines: [String] = []
+        var currentBytes = 0
+        var lineIndex = 0
+
+        while lineIndex < originalLines.count {
+            let line = originalLines[lineIndex]
+            let addedBytes = (currentLines.isEmpty ? 0 : 1) + line.utf8.count
+
+            if currentBytes + addedBytes > contentBudget && !currentLines.isEmpty {
+                chunks.append((
+                    content: currentLines.joined(separator: "\n"),
+                    lineCount: currentLines.count
+                ))
+                currentLines = []
+                currentBytes = 0
+
+                if chunks.count >= maxChunks - 1 {
+                    // Last allowed chunk — pack all remaining lines
+                    let remaining = Array(originalLines[lineIndex...])
+                    let remainingContent = remaining.joined(separator: "\n")
+
+                    if remainingContent.utf8.count <= contentBudget {
+                        chunks.append((content: remainingContent, lineCount: remaining.count))
+                    } else {
+                        // 4A truncation on the last chunk
+                        let truncMarker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(totalLineCount)"
+                        let truncMarkerBytes = truncMarker.utf8.count + 1
+                        let truncBudget = max(0, contentBudget - truncMarkerBytes)
+
+                        var truncLines: [String] = []
+                        var truncBytes = 0
+                        for rl in remaining {
+                            let added = (truncLines.isEmpty ? 0 : 1) + rl.utf8.count
+                            if truncBytes + added > truncBudget { break }
+                            truncLines.append(rl)
+                            truncBytes += added
+                        }
+
+                        let truncContent = truncMarker + "\n" + truncLines.joined(separator: "\n")
+                        chunks.append((content: truncContent, lineCount: truncLines.count))
+                    }
+                    lineIndex = originalLines.count
+                    break
+                }
+                continue
+            }
+
+            currentLines.append(line)
+            currentBytes += addedBytes
+            lineIndex += 1
+        }
+
+        if !currentLines.isEmpty {
+            chunks.append((
+                content: currentLines.joined(separator: "\n"),
+                lineCount: currentLines.count
+            ))
+        }
+
+        let totalChunks = chunks.count
+
+        for (index, chunk) in chunks.enumerated() {
+            let chunkNumber = index + 1
+            let chunkMarker = "📦 log_flush_chunk chunk=\(chunkNumber)/\(totalChunks) payload_id=\(groupId) lines_in_chunk=\(chunk.lineCount)"
+            let finalContent = chunkMarker + "\n" + chunk.content
+            await sendLogPayload(finalContent)
+        }
+    }
+
+    /// Sends a single log payload (or chunk) to the phone via WCSession.
+    private func sendLogPayload(_ content: String) async {
         let payloadId = UUID().uuidString
 
         let logDir = FileManager.default.urls(
@@ -212,17 +289,14 @@ actor WatchLogger {
         let perPayloadFile = logDir.appendingPathComponent(
             "watch_log_\(payloadId).txt"
         )
-        if let data = logsToSend.data(using: .utf8) {
+        if let data = content.data(using: .utf8) {
             try? data.write(to: perPayloadFile)
         }
-
-        logs.removeAll()
-        lastFlush = Date()
 
         let envelope: [String: Any] = [
             "type": "watchLogs",
             "payloadId": payloadId,
-            "data": logsToSend
+            "data": content
         ]
 
         if session.isReachable && session.activationState == .activated {
