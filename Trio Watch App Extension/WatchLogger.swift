@@ -405,7 +405,9 @@ actor WatchLogger {
             ) { reply in
                 if let ackType = reply["type"] as? String,
                    ackType == "ack",
-                   let ackId = reply["payloadId"] as? String,
+                   let ackId = WatchConnectivityPayloadIds.payloadIdString(
+                       reply["payloadId"]
+                   ),
                    ackId == payloadId {
                     let res = WatchLogger.removeFileTracked(
                         at: perPayloadFile
@@ -495,7 +497,7 @@ actor WatchLogger {
 
         let pendingPayloads = await getPendingPayloads()
         let pendingIds = pendingPayloads.compactMap {
-            $0["payloadId"] as? String
+            WatchConnectivityPayloadIds.payloadIdString($0["payloadId"])
         }
 
         if !pendingIds.isEmpty {
@@ -507,33 +509,43 @@ actor WatchLogger {
                 queryEnvelope,
                 context: "query_acks"
             ) { reply in
-                if let ackType = reply["type"] as? String,
-                   ackType == "batchAck",
-                   let ackIds = reply["ackIds"] as? [String] {
-                    var errCount = 0
-                    for ackId in ackIds {
-                        let path = logDir.appendingPathComponent(
-                            "watch_log_\(ackId).txt"
-                        )
-                        if WatchLogger.removeFileQuietly(at: path) {
-                            await WatchLogger.shared
-                                .removePendingPayload(ackId)
-                        } else {
-                            errCount += 1
-                        }
-                    }
-                    if !ackIds.isEmpty {
-                        let result = errCount > 0 ? "err" : "ok"
-                        await WatchLogger.shared.log(
-                            "⌚️ [CLEANUP] path=query_acks"
-                                + " artifact=watch_log"
-                                + " count=\(ackIds.count)"
-                                + " result=\(result)"
-                        )
-                    }
-                    await WatchLogger.shared
-                        .resendPendingPayloads()
+                guard let ackType = reply["type"] as? String,
+                      ackType == "batchAck"
+                else {
+                    await WatchLogger.shared.resendPendingPayloads()
+                    return
                 }
+
+                let ackIds = WatchConnectivityPayloadIds.payloadIdStrings(
+                    from: reply["ackIds"]
+                )
+
+                if ackIds.isEmpty {
+                    await WatchLogger.shared.resendPendingPayloads()
+                    return
+                }
+
+                var errCount = 0
+                for ackId in ackIds {
+                    let path = logDir.appendingPathComponent(
+                        "watch_log_\(ackId).txt"
+                    )
+                    if WatchLogger.removeFileQuietly(at: path) {
+                        await WatchLogger.shared
+                            .removePendingPayload(ackId)
+                    } else {
+                        errCount += 1
+                    }
+                }
+                let result = errCount > 0 ? "err" : "ok"
+                await WatchLogger.shared.log(
+                    "⌚️ [CLEANUP] path=query_acks"
+                        + " artifact=watch_log"
+                        + " count=\(ackIds.count)"
+                        + " result=\(result)"
+                )
+                await WatchLogger.shared
+                    .resendPendingPayloads()
             } onError: { error in
                 await WatchLogger.shared.log(
                     "⌚️ Failed to query ACKs: "
@@ -644,7 +656,9 @@ actor WatchLogger {
         let pendingPayloads = await getPendingPayloads()
 
         for record in pendingPayloads {
-            guard let payloadId = record["payloadId"] as? String,
+            guard let payloadId = WatchConnectivityPayloadIds.payloadIdString(
+                      record["payloadId"]
+                  ),
                   let type = record["type"] as? String,
                   type == "watchLogs",
                   let filePath = record["filePath"] as? String
@@ -672,7 +686,9 @@ actor WatchLogger {
             ) { reply in
                 if let ackType = reply["type"] as? String,
                    ackType == "ack",
-                   let ackId = reply["payloadId"] as? String,
+                   let ackId = WatchConnectivityPayloadIds.payloadIdString(
+                       reply["payloadId"]
+                   ),
                    ackId == payloadId {
                     let res = WatchLogger.removeFileTracked(
                         at: fileURL
@@ -754,7 +770,9 @@ actor WatchLogger {
         let pendingPayloads = await getPendingPayloads()
         let pendingByPayloadId = Dictionary(
             pendingPayloads.compactMap { rec -> (String, String)? in
-                guard let pid = rec["payloadId"] as? String,
+                guard let pid = WatchConnectivityPayloadIds.payloadIdString(
+                          rec["payloadId"]
+                      ),
                       let path = rec["filePath"] as? String
                 else { return nil }
                 return (pid, path)
@@ -1013,7 +1031,9 @@ actor WatchLogger {
             ) { reply in
                 if let ackType = reply["type"] as? String,
                    ackType == "ack",
-                   let ackId = reply["payloadId"] as? String,
+                   let ackId = WatchConnectivityPayloadIds.payloadIdString(
+                       reply["payloadId"]
+                   ),
                    ackId == payloadId {
                     let res = WatchLogger.removeFileTracked(
                         at: fileURL
