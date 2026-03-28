@@ -1,11 +1,17 @@
 import SwiftUI
 import UserNotifications
+import WatchKit
 
 @main struct TrioWatchApp: App {
+    @WKApplicationDelegateAdaptor(ExtensionDelegate.self) var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
         WatchNotificationHandler.shared.configure()
+        Task {
+            let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+            await WatchLogger.shared.log("[DEPLOY] event=watch_app_launch platform=watchos build=\(build)", force: true)
+        }
     }
 
     var body: some Scene {
