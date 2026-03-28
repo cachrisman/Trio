@@ -276,7 +276,7 @@ enum BackgroundTaskWindowCounter {
             anchor: anchor,
             limit: HKObjectQueryNoLimit,
             resultsHandler: { [weak self] _, samples, _, newAnchor, error in
-                guard let self else {
+                guard self != nil else {
                     completionHandler()
                     return
                 }
