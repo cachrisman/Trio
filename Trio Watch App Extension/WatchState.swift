@@ -539,10 +539,24 @@ enum BackgroundTaskWindowCounter {
 
         let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
 
-        let readingDate = latestGlucoseDate(from: payload)
-        guard let readingDate = readingDate else {
+        let readingDate: Date
+        switch resolveEffectiveCGMReadingDate(from: payload) {
+        case let .found(date):
+            readingDate = date
+        case .rejectedDateOnly:
             Task {
-                await WatchLogger.shared.log("Invalid snapshot received (missing date)")
+                await WatchLogger.shared.log(
+                    "Invalid snapshot received: no CGM reading timestamp"
+                        + " (top-level date is state/snapshot time only — not used as reading)"
+                )
+            }
+            return
+        case .missing:
+            Task {
+                await WatchLogger.shared.log(
+                    "Invalid snapshot received: no valid CGM reading timestamp"
+                        + " (no reading_epoch, glucoseValues samples, or parseable date)"
+                )
             }
             return
         }
@@ -963,21 +977,25 @@ enum BackgroundTaskWindowCounter {
             await WatchLogger.shared.log("📸 saveComplicationSnapshot called with keys: \(message.keys.joined(separator: ", "))")
         }
 
-        // R3: prefer top-level readingEpoch (R1a) over deriving from glucoseValues array
+        // R3: effective CGM reading time (shared resolver; see `resolveEffectiveCGMReadingDate`)
         let readingDate: Date
-        if let epoch = message[WatchMessageKeys.readingEpoch] as? TimeInterval {
-            readingDate = Date(timeIntervalSince1970: epoch)
-        } else if let latestDate = latestGlucoseDate(from: message) {
-            readingDate = latestDate
-        } else if let fallbackDate = dateValue(from: message[WatchMessageKeys.date]) {
+        switch resolveEffectiveCGMReadingDate(from: message) {
+        case let .found(date):
+            readingDate = date
+        case .rejectedDateOnly:
             Task {
-                await WatchLogger.shared.log("⚠️ saveComplicationSnapshot: readingEpoch and glucoseValues both missing; refusing build-time date fallback — skipping save")
+                await WatchLogger.shared.log(
+                    "⚠️ saveComplicationSnapshot: no reading_epoch or glucoseValues;"
+                        + " top-level date is state snapshot time only — refusing as CGM reading — skipping save"
+                )
             }
-            _ = fallbackDate
             return
-        } else {
+        case .missing:
             Task {
-                await WatchLogger.shared.log("📸 saveComplicationSnapshot SKIPPED: no valid readingDate")
+                await WatchLogger.shared.log(
+                    "📸 saveComplicationSnapshot SKIPPED: no valid CGM reading timestamp"
+                        + " (no reading_epoch, glucoseValues, or parseable date)"
+                )
             }
             return
         }
@@ -1248,5 +1266,29 @@ enum BackgroundTaskWindowCounter {
             dateValue(from: data["date"])
         }
         return dates.max()
+    }
+
+    private enum EffectiveCGMReadingDateResolution {
+        case found(Date)
+        case rejectedDateOnly
+        case missing
+    }
+
+    /// Resolves the CGM reading timestamp from a watch state / complication payload.
+    /// Uses `dateValue(from:)` for `reading_epoch` so bridged `NSNumber` / `Date` / `TimeInterval` match other timestamp fields.
+    /// Order: `reading_epoch` (R1a), then newest `glucoseValues` sample.
+    /// The top-level `date` key is **build/state snapshot time**, not the CGM reading time; if that is the only
+    /// parseable timestamp, the result is `.rejectedDateOnly` so callers never treat it as a reading.
+    private func resolveEffectiveCGMReadingDate(from message: [String: Any]) -> EffectiveCGMReadingDateResolution {
+        if let d = dateValue(from: message[WatchMessageKeys.readingEpoch]) {
+            return .found(d)
+        }
+        if let d = latestGlucoseDate(from: message) {
+            return .found(d)
+        }
+        if dateValue(from: message[WatchMessageKeys.date]) != nil {
+            return .rejectedDateOnly
+        }
+        return .missing
     }
 }
