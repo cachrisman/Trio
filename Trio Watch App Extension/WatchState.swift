@@ -456,11 +456,20 @@ enum BackgroundTaskWindowCounter {
     }
 
     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
-        // Handle batchAck for drain file cleanup
-        if let type = message["type"] as? String, type == "batchAck",
-           let ackIds = message["ackIds"] as? [String]
+        if let type = message["type"] as? String, type == "batchAck" {
+            let ackIds = WatchConnectivityPayloadIds.payloadIdStrings(
+                from: message["ackIds"]
+            )
+            if !ackIds.isEmpty {
+                Task { await WatchLogger.shared.deleteFilesForPayloadIds(ackIds) }
+            }
+            return
+        }
+
+        if let type = message["type"] as? String, type == "ack",
+           let pid = WatchConnectivityPayloadIds.payloadIdString(message["payloadId"])
         {
-            Task { await WatchLogger.shared.deleteFilesForPayloadIds(ackIds) }
+            Task { await WatchLogger.shared.deleteFilesForPayloadIds([pid]) }
             return
         }
 
@@ -525,11 +534,13 @@ enum BackgroundTaskWindowCounter {
     }
 
     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
-        // Handle watchLogConfirm for drain file cleanup
-        if let type = userInfo["type"] as? String, type == "watchLogConfirm",
-           let payloadIds = userInfo["payloadIds"] as? [String]
-        {
-            Task { await WatchLogger.shared.deleteFilesForPayloadIds(payloadIds) }
+        if let type = userInfo["type"] as? String, type == "watchLogConfirm" {
+            let payloadIds = WatchConnectivityPayloadIds.payloadIdStrings(
+                from: userInfo["payloadIds"]
+            )
+            if !payloadIds.isEmpty {
+                Task { await WatchLogger.shared.deleteFilesForPayloadIds(payloadIds) }
+            }
             return
         }
 
