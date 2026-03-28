@@ -1,6 +1,22 @@
 import Foundation
 import WatchConnectivity
 
+// MARK: - WCSession send completion (single resume for reply vs error)
+
+/// Ensures `CheckedContinuation.resume` runs at most once when either `replyHandler` or `errorHandler` fires.
+private final class WCSessionReplyGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+
+    func complete(_ continuation: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
+        continuation.resume()
+    }
+}
+
 actor WatchLogger {
     static let shared = WatchLogger()
 
@@ -27,6 +43,12 @@ actor WatchLogger {
     private var cachedWatchLogFiles: Int = 0
     private var cachedDrainFiles: Int = 0
     private var cachedCountsTimestamp: Date = .distantPast
+
+    /// Wall-clock cap for how long **this actor** waits on `sendMessage`’s reply/error callbacks.
+    /// This does **not** cancel in-flight `WCSession` delivery; a late `replyHandler` may still run.
+    /// Keep conservative on watchOS: long waits serialize the actor behind other lifecycle/flush work.
+    /// Raise only if telemetry shows healthy ACKs routinely exceed this under real devices.
+    private static let wcSessionSendTimeoutNs: UInt64 = 5 * 1_000_000_000
 
     private init() {
         Task {
@@ -99,6 +121,60 @@ actor WatchLogger {
             .replacingOccurrences(of: " ", with: "_")
             .filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
         return String(sanitized.prefix(50))
+    }
+
+    /// Non-blocking: nudges `activate()` and reports whether the session is already `.activated`
+    /// for an immediate `sendMessage`. Avoids multi-second polling on hot paths.
+    private func prepareSessionForImmediateSend() -> Bool {
+        if session.activationState == .activated { return true }
+        session.activate()
+        return session.activationState == .activated
+    }
+
+    /// Awaits `sendMessage` until reply, error, or **actor-side** timeout.
+    ///
+    /// **Semantics:** The timeout only bounds how long `WatchLogger` suspends; it does not cancel the
+    /// underlying session send. If the phone ACKs later, `replyHandler` may still run; `WCSessionReplyGate`
+    /// ensures the continuation resumes at most once, while `onReply` cleanup stays idempotent
+    /// (`removeFileTracked` / `removePendingPayload` tolerate missing files).
+    ///
+    /// **Pending:** Call sites that need recovery must `storePendingPayload` *before* awaiting here.
+    /// On timeout we **do not** enqueue `transferUserInfo` automatically (avoids duplicate delivery);
+    /// the payload row + on-disk file remain for `resendPendingPayloads` / a later ACK.
+    private func sendMessageAwaitingReply(
+        _ envelope: [String: Any],
+        context: String,
+        onReply: @escaping ([String: Any]) async -> Void,
+        onError: @escaping (Error) async -> Void
+    ) async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let gate = WCSessionReplyGate()
+            let timeoutTask = Task {
+                try? await Task.sleep(nanoseconds: Self.wcSessionSendTimeoutNs)
+                await WatchLogger.shared.log(
+                    "⌚️ WCSession sendMessage timed out context=\(context)"
+                        + " note=payload_still_pending no_auto_transferUserInfo"
+                )
+                gate.complete(cont)
+            }
+            session.sendMessage(
+                envelope,
+                replyHandler: { reply in
+                    Task {
+                        timeoutTask.cancel()
+                        defer { gate.complete(cont) }
+                        await onReply(reply)
+                    }
+                },
+                errorHandler: { error in
+                    Task {
+                        timeoutTask.cancel()
+                        defer { gate.complete(cont) }
+                        await onError(error)
+                    }
+                }
+            )
+        }
     }
 
     // MARK: - Timer
@@ -299,47 +375,59 @@ actor WatchLogger {
             "data": content
         ]
 
-        if session.isReachable && session.activationState == .activated {
+        if session.isReachable {
+            guard prepareSessionForImmediateSend() else {
+                await storePendingPayload(
+                    payloadId: payloadId,
+                    type: "watchLogs",
+                    filePath: perPayloadFile.path
+                )
+                _ = session.transferUserInfo(envelope)
+                await log(
+                    "⌚️ Logs queued for background delivery"
+                        + " (payloadId: \(payloadId))"
+                        + " watch_log_files=\(cachedWatchLogFiles)"
+                        + " drain_files=\(cachedDrainFiles)"
+                        + " note=activation_timeout"
+                )
+                return
+            }
+
             let filePath = perPayloadFile.path
             await storePendingPayload(
                 payloadId: payloadId,
                 type: "watchLogs",
                 filePath: filePath
             )
-            session.sendMessage(
+            await sendMessageAwaitingReply(
                 envelope,
-                replyHandler: { reply in
-                    Task {
-                        if let ackType = reply["type"] as? String,
-                           ackType == "ack",
-                           let ackId = reply["payloadId"] as? String,
-                           ackId == payloadId {
-                            let res = WatchLogger.removeFileTracked(
-                                at: perPayloadFile
-                            )
-                            if res.succeeded {
-                                await WatchLogger.shared
-                                    .removePendingPayload(payloadId)
-                            }
-                            await WatchLogger.shared
-                                .logCleanup(
-                                    path: "ack_reply", flow: "flush",
-                                    artifact: "watch_log",
-                                    payloadId: payloadId,
-                                    result: res
-                                )
-                        }
+                context: "flush payloadId=\(payloadId)"
+            ) { reply in
+                if let ackType = reply["type"] as? String,
+                   ackType == "ack",
+                   let ackId = reply["payloadId"] as? String,
+                   ackId == payloadId {
+                    let res = WatchLogger.removeFileTracked(
+                        at: perPayloadFile
+                    )
+                    if res.succeeded {
+                        await WatchLogger.shared
+                            .removePendingPayload(payloadId)
                     }
-                },
-                errorHandler: { error in
-                    Task {
-                        await WatchLogger.shared.log(
-                            "⌚️ Failed to send logs: "
-                                + error.localizedDescription
+                    await WatchLogger.shared
+                        .logCleanup(
+                            path: "ack_reply", flow: "flush",
+                            artifact: "watch_log",
+                            payloadId: payloadId,
+                            result: res
                         )
-                    }
                 }
-            )
+            } onError: { error in
+                await WatchLogger.shared.log(
+                    "⌚️ Failed to send logs: "
+                        + error.localizedDescription
+                )
+            }
         } else {
             await storePendingPayload(
                 payloadId: payloadId,
@@ -395,8 +483,15 @@ actor WatchLogger {
             perPayloadFiles: perPayloadFiles
         )
 
-        guard session.isReachable,
-              session.activationState == .activated else { return }
+        guard session.isReachable else { return }
+
+        if !prepareSessionForImmediateSend() {
+            await log(
+                "⌚️ flush_persisted_logs skipping_query_acks"
+                    + " note=session_not_activated"
+            )
+            return
+        }
 
         let pendingPayloads = await getPendingPayloads()
         let pendingIds = pendingPayloads.compactMap {
@@ -408,49 +503,44 @@ actor WatchLogger {
                 "type": "queryAcks",
                 "pendingIds": pendingIds
             ]
-            session.sendMessage(
+            await sendMessageAwaitingReply(
                 queryEnvelope,
-                replyHandler: { reply in
-                    Task {
-                        if let t = reply["type"] as? String,
-                           t == "batchAck",
-                           let ackIds = reply["ackIds"] as? [String] {
-                            var errCount = 0
-                            for ackId in ackIds {
-                                let path = logDir.appendingPathComponent(
-                                    "watch_log_\(ackId).txt"
-                                )
-                                if WatchLogger.removeFileQuietly(at: path) {
-                                    await WatchLogger.shared
-                                        .removePendingPayload(ackId)
-                                } else {
-                                    errCount += 1
-                                }
-                            }
-                            if !ackIds.isEmpty {
-                                let result = errCount > 0 ? "err" : "ok"
-                                await WatchLogger.shared.log(
-                                    "⌚️ [CLEANUP] path=query_acks"
-                                        + " artifact=watch_log"
-                                        + " count=\(ackIds.count)"
-                                        + " result=\(result)"
-                                )
-                            }
+                context: "query_acks"
+            ) { reply in
+                if let ackType = reply["type"] as? String,
+                   ackType == "batchAck",
+                   let ackIds = reply["ackIds"] as? [String] {
+                    var errCount = 0
+                    for ackId in ackIds {
+                        let path = logDir.appendingPathComponent(
+                            "watch_log_\(ackId).txt"
+                        )
+                        if WatchLogger.removeFileQuietly(at: path) {
                             await WatchLogger.shared
-                                .resendPendingPayloads()
+                                .removePendingPayload(ackId)
+                        } else {
+                            errCount += 1
                         }
                     }
-                },
-                errorHandler: { error in
-                    Task {
+                    if !ackIds.isEmpty {
+                        let result = errCount > 0 ? "err" : "ok"
                         await WatchLogger.shared.log(
-                            "⌚️ Failed to query ACKs: "
-                                + error.localizedDescription
+                            "⌚️ [CLEANUP] path=query_acks"
+                                + " artifact=watch_log"
+                                + " count=\(ackIds.count)"
+                                + " result=\(result)"
                         )
-                        await WatchLogger.shared.resendPendingPayloads()
                     }
+                    await WatchLogger.shared
+                        .resendPendingPayloads()
                 }
-            )
+            } onError: { error in
+                await WatchLogger.shared.log(
+                    "⌚️ Failed to query ACKs: "
+                        + error.localizedDescription
+                )
+                await WatchLogger.shared.resendPendingPayloads()
+            }
         } else {
             await resendPendingPayloads()
         }
@@ -542,8 +632,14 @@ actor WatchLogger {
     // MARK: - Resend pending payloads
 
     func resendPendingPayloads() async {
-        guard session.isReachable,
-              session.activationState == .activated else { return }
+        guard session.isReachable else { return }
+        guard prepareSessionForImmediateSend() else {
+            await log(
+                "⌚️ resend_pending_payloads skipped"
+                    + " note=session_not_activated"
+            )
+            return
+        }
 
         let pendingPayloads = await getPendingPayloads()
 
@@ -570,45 +666,42 @@ actor WatchLogger {
                 "data": logString
             ]
 
-            session.sendMessage(
+            await sendMessageAwaitingReply(
                 envelope,
-                replyHandler: { reply in
-                    Task {
-                        if let ackType = reply["type"] as? String,
-                           ackType == "ack",
-                           let ackId = reply["payloadId"] as? String,
-                           ackId == payloadId {
-                            let res = WatchLogger.removeFileTracked(
-                                at: fileURL
-                            )
-                            if res.succeeded {
-                                await WatchLogger.shared
-                                    .removePendingPayload(payloadId)
-                            }
-                            await WatchLogger.shared
-                                .logCleanup(
-                                    path: "ack_reply", flow: "resend",
-                                    artifact: "watch_log",
-                                    payloadId: payloadId,
-                                    result: res
-                                )
-                        }
+                context: "resend payloadId=\(payloadId)"
+            ) { reply in
+                if let ackType = reply["type"] as? String,
+                   ackType == "ack",
+                   let ackId = reply["payloadId"] as? String,
+                   ackId == payloadId {
+                    let res = WatchLogger.removeFileTracked(
+                        at: fileURL
+                    )
+                    if res.succeeded {
+                        await WatchLogger.shared
+                            .removePendingPayload(payloadId)
                     }
-                },
-                errorHandler: { error in
-                    Task {
-                        await WatchLogger.shared.log(
-                            "⌚️ Failed to resend for \(payloadId): "
-                                + error.localizedDescription
+                    await WatchLogger.shared
+                        .logCleanup(
+                            path: "ack_reply", flow: "resend",
+                            artifact: "watch_log",
+                            payloadId: payloadId,
+                            result: res
                         )
-                    }
                 }
-            )
+            } onError: { error in
+                await WatchLogger.shared.log(
+                    "⌚️ Failed to resend for \(payloadId): "
+                        + error.localizedDescription
+                )
+            }
         }
     }
 
     // MARK: - Pending payload storage
 
+    /// Replaces any existing pending row with the same `payloadId` before append, so repeated
+    /// failures for one payload cannot multiply list entries (only `createdAtEpoch` refreshes).
     func storePendingPayload(
         payloadId: String, type: String, filePath: String
     ) async {
@@ -858,8 +951,6 @@ actor WatchLogger {
     private static let drainSizeCap = 64 * 1024
 
     private func sendLogContentFromFile(fileURL: URL) async {
-        guard session.activationState == .activated else { return }
-
         guard let data = try? Data(contentsOf: fileURL),
               var content = String(data: data, encoding: .utf8),
               !content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -893,41 +984,64 @@ actor WatchLogger {
         let filePath = fileURL.path
 
         if session.isReachable {
-            session.sendMessage(
-                envelope,
-                replyHandler: { reply in
-                    Task {
-                        if let ackType = reply["type"] as? String,
-                           ackType == "ack",
-                           let ackId = reply["payloadId"] as? String,
-                           ackId == payloadId {
-                            let res = WatchLogger.removeFileTracked(
-                                at: fileURL
-                            )
-                            if res.succeeded {
-                                await WatchLogger.shared
-                                    .removePendingPayload(payloadId)
-                            }
-                            await WatchLogger.shared
-                                .logCleanup(
-                                    path: "ack_reply", flow: "drain",
-                                    artifact: "drain",
-                                    payloadId: payloadId,
-                                    result: res
-                                )
-                        }
-                    }
-                },
-                errorHandler: { _ in
-                    Task {
-                        await WatchLogger.shared.storePendingPayload(
-                            payloadId: payloadId,
-                            type: "watchLogs",
-                            filePath: filePath
-                        )
-                    }
-                }
+            guard prepareSessionForImmediateSend() else {
+                await storePendingPayload(
+                    payloadId: payloadId,
+                    type: "watchLogs",
+                    filePath: filePath
+                )
+                _ = session.transferUserInfo(envelope)
+                await log(
+                    "⌚️ Drain logs queued for background delivery"
+                        + " (payloadId: \(payloadId))"
+                        + " watch_log_files=\(cachedWatchLogFiles)"
+                        + " drain_files=\(cachedDrainFiles)"
+                        + " note=activation_timeout"
+                )
+                return
+            }
+
+            await storePendingPayload(
+                payloadId: payloadId,
+                type: "watchLogs",
+                filePath: filePath
             )
+
+            await sendMessageAwaitingReply(
+                envelope,
+                context: "drain payloadId=\(payloadId)"
+            ) { reply in
+                if let ackType = reply["type"] as? String,
+                   ackType == "ack",
+                   let ackId = reply["payloadId"] as? String,
+                   ackId == payloadId {
+                    let res = WatchLogger.removeFileTracked(
+                        at: fileURL
+                    )
+                    if res.succeeded {
+                        await WatchLogger.shared
+                            .removePendingPayload(payloadId)
+                    }
+                    await WatchLogger.shared
+                        .logCleanup(
+                            path: "ack_reply", flow: "drain",
+                            artifact: "drain",
+                            payloadId: payloadId,
+                            result: res
+                        )
+                }
+            } onError: { error in
+                await WatchLogger.shared.log(
+                    "⌚️ Failed to send drain logs"
+                        + " (payloadId: \(payloadId)): "
+                        + error.localizedDescription
+                )
+                await WatchLogger.shared.storePendingPayload(
+                    payloadId: payloadId,
+                    type: "watchLogs",
+                    filePath: filePath
+                )
+            }
         } else {
             _ = session.transferUserInfo(envelope)
             await storePendingPayload(
