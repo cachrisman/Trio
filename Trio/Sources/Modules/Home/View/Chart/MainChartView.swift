@@ -33,6 +33,8 @@ struct MainChartView: View {
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.calendar) var calendar
 
+    private let chartSpacing: CGFloat = 5
+
     // NOTE:
     // Historically these charts used `minHeight` to allow them to stretch if the
     // surrounding layout provided extra vertical space. The flexible sizing also
@@ -51,6 +53,10 @@ struct MainChartView: View {
 
     private var cobChartHeight: CGFloat {
         max(geo.size.height * 0.12, 0)
+    }
+
+    private var chartStackHeight: CGFloat {
+        basalChartHeight + mainChartHeight + cobChartHeight + (chartSpacing * 2)
     }
 
     var upperLimit: Decimal {
@@ -84,19 +90,17 @@ struct MainChartView: View {
     var body: some View {
         VStack {
             ZStack {
-                VStack(spacing: 5) {
+                VStack(spacing: chartSpacing) {
                     dummyBasalChart
                     staticYAxisChart
-                    Spacer()
                     dummyCobChart
                 }
 
                 ScrollViewReader { scroller in
                     ScrollView(.horizontal, showsIndicators: false) {
-                        VStack(spacing: 5) {
+                        VStack(spacing: chartSpacing) {
                             basalChart
                             mainChart
-                            Spacer()
                             cobIobChart
                         }.onChange(of: screenHours) {
                             scroller.scrollTo("MainChart", anchor: .trailing)
@@ -123,6 +127,7 @@ struct MainChartView: View {
                     }
                 }
             }
+            .frame(height: chartStackHeight)
         }
     }
 }
