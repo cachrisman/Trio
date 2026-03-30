@@ -127,6 +127,9 @@ enum BackgroundTaskWindowCounter {
 
     private var backgroundRefreshCount = 0
     private var lastBackgroundRefreshDate: Date?
+    private var lastConnectivityTerminalAt: Date?
+    private var lastConnectivityTerminalPath: String?
+    private let connectivityLateTaskWindowSeconds: TimeInterval = 1.0
 
     /// Guards against duplicate requestWatchStateUpdate() calls on cold start.
     /// Reset in noteAppBecameActive() on each active transition. Main-thread confined.
@@ -496,6 +499,10 @@ enum BackgroundTaskWindowCounter {
                 }
                 DispatchQueue.main.async {
                     self.showSyncingAnimation = false
+                    self.completePendingConnectivityTasksOnMain(
+                        path: "message_outdated",
+                        requiresNoPendingContent: true
+                    )
                 }
             }
             return
@@ -529,6 +536,10 @@ enum BackgroundTaskWindowCounter {
             }
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
+                self.completePendingConnectivityTasksOnMain(
+                    path: "message_invalid",
+                    requiresNoPendingContent: true
+                )
             }
         }
     }
@@ -561,12 +572,24 @@ enum BackgroundTaskWindowCounter {
                         + " (top-level date is state/snapshot time only — not used as reading)"
                 )
             }
+            DispatchQueue.main.async { [weak self] in
+                self?.completePendingConnectivityTasksOnMain(
+                    path: "invalid_no_pending",
+                    requiresNoPendingContent: true
+                )
+            }
             return
         case .missing:
             Task {
                 await WatchLogger.shared.log(
                     "Invalid snapshot received: no valid CGM reading timestamp"
                         + " (no reading_epoch, glucoseValues samples, or parseable date)"
+                )
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.completePendingConnectivityTasksOnMain(
+                    path: "invalid_no_pending",
+                    requiresNoPendingContent: true
                 )
             }
             return
@@ -591,6 +614,12 @@ enum BackgroundTaskWindowCounter {
             date: Date()
         )
         if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
+            DispatchQueue.main.async { [weak self] in
+                self?.completePendingConnectivityTasksOnMain(
+                    path: "dedup_no_pending",
+                    requiresNoPendingContent: true
+                )
+            }
             return
         }
 
@@ -611,29 +640,23 @@ enum BackgroundTaskWindowCounter {
                 Task {
                     await WatchLogger.shared.log("event=complication_userinfo_no_pending_tasks window_id=\(wid) reading_date_epoch=\(readingDateEpoch) note=race_or_foreground")
                 }
-                scheduleUIUpdate(with: payload, fromUserInfo: true, userInfoReceiveTimestamp: lastUserInfoReceiveTimestamp)
+                scheduleUIUpdate(
+                    with: payload,
+                    fromUserInfo: true,
+                    userInfoReceiveTimestamp: lastUserInfoReceiveTimestamp,
+                    pendingConnectivityCompletionPath: "fast"
+                )
             } else {
                 pendingData.merge(payload) { _, new in new }
                 quietWindowWorkItem?.cancel()
                 finalizeWorkItem?.cancel()
                 let receiveTs = lastUserInfoReceiveTimestamp
                 let work = DispatchWorkItem { [self] in
-                    finalizePendingData(fromUserInfo: true, userInfoReceiveTimestamp: receiveTs)
-                    let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
-                    let pendingCount = pendingConnectivityTasks.count
-                    Task {
-                        await WatchLogger.shared.log("event=complication_finalize_begin window_id=\(wid) pending_count=\(pendingCount)")
-                    }
-                    Task {
-                        await WatchLogger.shared.log("event=complication_bgtask_completing path=fast window_id=\(wid) task_type=WKWatchConnectivityRefreshBackgroundTask completed_count=\(pendingCount) ⚡️ BGTask completing (fast) window_id=\(wid) count=\(pendingCount)")
-                    }
-                    for t in pendingConnectivityTasks {
-                        t.setTaskCompletedWithSnapshot(false)
-                    }
-                    pendingConnectivityTasks.removeAll()
-                    Task {
-                        await WatchLogger.shared.log("event=complication_finalize_end window_id=\(wid) cleared_count=\(pendingCount)")
-                    }
+                    finalizePendingData(
+                        fromUserInfo: true,
+                        userInfoReceiveTimestamp: receiveTs,
+                        pendingConnectivityCompletionPath: "fast"
+                    )
                 }
                 quietWindowWorkItem = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
@@ -708,6 +731,7 @@ enum BackgroundTaskWindowCounter {
         guard let payload = applicationContext[WatchMessageKeys.watchState] as? [String: Any] else {
             return
         }
+        let readingResolution = resolveEffectiveCGMReadingDate(from: payload)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
@@ -720,6 +744,21 @@ enum BackgroundTaskWindowCounter {
                 }
                 self.forceWidgetReloadIfStale(receivedGap: gap)
             }
+            let completionPath: String
+            let requiresNoPendingContent: Bool
+            switch readingResolution {
+            case .found:
+                completionPath = "application_context"
+                requiresNoPendingContent = false
+            case .rejectedDateOnly, .missing:
+                completionPath = "application_context_invalid"
+                requiresNoPendingContent = true
+            }
+            self.completePendingConnectivityTasksOnMain(
+                path: completionPath,
+                requiresNoPendingContent: requiresNoPendingContent,
+                recordMarkerWithoutPendingTasks: !requiresNoPendingContent
+            )
         }
     }
 
@@ -748,6 +787,84 @@ enum BackgroundTaskWindowCounter {
             requestWatchStateUpdate()
             forcedSinceActivation = true
         }
+    }
+
+    private func connectivitySessionHasPendingContent() -> Bool {
+        if let session {
+            return session.hasContentPending
+        }
+        guard WCSession.isSupported() else { return false }
+        return WCSession.default.hasContentPending
+    }
+
+    private func recentConnectivityTerminalPathOnMain() -> String? {
+        assert(Thread.isMainThread, "recentConnectivityTerminalPathOnMain must be called on main thread")
+
+        guard let terminalAt = lastConnectivityTerminalAt,
+              let terminalPath = lastConnectivityTerminalPath else { return nil }
+
+        guard Date().timeIntervalSince(terminalAt) <= connectivityLateTaskWindowSeconds else {
+            lastConnectivityTerminalAt = nil
+            lastConnectivityTerminalPath = nil
+            return nil
+        }
+
+        return terminalPath
+    }
+
+    @discardableResult
+    private func completePendingConnectivityTasksOnMain(
+        path: String,
+        requiresNoPendingContent: Bool = false,
+        recordMarkerWithoutPendingTasks: Bool = false
+    ) -> Int {
+        assert(Thread.isMainThread, "completePendingConnectivityTasksOnMain must be called on main thread")
+
+        let pendingCount = pendingConnectivityTasks.count
+        let hasPendingContent = connectivitySessionHasPendingContent()
+        if requiresNoPendingContent, hasPendingContent {
+            let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+            Task {
+                await WatchLogger.shared.log(
+                    "event=complication_bgtask_completion_deferred path=\(path)"
+                        + " window_id=\(wid)"
+                        + " task_type=WKWatchConnectivityRefreshBackgroundTask"
+                        + " pending_count=\(pendingCount)"
+                        + " pending_content=true"
+                )
+            }
+            return 0
+        }
+
+        // Successful terminal paths need a short-lived marker even when the task
+        // arrives after processing completed. Guarded/no-pending paths use
+        // requiresNoPendingContent instead.
+        if pendingCount > 0 || requiresNoPendingContent || recordMarkerWithoutPendingTasks {
+            lastConnectivityTerminalAt = Date()
+            lastConnectivityTerminalPath = path
+        }
+
+        guard pendingCount > 0 else { return 0 }
+
+        let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+        Task {
+            await WatchLogger.shared.log(
+                "event=complication_bgtask_completing path=\(path)"
+                    + " window_id=\(wid)"
+                    + " task_type=WKWatchConnectivityRefreshBackgroundTask"
+                    + " completed_count=\(pendingCount)"
+                    + " pending_content=\(hasPendingContent)"
+                    + " 📡 BGTask completing (\(path)) window_id=\(wid) count=\(pendingCount)"
+            )
+        }
+
+        // Keep `false` here: complication freshness is driven by the save/reload path,
+        // and changing snapshot semantics is outside the scope of this task-lifecycle fix.
+        for task in pendingConnectivityTasks {
+            task.setTaskCompletedWithSnapshot(false)
+        }
+        pendingConnectivityTasks.removeAll()
+        return pendingCount
     }
 
     private func processWatchMessage(_ message: [String: Any]) {
@@ -786,15 +903,31 @@ enum BackgroundTaskWindowCounter {
             }
 
             if let watchStateData = message[WatchMessageKeys.watchState] as? [String: Any] {
-                self.scheduleUIUpdate(with: watchStateData, fromUserInfo: false)
+                let completionPath = self.pendingConnectivityTasks.isEmpty ? nil : "message"
+                self.scheduleUIUpdate(
+                    with: watchStateData,
+                    fromUserInfo: false,
+                    pendingConnectivityCompletionPath: completionPath
+                )
             }
         }
     }
 
-    private func scheduleUIUpdate(with newData: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
+    private func scheduleUIUpdate(
+        with newData: [String: Any],
+        fromUserInfo: Bool = false,
+        userInfoReceiveTimestamp: Date? = nil,
+        pendingConnectivityCompletionPath: String? = nil
+    ) {
         guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
             Task {
                 await WatchLogger.shared.log("Invalid date format in WatchState data")
+            }
+            if let pendingConnectivityCompletionPath {
+                completePendingConnectivityTasksOnMain(
+                    path: "\(pendingConnectivityCompletionPath)_invalid",
+                    requiresNoPendingContent: true
+                )
             }
             return
         }
@@ -804,6 +937,12 @@ enum BackgroundTaskWindowCounter {
         {
             Task {
                 await WatchLogger.shared.log("Skipping UI update — outdated WatchState (\(incomingDate))")
+            }
+            if let pendingConnectivityCompletionPath {
+                completePendingConnectivityTasksOnMain(
+                    path: "\(pendingConnectivityCompletionPath)_outdated",
+                    requiresNoPendingContent: true
+                )
             }
             return
         }
@@ -822,18 +961,27 @@ enum BackgroundTaskWindowCounter {
 
         let fromUserInfoCapture = fromUserInfo
         let userInfoTsCapture = userInfoReceiveTimestamp
+        let completionPathCapture = pendingConnectivityCompletionPath
         let workItem = DispatchWorkItem { [self] in
             Task {
                 await WatchLogger.shared.log("Debounced update fired")
             }
-            self.finalizePendingData(fromUserInfo: fromUserInfoCapture, userInfoReceiveTimestamp: userInfoTsCapture)
+            self.finalizePendingData(
+                fromUserInfo: fromUserInfoCapture,
+                userInfoReceiveTimestamp: userInfoTsCapture,
+                pendingConnectivityCompletionPath: completionPathCapture
+            )
         }
         finalizeWorkItem = workItem
         let delay: TimeInterval = isColdStart ? 0.2 : 0.1
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
-    private func finalizePendingData(fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
+    private func finalizePendingData(
+        fromUserInfo: Bool = false,
+        userInfoReceiveTimestamp: Date? = nil,
+        pendingConnectivityCompletionPath: String? = nil
+    ) {
         guard !pendingData.isEmpty else {
             Task {
                 await WatchLogger.shared.log("finalizePendingData called with empty data")
@@ -841,6 +989,12 @@ enum BackgroundTaskWindowCounter {
 
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
+            }
+            if let pendingConnectivityCompletionPath {
+                completePendingConnectivityTasksOnMain(
+                    path: "\(pendingConnectivityCompletionPath)_empty",
+                    requiresNoPendingContent: true
+                )
             }
             return
         }
@@ -858,6 +1012,24 @@ enum BackgroundTaskWindowCounter {
 
         Task {
             await WatchLogger.shared.log("Watch UI update complete")
+        }
+
+        guard let pendingConnectivityCompletionPath else { return }
+        let pendingCountBeforeCompletion = pendingConnectivityTasks.count
+        let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+        if pendingCountBeforeCompletion > 0 {
+            Task {
+                await WatchLogger.shared.log("event=complication_finalize_begin window_id=\(wid) pending_count=\(pendingCountBeforeCompletion)")
+            }
+        }
+        let clearedCount = completePendingConnectivityTasksOnMain(
+            path: pendingConnectivityCompletionPath,
+            recordMarkerWithoutPendingTasks: true
+        )
+        if clearedCount > 0 {
+            Task {
+                await WatchLogger.shared.log("event=complication_finalize_end window_id=\(wid) cleared_count=\(clearedCount)")
+            }
         }
     }
 
@@ -1197,12 +1369,20 @@ enum BackgroundTaskWindowCounter {
                         await WatchLogger.shared.log("event=complication_bgtask_received window_id=\(bgTaskWindowId) task_type=WKWatchConnectivityRefreshBackgroundTask 📡 BGTask received: WKWatchConnectivityRefreshBackgroundTask window_id=\(bgTaskWindowId)")
                     }
                     // Hold until userInfo processing completes (quiet-window or 5s safety timeout). All access on main.
-                    // Multiple tasks in one wake are all stored; multiple didReceiveUserInfo reset the 300ms quiet window; last timer runs, then one finalize and complete all. If handle(_:backgroundTasks:) is delivered after the debounce already fired (userInfo first, then task), the 5s timeout rescues the task.
+                    // Multiple tasks in one wake are all stored; multiple didReceiveUserInfo reset the 300ms quiet window; last timer runs, then one finalize and complete all. If handle(_:backgroundTasks:) is delivered after the terminal path already fired (userInfo/context first, then task), the short-lived terminal marker rescues the late task; the 5s timeout remains the final fallback.
                     DispatchQueue.main.async { [self] in
                         pendingConnectivityTasks.append(task)
                         let pendingCount = pendingConnectivityTasks.count
                         Task {
                             await WatchLogger.shared.log("event=complication_bgtask_enqueued window_id=\(bgTaskWindowId) task_type=WKWatchConnectivityRefreshBackgroundTask pending_count=\(pendingCount)")
+                        }
+                        if let terminalPath = recentConnectivityTerminalPathOnMain() {
+                            let lateCompletionPath = "\(terminalPath)_late_task"
+                            let clearedCount = completePendingConnectivityTasksOnMain(
+                                path: lateCompletionPath,
+                                requiresNoPendingContent: true
+                            )
+                            if clearedCount > 0 { return }
                         }
                         let taskToComplete = task
                         let windowId = bgTaskWindowId

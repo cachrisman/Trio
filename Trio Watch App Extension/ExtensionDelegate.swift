@@ -5,7 +5,11 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
         // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
         TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
         Task {
-            await WatchLogger.shared.log("Watch extension launched", force: true)
+            await WatchLogger.shared.log(
+                "event=watch_extension_launched source=wk_application_delegate "
+                    + "method=applicationDidFinishLaunching",
+                force: true
+            )
             // Emit App Group diagnostics early, before any snapshot reads/writes.
             let diagnostics = TrioComplicationDataStore.shared.diagnosticsSummary(context: "applicationDidFinishLaunching")
             await WatchLogger.shared.log(diagnostics, force: true)
@@ -14,7 +18,13 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func applicationDidBecomeActive() {
-        Task { await WatchLogger.shared.log("event=watch_app_became_active context=foreground") }
+        Task {
+            await WatchLogger.shared.log(
+                "event=watch_app_became_active source=wk_application_delegate "
+                    + "method=applicationDidBecomeActive context=foreground",
+                force: false
+            )
+        }
         WatchState.shared.noteAppBecameActive()
         WatchState.shared.requestWatchStateUpdate()
         // Note: forceComplicationUpdate() is now called in finalizePendingData() after fresh data arrives
@@ -22,12 +32,20 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func applicationWillResignActive() {
-        Task { await WatchLogger.shared.log("Watch app entering background") }
+        Task {
+            await WatchLogger.shared.log(
+                "event=watch_app_resigning_active source=wk_application_delegate "
+                    + "method=applicationWillResignActive",
+                force: true
+            )
+        }
     }
 
     func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
         Task {
-            await WatchLogger.shared.log("event=complication_bgtask_forwarding count=\(backgroundTasks.count)")
+            await WatchLogger.shared.log(
+                "event=complication_bgtask_forwarding source=wk_application_delegate count=\(backgroundTasks.count)"
+            )
         }
         WatchState.shared.handleBackgroundTasks(backgroundTasks)
     }

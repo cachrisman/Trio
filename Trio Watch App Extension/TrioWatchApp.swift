@@ -18,8 +18,18 @@ import WatchKit
         WindowGroup {
             TrioMainWatchView()
         }
-        .onChange(of: scenePhase) { _, newScenePhase in
-            if newScenePhase == .active {
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            let oldToken = watchScenePhaseToken(oldPhase)
+            let newToken = watchScenePhaseToken(newPhase)
+            let forceFlush = newPhase != .active
+            Task {
+                await WatchLogger.shared.log(
+                    "event=watch_scene_phase_transition old=\(oldToken) new=\(newToken) source=swiftui_environment",
+                    force: forceFlush
+                )
+            }
+
+            if newPhase == .active {
                 Task {
                     // Check for crashes and mark as active
                     await WatchErrorReporter.shared.startup()
@@ -27,11 +37,20 @@ import WatchKit
                     // Flush persisted logs (will query ACKs first, then resend pending payloads)
                     await WatchLogger.shared.flushPersistedLogs()
                 }
-            } else if newScenePhase == .background || newScenePhase == .inactive {
+            } else if newPhase == .background || newPhase == .inactive {
                 Task {
                     await WatchErrorReporter.shared.markEnteredBackgroundOrInactive()
                 }
             }
         }
+    }
+}
+
+private func watchScenePhaseToken(_ phase: ScenePhase) -> String {
+    switch phase {
+    case .active: "active"
+    case .inactive: "inactive"
+    case .background: "background"
+    @unknown default: "unknown"
     }
 }
