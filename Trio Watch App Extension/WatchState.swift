@@ -129,7 +129,14 @@ enum BackgroundTaskWindowCounter {
     private var lastBackgroundRefreshDate: Date?
     private var lastConnectivityTerminalAt: Date?
     private var lastConnectivityTerminalPath: String?
-    private let connectivityLateTaskWindowSeconds: TimeInterval = 1.0
+    private var deferredConnectivityCompletionWorkItem: DispatchWorkItem?
+    private var deferredConnectivityCompletionDeadline: Date?
+    private var deferredConnectivityCompletionPath: String?
+    private var deferredConnectivityCompletionAttempt = 0
+    private let connectivityLateTaskWindowSeconds: TimeInterval = 2.0
+    private let connectivityDeferredRetryInitialDelaySeconds: TimeInterval = 0.2
+    private let connectivityDeferredRetryMaxDelaySeconds: TimeInterval = 1.0
+    private let connectivityDeferredRetryBudgetSeconds: TimeInterval = 4.0
 
     /// Guards against duplicate requestWatchStateUpdate() calls on cold start.
     /// Reset in noteAppBecameActive() on each active transition. Main-thread confined.
@@ -797,8 +804,108 @@ enum BackgroundTaskWindowCounter {
         return WCSession.default.hasContentPending
     }
 
-    private func recentConnectivityTerminalPathOnMain() -> String? {
-        assert(Thread.isMainThread, "recentConnectivityTerminalPathOnMain must be called on main thread")
+    private func canonicalConnectivityTerminalPath(_ path: String) -> String {
+        var basePath = path
+        let suffix = "_late_task"
+        while basePath.hasSuffix(suffix) {
+            basePath.removeLast(suffix.count)
+        }
+        return basePath.isEmpty ? path : basePath
+    }
+
+    private func clearDeferredConnectivityCompletionRetryOnMain() {
+        assert(Thread.isMainThread, "clearDeferredConnectivityCompletionRetryOnMain must be called on main thread")
+        deferredConnectivityCompletionWorkItem?.cancel()
+        deferredConnectivityCompletionWorkItem = nil
+        deferredConnectivityCompletionDeadline = nil
+        deferredConnectivityCompletionPath = nil
+        deferredConnectivityCompletionAttempt = 0
+    }
+
+    private func scheduleDeferredConnectivityCompletionRetryOnMain(path: String) {
+        assert(Thread.isMainThread, "scheduleDeferredConnectivityCompletionRetryOnMain must be called on main thread")
+
+        guard !pendingConnectivityTasks.isEmpty else {
+            clearDeferredConnectivityCompletionRetryOnMain()
+            return
+        }
+
+        let now = Date()
+        if deferredConnectivityCompletionPath != path {
+            deferredConnectivityCompletionWorkItem?.cancel()
+            deferredConnectivityCompletionWorkItem = nil
+            deferredConnectivityCompletionPath = path
+            deferredConnectivityCompletionDeadline = now.addingTimeInterval(connectivityDeferredRetryBudgetSeconds)
+            deferredConnectivityCompletionAttempt = 0
+        } else if deferredConnectivityCompletionWorkItem != nil {
+            return
+        }
+
+        let attempt = deferredConnectivityCompletionAttempt + 1
+        let delay = min(
+            connectivityDeferredRetryInitialDelaySeconds * pow(2.0, Double(max(attempt - 1, 0))),
+            connectivityDeferredRetryMaxDelaySeconds
+        )
+
+        deferredConnectivityCompletionWorkItem?.cancel()
+        let work = DispatchWorkItem { [self] in
+            deferredConnectivityCompletionWorkItem = nil
+            deferredConnectivityCompletionAttempt = attempt
+
+            guard !pendingConnectivityTasks.isEmpty else {
+                clearDeferredConnectivityCompletionRetryOnMain()
+                return
+            }
+
+            let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+            if !connectivitySessionHasPendingContent() {
+                Task {
+                    await WatchLogger.shared.log(
+                        "event=complication_bgtask_completion_retry_ready path=\(path)"
+                            + " window_id=\(wid)"
+                            + " attempt=\(attempt)"
+                            + " pending_content=false"
+                    )
+                }
+                _ = completePendingConnectivityTasksOnMain(
+                    path: path,
+                    requiresNoPendingContent: true
+                )
+                return
+            }
+
+            guard let deadline = deferredConnectivityCompletionDeadline,
+                  Date() < deadline else {
+                Task {
+                    await WatchLogger.shared.log(
+                        "event=complication_bgtask_completion_retry_expired path=\(path)"
+                            + " window_id=\(wid)"
+                            + " attempt=\(attempt)"
+                            + " pending_count=\(pendingConnectivityTasks.count)"
+                            + " pending_content=true"
+                    )
+                }
+                clearDeferredConnectivityCompletionRetryOnMain()
+                return
+            }
+
+            Task {
+                await WatchLogger.shared.log(
+                    "event=complication_bgtask_completion_retry_pending path=\(path)"
+                        + " window_id=\(wid)"
+                        + " attempt=\(attempt)"
+                        + " pending_count=\(pendingConnectivityTasks.count)"
+                        + " pending_content=true"
+                )
+            }
+            scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
+        }
+        deferredConnectivityCompletionWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func recentConnectivityTerminalBasePathOnMain() -> String? {
+        assert(Thread.isMainThread, "recentConnectivityTerminalBasePathOnMain must be called on main thread")
 
         guard let terminalAt = lastConnectivityTerminalAt,
               let terminalPath = lastConnectivityTerminalPath else { return nil }
@@ -833,6 +940,9 @@ enum BackgroundTaskWindowCounter {
                         + " pending_content=true"
                 )
             }
+            if pendingCount > 0 {
+                scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
+            }
             return 0
         }
 
@@ -841,10 +951,22 @@ enum BackgroundTaskWindowCounter {
         // requiresNoPendingContent instead.
         if pendingCount > 0 || requiresNoPendingContent || recordMarkerWithoutPendingTasks {
             lastConnectivityTerminalAt = Date()
-            lastConnectivityTerminalPath = path
+            lastConnectivityTerminalPath = canonicalConnectivityTerminalPath(path)
         }
 
-        guard pendingCount > 0 else { return 0 }
+        guard pendingCount > 0 else {
+            let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+            if recordMarkerWithoutPendingTasks {
+                Task {
+                    await WatchLogger.shared.log(
+                        "event=complication_bgtask_terminal_marker path=\(canonicalConnectivityTerminalPath(path))"
+                            + " window_id=\(wid)"
+                            + " pending_count=0"
+                    )
+                }
+            }
+            return 0
+        }
 
         let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
         Task {
@@ -857,6 +979,8 @@ enum BackgroundTaskWindowCounter {
                     + " 📡 BGTask completing (\(path)) window_id=\(wid) count=\(pendingCount)"
             )
         }
+
+        clearDeferredConnectivityCompletionRetryOnMain()
 
         // Keep `false` here: complication freshness is driven by the save/reload path,
         // and changing snapshot semantics is outside the scope of this task-lifecycle fix.
@@ -919,6 +1043,18 @@ enum BackgroundTaskWindowCounter {
         userInfoReceiveTimestamp: Date? = nil,
         pendingConnectivityCompletionPath: String? = nil
     ) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [self] in
+                scheduleUIUpdate(
+                    with: newData,
+                    fromUserInfo: fromUserInfo,
+                    userInfoReceiveTimestamp: userInfoReceiveTimestamp,
+                    pendingConnectivityCompletionPath: pendingConnectivityCompletionPath
+                )
+            }
+            return
+        }
+
         guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
             Task {
                 await WatchLogger.shared.log("Invalid date format in WatchState data")
@@ -1020,6 +1156,13 @@ enum BackgroundTaskWindowCounter {
         if pendingCountBeforeCompletion > 0 {
             Task {
                 await WatchLogger.shared.log("event=complication_finalize_begin window_id=\(wid) pending_count=\(pendingCountBeforeCompletion)")
+            }
+        } else {
+            Task {
+                await WatchLogger.shared.log(
+                    "event=complication_finalize_no_pending_tasks window_id=\(wid)"
+                        + " path=\(pendingConnectivityCompletionPath)"
+                )
             }
         }
         let clearedCount = completePendingConnectivityTasksOnMain(
@@ -1376,7 +1519,7 @@ enum BackgroundTaskWindowCounter {
                         Task {
                             await WatchLogger.shared.log("event=complication_bgtask_enqueued window_id=\(bgTaskWindowId) task_type=WKWatchConnectivityRefreshBackgroundTask pending_count=\(pendingCount)")
                         }
-                        if let terminalPath = recentConnectivityTerminalPathOnMain() {
+                        if let terminalPath = recentConnectivityTerminalBasePathOnMain() {
                             let lateCompletionPath = "\(terminalPath)_late_task"
                             let clearedCount = completePendingConnectivityTasksOnMain(
                                 path: lateCompletionPath,
@@ -1390,6 +1533,9 @@ enum BackgroundTaskWindowCounter {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [self] in
                             if let idx = pendingConnectivityTasks.firstIndex(where: { $0 === taskToComplete }) {
                                 pendingConnectivityTasks.remove(at: idx)
+                                if pendingConnectivityTasks.isEmpty {
+                                    clearDeferredConnectivityCompletionRetryOnMain()
+                                }
                                 let completionDelayMs = Int(Date().timeIntervalSince(receivedAtCapture) * 1000)
                                 Task {
                                     await WatchLogger.shared.log("event=complication_bgtask_completing path=timeout window_id=\(windowId) task_type=WKWatchConnectivityRefreshBackgroundTask completion_delay_ms=\(completionDelayMs) completed_count=1 📡 BGTask completing (timeout) window_id=\(windowId)")
