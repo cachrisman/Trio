@@ -34,11 +34,10 @@ struct MainChartView: View {
 
     private let chartSpacing: CGFloat = 5
 
-    /// Use a stable, device-level height reference for chart sizing.
-    /// `GeometryReader` inside nested stacks can transiently report values that
-    /// fluctuate during safe-area, keyboard, and overlay transitions.
+    /// Use the current chart container height as the layout reference, then
+    /// bound it to avoid pathological values during transient layout passes.
     private var chartLayoutReferenceHeight: CGFloat {
-        max(UIScreen.screenHeight, 0)
+        max(geo.size.height, 0).clamped(520 ... 980)
     }
 
     // NOTE:
@@ -50,15 +49,18 @@ struct MainChartView: View {
     // prefer a bounded range (`minHeight` + `maxHeight`) instead of a single
     // unconstrained `minHeight`.
     private var mainChartHeight: CGFloat {
-        max(chartLayoutReferenceHeight * (0.28 - safeAreaSize), 0)
+        let rawHeight = chartLayoutReferenceHeight * (0.28 - safeAreaSize)
+        return rawHeight.clamped(110 ... 320)
     }
 
     private var basalChartHeight: CGFloat {
-        max(chartLayoutReferenceHeight * 0.05, 0)
+        let rawHeight = chartLayoutReferenceHeight * 0.05
+        return rawHeight.clamped(24 ... 64)
     }
 
     private var cobChartHeight: CGFloat {
-        max(chartLayoutReferenceHeight * 0.12, 0)
+        let rawHeight = chartLayoutReferenceHeight * 0.12
+        return rawHeight.clamped(56 ... 150)
     }
 
     private var chartStackHeight: CGFloat {
