@@ -97,4 +97,25 @@ trailingClosures \
 --typeattributes same-line \
 --varattributes same-line \
 --wrapcollections before-first \
---exclude "Pods,Generated,**/R.generated.swift,fastlane/swift,Dependencies,LoopKit,LibreTransmitter,G7SensorKit,OmniKit,dexcom-share-client-swift,CGMBLEKit,RileyLinkKit,OmniBLE,MinimedKit,TidepoolService,DanaKit,build,.build,DerivedData,.trio-worktrees,SourcePackages,**/*.pb.swift"
+--exclude Pods, Generated, \
+  **/R.generated.swift, \
+  fastlane/swift, \
+  Dependencies,  \
+  LoopKit,  \
+  LibreTransmitter, \
+  G7SensorKit, \
+  OmniKit,  \
+  dexcom-share-client-swift, \
+  CGMBLEKit, \
+  RileyLinkKit, \
+  OmniBLE, \
+  MinimedKit, \
+  TidepoolService, \
+  DanaKit, \
+  MedtrumKit, \
+  build, \
+  .build, \
+  DerivedData, \
+  .trio-worktrees, \
+  SourcePackages, \
+  **/*.pb.swift
