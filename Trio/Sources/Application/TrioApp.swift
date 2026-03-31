@@ -70,26 +70,36 @@ extension Notification.Name {
     }
 
     private func loadServices() {
-        resolver.resolve(AppearanceManager.self)!.setupGlobalAppearance()
-        _ = resolver.resolve(DeviceDataManager.self)!
-        _ = resolver.resolve(APSManager.self)!
-        _ = resolver.resolve(FetchGlucoseManager.self)!
-        _ = resolver.resolve(FetchTreatmentsManager.self)!
-        _ = resolver.resolve(CalendarManager.self)!
-        _ = resolver.resolve(UserNotificationsManager.self)!
-        _ = resolver.resolve(WatchManager.self)!
-        _ = resolver.resolve(ContactImageManager.self)!
-        _ = resolver.resolve(HealthKitManager.self)!
-        _ = resolver.resolve(WatchManager.self)!
-        _ = resolver.resolve(GarminManager.self)!
-        _ = resolver.resolve(ContactImageManager.self)!
-        _ = resolver.resolve(BluetoothStateManager.self)!
-        _ = resolver.resolve(PluginManager.self)!
-        _ = resolver.resolve(AlertPermissionsChecker.self)!
-        if #available(iOS 16.2, *) {
-            _ = resolver.resolve(LiveActivityManager.self)!
+        if let appearance = resolveOrLog(AppearanceManager.self) {
+            appearance.setupGlobalAppearance()
         }
-        _ = resolver.resolve(IOBService.self)!
+        resolveOrLog(DeviceDataManager.self)
+        resolveOrLog(APSManager.self)
+        resolveOrLog(FetchGlucoseManager.self)
+        resolveOrLog(FetchTreatmentsManager.self)
+        resolveOrLog(CalendarManager.self)
+        resolveOrLog(UserNotificationsManager.self)
+        resolveOrLog(WatchManager.self)
+        resolveOrLog(ContactImageManager.self)
+        resolveOrLog(HealthKitManager.self)
+        resolveOrLog(GarminManager.self)
+        resolveOrLog(BluetoothStateManager.self)
+        resolveOrLog(PluginManager.self)
+        resolveOrLog(AlertPermissionsChecker.self)
+        resolveOrLog(CloudLogUploadService.self)
+        if #available(iOS 16.2, *) {
+            resolveOrLog(LiveActivityManager.self)
+        }
+        resolveOrLog(IOBService.self)
+    }
+
+    @discardableResult
+    private func resolveOrLog<T>(_ type: T.Type) -> T? {
+        guard let service = resolver.resolve(type) else {
+            warning(.default, "loadServices: failed to resolve \(type) — skipping")
+            return nil
+        }
+        return service
     }
 
     init() {
