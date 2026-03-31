@@ -559,6 +559,12 @@ enum BackgroundTaskWindowCounter {
             if !payloadIds.isEmpty {
                 Task { await WatchLogger.shared.deleteFilesForPayloadIds(payloadIds) }
             }
+            DispatchQueue.main.async { [self] in
+                completePendingConnectivityTasksOnMain(
+                    path: "watch_log_confirm",
+                    requiresNoPendingContent: true
+                )
+            }
             return
         }
 
@@ -743,6 +749,9 @@ enum BackgroundTaskWindowCounter {
             guard let self else { return }
             let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             self.saveComplicationSnapshot(from: payload)
+            if case .found = readingResolution {
+                self.scheduleUIUpdate(with: payload)
+            }
             self.lastDataReceivedAt = Date()
             if gap > 600 {
                 let gapDisplay = gap.isInfinite ? "first_receive" : "\(Int(gap))"

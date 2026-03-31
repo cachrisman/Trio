@@ -1101,11 +1101,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             }
         }
 
-        // Send durable confirmation for drain file cleanup on the watch
-        if type == "watchLogs" {
-            let confirm: [String: Any] = ["type": "watchLogConfirm", "payloadIds": [payloadId]]
-            session.transferUserInfo(confirm)
-        }
+        // Do not send reverse transferUserInfo confirms for watchLogs here.
+        // Watch-side cleanup is covered by the immediate ACK reply plus later batchAck/queryAcks,
+        // and the extra userInfo confirm can create avoidable connectivity background wakes.
 
         // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
         let ack: [String: Any] = [
@@ -1128,8 +1126,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                         SimpleLogReporter.appendToWatchLog(logData)
                         Foundation.NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
                     }
-                    let confirm: [String: Any] = ["type": "watchLogConfirm", "payloadIds": [payloadId]]
-                    self?.session?.transferUserInfo(confirm)
                 } else if type == "watchError" {
                     if let errorData = message["data"] as? [String: Any] {
                         self?.handleWatchError(errorData)
@@ -1307,8 +1303,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     SimpleLogReporter.appendToWatchLog(logData)
                     Foundation.NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
                 }
-                let confirm: [String: Any] = ["type": "watchLogConfirm", "payloadIds": [payloadId]]
-                session?.transferUserInfo(confirm)
             } else if type == "watchError" {
                 if let errorData = userInfo["data"] as? [String: Any] {
                     handleWatchError(errorData)
