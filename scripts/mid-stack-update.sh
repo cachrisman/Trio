@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.7)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.8)
 #
 # CHANGELOG:
+#   v1.8  - --extra-files: trim leading/trailing whitespace only when
+#           normalizing paths. Previously `tr -d '[:space:]'` removed ALL
+#           spaces, breaking paths like `Trio Watch App Extension/Foo.swift`.
 #   v1.7  - Auto-restore dirty target patch: when the target patch has
 #           uncommitted modifications (common after a prior regeneration
 #           was rolled back), restore the committed version automatically
@@ -187,6 +190,11 @@ is_infra_path() {
         *)
             return 1 ;;
     esac
+}
+
+# Leading/trailing whitespace only — paths may contain internal spaces.
+strip_outer_whitespace() {
+    printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 #===============================================================================
@@ -728,7 +736,7 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
     PATCH_SCOPE_FILES=(${EXISTING_FILES[@]+"${EXISTING_FILES[@]}"})
     if [ ${#EXTRA_FILE_LIST[@]} -gt 0 ]; then
         for ef in "${EXTRA_FILE_LIST[@]}"; do
-            ef_trimmed=$(echo "$ef" | tr -d '[:space:]')
+            ef_trimmed=$(strip_outer_whitespace "$ef")
             [ -n "$ef_trimmed" ] && PATCH_SCOPE_FILES+=("$ef_trimmed")
         done
     fi
@@ -835,7 +843,7 @@ set +u
 set -u
 if [ ${#EXTRA_FILE_LIST[@]} -gt 0 ]; then
     for ef in "${EXTRA_FILE_LIST[@]}"; do
-        ef_trimmed=$(echo "$ef" | tr -d '[:space:]')
+        ef_trimmed=$(strip_outer_whitespace "$ef")
         already=false
         for df in "${DIFF_FILES[@]}"; do
             if [ "$df" = "$ef_trimmed" ]; then
