@@ -1,29 +1,29 @@
-From 508baed1c5288f9e7fadec5b522cb452c93deb7f Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sat, 21 Mar 2026 23:27:45 +0100
+From aa2a617199879509016f80ce6ed03179fd5aba99 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Tue, 31 Mar 2026 23:43:27 +0200
 Subject: [PATCH] feat: cloud-logging
 
 ---
- Trio Watch App Extension/WatchLogger.swift    | 1030 ++++++++++++++---
- Trio Watch Shared/ComplicationLogBuffer.swift |  156 +++
+ .../WatchConnectivityPayloadIds.swift         |   59 +
+ Trio Watch App Extension/WatchLogger.swift    | 1208 ++++++++++++++---
  Trio/Sources/Application/AppDelegate.swift    |   34 +-
- Trio/Sources/Application/TrioApp.swift        |    3 +
  Trio/Sources/Assemblies/ServiceAssembly.swift |    1 +
  .../Helpers/AppTerminationTracker.swift       |  306 +++++
- .../BetterStackLogtailProvider.swift          |   71 ++
+ .../BetterStackLogtailProvider.swift          |   71 +
  .../CloudLogging/BetterStackSettings.swift    |   35 +
  .../CloudLogEntryAggregator.swift             |   41 +
- .../CloudLogging/CloudLogLineParsing.swift    |  298 +++++
+ .../CloudLogging/CloudLogLineParsing.swift    |  298 ++++
  .../CloudLogging/CloudLogProvider.swift       |  127 ++
- .../CloudLogging/CloudLogUploadService.swift  |  194 ++++
- .../CloudLogging/CloudLogUploader.swift       |  430 +++++++
+ .../CloudLogging/CloudLogUploadService.swift  |  194 +++
+ .../CloudLogging/CloudLogUploader.swift       |  430 ++++++
+ .../IssueReporter/SimpleLogReporter.swift     |   13 +-
  .../Modules/Settings/SettingItems.swift       |   11 +
- .../View/CloudLoggingSettingsView.swift       |  150 +++
+ .../View/CloudLoggingSettingsView.swift       |  150 ++
  .../Settings/View/Subviews/ServicesView.swift |    1 +
  Trio/Sources/Router/Screen.swift              |    3 +
  TrioTests/CloudLogEntryAggregatorTests.swift  |   42 +
- 18 files changed, 2767 insertions(+), 166 deletions(-)
- create mode 100644 Trio Watch Shared/ComplicationLogBuffer.swift
+ 18 files changed, 2830 insertions(+), 194 deletions(-)
+ create mode 100644 Trio Watch App Extension/WatchConnectivityPayloadIds.swift
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
@@ -35,11 +35,95 @@ Subject: [PATCH] feat: cloud-logging
  create mode 100644 Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
  create mode 100644 TrioTests/CloudLogEntryAggregatorTests.swift
 
+diff --git a/Trio Watch App Extension/WatchConnectivityPayloadIds.swift b/Trio Watch App Extension/WatchConnectivityPayloadIds.swift
+new file mode 100644
+index 000000000..d1ad58615
+--- /dev/null
++++ b/Trio Watch App Extension/WatchConnectivityPayloadIds.swift	
+@@ -0,0 +1,59 @@
++import Foundation
++
++/// Normalizes watch ↔ phone payload identifiers from `WCSession` dictionaries.
++/// Accepts `String`, `NSString`, `UUID`, and `NSUUID` only (rejects `NSNumber` and other types).
++enum WatchConnectivityPayloadIds {
++    private static func debugLogUnexpected(_ value: Any?) {
++        #if DEBUG
++        if let value {
++            let typeName = String(describing: type(of: value))
++            debugPrint("WatchConnectivityPayloadIds: unexpected payload id type \(typeName)")
++        }
++        #endif
++    }
++
++    /// Returns a canonical UUID string, or `nil` if the value is not a supported type.
++    static func payloadIdString(_ value: Any?) -> String? {
++        switch value {
++        case let s as String:
++            return s
++        case let s as NSString:
++            return s as String
++        case let u as UUID:
++            return u.uuidString
++        case let u as NSUUID:
++            return u.uuidString
++        case is NSNumber:
++            debugLogUnexpected(value)
++            return nil
++        default:
++            if value != nil {
++                debugLogUnexpected(value)
++            }
++            return nil
++        }
++    }
++
++    /// Extracts payload id strings from an array or `NSArray` value (e.g. `ackIds`, `payloadIds`).
++    static func payloadIdStrings(from value: Any?) -> [String] {
++        guard let value else { return [] }
++
++        if let anyArray = value as? [Any] {
++            return anyArray.compactMap { payloadIdString($0) }
++        }
++
++        if let nsArray = value as? NSArray {
++            var out: [String] = []
++            out.reserveCapacity(nsArray.count)
++            for i in 0 ..< nsArray.count {
++                if let s = payloadIdString(nsArray[i]) {
++                    out.append(s)
++                }
++            }
++            return out
++        }
++
++        debugLogUnexpected(value)
++        return []
++    }
++}
 diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
-index 3f9a83de5..ca9a7dc7c 100644
+index 3f9a83de5..0f81f3475 100644
 --- a/Trio Watch App Extension/WatchLogger.swift	
 +++ b/Trio Watch App Extension/WatchLogger.swift	
-@@ -4,6 +4,7 @@ import WatchConnectivity
+@@ -1,9 +1,26 @@
+ import Foundation
+ import WatchConnectivity
+ 
++// MARK: - WCSession send completion (single resume for reply vs error)
++
++/// Ensures `CheckedContinuation.resume` runs at most once when either `replyHandler` or `errorHandler` fires.
++private final class WCSessionReplyGate: @unchecked Sendable {
++    private let lock = NSLock()
++    private var finished = false
++
++    func complete(_ continuation: CheckedContinuation<Void, Never>) {
++        lock.lock()
++        defer { lock.unlock() }
++        guard !finished else { return }
++        finished = true
++        continuation.resume()
++    }
++}
++
  actor WatchLogger {
      static let shared = WatchLogger()
  
@@ -47,7 +131,7 @@ index 3f9a83de5..ca9a7dc7c 100644
      private var logs: [String] = []
      private let maxEntries = 500
      private let flushInterval: TimeInterval = 3 * 60
-@@ -11,14 +12,21 @@ actor WatchLogger {
+@@ -11,14 +28,27 @@ actor WatchLogger {
      private var lastFlush = Date()
  
      // Size caps
@@ -69,10 +153,16 @@ index 3f9a83de5..ca9a7dc7c 100644
 +    private var cachedWatchLogFiles: Int = 0
 +    private var cachedDrainFiles: Int = 0
 +    private var cachedCountsTimestamp: Date = .distantPast
++
++    /// Wall-clock cap for how long **this actor** waits on `sendMessage`’s reply/error callbacks.
++    /// This does **not** cancel in-flight `WCSession` delivery; a late `replyHandler` may still run.
++    /// Keep conservative on watchOS: long waits serialize the actor behind other lifecycle/flush work.
++    /// Raise only if telemetry shows healthy ACKs routinely exceed this under real devices.
++    private static let wcSessionSendTimeoutNs: UInt64 = 5 * 1_000_000_000
  
      private init() {
          Task {
-@@ -26,12 +34,75 @@ actor WatchLogger {
+@@ -26,12 +56,129 @@ actor WatchLogger {
          }
      }
  
@@ -105,8 +195,8 @@ index 3f9a83de5..ca9a7dc7c 100644
 +                error: sanitizeError(error)
 +            )
 +        }
-     }
- 
++    }
++
 +    static func removeFileTracked(atPath path: String) -> RemoveResult {
 +        do {
 +            try FileManager.default.removeItem(atPath: path)
@@ -121,8 +211,8 @@ index 3f9a83de5..ca9a7dc7c 100644
 +                error: sanitizeError(error)
 +            )
 +        }
-+    }
-+
+     }
+ 
 +    /// Best-effort removal: true = gone (deleted or already absent),
 +    /// false = unexpected error.
 +    static func removeFileQuietly(at url: URL) -> Bool {
@@ -144,12 +234,66 @@ index 3f9a83de5..ca9a7dc7c 100644
 +        return String(sanitized.prefix(50))
 +    }
 +
++    /// Non-blocking: nudges `activate()` and reports whether the session is already `.activated`
++    /// for an immediate `sendMessage`. Avoids multi-second polling on hot paths.
++    private func prepareSessionForImmediateSend() -> Bool {
++        if session.activationState == .activated { return true }
++        session.activate()
++        return session.activationState == .activated
++    }
++
++    /// Awaits `sendMessage` until reply, error, or **actor-side** timeout.
++    ///
++    /// **Semantics:** The timeout only bounds how long `WatchLogger` suspends; it does not cancel the
++    /// underlying session send. If the phone ACKs later, `replyHandler` may still run; `WCSessionReplyGate`
++    /// ensures the continuation resumes at most once, while `onReply` cleanup stays idempotent
++    /// (`removeFileTracked` / `removePendingPayload` tolerate missing files).
++    ///
++    /// **Pending:** Call sites that need recovery must `storePendingPayload` *before* awaiting here.
++    /// On timeout we **do not** enqueue `transferUserInfo` automatically (avoids duplicate delivery);
++    /// the payload row + on-disk file remain for `resendPendingPayloads` / a later ACK.
++    private func sendMessageAwaitingReply(
++        _ envelope: [String: Any],
++        context: String,
++        onReply: @escaping ([String: Any]) async -> Void,
++        onError: @escaping (Error) async -> Void
++    ) async {
++        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
++            let gate = WCSessionReplyGate()
++            let timeoutTask = Task {
++                try? await Task.sleep(nanoseconds: Self.wcSessionSendTimeoutNs)
++                await WatchLogger.shared.log(
++                    "⌚️ WCSession sendMessage timed out context=\(context)"
++                        + " note=payload_still_pending no_auto_transferUserInfo"
++                )
++                gate.complete(cont)
++            }
++            session.sendMessage(
++                envelope,
++                replyHandler: { reply in
++                    Task {
++                        timeoutTask.cancel()
++                        defer { gate.complete(cont) }
++                        await onReply(reply)
++                    }
++                },
++                errorHandler: { error in
++                    Task {
++                        timeoutTask.cancel()
++                        defer { gate.complete(cont) }
++                        await onError(error)
++                    }
++                }
++            )
++        }
++    }
++
 +    // MARK: - Timer
 +
      private func startFlushTimer() async {
          timerTask = Task {
              while true {
-@@ -41,6 +112,8 @@ actor WatchLogger {
+@@ -41,6 +188,8 @@ actor WatchLogger {
          }
      }
  
@@ -158,7 +302,7 @@ index 3f9a83de5..ca9a7dc7c 100644
      func log(
          _ message: String,
          force: Bool = false,
-@@ -49,8 +122,8 @@ actor WatchLogger {
+@@ -49,8 +198,8 @@ actor WatchLogger {
          line: Int = #line
      ) async {
          let shortFile = (file as NSString).lastPathComponent
@@ -169,7 +313,7 @@ index 3f9a83de5..ca9a7dc7c 100644
  
          logs.append(entry)
          if logs.count > maxEntries {
-@@ -59,7 +132,6 @@ actor WatchLogger {
+@@ -59,7 +208,6 @@ actor WatchLogger {
  
          print(entry)
  
@@ -177,7 +321,7 @@ index 3f9a83de5..ca9a7dc7c 100644
          await appendToDailyLog(entry)
  
          await flushIfNeeded(force: force)
-@@ -67,10 +139,13 @@ actor WatchLogger {
+@@ -67,10 +215,13 @@ actor WatchLogger {
  
      /// Appends text to the daily local debug log (never sent to phone).
      func appendToDailyLog(_ text: String) async {
@@ -194,7 +338,7 @@ index 3f9a83de5..ca9a7dc7c 100644
  
          let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
          let logEntry = text + "\n"
-@@ -86,9 +161,13 @@ actor WatchLogger {
+@@ -86,9 +237,13 @@ actor WatchLogger {
          }
      }
  
@@ -209,7 +353,7 @@ index 3f9a83de5..ca9a7dc7c 100644
  
          if shouldFlush {
              await flushToPhone()
-@@ -96,247 +175,448 @@ actor WatchLogger {
+@@ -96,247 +251,481 @@ actor WatchLogger {
      }
  
      private func flushToPhone() async {
@@ -358,58 +502,84 @@ index 3f9a83de5..ca9a7dc7c 100644
          ]
  
 -        // Do NOT activate session - WatchState owns activation
-         if session.isReachable && session.activationState == .activated {
+-        if session.isReachable && session.activationState == .activated {
 -            // Use sendMessage with replyHandler for immediate ACK
++        if session.isReachable {
++            guard prepareSessionForImmediateSend() else {
++                await storePendingPayload(
++                    payloadId: payloadId,
++                    type: "watchLogs",
++                    filePath: perPayloadFile.path
++                )
++                _ = session.transferUserInfo(envelope)
++                await log(
++                    "⌚️ Logs queued for background delivery"
++                        + " (payloadId: \(payloadId))"
++                        + " watch_log_files=\(cachedWatchLogFiles)"
++                        + " drain_files=\(cachedDrainFiles)"
++                        + " note=activation_timeout"
++                )
++                return
++            }
++
              let filePath = perPayloadFile.path
+-            session.sendMessage(
 +            await storePendingPayload(
 +                payloadId: payloadId,
 +                type: "watchLogs",
 +                filePath: filePath
 +            )
-             session.sendMessage(
++            await sendMessageAwaitingReply(
                  envelope,
-                 replyHandler: { reply in
-                     Task {
+-                replyHandler: { reply in
+-                    Task {
 -                        // Check if ACK received
-                         if let ackType = reply["type"] as? String,
-                            ackType == "ack",
+-                        if let ackType = reply["type"] as? String,
+-                           ackType == "ack",
 -                           let ackPayloadId = reply["payloadId"] as? String,
 -                           ackPayloadId == payloadId {
 -                            // ACK received - delete file
 -                            try? FileManager.default.removeItem(at: perPayloadFile)
 -                            await WatchLogger.shared.removePendingPayload(payloadId)
 -                            await WatchLogger.shared.log("⌚️ Logs ACK received from phone for payloadId: \(payloadId)")
-+                           let ackId = reply["payloadId"] as? String,
-+                           ackId == payloadId {
-+                            let res = WatchLogger.removeFileTracked(
-+                                at: perPayloadFile
-+                            )
-+                            if res.succeeded {
-+                                await WatchLogger.shared
-+                                    .removePendingPayload(payloadId)
-+                            }
-+                            await WatchLogger.shared
-+                                .logCleanup(
-+                                    path: "ack_reply", flow: "flush",
-+                                    artifact: "watch_log",
-+                                    payloadId: payloadId,
-+                                    result: res
-+                                )
-                         }
-                     }
-                 },
-                 errorHandler: { error in
-                     Task {
+-                        }
+-                    }
+-                },
+-                errorHandler: { error in
+-                    Task {
 -                        await WatchLogger.shared.log("⌚️ Failed to send logs to phone: \(error.localizedDescription)")
 -                        // Keep file, mark as pending for retry
 -                        await WatchLogger.shared.storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
-+                        await WatchLogger.shared.log(
-+                            "⌚️ Failed to send logs: "
-+                                + error.localizedDescription
-+                        )
++                context: "flush payloadId=\(payloadId)"
++            ) { reply in
++                if let ackType = reply["type"] as? String,
++                   ackType == "ack",
++                   let ackId = WatchConnectivityPayloadIds.payloadIdString(
++                       reply["payloadId"]
++                   ),
++                   ackId == payloadId {
++                    let res = WatchLogger.removeFileTracked(
++                        at: perPayloadFile
++                    )
++                    if res.succeeded {
++                        await WatchLogger.shared
++                            .removePendingPayload(payloadId)
                      }
++                    await WatchLogger.shared
++                        .logCleanup(
++                            path: "ack_reply", flow: "flush",
++                            artifact: "watch_log",
++                            payloadId: payloadId,
++                            result: res
++                        )
                  }
-             )
+-            )
++            } onError: { error in
++                await WatchLogger.shared.log(
++                    "⌚️ Failed to send logs: "
++                        + error.localizedDescription
++                )
++            }
          } else {
 -            // Not reachable - persist locally and mark as pending
 -            await storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: perPayloadFile.path)
@@ -430,15 +600,11 @@ index 3f9a83de5..ca9a7dc7c 100644
          }
      }
  
--    func flushPersistedLogs() async {
++    // MARK: - Persisted log flush + retention
++
+     func flushPersistedLogs() async {
 -        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
 -            .appendingPathComponent("logs", isDirectory: true)
-+    // MARK: - Persisted log flush + retention
- 
--        // Scan for per-payload log files
--        guard let files = try? FileManager.default.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]) else {
--            return
-+    func flushPersistedLogs() async {
 +        let lastKnownBuild = UserDefaults.standard.string(
 +            forKey: lastKnownBuildKey
 +        )
@@ -449,13 +615,15 @@ index 3f9a83de5..ca9a7dc7c 100644
 +                    + " from \(lastKnownBuild ?? "nil") to \(build)",
 +                force: true
 +            )
-         }
- 
++        }
++
 +        updateCachedCountsIfStale()
 +        await logFileInventory()
 +
 +        await drainComplicationLogs()
-+
+ 
+-        // Scan for per-payload log files
+-        guard let files = try? FileManager.default.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]) else {
 +        let logDir = FileManager.default.urls(
 +            for: .documentDirectory, in: .userDomainMask
 +        ).first!.appendingPathComponent("logs", isDirectory: true)
@@ -465,81 +633,94 @@ index 3f9a83de5..ca9a7dc7c 100644
 +            includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]
 +        ) else { return }
 +
-         let perPayloadFiles = files.filter { file in
--            file.lastPathComponent.hasPrefix("watch_log_") &&
--            file.lastPathComponent.hasSuffix(".txt") &&
--            file.lastPathComponent != "watch_log_daily.txt"
++        let perPayloadFiles = files.filter { file in
 +            file.lastPathComponent.hasPrefix("watch_log_")
 +                && file.lastPathComponent.hasSuffix(".txt")
 +                && file.lastPathComponent != "watch_log_daily.txt"
 +        }
 +
-+        let validFiles = await applyWatchLogRetention(
++        _ = await applyWatchLogRetention(
 +            perPayloadFiles: perPayloadFiles
 +        )
 +
-+        guard session.isReachable,
-+              session.activationState == .activated else { return }
++        guard session.isReachable else { return }
 +
-+        let pendingPayloads = await getPendingPayloads()
-+        let pendingIds = pendingPayloads.compactMap {
-+            $0["payloadId"] as? String
++        if !prepareSessionForImmediateSend() {
++            await log(
++                "⌚️ flush_persisted_logs skipping_query_acks"
++                    + " note=session_not_activated"
++            )
+             return
          }
  
--        // Apply retention caps
+-        let perPayloadFiles = files.filter { file in
+-            file.lastPathComponent.hasPrefix("watch_log_") &&
+-            file.lastPathComponent.hasSuffix(".txt") &&
+-            file.lastPathComponent != "watch_log_daily.txt"
++        let pendingPayloads = await getPendingPayloads()
++        let pendingIds = pendingPayloads.compactMap {
++            WatchConnectivityPayloadIds.payloadIdString($0["payloadId"])
++        }
++
 +        if !pendingIds.isEmpty {
 +            let queryEnvelope: [String: Any] = [
 +                "type": "queryAcks",
 +                "pendingIds": pendingIds
 +            ]
-+            session.sendMessage(
++            await sendMessageAwaitingReply(
 +                queryEnvelope,
-+                replyHandler: { reply in
-+                    Task {
-+                        if let t = reply["type"] as? String,
-+                           t == "batchAck",
-+                           let ackIds = reply["ackIds"] as? [String] {
-+                            var errCount = 0
-+                            for ackId in ackIds {
-+                                let path = logDir.appendingPathComponent(
-+                                    "watch_log_\(ackId).txt"
-+                                )
-+                                if WatchLogger.removeFileQuietly(at: path) {
-+                                    await WatchLogger.shared
-+                                        .removePendingPayload(ackId)
-+                                } else {
-+                                    errCount += 1
-+                                }
-+                            }
-+                            if !ackIds.isEmpty {
-+                                let result = errCount > 0 ? "err" : "ok"
-+                                await WatchLogger.shared.log(
-+                                    "⌚️ [CLEANUP] path=query_acks"
-+                                        + " artifact=watch_log"
-+                                        + " count=\(ackIds.count)"
-+                                        + " result=\(result)"
-+                                )
-+                            }
-+                            await WatchLogger.shared
-+                                .resendPendingPayloads()
-+                        }
-+                    }
-+                },
-+                errorHandler: { error in
-+                    Task {
-+                        await WatchLogger.shared.log(
-+                            "⌚️ Failed to query ACKs: "
-+                                + error.localizedDescription
-+                        )
-+                        await WatchLogger.shared.resendPendingPayloads()
++                context: "query_acks"
++            ) { reply in
++                guard let ackType = reply["type"] as? String,
++                      ackType == "batchAck"
++                else {
++                    await WatchLogger.shared.resendPendingPayloads()
++                    return
++                }
++
++                let ackIds = WatchConnectivityPayloadIds.payloadIdStrings(
++                    from: reply["ackIds"]
++                )
++
++                if ackIds.isEmpty {
++                    await WatchLogger.shared.resendPendingPayloads()
++                    return
++                }
++
++                var errCount = 0
++                for ackId in ackIds {
++                    let path = logDir.appendingPathComponent(
++                        "watch_log_\(ackId).txt"
++                    )
++                    if WatchLogger.removeFileQuietly(at: path) {
++                        await WatchLogger.shared
++                            .removePendingPayload(ackId)
++                    } else {
++                        errCount += 1
 +                    }
 +                }
-+            )
++                let result = errCount > 0 ? "err" : "ok"
++                await WatchLogger.shared.log(
++                    "⌚️ [CLEANUP] path=query_acks"
++                        + " artifact=watch_log"
++                        + " count=\(ackIds.count)"
++                        + " result=\(result)"
++                )
++                await WatchLogger.shared
++                    .resendPendingPayloads()
++            } onError: { error in
++                await WatchLogger.shared.log(
++                    "⌚️ Failed to query ACKs: "
++                        + error.localizedDescription
++                )
++                await WatchLogger.shared.resendPendingPayloads()
++            }
 +        } else {
 +            await resendPendingPayloads()
-+        }
+         }
 +    }
-+
+ 
+-        // Apply retention caps
 +    /// Deletes age-expired and excess watch_log files, emits a
 +    /// [CLEANUP] retention summary when any files are removed.
 +    /// Returns the surviving file list.
@@ -593,6 +774,10 @@ index 3f9a83de5..ca9a7dc7c 100644
 -                let date1 = ((try? FileManager.default.attributesOfItem(atPath: file1.path))?[.creationDate] as? Date) ?? Date.distantPast
 -                let date2 = ((try? FileManager.default.attributesOfItem(atPath: file2.path))?[.creationDate] as? Date) ?? Date.distantPast
 -                return date1 > date2
+-            }
+-            let filesToRemove = sortedFiles.suffix(validFiles.count - maxPerPayloadFiles)
+-            for file in filesToRemove {
+-                try? FileManager.default.removeItem(at: file)
 +            let sorted = validFiles.sorted { f1, f2 in
 +                let d1 = ((try? FileManager.default.attributesOfItem(
 +                    atPath: f1.path
@@ -602,31 +787,9 @@ index 3f9a83de5..ca9a7dc7c 100644
 +                ))?[.creationDate] as? Date) ?? .distantPast
 +                return d1 > d2
              }
--            let filesToRemove = sortedFiles.suffix(validFiles.count - maxPerPayloadFiles)
--            for file in filesToRemove {
--                try? FileManager.default.removeItem(at: file)
-+            let excess = sorted.suffix(
-+                validFiles.count - maxPerPayloadFiles
-+            )
-+            for file in excess {
-+                if let attrs = try? FileManager.default.attributesOfItem(
-+                    atPath: file.path
-+                ),
-+                    let created = attrs[.creationDate] as? Date {
-+                    oldestDeletedAge = max(
-+                        oldestDeletedAge, now.timeIntervalSince(created)
-+                    )
-+                }
-+                if Self.removeFileQuietly(at: file) {
-+                    deletedCount += 1
-+                } else {
-+                    errCount += 1
-+                }
-             }
 -            validFiles = Array(sortedFiles.prefix(maxPerPayloadFiles))
-+            validFiles = Array(sorted.prefix(maxPerPayloadFiles))
-         }
- 
+-        }
+-
 -        // If reachable, query ACKs first, then resend remaining files
 -        if session.isReachable && session.activationState == .activated {
 -            // 1. Query ACKs for pending payloads
@@ -669,10 +832,30 @@ index 3f9a83de5..ca9a7dc7c 100644
 -            } else {
 -                // No pending payloads, just resend any remaining files
 -                await resendPendingPayloads()
--            }
++            let excess = sorted.suffix(
++                validFiles.count - maxPerPayloadFiles
++            )
++            for file in excess {
++                if let attrs = try? FileManager.default.attributesOfItem(
++                    atPath: file.path
++                ),
++                    let created = attrs[.creationDate] as? Date {
++                    oldestDeletedAge = max(
++                        oldestDeletedAge, now.timeIntervalSince(created)
++                    )
++                }
++                if Self.removeFileQuietly(at: file) {
++                    deletedCount += 1
++                } else {
++                    errCount += 1
++                }
+             }
 -        } else {
 -            // Not reachable - do NOT delete files, optionally use transferUserInfo
 -            // Files will be resent when reachable
++            validFiles = Array(sorted.prefix(maxPerPayloadFiles))
+         }
++
 +        if deletedCount > 0 || errCount > 0 {
 +            let hours = Int(oldestDeletedAge / 3600)
 +            let result = errCount > 0 ? "err" : "ok"
@@ -683,7 +866,7 @@ index 3f9a83de5..ca9a7dc7c 100644
 +                    + " oldest_age_hours=\(hours)"
 +                    + " result=\(result)"
 +            )
-         }
++        }
 +
 +        return validFiles
      }
@@ -693,10 +876,14 @@ index 3f9a83de5..ca9a7dc7c 100644
 +
      func resendPendingPayloads() async {
 -        guard session.isReachable && session.activationState == .activated else {
--            return
--        }
-+        guard session.isReachable,
-+              session.activationState == .activated else { return }
++        guard session.isReachable else { return }
++        guard prepareSessionForImmediateSend() else {
++            await log(
++                "⌚️ resend_pending_payloads skipped"
++                    + " note=session_not_activated"
++            )
+             return
+         }
  
 -        // Get pending payloads
          let pendingPayloads = await getPendingPayloads()
@@ -705,7 +892,9 @@ index 3f9a83de5..ca9a7dc7c 100644
 -            guard let payloadId = pendingRecord["payloadId"] as? String,
 -                  let type = pendingRecord["type"] as? String,
 +        for record in pendingPayloads {
-+            guard let payloadId = record["payloadId"] as? String,
++            guard let payloadId = WatchConnectivityPayloadIds.payloadIdString(
++                      record["payloadId"]
++                  ),
 +                  let type = record["type"] as? String,
                    type == "watchLogs",
 -                  let filePath = pendingRecord["filePath"] as? String else {
@@ -735,49 +924,57 @@ index 3f9a83de5..ca9a7dc7c 100644
              ]
  
 -            // Resend using sendMessage (not transferUserInfo) to get immediate ACK
-             session.sendMessage(
+-            session.sendMessage(
++            await sendMessageAwaitingReply(
                  envelope,
-                 replyHandler: { reply in
-                     Task {
+-                replyHandler: { reply in
+-                    Task {
 -                        // Check if ACK received
-                         if let ackType = reply["type"] as? String,
-                            ackType == "ack",
+-                        if let ackType = reply["type"] as? String,
+-                           ackType == "ack",
 -                           let ackPayloadId = reply["payloadId"] as? String,
 -                           ackPayloadId == payloadId {
 -                            // ACK received - delete file
 -                            try? FileManager.default.removeItem(at: fileURL)
 -                            await WatchLogger.shared.removePendingPayload(payloadId)
 -                            await WatchLogger.shared.log("⌚️ Resent logs ACK received for payloadId: \(payloadId)")
-+                           let ackId = reply["payloadId"] as? String,
-+                           ackId == payloadId {
-+                            let res = WatchLogger.removeFileTracked(
-+                                at: fileURL
-+                            )
-+                            if res.succeeded {
-+                                await WatchLogger.shared
-+                                    .removePendingPayload(payloadId)
-+                            }
-+                            await WatchLogger.shared
-+                                .logCleanup(
-+                                    path: "ack_reply", flow: "resend",
-+                                    artifact: "watch_log",
-+                                    payloadId: payloadId,
-+                                    result: res
-+                                )
-                         }
-                     }
-                 },
-                 errorHandler: { error in
-                     Task {
+-                        }
+-                    }
+-                },
+-                errorHandler: { error in
+-                    Task {
 -                        await WatchLogger.shared.log("⌚️ Failed to resend logs for payloadId \(payloadId): \(error.localizedDescription)")
 -                        // Keep file for next retry
-+                        await WatchLogger.shared.log(
-+                            "⌚️ Failed to resend for \(payloadId): "
-+                                + error.localizedDescription
-+                        )
++                context: "resend payloadId=\(payloadId)"
++            ) { reply in
++                if let ackType = reply["type"] as? String,
++                   ackType == "ack",
++                   let ackId = WatchConnectivityPayloadIds.payloadIdString(
++                       reply["payloadId"]
++                   ),
++                   ackId == payloadId {
++                    let res = WatchLogger.removeFileTracked(
++                        at: fileURL
++                    )
++                    if res.succeeded {
++                        await WatchLogger.shared
++                            .removePendingPayload(payloadId)
                      }
++                    await WatchLogger.shared
++                        .logCleanup(
++                            path: "ack_reply", flow: "resend",
++                            artifact: "watch_log",
++                            payloadId: payloadId,
++                            result: res
++                        )
                  }
-             )
+-            )
++            } onError: { error in
++                await WatchLogger.shared.log(
++                    "⌚️ Failed to resend for \(payloadId): "
++                        + error.localizedDescription
++                )
++            }
          }
      }
  
@@ -786,6 +983,8 @@ index 3f9a83de5..ca9a7dc7c 100644
 -        var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
 +    // MARK: - Pending payload storage
 +
++    /// Replaces any existing pending row with the same `payloadId` before append, so repeated
++    /// failures for one payload cannot multiply list entries (only `createdAtEpoch` refreshes).
 +    func storePendingPayload(
 +        payloadId: String, type: String, filePath: String
 +    ) async {
@@ -797,7 +996,7 @@ index 3f9a83de5..ca9a7dc7c 100644
  
          let record: [String: Any] = [
              "payloadId": payloadId,
-@@ -344,32 +624,452 @@ actor WatchLogger {
+@@ -344,32 +733,477 @@ actor WatchLogger {
              "filePath": filePath,
              "createdAtEpoch": Date().timeIntervalSince1970
          ]
@@ -853,7 +1052,9 @@ index 3f9a83de5..ca9a7dc7c 100644
 +        let pendingPayloads = await getPendingPayloads()
 +        let pendingByPayloadId = Dictionary(
 +            pendingPayloads.compactMap { rec -> (String, String)? in
-+                guard let pid = rec["payloadId"] as? String,
++                guard let pid = WatchConnectivityPayloadIds.payloadIdString(
++                          rec["payloadId"]
++                      ),
 +                      let path = rec["filePath"] as? String
 +                else { return nil }
 +                return (pid, path)
@@ -1050,8 +1251,6 @@ index 3f9a83de5..ca9a7dc7c 100644
 +    private static let drainSizeCap = 64 * 1024
 +
 +    private func sendLogContentFromFile(fileURL: URL) async {
-+        guard session.activationState == .activated else { return }
-+
 +        guard let data = try? Data(contentsOf: fileURL),
 +              var content = String(data: data, encoding: .utf8),
 +              !content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1085,41 +1284,66 @@ index 3f9a83de5..ca9a7dc7c 100644
 +        let filePath = fileURL.path
 +
 +        if session.isReachable {
-+            session.sendMessage(
-+                envelope,
-+                replyHandler: { reply in
-+                    Task {
-+                        if let ackType = reply["type"] as? String,
-+                           ackType == "ack",
-+                           let ackId = reply["payloadId"] as? String,
-+                           ackId == payloadId {
-+                            let res = WatchLogger.removeFileTracked(
-+                                at: fileURL
-+                            )
-+                            if res.succeeded {
-+                                await WatchLogger.shared
-+                                    .removePendingPayload(payloadId)
-+                            }
-+                            await WatchLogger.shared
-+                                .logCleanup(
-+                                    path: "ack_reply", flow: "drain",
-+                                    artifact: "drain",
-+                                    payloadId: payloadId,
-+                                    result: res
-+                                )
-+                        }
-+                    }
-+                },
-+                errorHandler: { _ in
-+                    Task {
-+                        await WatchLogger.shared.storePendingPayload(
-+                            payloadId: payloadId,
-+                            type: "watchLogs",
-+                            filePath: filePath
-+                        )
-+                    }
-+                }
++            guard prepareSessionForImmediateSend() else {
++                await storePendingPayload(
++                    payloadId: payloadId,
++                    type: "watchLogs",
++                    filePath: filePath
++                )
++                _ = session.transferUserInfo(envelope)
++                await log(
++                    "⌚️ Drain logs queued for background delivery"
++                        + " (payloadId: \(payloadId))"
++                        + " watch_log_files=\(cachedWatchLogFiles)"
++                        + " drain_files=\(cachedDrainFiles)"
++                        + " note=activation_timeout"
++                )
++                return
++            }
++
++            await storePendingPayload(
++                payloadId: payloadId,
++                type: "watchLogs",
++                filePath: filePath
 +            )
++
++            await sendMessageAwaitingReply(
++                envelope,
++                context: "drain payloadId=\(payloadId)"
++            ) { reply in
++                if let ackType = reply["type"] as? String,
++                   ackType == "ack",
++                   let ackId = WatchConnectivityPayloadIds.payloadIdString(
++                       reply["payloadId"]
++                   ),
++                   ackId == payloadId {
++                    let res = WatchLogger.removeFileTracked(
++                        at: fileURL
++                    )
++                    if res.succeeded {
++                        await WatchLogger.shared
++                            .removePendingPayload(payloadId)
++                    }
++                    await WatchLogger.shared
++                        .logCleanup(
++                            path: "ack_reply", flow: "drain",
++                            artifact: "drain",
++                            payloadId: payloadId,
++                            result: res
++                        )
++                }
++            } onError: { error in
++                await WatchLogger.shared.log(
++                    "⌚️ Failed to send drain logs"
++                        + " (payloadId: \(payloadId)): "
++                        + error.localizedDescription
++                )
++                await WatchLogger.shared.storePendingPayload(
++                    payloadId: payloadId,
++                    type: "watchLogs",
++                    filePath: filePath
++                )
++            }
 +        } else {
 +            _ = session.transferUserInfo(envelope)
 +            await storePendingPayload(
@@ -1265,168 +1489,6 @@ index 3f9a83de5..ca9a7dc7c 100644
 +        UserDefaults.standard.set(now, forKey: lastInventoryKey)
      }
  }
-diff --git a/Trio Watch Shared/ComplicationLogBuffer.swift b/Trio Watch Shared/ComplicationLogBuffer.swift
-new file mode 100644
-index 000000000..31b8ea095
---- /dev/null
-+++ b/Trio Watch Shared/ComplicationLogBuffer.swift	
-@@ -0,0 +1,156 @@
-+import Foundation
-+
-+/// Append-only log buffer for the Complication Extension, written to App Group storage.
-+/// The Watch App drains this file and sends raw lines via watchLogs envelope.
-+/// Format matches WatchLogger: `[timestamp] [File.swift:line] function → message`
-+/// ComplicationLogBuffer is used as the file/category so the parser can tag source=complication.
-+enum ComplicationLogBuffer {
-+    private static let logFileName = "complication_log.txt"
-+    private static let logsSubdir = "logs"
-+    private static let sizeCapBytes = 64 * 1024
-+    private static let truncateKeepBytes = 32 * 1024
-+
-+    private static let queue = DispatchQueue(label: "ComplicationLogBuffer.queue")
-+    private static var hasLoggedAppGroupUnavailable = false
-+
-+    private static let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
-+
-+    private static let dateFormatter: DateFormatter = {
-+        let formatter = DateFormatter()
-+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
-+        return formatter
-+    }()
-+
-+    /// Appends a formatted log line to the App Group buffer.
-+    /// Falls back to NSLog if App Group is unavailable (throttled warning).
-+    static func append(
-+        _ message: String,
-+        file: String = #fileID,
-+        line: Int = #line,
-+        function: String = #function
-+    ) {
-+        queue.async {
-+            let shortFile = (file as NSString).lastPathComponent
-+            let timestamp = dateFormatter.string(from: Date())
-+            let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message)\n"
-+
-+            guard let logURL = logFileURL() else {
-+                NSLog("[ComplicationLogBuffer] %@", String(entry.dropLast()))
-+                if !hasLoggedAppGroupUnavailable {
-+                    hasLoggedAppGroupUnavailable = true
-+                    NSLog("[ComplicationLogBuffer] App Group unavailable; using NSLog fallback")
-+                }
-+                return
-+            }
-+
-+            do {
-+                let fm = FileManager.default
-+                let dirURL = logURL.deletingLastPathComponent()
-+                if !fm.fileExists(atPath: dirURL.path) {
-+                    try fm.createDirectory(at: dirURL, withIntermediateDirectories: true)
-+                }
-+
-+                guard let data = entry.data(using: .utf8) else { return }
-+
-+                if fm.fileExists(atPath: logURL.path) {
-+                    let handle = try FileHandle(forWritingTo: logURL)
-+                    handle.seekToEndOfFile()
-+                    handle.write(data)
-+                    try? handle.close()
-+
-+                    if let attrs = try? fm.attributesOfItem(atPath: logURL.path),
-+                       let size = attrs[.size] as? Int64,
-+                       size > sizeCapBytes
-+                    {
-+                        truncateKeepingNewest(at: logURL)
-+                    }
-+                } else {
-+                    try data.write(to: logURL)
-+                }
-+            } catch {
-+                NSLog("[ComplicationLogBuffer] write failed: %@", error.localizedDescription)
-+            }
-+        }
-+    }
-+
-+    // MARK: - Truncation
-+
-+    private static func truncateKeepingNewest(at url: URL) {
-+        guard let data = try? Data(contentsOf: url),
-+              let content = String(data: data, encoding: .utf8) else { return }
-+
-+        let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
-+
-+        var keptBytes = 0
-+        var keptLines: [String] = []
-+        for line in lines.reversed() {
-+            let lineBytes = (line + "\n").utf8.count
-+            if keptBytes + lineBytes > truncateKeepBytes { break }
-+            keptBytes += lineBytes
-+            keptLines.insert(line, at: 0)
-+        }
-+
-+        let droppedCount = lines.count - keptLines.count
-+        let marker = "[dropped \(droppedCount) lines]\n"
-+        let newContent = marker + keptLines.map { $0 + "\n" }.joined()
-+        try? newContent.write(to: url, atomically: true, encoding: .utf8)
-+    }
-+
-+    // MARK: - File URLs (also used by drain logic in Watch App)
-+
-+    /// Returns the log file URL in the App Group container, or nil if unavailable.
-+    static func logFileURL() -> URL? {
-+        guard let containerURL = sharedContainerURL() else { return nil }
-+        return containerURL
-+            .appendingPathComponent(logsSubdir, isDirectory: true)
-+            .appendingPathComponent(logFileName, isDirectory: false)
-+    }
-+
-+    /// Returns the shared container URL. Used by both append (Complication) and drain (Watch App).
-+    static func sharedContainerURL() -> URL? {
-+        var bundle: Bundle = .main
-+        let classBundle = Bundle(for: _BundleAnchor.self)
-+        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
-+            bundle = classBundle
-+        }
-+
-+        guard let suiteName = resolveAppGroupID(bundle: bundle).value else { return nil }
-+        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
-+    }
-+
-+    // MARK: - App Group Resolution (mirrors TrioComplicationDataStore)
-+
-+    private static func appGroupID(forTeamID teamID: String) -> String {
-+        "group.org.nightscout.\(teamID).trio.trio-app-group"
-+    }
-+
-+    private static func extractTeamID(fromBundleIdentifier bid: String?) -> String? {
-+        guard let bid, !bid.isEmpty else { return nil }
-+        let prefix = "org.nightscout."
-+        guard let prefixRange = bid.range(of: prefix) else { return nil }
-+        let after = bid[prefixRange.upperBound...]
-+        guard let trioRange = after.range(of: ".trio") else { return nil }
-+        let teamID = String(after[..<trioRange.lowerBound])
-+        return teamID.isEmpty ? nil : teamID
-+    }
-+
-+    private static func resolveAppGroupID(bundle: Bundle) -> (value: String?, source: String) {
-+        if let value = bundle.object(forInfoDictionaryKey: "AppGroupID") as? String, !value.isEmpty {
-+            return (value, "Info.plist(AppGroupID)")
-+        }
-+        #if os(watchOS)
-+        if let companionID = Bundle.main.object(forInfoDictionaryKey: "WKCompanionAppBundleIdentifier") as? String,
-+           let teamID = extractTeamID(fromBundleIdentifier: companionID)
-+        {
-+            return (appGroupID(forTeamID: teamID), "Derived(WKCompanionAppBundleIdentifier)")
-+        }
-+        #endif
-+        if let teamID = extractTeamID(fromBundleIdentifier: bundle.bundleIdentifier) {
-+            return (appGroupID(forTeamID: teamID), "Derived(bundleIdentifier)")
-+        }
-+        return (nil, "Unavailable")
-+    }
-+}
-+
-+/// Anchor class for Bundle(for:) lookup since the enum has no instances.
-+private final class _BundleAnchor {}
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
 index 46134bc21..f938e4827 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
@@ -1482,20 +1544,6 @@ index 46134bc21..f938e4827 100644
      func application(
          _: UIApplication,
          didReceiveRemoteNotification userInfo: [AnyHashable: Any],
-diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
-index 1d148c93d..6684460f4 100644
---- a/Trio/Sources/Application/TrioApp.swift
-+++ b/Trio/Sources/Application/TrioApp.swift
-@@ -81,6 +81,9 @@ extension Notification.Name {
-         _ = resolver.resolve(BluetoothStateManager.self)!
-         _ = resolver.resolve(PluginManager.self)!
-         _ = resolver.resolve(AlertPermissionsChecker.self)!
-+        _ = resolver.resolve(CloudLogUploadService.self)!
-+        let launchBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
-+        debug(.service, "[DEPLOY] event=app_launch platform=ios build=\(launchBuild)")
-         if #available(iOS 16.2, *) {
-             _ = resolver.resolve(LiveActivityManager.self)!
-         }
 diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
 index fea855ed8..94a505eba 100644
 --- a/Trio/Sources/Assemblies/ServiceAssembly.swift
@@ -1510,7 +1558,7 @@ index fea855ed8..94a505eba 100644
                  LiveActivityManager(resolver: r)
 diff --git a/Trio/Sources/Helpers/AppTerminationTracker.swift b/Trio/Sources/Helpers/AppTerminationTracker.swift
 new file mode 100644
-index 000000000..e8ea7b7c3
+index 000000000..b42dc8d69
 --- /dev/null
 +++ b/Trio/Sources/Helpers/AppTerminationTracker.swift
 @@ -0,0 +1,306 @@
@@ -1723,7 +1771,7 @@ index 000000000..e8ea7b7c3
 +
 +        // Add memory info if available
 +        var memoryInfoString = ""
-+        if let memoryInfo = userDefaults.dictionary(forKey: "AppTerminationTracker.lastMemoryInfo") as? [String: Any] {
++        if let memoryInfo = userDefaults.dictionary(forKey: "AppTerminationTracker.lastMemoryInfo") {
 +            let memoryDetails = memoryInfo.compactMap { key, value -> String? in
 +                if let numValue = value as? NSNumber {
 +                    return "\(key)=\(numValue.intValue)MB"
@@ -1770,7 +1818,7 @@ index 000000000..e8ea7b7c3
 +        Crashlytics.crashlytics().setCustomValue(Int(timeSinceLastState), forKey: "time_since_last_state_seconds")
 +
 +        // Add memory info to Crashlytics
-+        if let memoryInfo = userDefaults.dictionary(forKey: "AppTerminationTracker.lastMemoryInfo") as? [String: Any] {
++        if let memoryInfo = userDefaults.dictionary(forKey: "AppTerminationTracker.lastMemoryInfo") {
 +            for (key, value) in memoryInfo {
 +                if let numValue = value as? NSNumber {
 +                    Crashlytics.crashlytics().setCustomValue(numValue.intValue, forKey: "last_memory_\(key)")
@@ -3058,11 +3106,43 @@ index 000000000..231dcec84
 +        return ""
 +    }
 +}
+diff --git a/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift b/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift
+index 2a02082b7..03a199a39 100644
+--- a/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift
++++ b/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift
+@@ -3,12 +3,13 @@ import SwiftDate
+ 
+ final class SimpleLogReporter: IssueReporter {
+     private let fileManager = FileManager.default
++    private let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+ 
+-    private var dateFormatter: DateFormatter {
+-        let dateFormatter = DateFormatter()
+-        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+-        return dateFormatter
+-    }
++    private static let dateFormatter: DateFormatter = {
++        let formatter = DateFormatter()
++        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
++        return formatter
++    }()
+ 
+     func setup() {}
+ 
+@@ -42,7 +43,7 @@ final class SimpleLogReporter: IssueReporter {
+             }
+         }
+ 
+-        let logEntry = "\(dateFormatter.string(from: now)) [\(category)] \(file.file) - \(function) - \(line) - \(message)\n"
++        let logEntry = "\(SimpleLogReporter.dateFormatter.string(from: now)) [b:\(build)] [\(category)] \(file.file) - \(function) - \(line) - \(message)\n"
+         let data = logEntry.data(using: .utf8)!
+         try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
+     }
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
-index 50ab1418a..5b82e4b3a 100644
+index fefa4189b..c7c9abb6a 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
 +++ b/Trio/Sources/Modules/Settings/SettingItems.swift
-@@ -326,6 +326,17 @@ enum SettingItems {
+@@ -325,6 +325,17 @@ enum SettingItems {
              ],
              path: ["Services", "Nightscout", "Fetch and Remote Control"]
          ),

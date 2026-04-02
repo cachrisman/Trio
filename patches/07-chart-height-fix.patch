@@ -1,82 +1,189 @@
-From 12019a4836ea48b3b1ea7e5e85286f40a49b35e7 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Wed, 14 Jan 2026 22:53:12 +0100
+From 474de3520bcbda7cda5959e17c12de8ed709fb24 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <patch-bot@users.noreply.github.com>
+Date: Wed, 1 Apr 2026 00:36:24 +0200
 Subject: [PATCH] feat: chart-height-fix
 
 ---
- .../View/Chart/ChartElements/BasalChart.swift |  2 +-
- .../Chart/ChartElements/CobIobChart.swift     |  2 +-
- .../Chart/ChartElements/DummyCharts.swift     |  8 +++----
- .../Home/View/Chart/MainChartView.swift       | 24 ++++++++++++++++---
- 4 files changed, 26 insertions(+), 10 deletions(-)
+ .../View/Chart/ChartElements/BasalChart.swift |  61 ++---
+ .../Chart/ChartElements/CobIobChart.swift     |   4 +-
+ .../Chart/ChartElements/DummyCharts.swift     |  14 +-
+ .../Home/View/Chart/MainChartView.swift       | 224 ++++++++++--------
+ 4 files changed, 160 insertions(+), 143 deletions(-)
 
 diff --git a/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift b/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift
-index 593c5ccb9..23b425ce9 100644
+index 8f64666a5..b47d6b15f 100644
 --- a/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift
 +++ b/Trio/Sources/Modules/Home/View/Chart/ChartElements/BasalChart.swift
-@@ -32,7 +32,7 @@ extension MainChartView {
-             .onChange(of: state.maxBasal) {
-                 calculateBasals()
-             }
+@@ -17,29 +17,28 @@ struct BasalProfile: Hashable {
+ 
+ extension MainChartView {
+     var basalChart: some View {
+-        VStack {
+-            Chart {
+-                drawStartRuleMark()
+-                drawEndRuleMark()
+-                drawCurrentTimeMarker()
+-                drawTempBasals(dummy: false)
+-                drawBasalProfile()
+-                drawSuspensions()
+-            }.onChange(of: state.tempBasals) {
+-                calculateBasals()
+-                calculateTempBasalsInBackground()
+-            }
+-            .onChange(of: state.maxBasal) {
+-                calculateBasals()
+-            }
 -            .frame(minHeight: geo.size.height * 0.05)
-+            .frame(height: basalChartHeight)
-             .frame(width: fullWidth(viewWidth: screenSize.width))
-             .chartXScale(domain: state.startMarker ... state.endMarker)
-             .chartXAxis { basalChartXAxis }
+-            .frame(width: fullWidth(viewWidth: screenSize.width))
+-            .chartXScale(domain: state.startMarker ... state.endMarker)
+-            .chartXAxis { basalChartXAxis }
+-            .chartXAxis(.hidden)
+-            .chartYAxis(.hidden)
+-            .chartPlotStyle { basalChartPlotStyle($0) }
++        Chart {
++            drawStartRuleMark()
++            drawEndRuleMark()
++            drawCurrentTimeMarker()
++            drawTempBasals(dummy: false)
++            drawBasalProfile()
++            drawSuspensions()
++        }
++        .onChange(of: state.tempBasals) {
++            calculateBasals()
++            calculateTempBasalsInBackground()
+         }
++        .onChange(of: state.maxBasal) {
++            calculateBasals()
++        }
++        .frame(height: basalChartHeight)
++        .frame(width: fullWidth(viewWidth: geo.size.width))
++        .chartXScale(domain: state.startMarker ... state.endMarker)
++        .chartXAxis { basalChartXAxis }
++        .chartXAxis(.hidden)
++        .chartYAxis(.hidden)
++        .chartPlotStyle { basalChartPlotStyle($0) }
+     }
+ }
+ 
+@@ -177,7 +176,6 @@ extension MainChartView {
+         let startOfDay = Calendar.current.startOfDay(for: beginDate)
+         let profile = state.basalProfile
+         var basalPoints: [BasalProfile] = []
+-        var lastEntryBeforeRange: (amount: Double, date: Date)?
+ 
+         // Iterate over the next three days, multiplying the time intervals
+         for dayOffset in 0 ..< 3 {
+@@ -186,12 +184,8 @@ extension MainChartView {
+                 let basalTime = startOfDay.addingTimeInterval(entry.minutes.minutes.timeInterval + dayTimeOffset)
+                 let basalTimeInterval = basalTime.timeIntervalSince1970
+ 
+-                if basalTimeInterval < timeBegin {
+-                    // Track the last profile entry before the visible range
+-                    if lastEntryBeforeRange == nil || basalTime > lastEntryBeforeRange!.date {
+-                        lastEntryBeforeRange = (amount: Double(entry.rate), date: basalTime)
+-                    }
+-                } else if basalTimeInterval < timeEnd {
++                // Only append points within the timeBegin and timeEnd range
++                if basalTimeInterval >= timeBegin, basalTimeInterval < timeEnd {
+                     basalPoints.append(BasalProfile(
+                         amount: Double(entry.rate),
+                         isOverwritten: false,
+@@ -201,15 +195,6 @@ extension MainChartView {
+             }
+         }
+ 
+-        // Include the active profile entry at timeBegin so the line starts at the chart's left edge
+-        if let lastBefore = lastEntryBeforeRange {
+-            basalPoints.append(BasalProfile(
+-                amount: lastBefore.amount,
+-                isOverwritten: false,
+-                startDate: beginDate
+-            ))
+-        }
+-
+         return basalPoints
+     }
+ 
 diff --git a/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift b/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift
-index ab152a39a..ca51456db 100644
+index ab152a39a..298d25bd0 100644
 --- a/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift
 +++ b/Trio/Sources/Modules/Home/View/Chart/ChartElements/CobIobChart.swift
-@@ -44,7 +44,7 @@ extension MainChartView {
+@@ -44,8 +44,8 @@ extension MainChartView {
              "IOB": Color.darkerBlue
          ])
          .chartLegend(.hidden)
 -        .frame(minHeight: geo.size.height * 0.12)
+-        .frame(width: fullWidth(viewWidth: screenSize.width))
 +        .frame(height: cobChartHeight)
-         .frame(width: fullWidth(viewWidth: screenSize.width))
++        .frame(width: fullWidth(viewWidth: geo.size.width))
          .chartXScale(domain: state.startMarker ... state.endMarker)
          .chartXSelection(value: $selection)
+         .chartXAxis { basalChartXAxis }
 diff --git a/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift b/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift
-index 8380f5aff..dc3ee4142 100644
+index 8380f5aff..a94871dca 100644
 --- a/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift
 +++ b/Trio/Sources/Modules/Home/View/Chart/ChartElements/DummyCharts.swift
-@@ -38,9 +38,7 @@ extension MainChartView {
+@@ -38,10 +38,8 @@ extension MainChartView {
              }
          }
          .id("DummyMainChart")
 -        .frame(
 -            minHeight: geo.size.height * (0.28 - safeAreaSize)
 -        )
+-        .frame(width: screenSize.width - 10)
 +        .frame(height: mainChartHeight)
-         .frame(width: screenSize.width - 10)
++        .frame(width: geo.size.width - 10)
          .chartXAxis { mainChartXAxis }
          .chartXScale(domain: state.startMarker ... state.endMarker)
-@@ -56,7 +54,7 @@ extension MainChartView {
+         .chartXAxis(.hidden)
+@@ -56,8 +54,8 @@ extension MainChartView {
      var dummyBasalChart: some View {
          Chart {}
              .id("DummyBasalChart")
 -            .frame(minHeight: geo.size.height * 0.05)
+-            .frame(width: screenSize.width - 10)
 +            .frame(height: basalChartHeight)
-             .frame(width: screenSize.width - 10)
++            .frame(width: geo.size.width - 10)
              .chartXAxis { basalChartXAxis }
              .chartXAxis(.hidden)
-@@ -67,7 +65,7 @@ extension MainChartView {
+             .chartYAxis(.hidden)
+@@ -67,8 +65,8 @@ extension MainChartView {
      var dummyCobChart: some View {
          Chart {}
              .id("DummyCobChart")
 -            .frame(minHeight: geo.size.height * 0.12)
+-            .frame(width: screenSize.width - 10)
 +            .frame(height: cobChartHeight)
-             .frame(width: screenSize.width - 10)
++            .frame(width: geo.size.width - 10)
              .chartXScale(domain: state.startMarker ... state.endMarker)
              .chartXAxis { basalChartXAxis }
+             .chartXAxis(.hidden)
 diff --git a/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift b/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift
-index a4fa90784..bc072fd3e 100644
+index 34db04766..51af6aa6b 100644
 --- a/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift
 +++ b/Trio/Sources/Modules/Home/View/Chart/MainChartView.swift
-@@ -33,6 +33,26 @@ struct MainChartView: View {
+@@ -2,7 +2,6 @@ import Charts
+ import CoreData
+ import SwiftUI
+ 
+-let screenSize: CGRect = UIScreen.main.bounds
+ let calendar = Calendar.current
+ 
+ struct MainChartView: View {
+@@ -33,6 +32,45 @@ struct MainChartView: View {
      @Environment(\.colorScheme) var colorScheme
      @Environment(\.calendar) var calendar
  
++    // Scaled spacer height for accessibility support - scales with dynamic type.
++    @ScaledMetric(relativeTo: .footnote) private var axisSpacerHeight: CGFloat = 16
++
++    private let chartSpacing: CGFloat = 5
++
++    /// Use the current chart container height as the layout reference, then
++    /// bound it to avoid pathological values during transient layout passes.
++    private var chartLayoutReferenceHeight: CGFloat {
++        max(geo.size.height, 0).clamped(320 ... 980)
++    }
 +    // NOTE:
 +    // Historically these charts used `minHeight` to allow them to stretch if the
 +    // surrounding layout provided extra vertical space. The flexible sizing also
@@ -86,31 +193,252 @@ index a4fa90784..bc072fd3e 100644
 +    // prefer a bounded range (`minHeight` + `maxHeight`) instead of a single
 +    // unconstrained `minHeight`.
 +    var mainChartHeight: CGFloat {
-+        max(geo.size.height * (0.28 - safeAreaSize), 0)
++        let rawHeight = chartLayoutReferenceHeight * (0.28 - safeAreaSize)
++        return rawHeight.clamped(110 ... 320)
 +    }
 +
 +    var basalChartHeight: CGFloat {
-+        max(geo.size.height * 0.05, 0)
++        let rawHeight = chartLayoutReferenceHeight * 0.05
++        return rawHeight.clamped(24 ... 64)
 +    }
 +
 +    var cobChartHeight: CGFloat {
-+        max(geo.size.height * 0.12, 0)
++        let rawHeight = chartLayoutReferenceHeight * 0.12
++        return rawHeight.clamped(56 ... 150)
++    }
++
++    // Computed chart stack height to constrain the overall chart region.
++    // Layout inside each VStack: basalChart, mainChart, axisSpacer, cobChart = 4 items with 3 gaps.
++    private var chartStackHeight: CGFloat {
++        basalChartHeight + mainChartHeight + cobChartHeight + axisSpacerHeight + (chartSpacing * 3)
 +    }
 +
      var upperLimit: Decimal {
          units == .mgdL ? 400 : 22.2
      }
-@@ -186,9 +206,7 @@ extension MainChartView {
+@@ -62,21 +100,21 @@ struct MainChartView: View {
+     }
+ 
+     var body: some View {
+-        VStack {
++        VStack(spacing: 0) {
+             ZStack {
+-                VStack(spacing: 5) {
++                VStack(spacing: chartSpacing) {
+                     dummyBasalChart
+                     staticYAxisChart
+-                    Spacer()
++                    Color.clear.frame(height: axisSpacerHeight)
+                     dummyCobChart
+                 }
+ 
+                 ScrollViewReader { scroller in
+                     ScrollView(.horizontal, showsIndicators: false) {
+-                        VStack(spacing: 5) {
++                        VStack(spacing: chartSpacing) {
+                             basalChart
+                             mainChart
+-                            Spacer()
++                            Color.clear.frame(height: axisSpacerHeight)
+                             cobIobChart
+                         }.onChange(of: screenHours) {
+                             scroller.scrollTo("MainChart", anchor: .trailing)
+@@ -103,6 +141,7 @@ struct MainChartView: View {
+                     }
                  }
              }
-             .id("MainChart")
++            .frame(height: chartStackHeight)
+         }
+     }
+ }
+@@ -111,103 +150,98 @@ struct MainChartView: View {
+ 
+ extension MainChartView {
+     private var mainChart: some View {
+-        VStack {
+-            Chart {
+-                drawStartRuleMark()
+-                drawEndRuleMark()
+-                drawCurrentTimeMarker()
+-
+-                GlucoseTargetsView(
+-                    targetProfiles: state.targetProfiles
+-                )
++        Chart {
++            drawStartRuleMark()
++            drawEndRuleMark()
++            drawCurrentTimeMarker()
+ 
+-                OverrideView(
+-                    state: state,
+-                    overrides: state.overrides,
+-                    overrideRunStored: state.overrideRunStored,
+-                    units: state.units,
+-                    viewContext: context
+-                )
+-
+-                TempTargetView(
+-                    tempTargetStored: state.tempTargetStored,
+-                    tempTargetRunStored: state.tempTargetRunStored,
+-                    units: state.units,
+-                    viewContext: context
+-                )
++            GlucoseTargetsView(
++                targetProfiles: state.targetProfiles
++            )
+ 
+-                GlucoseChartView(
+-                    glucoseData: state.glucoseFromPersistence,
+-                    units: state.units,
+-                    highGlucose: state.highGlucose,
+-                    lowGlucose: state.lowGlucose,
+-                    currentGlucoseTarget: state.currentGlucoseTarget,
+-                    isSmoothingEnabled: state.isSmoothingEnabled,
+-                    glucoseColorScheme: state.glucoseColorScheme
+-                )
++            OverrideView(
++                state: state,
++                overrides: state.overrides,
++                overrideRunStored: state.overrideRunStored,
++                units: state.units,
++                viewContext: context
++            )
+ 
+-                InsulinView(
+-                    glucoseData: state.glucoseFromPersistence,
+-                    insulinData: state.insulinFromPersistence,
+-                    units: state.units,
+-                    bolusDisplayThreshold: state.bolusDisplayThreshold
+-                )
++            TempTargetView(
++                tempTargetStored: state.tempTargetStored,
++                tempTargetRunStored: state.tempTargetRunStored,
++                units: state.units,
++                viewContext: context
++            )
+ 
+-                CarbView(
+-                    glucoseData: state.glucoseFromPersistence,
+-                    units: state.units,
+-                    carbData: state.carbsFromPersistence,
+-                    fpuData: state.fpusFromPersistence,
+-                    minValue: units == .mgdL ? state.minYAxisValue : state.minYAxisValue
+-                        .asMmolL
+-                )
++            GlucoseChartView(
++                glucoseData: state.glucoseFromPersistence,
++                units: state.units,
++                highGlucose: state.highGlucose,
++                lowGlucose: state.lowGlucose,
++                currentGlucoseTarget: state.currentGlucoseTarget,
++                isSmoothingEnabled: state.isSmoothingEnabled,
++                glucoseColorScheme: state.glucoseColorScheme
++            )
+ 
+-                ForecastView(
+-                    preprocessedData: state.preprocessedData,
+-                    minForecast: state.minForecast,
+-                    maxForecast: state.maxForecast,
+-                    units: state.units,
+-                    maxValue: state.maxYAxisValue,
+-                    forecastDisplayType: state.forecastDisplayType,
+-                    lastDeterminationDate: state.determinationsFromPersistence.first?.deliverAt ?? .distantPast
+-                )
++            InsulinView(
++                glucoseData: state.glucoseFromPersistence,
++                insulinData: state.insulinFromPersistence,
++                units: state.units,
++                bolusDisplayThreshold: state.bolusDisplayThreshold
++            )
+ 
+-                /// show glucose value when hovering over it
+-                if let selectedGlucose {
+-                    SelectionPopoverView(
+-                        selectedGlucose: selectedGlucose,
+-                        selectedIOBValue: selectedIOBValue,
+-                        selectedCOBValue: selectedCOBValue,
+-                        units: units,
+-                        highGlucose: highGlucose,
+-                        lowGlucose: lowGlucose,
+-                        currentGlucoseTarget: currentGlucoseTarget,
+-                        glucoseColorScheme: glucoseColorScheme,
+-                        isSmoothingEnabled: state.settingsManager.settings.smoothGlucose
+-                    )
+-                }
+-            }
+-            .id("MainChart")
 -            .frame(
 -                minHeight: geo.size.height * (0.28 - safeAreaSize)
--            )
-+            .frame(height: mainChartHeight)
-             .frame(width: fullWidth(viewWidth: screenSize.width))
-             .chartXScale(domain: state.startMarker ... state.endMarker)
-             .chartXAxis { mainChartXAxis }
++            CarbView(
++                glucoseData: state.glucoseFromPersistence,
++                units: state.units,
++                carbData: state.carbsFromPersistence,
++                fpuData: state.fpusFromPersistence,
++                minValue: units == .mgdL ? state.minYAxisValue : state.minYAxisValue
++                    .asMmolL
+             )
+-            .frame(width: fullWidth(viewWidth: screenSize.width))
+-            .chartXScale(domain: state.startMarker ... state.endMarker)
+-            .chartXAxis { mainChartXAxis }
+-            .chartYAxis { mainChartYAxis }
+-            .chartYAxis(.hidden)
+-            .chartXSelection(value: $selection)
+-            .chartYScale(
+-                domain: units == .mgdL ? state.minYAxisValue ... state.maxYAxisValue : state.minYAxisValue
+-                    .asMmolL ... state.maxYAxisValue.asMmolL
++
++            ForecastView(
++                preprocessedData: state.preprocessedData,
++                minForecast: state.minForecast,
++                maxForecast: state.maxForecast,
++                units: state.units,
++                maxValue: state.maxYAxisValue,
++                forecastDisplayType: state.forecastDisplayType,
++                lastDeterminationDate: state.determinationsFromPersistence.first?.deliverAt ?? .distantPast
+             )
+-            .chartLegend(.hidden)
+-            .chartForegroundStyleScale([
+-                "iob": Color.insulin,
+-                "uam": Color.uam,
+-                "zt": Color.zt,
+-                "cob": Color.orange
+-            ])
++
++            if let selectedGlucose {
++                SelectionPopoverView(
++                    selectedGlucose: selectedGlucose,
++                    selectedIOBValue: selectedIOBValue,
++                    selectedCOBValue: selectedCOBValue,
++                    units: units,
++                    highGlucose: highGlucose,
++                    lowGlucose: lowGlucose,
++                    currentGlucoseTarget: currentGlucoseTarget,
++                    glucoseColorScheme: glucoseColorScheme,
++                    isSmoothingEnabled: state.settingsManager.settings.smoothGlucose
++                )
++            }
+         }
++        .id("MainChart")
++        .frame(height: mainChartHeight)
++        .frame(width: fullWidth(viewWidth: geo.size.width))
++        .chartXScale(domain: state.startMarker ... state.endMarker)
++        .chartXAxis { mainChartXAxis }
++        .chartYAxis { mainChartYAxis }
++        .chartYAxis(.hidden)
++        .chartXSelection(value: $selection)
++        .chartYScale(
++            domain: units == .mgdL ? state.minYAxisValue ... state.maxYAxisValue : state.minYAxisValue
++                .asMmolL ... state.maxYAxisValue.asMmolL
++        )
++        .chartLegend(.hidden)
++        .chartForegroundStyleScale([
++            "iob": Color.insulin,
++            "uam": Color.uam,
++            "zt": Color.zt,
++            "cob": Color.orange
++        ])
+     }
+ }
 -- 
 2.50.1 (Apple Git-155)
 
