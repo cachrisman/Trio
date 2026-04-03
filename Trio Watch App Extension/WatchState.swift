@@ -142,6 +142,9 @@ enum BackgroundTaskWindowCounter {
     private var healthKitStore: HKHealthStore?
     private var glucoseObserverQuery: HKObserverQuery?
 
+    /// Path B4 — max samples for nil-anchor bootstrap (`HKSampleQuery`, descending). **64** ≈ enough for latest + delta/trend context within a dense CGM window while capping peak batch size vs unbounded anchored pulls.
+    private static let hkBootstrapSampleLimit = 64
+
     private var backgroundRefreshCount = 0
     private var lastBackgroundRefreshDate: Date?
     private var lastConnectivityTerminalAt: Date?
@@ -510,6 +513,162 @@ enum BackgroundTaskWindowCounter {
         glucoseObserverQuery = query
     }
 
+    /// Path B4 — shared post-fetch processing for **both** bootstrap (`HKSampleQuery`) and incremental (`HKAnchoredObjectQuery`) paths. Persists `HKQueryAnchor` when `newAnchor` is non-nil (incremental path). Bootstrap anchor persistence is handled separately via `establishHealthKitGlucoseTimelineAnchorAfterBootstrap` after a successful sample query.
+    private func finishHKGlucoseObserverFetch(
+        fireId: UUID,
+        anchorWasNil: Bool,
+        samples: [HKQuantitySample]?,
+        newAnchor: HKQueryAnchor?,
+        error: Error?,
+        mgDlUnit: HKUnit,
+        completionHandler: @escaping () -> Void
+    ) {
+        let dataStore = TrioComplicationDataStore.shared
+        if let err = error {
+            Task {
+                await WatchLogger.shared.log("❌ hk_observer_query_error fire_id=\(fireId) error=\(err.localizedDescription)")
+            }
+            completionHandler()
+            return
+        }
+
+        let added = samples ?? []
+        // Stable batch events: `hk_sample_query_batch` (bootstrap `HKSampleQuery`) vs `hk_anchored_query_batch` (incremental `HKAnchoredObjectQuery`) — split so Better Stack filters are not misleading (Claude review).
+        let batchEventName = anchorWasNil ? "hk_sample_query_batch" : "hk_anchored_query_batch"
+        Task {
+            await WatchLogger.shared
+                .log("event=\(batchEventName) fire_id=\(fireId) anchor_was_nil=\(anchorWasNil) samples_count=\(added.count)")
+        }
+
+        if let newAnchor,
+           let anchorData = try? NSKeyedArchiver.archivedData(withRootObject: newAnchor, requiringSecureCoding: true) {
+            dataStore.saveHKGlucoseAnchor(anchorData)
+        }
+
+        let sortedByDate = added.sorted { $0.startDate > $1.startDate }
+        if sortedByDate.isEmpty {
+            Task {
+                await WatchLogger.shared.log("⚠️ hk_observer_no_new_samples fire_id=\(fireId)")
+            }
+            completionHandler()
+            return
+        }
+
+        let latest = sortedByDate[0]
+        let latestEpoch = latest.startDate.timeIntervalSince1970
+        let latestMgDl = latest.quantity.doubleValue(for: mgDlUnit)
+
+        if latestEpoch == dataStore.hkLastReceivedGlucoseEpoch() {
+            Task {
+                await WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
+            }
+            completionHandler()
+            return
+        }
+
+        var previousMgDl: Double?
+        var previousEpoch: TimeInterval?
+        if sortedByDate.count >= 2 {
+            let prev = sortedByDate[1]
+            previousMgDl = prev.quantity.doubleValue(for: mgDlUnit)
+            previousEpoch = prev.startDate.timeIntervalSince1970
+        } else {
+            let storedEpoch = dataStore.hkLastReceivedGlucoseEpoch()
+            if storedEpoch > 0 {
+                previousEpoch = storedEpoch
+                previousMgDl = dataStore.hkLastReceivedGlucoseValueMgDl()
+            }
+        }
+
+        let timeDelta = previousEpoch.map { latestEpoch - $0 } ?? 0
+        let plausibilityOK = timeDelta > 0 && timeDelta < 15 * 60
+
+        var deltaString = "--"
+        var trendString = ""
+        var trendDerived = false
+
+        if let prev = previousMgDl, plausibilityOK {
+            let rawDeltaMgDl = latestMgDl - prev
+            let deltaInt = Int(rawDeltaMgDl.rounded())
+            deltaString = String(format: "%+d", deltaInt)
+            trendString = Self.hkTrendString(fromDeltaMgDl: deltaInt)
+            trendDerived = true
+        }
+
+        dataStore.setHKLastReceivedGlucoseEpoch(latestEpoch)
+        dataStore.setHKLastReceivedGlucoseValueMgDl(latestMgDl)
+
+        let readingDate = latest.startDate
+        let glucoseString = String(Int(latestMgDl.rounded()))
+        let syncLag = Int(Date().timeIntervalSince(readingDate))
+
+        // Stable tokens for validation / Better Stack: batch lines use `hk_sample_query_batch` | `hk_anchored_query_batch` above; `query_type` uses `sampleQuery_bootstrap` | `anchoredQuery`. Do not rename casually.
+        let queryLabel = anchorWasNil ? "sampleQuery_bootstrap" : "anchoredQuery"
+        Task {
+            await WatchLogger.shared.log(
+                "🏥 hk_observer_fired fire_id=\(fireId) reading_epoch=\(Int(readingDate.timeIntervalSince1970)) sync_lag=\(syncLag) glucose=\(glucoseString) delta=\(deltaString) trend=\(trendString) trend_derived=\(trendDerived) samples_in_batch=\(sortedByDate.count) query_type=\(queryLabel)"
+            )
+        }
+
+        let snapshot = TrioComplicationSnapshot(
+            glucose: glucoseString,
+            trend: trendString,
+            delta: deltaString,
+            readingDate: readingDate,
+            date: Date(),
+            glucoseColor: nil
+        )
+
+        DispatchQueue.main.async {
+            TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+            completionHandler()
+        }
+    }
+
+    /// Path B4 — After a successful bounded `HKSampleQuery` bootstrap, persist an `HKQueryAnchor` at the current timeline (“samples from `Date()` onward” + `.strictStartDate` is typically an **empty** forward window) so the next observer cycle uses incremental `HKAnchoredObjectQuery` instead of repeating bootstrap. Calls `completion` when the establishment query finishes (success or failure) so the HK observer callback is not released before the anchor write attempt.
+    ///
+    /// **Memory safety:** Uses `HKObjectQueryNoLimit`, but boundedness relies on the **predicate** yielding an effectively empty forward timeline—not on the limit parameter (ChatGPT review P2).
+    private func establishHealthKitGlucoseTimelineAnchorAfterBootstrap(
+        store: HKHealthStore,
+        bgType: HKQuantityType,
+        fireId: UUID,
+        completion: @escaping () -> Void
+    ) {
+        let now = Date()
+        let predicate = HKQuery.predicateForSamples(withStart: now, end: nil, options: .strictStartDate)
+        let anchorQuery = HKAnchoredObjectQuery(
+            type: bgType,
+            predicate: predicate,
+            anchor: nil,
+            limit: HKObjectQueryNoLimit,
+            resultsHandler: { _, samples, _, newAnchor, error in
+                defer { completion() }
+                if let err = error {
+                    Task {
+                        await WatchLogger.shared
+                            .log("⚠️ hk_bootstrap_anchor_establish_failed fire_id=\(fireId) error=\(err.localizedDescription)")
+                    }
+                    return
+                }
+                guard let newAnchor,
+                      let anchorData = try? NSKeyedArchiver.archivedData(withRootObject: newAnchor, requiringSecureCoding: true)
+                else {
+                    Task {
+                        await WatchLogger.shared.log("⚠️ hk_bootstrap_anchor_establish_no_anchor fire_id=\(fireId)")
+                    }
+                    return
+                }
+                TrioComplicationDataStore.shared.saveHKGlucoseAnchor(anchorData)
+                let n = (samples as? [HKQuantitySample])?.count ?? 0
+                Task {
+                    await WatchLogger.shared
+                        .log("✅ hk_bootstrap_anchor_established fire_id=\(fireId) timeline_predicate_samples_count=\(n)")
+                }
+            }
+        )
+        store.execute(anchorQuery)
+    }
+
     private func fetchLatestGlucoseFromHealthKit(fireId: UUID, completionHandler: @escaping () -> Void) {
         guard let store = healthKitStore,
               let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else {
@@ -539,112 +698,78 @@ enum BackgroundTaskWindowCounter {
             }
         }
 
+        let anchorWasNil = (anchor == nil)
+
         // R6.1 — Nil anchor: cap to 24h. With anchor: no date cap. SyncIdentifier filter deferred (see plan §Source Predicate).
-        let predicate: NSPredicate?
-        if anchor == nil {
-            let twentyFourHoursAgo = Date().addingTimeInterval(-24 * 3600)
-            predicate = HKQuery.predicateForSamples(withStart: twentyFourHoursAgo, end: nil, options: .strictStartDate)
-        } else {
-            predicate = nil
+        let twentyFourHoursAgo = Date().addingTimeInterval(-24 * 3600)
+        let bootstrapPredicate = HKQuery.predicateForSamples(withStart: twentyFourHoursAgo, end: nil, options: .strictStartDate)
+
+        // Path B4 — No durable anchor: use descending `HKSampleQuery` so a positive limit still returns the *newest* samples (anchored queries enumerate oldest-first).
+        if anchorWasNil {
+            let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
+            let sampleQuery = HKSampleQuery(
+                sampleType: bgType,
+                predicate: bootstrapPredicate,
+                limit: Self.hkBootstrapSampleLimit,
+                sortDescriptors: [sort]
+            ) { [weak self] _, samples, error in
+                guard let self else {
+                    completionHandler()
+                    return
+                }
+                if error != nil {
+                    self.finishHKGlucoseObserverFetch(
+                        fireId: fireId,
+                        anchorWasNil: true,
+                        samples: samples as? [HKQuantitySample],
+                        newAnchor: nil,
+                        error: error,
+                        mgDlUnit: mgDlUnit,
+                        completionHandler: completionHandler
+                    )
+                    return
+                }
+                let afterBootstrap: () -> Void = {
+                    self.establishHealthKitGlucoseTimelineAnchorAfterBootstrap(
+                        store: store,
+                        bgType: bgType,
+                        fireId: fireId,
+                        completion: completionHandler
+                    )
+                }
+                self.finishHKGlucoseObserverFetch(
+                    fireId: fireId,
+                    anchorWasNil: true,
+                    samples: samples as? [HKQuantitySample],
+                    newAnchor: nil,
+                    error: nil,
+                    mgDlUnit: mgDlUnit,
+                    completionHandler: afterBootstrap
+                )
+            }
+            store.execute(sampleQuery)
+            return
         }
 
         let query = HKAnchoredObjectQuery(
             type: bgType,
-            predicate: predicate,
+            predicate: nil,
             anchor: anchor,
             limit: HKObjectQueryNoLimit,
             resultsHandler: { [weak self] _, samples, _, newAnchor, error in
-                guard self != nil else {
+                guard let self else {
                     completionHandler()
                     return
                 }
-                if let error = error {
-                    Task {
-                        await WatchLogger.shared.log("❌ hk_observer_query_error fire_id=\(fireId) error=\(error.localizedDescription)")
-                    }
-                    completionHandler()
-                    return
-                }
-                if let newAnchor = newAnchor,
-                   let anchorData = try? NSKeyedArchiver.archivedData(withRootObject: newAnchor, requiringSecureCoding: true) {
-                    dataStore.saveHKGlucoseAnchor(anchorData)
-                }
-
-                let added = (samples as? [HKQuantitySample]) ?? []
-                let sortedByDate = added.sorted { $0.startDate > $1.startDate }
-                if sortedByDate.isEmpty {
-                    Task {
-                        await WatchLogger.shared.log("⚠️ hk_observer_no_new_samples fire_id=\(fireId)")
-                    }
-                    completionHandler()
-                    return
-                }
-
-                let latest = sortedByDate[0]
-                let latestEpoch = latest.startDate.timeIntervalSince1970
-                let latestMgDl = latest.quantity.doubleValue(for: mgDlUnit)
-
-                if latestEpoch == dataStore.hkLastReceivedGlucoseEpoch() {
-                    Task {
-                        await WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
-                    }
-                    completionHandler()
-                    return
-                }
-
-                var previousMgDl: Double?
-                var previousEpoch: TimeInterval?
-                if sortedByDate.count >= 2 {
-                    let prev = sortedByDate[1]
-                    previousMgDl = prev.quantity.doubleValue(for: mgDlUnit)
-                    previousEpoch = prev.startDate.timeIntervalSince1970
-                } else {
-                    let storedEpoch = dataStore.hkLastReceivedGlucoseEpoch()
-                    if storedEpoch > 0 {
-                        previousEpoch = storedEpoch
-                        previousMgDl = dataStore.hkLastReceivedGlucoseValueMgDl()
-                    }
-                }
-
-                let timeDelta = previousEpoch.map { latestEpoch - $0 } ?? 0
-                let plausibilityOK = timeDelta > 0 && timeDelta < 15 * 60
-
-                var deltaString = "--"
-                var trendString = ""
-                var trendDerived = false
-
-                if let prev = previousMgDl, plausibilityOK {
-                    let rawDeltaMgDl = latestMgDl - prev
-                    let deltaInt = Int(rawDeltaMgDl.rounded())
-                    deltaString = String(format: "%+d", deltaInt)
-                    trendString = Self.hkTrendString(fromDeltaMgDl: deltaInt)
-                    trendDerived = true
-                }
-
-                dataStore.setHKLastReceivedGlucoseEpoch(latestEpoch)
-                dataStore.setHKLastReceivedGlucoseValueMgDl(latestMgDl)
-
-                let readingDate = latest.startDate
-                let glucoseString = String(Int(latestMgDl.rounded()))
-                let syncLag = Int(Date().timeIntervalSince(readingDate))
-
-                Task {
-                    await WatchLogger.shared.log("🏥 hk_observer_fired fire_id=\(fireId) reading_epoch=\(Int(readingDate.timeIntervalSince1970)) sync_lag=\(syncLag) glucose=\(glucoseString) delta=\(deltaString) trend=\(trendString) trend_derived=\(trendDerived) samples_in_batch=\(sortedByDate.count) query_type=anchoredQuery")
-                }
-
-                let snapshot = TrioComplicationSnapshot(
-                    glucose: glucoseString,
-                    trend: trendString,
-                    delta: deltaString,
-                    readingDate: readingDate,
-                    date: Date(),
-                    glucoseColor: nil
+                self.finishHKGlucoseObserverFetch(
+                    fireId: fireId,
+                    anchorWasNil: false,
+                    samples: samples as? [HKQuantitySample],
+                    newAnchor: newAnchor,
+                    error: error,
+                    mgDlUnit: mgDlUnit,
+                    completionHandler: completionHandler
                 )
-
-                DispatchQueue.main.async {
-                    TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
-                    completionHandler()
-                }
             }
         )
         store.execute(query)
@@ -661,6 +786,30 @@ enum BackgroundTaskWindowCounter {
         case 20 ..< 30: return "SingleUp"
         default: return "DoubleUp"
         }
+    }
+
+    /// Path B1 — Summarize inbound WC messages without stringifying nested `glucoseValues` (avoids large transient `String` allocations).
+    private static func watchConnectivityInboundSummary(_ message: [String: Any]) -> String {
+        let topKeys = message.keys.sorted().joined(separator: ",")
+        var parts = ["event=watch_wc_inbound channel=message top_level_keys=\(topKeys)"]
+        if let type = message["type"] as? String {
+            parts.append("type=\(type)")
+        }
+        if let ws = message[WatchMessageKeys.watchState] as? [String: Any] {
+            let gv = ws[WatchMessageKeys.glucoseValues]
+            let gvCount: Int
+            if let arr = gv as? [Any] {
+                gvCount = arr.count
+            } else if gv != nil {
+                gvCount = -1
+            } else {
+                gvCount = 0
+            }
+            let epoch = (ws[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
+            let wsKeys = ws.keys.sorted().joined(separator: ",")
+            parts.append("watchState_keys=\(wsKeys) glucoseValues_count=\(gvCount) reading_epoch=\(epoch)")
+        }
+        return parts.joined(separator: " ")
     }
 
     // MARK: - Acknowledgement handling
@@ -752,7 +901,7 @@ enum BackgroundTaskWindowCounter {
         }
 
         Task {
-            await WatchLogger.shared.log("Watch received data: \(message)")
+            await WatchLogger.shared.log(Self.watchConnectivityInboundSummary(message))
         }
 
         // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
