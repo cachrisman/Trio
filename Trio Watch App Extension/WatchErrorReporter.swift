@@ -7,7 +7,7 @@ actor WatchErrorReporter {
     static let shared = WatchErrorReporter()
 
     private let session = WCSession.default
-    private let watchLastRunWasForegroundKey = "watchLastRunWasForeground"
+    private static let watchLastRunWasForegroundKey = "watchLastRunWasForeground"
     private let crashContextKey = "watchAppCrashContext"
     private let firstLaunchKey = "watchAppHasLaunchedBefore"
     private let pendingPayloadsKey = "watchPendingPayloads"
@@ -45,18 +45,18 @@ actor WatchErrorReporter {
         // First launch
         if !hasLaunchedBefore {
             userDefaults.set(true, forKey: firstLaunchKey)
-            userDefaults.set(false, forKey: watchLastRunWasForegroundKey)
+            userDefaults.set(false, forKey: Self.watchLastRunWasForegroundKey)
             return
         }
 
         // Subsequent launches - check if previous run was foreground
-        let lastRunWasForeground = userDefaults.bool(forKey: watchLastRunWasForegroundKey)
+        let lastRunWasForeground = userDefaults.bool(forKey: Self.watchLastRunWasForegroundKey)
 
         if lastRunWasForeground {
             // Previous run was foreground and didn't transition to background - likely crashed
             await reportPotentialCrash()
             // Clear the marker to prevent repeated reporting in the same session
-            userDefaults.set(false, forKey: watchLastRunWasForegroundKey)
+            userDefaults.set(false, forKey: Self.watchLastRunWasForegroundKey)
         }
     }
 
@@ -167,13 +167,21 @@ actor WatchErrorReporter {
     }
 
     /// Marks the app as having become active (foreground).
+    static func markBecameActiveImmediately() {
+        UserDefaults.standard.set(true, forKey: Self.watchLastRunWasForegroundKey)
+    }
+
     func markBecameActive() async {
-        UserDefaults.standard.set(true, forKey: watchLastRunWasForegroundKey)
+        Self.markBecameActiveImmediately()
     }
 
     /// Marks the app as having entered background or inactive state.
+    static func markEnteredBackgroundOrInactiveImmediately() {
+        UserDefaults.standard.set(false, forKey: Self.watchLastRunWasForegroundKey)
+    }
+
     func markEnteredBackgroundOrInactive() async {
-        UserDefaults.standard.set(false, forKey: watchLastRunWasForegroundKey)
+        Self.markEnteredBackgroundOrInactiveImmediately()
     }
 
     /// Saves context that should be included if the app crashes.
