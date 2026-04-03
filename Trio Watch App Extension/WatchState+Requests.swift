@@ -234,6 +234,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ No session available for state update")
             }
+            clearStartupFirstRefreshInFlightOnMain()
             loadFallbackDataFromComplication()
             return
         }
@@ -243,6 +244,7 @@ extension WatchState {
                 await WatchLogger.shared.log("⌚️ Session not activated. Activating...")
             }
             session.activate()
+            clearStartupFirstRefreshInFlightOnMain()
             loadFallbackDataFromComplication()
             return
         }
@@ -261,6 +263,7 @@ extension WatchState {
                     await WatchLogger.shared.flushPersistedLogs()
                 }
                 DispatchQueue.main.async {
+                    self.clearStartupFirstRefreshInFlightOnMain()
                     self.loadFallbackDataFromComplication()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
                         self.requestWatchStateUpdate()
@@ -273,6 +276,7 @@ extension WatchState {
                 Task {
                     await WatchLogger.shared.log("WatchState update timeout - using fallback data")
                 }
+                self?.clearStartupFirstRefreshInFlightOnMain()
                 self?.loadFallbackDataFromComplication()
             }
             syncTimeoutWorkItem = timeoutWorkItem
@@ -281,6 +285,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ Phone not reachable for WatchState update")
             }
+            clearStartupFirstRefreshInFlightOnMain()
             loadFallbackDataFromComplication()
         }
     }

@@ -2,6 +2,45 @@ import Foundation
 import WatchKit
 import WatchConnectivity
 
+/// Shared startup transport gate for watch log delivery.
+/// Synchronous access is required so foreground lifecycle code can arm or disarm
+/// suppression before any follow-on log call has a chance to flush.
+enum WatchStartupTransportGate {
+    private static let lock = NSLock()
+    private static var isSuppressed = true
+    private static var activationSequence: Int?
+
+    static func arm(activationSequence: Int?) {
+        lock.lock()
+        defer { lock.unlock() }
+        isSuppressed = true
+        self.activationSequence = activationSequence
+    }
+
+    @discardableResult
+    static func disarm(activationSequence: Int? = nil) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let activationSequence,
+           let currentActivationSequence = self.activationSequence,
+           currentActivationSequence != activationSequence
+        {
+            return false
+        }
+
+        isSuppressed = false
+        self.activationSequence = nil
+        return true
+    }
+
+    static func snapshot() -> (isSuppressed: Bool, activationSequence: Int?) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (isSuppressed, activationSequence)
+    }
+}
+
 // MARK: - WCSession send completion (single resume for reply vs error)
 
 /// Ensures `CheckedContinuation.resume` runs at most once when either `replyHandler` or `errorHandler` fires.
@@ -307,12 +346,14 @@ actor WatchLogger {
             || logs.count >= flushSizeThreshold
 
         if shouldFlush {
+            guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
             await flushToPhone()
         }
     }
 
     private func flushToPhone() async {
         guard !logs.isEmpty else { return }
+        guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
 
         updateCachedCountsIfStale()
         await logFileInventory()
@@ -509,18 +550,22 @@ actor WatchLogger {
 
     // MARK: - Persisted log flush + retention
 
-    func flushPersistedLogs() async {
+    func flushPersistedLogs(startupTransportSuppressedOverride: Bool? = nil) async {
+        let startupTransportSuppressed = startupTransportSuppressedOverride
+            ?? WatchStartupTransportGate.snapshot().isSuppressed
         let lastKnownBuild = UserDefaults.standard.string(
             forKey: lastKnownBuildKey
         )
         if lastKnownBuild != build {
-            UserDefaults.standard.set(build, forKey: lastKnownBuildKey)
             await log(
                 "[UPGRADE] build changed"
                     + " from \(lastKnownBuild ?? "nil") to \(build)",
-                force: true
+                force: !startupTransportSuppressed
             )
+            UserDefaults.standard.set(build, forKey: lastKnownBuildKey)
         }
+
+        guard !startupTransportSuppressed else { return }
 
         updateCachedCountsIfStale()
         await logFileInventory()
@@ -705,6 +750,7 @@ actor WatchLogger {
     // MARK: - Resend pending payloads
 
     func resendPendingPayloads() async {
+        guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
         guard session.isReachable else { return }
         guard prepareSessionForImmediateSend() else {
             await log(

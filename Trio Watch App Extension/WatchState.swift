@@ -120,6 +120,23 @@ enum BackgroundTaskWindowCounter {
     private let maxTransferRetries = 3
     private var retryWorkItem: DispatchWorkItem?
 
+    // MARK: - Startup coordination
+
+    private let startupWatchStateDelaySeconds: TimeInterval = 2.0
+    private let startupHealthKitDelaySeconds: TimeInterval = 10.0
+    private let startupFlushDelaySeconds: TimeInterval = 10.0
+
+    private var startupActivationSequence = 0
+    private var startupCurrentActivationSequence: Int?
+    private var startupIsForegroundActive = false
+    private var startupBackgroundLaunchDisarmWorkItem: DispatchWorkItem?
+    private var startupDeferredWatchStateWorkItem: DispatchWorkItem?
+    private var startupDeferredHealthKitWorkItem: DispatchWorkItem?
+    private var startupDeferredPersistedLogFlushWorkItem: DispatchWorkItem?
+    private var startupFirstRefreshFiredActivationSequence: Int?
+    private var startupFirstRefreshInFlight = false
+    private var hasInitializedHealthKitSetupInProcess = false
+
     // MARK: - HealthKit (R6)
 
     private var healthKitStore: HKHealthStore?
@@ -164,7 +181,260 @@ enum BackgroundTaskWindowCounter {
         activationTimestamp = Date()
         forcedSinceActivation = false
         hasRequestedInitialUpdate = false
-        Task { await WatchLogger.shared.log("Cold start window active for 60s") }
+        startupFirstRefreshInFlight = false
+    }
+
+    func scheduleBackgroundLaunchDisarmIfNeeded() {
+        assert(Thread.isMainThread, "scheduleBackgroundLaunchDisarmIfNeeded must be called on main thread")
+        startupBackgroundLaunchDisarmWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.startupBackgroundLaunchDisarmWorkItem = nil
+            guard !self.startupIsForegroundActive else { return }
+
+            WatchStartupTransportGate.disarm()
+            Task {
+                await WatchLogger.shared.log(
+                    "event=watch_startup_background_launch_disarm"
+                        + " reason=no_foreground_entry"
+                )
+            }
+        }
+
+        startupBackgroundLaunchDisarmWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
+    }
+
+    func handleForegroundActiveEntry() {
+        assert(Thread.isMainThread, "handleForegroundActiveEntry must be called on main thread")
+        guard !startupIsForegroundActive else { return }
+
+        startupIsForegroundActive = true
+        startupActivationSequence += 1
+        let activationSequence = startupActivationSequence
+        startupCurrentActivationSequence = activationSequence
+        startupFirstRefreshFiredActivationSequence = nil
+
+        startupBackgroundLaunchDisarmWorkItem?.cancel()
+        startupBackgroundLaunchDisarmWorkItem = nil
+        WatchStartupTransportGate.arm(activationSequence: activationSequence)
+        noteAppBecameActive()
+        WatchErrorReporter.markBecameActiveImmediately()
+        scheduleStartupSequenceOnMain(activationSequence: activationSequence)
+
+        Task {
+            await WatchLogger.shared.log(
+                "event=watch_startup_grace_scheduled"
+                    + " activation_seq=\(activationSequence)"
+                    + " watch_state_delay_s=\(Int(startupWatchStateDelaySeconds))"
+                    + " healthkit_delay_s=\(Int(startupHealthKitDelaySeconds))"
+                    + " flush_delay_s=\(Int(startupFlushDelaySeconds))"
+            )
+            await WatchErrorReporter.shared.startup()
+        }
+    }
+
+    func handleForegroundInactiveOrBackground() {
+        assert(Thread.isMainThread, "handleForegroundInactiveOrBackground must be called on main thread")
+        guard startupIsForegroundActive else { return }
+
+        startupIsForegroundActive = false
+        startupFirstRefreshInFlight = false
+        let activationSequence = startupCurrentActivationSequence
+        let pendingTasks = startupPendingTasksFieldOnMain()
+        cancelStartupSequenceOnMain()
+        startupCurrentActivationSequence = nil
+        WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
+
+        if let activationSequence {
+            WatchStartupTransportGate.disarm(activationSequence: activationSequence)
+            if pendingTasks != "none" {
+                Task {
+                    await WatchLogger.shared.log(
+                        "event=watch_startup_grace_canceled"
+                            + " activation_seq=\(activationSequence)"
+                            + " reason=left_active_before_fire"
+                            + " pending=\(pendingTasks)"
+                    )
+                }
+            }
+        }
+    }
+
+    private func scheduleStartupSequenceOnMain(activationSequence: Int) {
+        assert(Thread.isMainThread, "scheduleStartupSequenceOnMain must be called on main thread")
+        cancelStartupSequenceOnMain()
+
+        let watchStateWorkItem = DispatchWorkItem { [weak self] in
+            self?.fireDeferredStartupWatchStateRefreshOnMain(
+                activationSequence: activationSequence
+            )
+        }
+        startupDeferredWatchStateWorkItem = watchStateWorkItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + startupWatchStateDelaySeconds,
+            execute: watchStateWorkItem
+        )
+
+        let healthKitWorkItem = DispatchWorkItem { [weak self] in
+            self?.fireDeferredStartupHealthKitSetupOnMain(
+                activationSequence: activationSequence
+            )
+        }
+        startupDeferredHealthKitWorkItem = healthKitWorkItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + startupHealthKitDelaySeconds,
+            execute: healthKitWorkItem
+        )
+
+        let flushWorkItem = DispatchWorkItem { [weak self] in
+            self?.fireDeferredStartupPersistedLogFlushOnMain(
+                activationSequence: activationSequence
+            )
+        }
+        startupDeferredPersistedLogFlushWorkItem = flushWorkItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + startupFlushDelaySeconds,
+            execute: flushWorkItem
+        )
+    }
+
+    private func cancelStartupSequenceOnMain() {
+        assert(Thread.isMainThread, "cancelStartupSequenceOnMain must be called on main thread")
+        startupDeferredWatchStateWorkItem?.cancel()
+        startupDeferredWatchStateWorkItem = nil
+        startupDeferredHealthKitWorkItem?.cancel()
+        startupDeferredHealthKitWorkItem = nil
+        startupDeferredPersistedLogFlushWorkItem?.cancel()
+        startupDeferredPersistedLogFlushWorkItem = nil
+    }
+
+    private func startupPendingTasksFieldOnMain() -> String {
+        assert(Thread.isMainThread, "startupPendingTasksFieldOnMain must be called on main thread")
+
+        var pendingTasks: [String] = []
+        if startupDeferredWatchStateWorkItem != nil {
+            pendingTasks.append("watch_state")
+        }
+        if startupDeferredHealthKitWorkItem != nil {
+            pendingTasks.append("healthkit")
+        }
+        if startupDeferredPersistedLogFlushWorkItem != nil {
+            pendingTasks.append("flush")
+        }
+
+        return pendingTasks.isEmpty ? "none" : pendingTasks.joined(separator: "|")
+    }
+
+    private func fireDeferredStartupWatchStateRefreshOnMain(activationSequence: Int) {
+        assert(Thread.isMainThread, "fireDeferredStartupWatchStateRefreshOnMain must be called on main thread")
+        guard startupIsForegroundActive,
+              startupCurrentActivationSequence == activationSequence
+        else { return }
+
+        startupDeferredWatchStateWorkItem = nil
+        startupFirstRefreshFiredActivationSequence = activationSequence
+        hasRequestedInitialUpdate = true
+        startupFirstRefreshInFlight = true
+        showSyncingAnimation = true
+
+        Task {
+            await WatchLogger.shared.log(
+                "event=watch_startup_deferred_watch_state_refresh_fired"
+                    + " activation_seq=\(activationSequence)"
+            )
+        }
+
+        requestWatchStateUpdate()
+    }
+
+    private func fireDeferredStartupHealthKitSetupOnMain(activationSequence: Int) {
+        assert(Thread.isMainThread, "fireDeferredStartupHealthKitSetupOnMain must be called on main thread")
+        guard startupIsForegroundActive,
+              startupCurrentActivationSequence == activationSequence
+        else { return }
+
+        startupDeferredHealthKitWorkItem = nil
+        let alreadyInitialized = hasInitializedHealthKitSetupInProcess
+
+        Task {
+            await WatchLogger.shared.log(
+                "event=watch_startup_deferred_healthkit_setup_fired"
+                    + " activation_seq=\(activationSequence)"
+                    + " already_initialized=\(alreadyInitialized)"
+            )
+        }
+
+        guard !alreadyInitialized else { return }
+
+        hasInitializedHealthKitSetupInProcess = true
+        setupHealthKitBackgroundDelivery()
+    }
+
+    private func fireDeferredStartupPersistedLogFlushOnMain(activationSequence: Int) {
+        assert(Thread.isMainThread, "fireDeferredStartupPersistedLogFlushOnMain must be called on main thread")
+        guard startupIsForegroundActive,
+              startupCurrentActivationSequence == activationSequence
+        else { return }
+
+        startupDeferredPersistedLogFlushWorkItem = nil
+
+        Task {
+            await WatchLogger.shared.log(
+                "event=watch_startup_deferred_persisted_log_flush_fired"
+                    + " activation_seq=\(activationSequence)"
+            )
+            let didDisarm = WatchStartupTransportGate.disarm(
+                activationSequence: activationSequence
+            )
+            await WatchLogger.shared.flushPersistedLogs(
+                startupTransportSuppressedOverride: didDisarm ? false : nil
+            )
+        }
+    }
+
+    private func shouldSuppressStartupSignalOnMain() -> Bool {
+        assert(Thread.isMainThread, "shouldSuppressStartupSignalOnMain must be called on main thread")
+
+        guard activationTimestamp != nil else { return true }
+
+        guard startupIsForegroundActive,
+              let activationSequence = startupCurrentActivationSequence
+        else { return false }
+
+        return startupFirstRefreshFiredActivationSequence != activationSequence
+    }
+
+    private func logStartupSignalSuppressedOnMain() {
+        assert(Thread.isMainThread, "logStartupSignalSuppressedOnMain must be called on main thread")
+        guard startupIsForegroundActive,
+              let activationSequence = startupCurrentActivationSequence
+        else { return }
+
+        Task {
+            await WatchLogger.shared.log(
+                "event=watch_startup_transport_suppressed"
+                    + " activation_seq=\(activationSequence)"
+                    + " path=startup_signal"
+                    + " reason=startup_grace"
+            )
+        }
+    }
+
+    private func requestWatchStateUpdateRespectingStartupGraceOnMain() {
+        assert(Thread.isMainThread, "requestWatchStateUpdateRespectingStartupGraceOnMain must be called on main thread")
+        if shouldSuppressStartupSignalOnMain() {
+            logStartupSignalSuppressedOnMain()
+            return
+        }
+
+        requestWatchStateUpdate()
+    }
+
+    func clearStartupFirstRefreshInFlightOnMain() {
+        assert(Thread.isMainThread, "clearStartupFirstRefreshInFlightOnMain must be called on main thread")
+        startupFirstRefreshInFlight = false
     }
 
     private func setupSession() {
@@ -181,8 +451,6 @@ enum BackgroundTaskWindowCounter {
                 await WatchLogger.shared.log("WCSession is not supported on this device")
             }
         }
-        // R6: independent of WatchConnectivity — HK background delivery is a separate wake path.
-        setupHealthKitBackgroundDelivery()
     }
 
     // MARK: - HealthKit background delivery (R6)
@@ -455,7 +723,7 @@ enum BackgroundTaskWindowCounter {
                     await WatchLogger.shared.log("Watch session activated with state: \(activationState.rawValue)")
                 }
 
-                self.forceConditionalWatchStateUpdate()
+                _ = self.forceConditionalWatchStateUpdate()
                 self.isReachable = session.isReachable
 
                 Task {
@@ -505,6 +773,7 @@ enum BackgroundTaskWindowCounter {
                     await WatchLogger.shared.log("Received outdated watchState data (\(date))")
                 }
                 DispatchQueue.main.async {
+                    self.clearStartupFirstRefreshInFlightOnMain()
                     self.showSyncingAnimation = false
                     self.completePendingConnectivityTasksOnMain(
                         path: "message_outdated",
@@ -542,6 +811,7 @@ enum BackgroundTaskWindowCounter {
                 await WatchLogger.shared.log("Faulty data. Skipping.")
             }
             DispatchQueue.main.async {
+                self.clearStartupFirstRefreshInFlightOnMain()
                 self.showSyncingAnimation = false
                 self.completePendingConnectivityTasksOnMain(
                     path: "message_invalid",
@@ -703,7 +973,7 @@ enum BackgroundTaskWindowCounter {
 
                 retryWorkItem?.cancel()
                 retryWorkItem = DispatchWorkItem { [weak self] in
-                    self?.requestWatchStateUpdate()
+                    self?.requestWatchStateUpdateRespectingStartupGraceOnMain()
                 }
 
                 DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: retryWorkItem!)
@@ -726,8 +996,7 @@ enum BackgroundTaskWindowCounter {
 
             if session.isReachable {
                 if self.isColdStart, !self.forcedSinceActivation {
-                    self.forceConditionalWatchStateUpdate()
-                    self.forcedSinceActivation = true
+                    _ = self.forceConditionalWatchStateUpdate()
                 }
 
                 self.bolusAmount = 0
@@ -778,10 +1047,20 @@ enum BackgroundTaskWindowCounter {
         }
     }
 
-    private func forceConditionalWatchStateUpdate() {
+    @discardableResult
+    private func forceConditionalWatchStateUpdate() -> Bool {
         assert(Thread.isMainThread, "forceConditionalWatchStateUpdate must be called on main thread")
+        if shouldSuppressStartupSignalOnMain() {
+            logStartupSignalSuppressedOnMain()
+            return false
+        }
+
+        guard !startupFirstRefreshInFlight else {
+            return false
+        }
+
         guard let lastUpdateTimestamp = lastWatchStateUpdate else {
-            guard !hasRequestedInitialUpdate else { return }
+            guard !hasRequestedInitialUpdate else { return false }
             hasRequestedInitialUpdate = true
             Task {
                 await WatchLogger.shared.log("Forcing initial WatchState update")
@@ -789,7 +1068,7 @@ enum BackgroundTaskWindowCounter {
             showSyncingAnimation = true
             requestWatchStateUpdate()
             forcedSinceActivation = true
-            return
+            return true
         }
 
         let now = Date()
@@ -802,7 +1081,10 @@ enum BackgroundTaskWindowCounter {
             showSyncingAnimation = true
             requestWatchStateUpdate()
             forcedSinceActivation = true
+            return true
         }
+
+        return false
     }
 
     private func connectivitySessionHasPendingContent() -> Bool {
@@ -1189,6 +1471,8 @@ enum BackgroundTaskWindowCounter {
         Task {
             await WatchLogger.shared.log("Processing raw WatchState data with keys: \(message.keys.joined(separator: ", "))")
         }
+
+        startupFirstRefreshInFlight = false
 
         if let date = dateValue(from: message[WatchMessageKeys.date]) {
             lastWatchStateUpdate = date

@@ -10,7 +10,7 @@ import WatchKit
         WatchNotificationHandler.shared.configure()
         Task {
             let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
-            await WatchLogger.shared.log("[DEPLOY] event=watch_app_launch platform=watchos build=\(build)", force: true)
+            await WatchLogger.shared.log("[DEPLOY] event=watch_app_launch platform=watchos build=\(build)")
         }
     }
 
@@ -21,26 +21,19 @@ import WatchKit
         .onChange(of: scenePhase) { oldPhase, newPhase in
             let oldToken = watchScenePhaseToken(oldPhase)
             let newToken = watchScenePhaseToken(newPhase)
+
+            if newPhase == .active {
+                WatchState.shared.handleForegroundActiveEntry()
+            } else if newPhase == .background || newPhase == .inactive {
+                WatchState.shared.handleForegroundInactiveOrBackground()
+            }
+
             let forceFlush = newPhase != .active
             Task {
                 await WatchLogger.shared.log(
                     "event=watch_scene_phase_transition old=\(oldToken) new=\(newToken) source=swiftui_environment",
                     force: forceFlush
                 )
-            }
-
-            if newPhase == .active {
-                Task {
-                    // Check for crashes and mark as active
-                    await WatchErrorReporter.shared.startup()
-                    await WatchErrorReporter.shared.markBecameActive()
-                    // Flush persisted logs (will query ACKs first, then resend pending payloads)
-                    await WatchLogger.shared.flushPersistedLogs()
-                }
-            } else if newPhase == .background || newPhase == .inactive {
-                Task {
-                    await WatchErrorReporter.shared.markEnteredBackgroundOrInactive()
-                }
             }
         }
     }
