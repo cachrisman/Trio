@@ -1,9 +1,9 @@
 # Feature docs and implementation workflow
 
-**Version:** 1.4  
+**Version:** 1.5  
 **Status:** In Use  
 **Created:** 2026-03-17 12:18 CET  
-**Last updated:** 2026-03-17 14:15 CET  
+**Last updated:** 2026-04-03 22:49 CET  
 
 ---
 
@@ -18,8 +18,8 @@ This folder contains prompts for a **user-driven** workflow: creating feature do
 | 1 | [01-design-doc-review.md](01-design-doc-review.md) | Ask the agent to run a design doc review (see below). Review the report and any doc edits, then proceed when satisfied. |
 | 2 | [02-create-implementation-plan-from-design.md](02-create-implementation-plan-from-design.md) | Instruct the agent to create an implementation plan from the design doc (provide the design doc path). Review the plan, then proceed. |
 | 3 | [03-pre-implementation-doc-review.md](03-pre-implementation-doc-review.md) | Instruct the agent to review the design + implementation plan (and any related docs) for consistency and gaps. Review the findings and edits, then proceed. |
-| 4 | [04-execute-implementation-plan.md](04-execute-implementation-plan.md) | Instruct the agent to execute the implementation plan (provide design doc and plan paths). Review the implementation and implementation log in the plan, then proceed. |
-| 5 | [05-implementation-changes-red-team-full-review.md](05-implementation-changes-red-team-full-review.md) | Instruct the agent to red-team review the implementation changes (provide design doc, plan, and branch). Review the report and any fixes, then consider the feature complete or iterate. |
+| 4 | [04-execute-implementation-plan.md](04-execute-implementation-plan.md) | Instruct the agent to execute the implementation plan (provide design doc and plan paths). Review the implementation and implementation log in the plan, then proceed. **Compile verification** is not an agent step: see **AGENTS.md** rule 10 and prompt 04 — use review + `patch-test.sh`; full builds via `ci/local-build.sh` are user-driven or explicit build requests. |
+| 5 | [05-implementation-changes-red-team-full-review.md](05-implementation-changes-red-team-full-review.md) | Instruct the agent to red-team review the implementation changes (provide design doc, plan, and branch). Review the report and any fixes, then consider the feature complete or iterate. Same **no `xcodebuild`** policy as step 4 unless the user asked for a build. |
 
 ## Cursor rules
 
@@ -47,6 +47,7 @@ Other files in this folder (e.g. prompts in `others/`) may be used for one-off o
 
 | Version | Date       | Change |
 |---------|------------|--------|
+| 1.5     | 2026-04-03 22:49 CET | Intended order table: note **AGENTS.md** rule 10 — steps 4–5 do not use `xcodebuild` / unsolicited `local-build.sh` for compile verification. |
 | 1.4     | 2026-03-17 14:15 CET | Mutation expectations: which steps review vs create/modify; default fix-and-update for 1, 3, 5; impl plan canonical for step 4 execution log; review-only opt-in. |
 | 1.3     | 2026-03-17 13:45 CET | All five Cursor rules use alwaysApply: false (phrase-triggered only). |
 | 1.2     | 2026-03-17 13:15 CET | Cursor rules: document all five rule files and trigger phrases; step 1 alwaysApply, steps 2–5 on phrase. |

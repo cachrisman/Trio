@@ -1,9 +1,9 @@
 # Execute Implementation Plan
 
-**Version:** 1.6  
+**Version:** 1.7  
 **Status:** In Use  
 **Created:** 2026-03-17 10:50 CET  
-**Last updated:** 2026-03-17 14:15 CET  
+**Last updated:** 2026-04-03 22:49 CET  
 
 ---
 
@@ -39,7 +39,7 @@ Use these as the **authoritative context** for what to build and in what order.
      - **Do** the work (code, config, tests, or docs as specified).
      - **Verify** the step’s acceptance criteria (run tests, manual check, or observable behavior).
      - If a step hits a **true blocker** (would require inventing behavior not in the design or plan, violating the design, or proceeding without a required dependency), stop and report the blocker with exact reference to the plan and design. Otherwise, complete the maximum grounded subset of the step, record any assumptions or deviations in the implementation log, and continue.
-   - After each step (or small group of related steps), ensure the codebase still builds and any step-level tests pass.
+   - After each step (or small group of related steps), **verify without Xcode compilation** (per **AGENTS.md** safety rule 10): re-read changed code, run **`scripts/patch-test.sh`** when the patch stack is in scope, run any **step-level automated tests** the plan specifies that do **not** require `xcodebuild` / a full app build, and record how acceptance was checked in the implementation log. **Do not** run `xcodebuild` or start `ci/local-build.sh` as a routine compile check; if the plan calls for a full build, note that the user should run **`ci/local-build.sh`** locally (or explicitly ask the agent to run a build).
 
 4. **Track progress.**  
    Keep an **implementation log** (execution log) as you complete steps. The log must live **in the implementation plan document itself**, in a dedicated section placed **at the end of the document, immediately before the Changelog section**.
@@ -49,7 +49,7 @@ Use these as the **authoritative context** for what to build and in what order.
    - **Ongoing:** Update the log after each step or small group of steps so the plan document always reflects current progress. Version and changelog updates for the plan may be batched per execution session or per meaningful batch of work (e.g. end of a phase or logical group of steps); you do not need to increment version and add a changelog entry for every single log append.
 
 5. **Final validation.**  
-   When all steps are complete, run the **rollout / validation** section of the implementation plan (e.g. full test suite, manual scenarios, metrics check). If the plan references design success criteria, confirm they are met.
+   When all steps are complete, run the **rollout / validation** section of the implementation plan **to the extent possible without Xcode compilation** (e.g. unit tests that run outside a full app build, manual scenarios, metrics check). If the plan requires a **full compile or TestFlight-class build**, do **not** substitute `xcodebuild`; state that **`ci/local-build.sh`** (or the user’s chosen build command) should be run **by the user** unless they explicitly instructed you to start a build per AGENTS.md. If the plan references design success criteria, confirm they are met from evidence you can actually gather in-session.
 
 6. **Report.**  
    Produce a short execution summary: what was implemented, what was skipped or deferred and why, any blockers or follow-ups, and where the implementation lives (branch, key files). **Include the branch name (and worktree if relevant)** so the user can pass them to prompt 05 (red-team review).
@@ -58,7 +58,7 @@ Use these as the **authoritative context** for what to build and in what order.
 
 - **No scope creep** — Do not add features, refactors, or “improvements” beyond the design and plan. If you see a worthwhile addition, note it as a follow-up; do not implement it in this pass.
 - **Do not skip steps** — Unless the plan explicitly marks a step optional or conditional, attempt it and complete it as fully as the available codebase, dependencies, and design support allow. Do not stop for ordinary ambiguity. If a step is unclear but not truly blocked, use the minimal grounded interpretation that best matches the design and implementation plan, record the assumption/deviation in the implementation log, and continue. Only stop when the ambiguity is a true blocker under the blocker-handling rule.
-- **Respect repo rules** — Follow AGENTS.md and any project rules: e.g. no manual `project.pbxproj` edits (use sync scripts), no hand-editing patch files (fix code and regenerate), no TestFlight upload unless requested.
+- **Respect repo rules** — Follow AGENTS.md and any project rules: e.g. no manual `project.pbxproj` edits (use sync scripts), no hand-editing patch files (fix code and regenerate), no TestFlight upload unless requested, **no `xcodebuild` / no unsolicited `ci/local-build.sh`** for routine verification (AGENTS.md safety rule 10).
 - **Tests and acceptance** — For each step that specifies tests or acceptance, run them. If tests are missing but the plan says “add tests,” add them as part of that step.
 - **Blocker handling** — Stop only for a **true blocker**: one that would require inventing behavior not in the design or plan, violating the design, or proceeding without a required dependency. In that case, report the blocker with exact reference to the plan and design and suggest what would unblock. Otherwise, complete the maximum grounded subset of the step, record assumptions and deviations in the implementation log, and continue.
 
@@ -69,7 +69,7 @@ After completing execution (all steps or stop at blocker) and before presenting 
 1. **Re-read the implementation plan** and the **implementation log section** (in that document) — Confirm every completed step is accurately logged with what was done, where, and how acceptance was verified; fix any omission or misstatement in the log.
 2. **Re-read the design doc** — Verify the implemented behavior satisfies the stated requirements, constraints, and success criteria; flag any shortfall or deviation in the report.
 3. **Re-scan the changed files** — Walk through every modified or new file; check for obvious bugs, missing error handling, inconsistent naming, or leftover TODOs that contradict the plan.
-4. **Re-run step-level and final validation** — Run the tests and acceptance checks called out in the plan; if anything fails, fix or report as a residual issue in the summary.
+4. **Re-run step-level and final validation** — Run the tests and acceptance checks called out in the plan **that do not require Xcode compilation**; if the plan’s validation is build-only, record that as **user / local-build** follow-up instead of running `xcodebuild`. If anything fails, fix or report as a residual issue in the summary.
 5. **Re-check repo rules** — Confirm no AGENTS.md or project rules were violated (e.g. no manual pbxproj edits, no TestFlight upload, correct worktree/branch).
 
 If the self-review finds defects or gaps, fix them and re-run the relevant acceptance checks; then repeat the self-review until it passes. Only then present the execution summary and final verdict.
@@ -95,6 +95,7 @@ Do not mark the plan “done” if steps were skipped without the plan’s appro
 
 | Version | Date       | Change |
 |---------|------------|--------|
+| 1.7     | 2026-04-03 22:49 CET | **No Xcode compile verification:** After each step and in final/self-review validation, agents must not use `xcodebuild` or start `ci/local-build.sh` as routine compile checks (aligns with AGENTS.md v13 rule 10). Verification = static review, `patch-test.sh` when applicable, and non–full-build tests; full builds are user-driven or explicit “run a build” requests. |
 | 1.6     | 2026-03-17 14:15 CET | Commit policy: leave changes in working tree; no commit unless user explicitly instructs; staging optional. Blocker behavior: stop only for true blocker (inventing/violating design/missing required dependency); otherwise complete max grounded subset and log assumptions. Version/changelog: may batch per session or meaningful batch. |
 | 1.5     | 2026-03-17 13:00 CET | Completion rule: Self-review must be completed and passed before presenting the final summary. |
 | 1.4     | 2026-03-17 12:33 CET | Report and final summary: include branch (and worktree if relevant) so user can pass them to prompt 05. |

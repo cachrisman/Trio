@@ -11,4 +11,6 @@ When the user says **"red-team review the implementation"** (or equivalent, e.g.
 2. **Execute** the review exactly as specified in that prompt (load design and plan, state branch, inspect diff, finding passes, fixes, self-review).
 3. The user will provide the design doc, implementation plan, and the branch (or diff) to review; typically the same branch used when running step 4.
 
+**Compilation:** Do **not** run `xcodebuild` or start `ci/local-build.sh` to validate fixes unless the user explicitly asked for a build. See **AGENTS.md** safety rule 10 and the prompt’s **Build / compile verification (agents)** section.
+
 Do not substitute your own review process. Follow the prompt file's instructions. See `docs/prompts/README.md` for the full workflow (steps 1–5).

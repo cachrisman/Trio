@@ -1,4 +1,4 @@
-# AGENTS.md — v12
+# AGENTS.md — v13
 
 Instructions for AI agents working in this repository.
 
@@ -34,6 +34,10 @@ Read first:
 9) **If you stash at the beginning of a workflow, pop at the end.**
    - The worktree state should be the same as before the run (aside from any commits you were asked to make).
    - Use `git stash -u` (include untracked) when the worktree has untracked files you care about (e.g. plan docs in `docs/`).
+
+10) **Do not use Xcode compilation to verify ordinary implementation work.**
+   - **Do not run** `xcodebuild`, `xcodebuild test`, or other direct Xcode CLI invocations to confirm that Swift/iOS/watch changes compile. They are slow, often abort or time out in agent environments, and duplicate the fork’s canonical build path.
+   - **Do not start** `ci/local-build.sh` as a routine “did my edit compile?” check. Full compilation is a **separate, human- or explicitly-requested** step (see **When the user instructs a build**). After code changes, verify with **static review** (re-read diffs, imports, symbols), **`scripts/patch-test.sh`** when the change touches the patch stack, and **any tests the plan or repo already runs without a full Xcode build**. If compile confirmation is needed, **tell the user** to run `ci/local-build.sh` locally with their chosen flags — do not substitute `xcodebuild` in the agent session.
 
 ## Self-Review Protocol
 
@@ -126,6 +130,8 @@ When a patch modifies a file that an earlier patch also modified, plain `git am`
 ## Agent sandbox notes
 
 `ci/local-build.sh` requires unrestricted filesystem/process access (it creates worktrees, runs Xcode builds, accesses signing certificates). In sandboxed agent environments (e.g., Cursor), request `all` permissions before running build commands.
+
+**Verification vs. builds:** Even with permissions, **do not** run `xcodebuild` (or ad-hoc scheme builds) to validate edits. Use review + `patch-test.sh` + plan-specified non-Xcode checks. Reserve `ci/local-build.sh` for when the **user** asked you to run a build (see **When the user instructs a build**).
 
 ## Common workflows
 
@@ -435,6 +441,9 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v13 (2026-04-03 22:49 CET)
+- **Agent verification vs. compilation:** New safety rule **10** — do not run `xcodebuild` or other Xcode CLI builds to verify ordinary implementation work; do not start `ci/local-build.sh` as a routine post-change compile check. Verification is static review, `scripts/patch-test.sh` when applicable, and tests that do not require a full Xcode build; direct users to `local-build.sh` for compile confirmation. **Agent sandbox notes** updated to reinforce this (builds only when the user requested a build).
 
 ### v12 (2026-03-20)
 - **`mid-stack-update.sh` v1.7 — auto-restore and auto-detect:** Updated "Dirty patch file" bullet — script now auto-restores the committed version of modified target patches (no manual `git checkout --` needed). Updated "Pre-flight" section — script now auto-detects cherry-pick candidates when `--cherry-pick` is omitted, printing all feature branch commits since merge-base with a suggested command. Updated dirty-patch precondition note in "Patch commit lifecycle" to reflect the automation.

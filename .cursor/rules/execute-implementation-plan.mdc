@@ -11,4 +11,6 @@ When the user says **"execute the implementation plan"** (or equivalent, e.g. "r
 2. **Execute** the workflow exactly as specified in that prompt (load context, confirm baseline, execute by step, track progress in the plan's implementation log, final validation, report).
 3. The user will provide the design doc and implementation plan paths (or @-reference the files); optionally other relevant docs.
 
+**Compilation:** Do **not** run `xcodebuild` or start `ci/local-build.sh` as routine verification of Swift changes. Follow **AGENTS.md** safety rule 10: static review, `scripts/patch-test.sh` when patches apply, and plan-specified checks that do not require a full Xcode build; full builds only when the user explicitly asked you to run a build.
+
 Do not substitute your own process. Follow the prompt file's instructions. See `docs/prompts/README.md` for the full workflow (steps 1–5).

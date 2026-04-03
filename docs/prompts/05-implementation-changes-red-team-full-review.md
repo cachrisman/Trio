@@ -1,9 +1,9 @@
 # Implementation Changes Red-Team Review
 
-**Version:** 1.6  
+**Version:** 1.7  
 **Status:** In Use  
 **Created:** 2026-03-16 00:22 CET  
-**Last updated:** 2026-03-20 13:30 CET  
+**Last updated:** 2026-04-03 22:49 CET  
 
 ---
 
@@ -107,6 +107,10 @@ Do not assume that a symbol’s existence means it is used correctly.
 Do not assume that a test’s existence means the case is covered meaningfully.
 Do not assume a logger or metric is sufficient unless it can actually confirm the intended behavior.
 
+## Build / compile verification (agents)
+
+Do **not** run `xcodebuild` or start `ci/local-build.sh` to prove that fixes compile unless the **user** explicitly instructed you to run a build. Red-team validation is **code reasoning**, **tests that do not require a full Xcode build**, and **`scripts/patch-test.sh`** when the patch stack is in scope. For compile confirmation, **recommend `ci/local-build.sh`** (user’s flags) — see **AGENTS.md** safety rule 10.
+
 ## Severity standard
 
 Use the same severity levels as the other workflow prompts (01, 03):
@@ -199,6 +203,7 @@ If the self-review finds a missed issue or an unfixed blocker/major, address it 
 
 | Version | Date       | Change |
 |---------|------------|--------|
+| 1.7     | 2026-04-03 22:49 CET | **Build verification:** New section — agents must not use `xcodebuild` or unsolicited `local-build.sh` during red-team passes; align with **AGENTS.md** v13 rule 10. |
 | 1.6     | 2026-03-20 13:30 CET | Architecture and integration: added cross-patch type resolution check — verify symbols referenced across patch boundaries resolve correctly in the post-all-patches-applied state, not just on the feature branch in isolation. Catches protocol/typealias shadowing of Foundation types. |
 | 1.5     | 2026-03-17 14:15 CET | Default: review + report + apply fixes (fix-and-update); review-only when user explicitly requests. Pass quality: do not restate prior findings for pass count; each pass adds new scrutiny, confirms resolutions, or identifies proof gaps. |
 | 1.4     | 2026-03-17 13:00 CET | Completion rule: Self-review must be completed and passed before concluding the implementation is clean. |

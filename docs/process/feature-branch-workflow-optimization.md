@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v15 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v16 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -456,6 +456,16 @@ ci/local-build.sh --build-current --build-only
 ci/local-build.sh --base-branch dev --reapply-stash --include-untracked --build-only
 ```
 
+### AI agents: implementation work is not verified with `xcodebuild`
+
+When implementing product code (not when the user explicitly asked for a build):
+
+- **Do not** run `xcodebuild`, `xcodebuild test`, or other Xcode CLI compilation to “confirm the project builds.” These commands are a poor fit for agent sessions (timeouts, aborted runs, noisy environment) and are **not** the fork’s intended verification loop for day-to-day edits.
+- **Do not** start `ci/local-build.sh` on your own as a post-change compile check. Full builds are **human-driven** or run only when the user explicitly instructs an agent to start a build.
+- **Do** use static review, `scripts/patch-test.sh` when patches are involved, and any automated checks the implementation plan requires that **do not** require a full Xcode build. For compile confirmation, **tell the user** to run `ci/local-build.sh` with their flags (see commands above).
+
+Authoritative policy: **AGENTS.md** (safety rule 10, **Agent sandbox notes**).
+
 ### AI agent: running builds
 
 When an AI agent is instructed to run a build, it should:
@@ -539,6 +549,9 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v16 (2026-04-03 22:49 CET)
+- **AI agents — no `xcodebuild` for implementation verification:** New subsection under **Local builds** clarifying that agents must not use Xcode CLI or unsolicited `ci/local-build.sh` to verify ordinary code changes; use review + `patch-test.sh` + non–full-build checks, and point users to `local-build.sh` for compile confirmation. Cross-reference **AGENTS.md** v13 rule 10.
 
 ### v15
 - **`mid-stack-update.sh` v1.7 safety guarantees:** Updated "Refuses to run" to "Auto-restores dirty target patches" — modified target patches are now auto-restored to committed version; only untracked targets still error.
