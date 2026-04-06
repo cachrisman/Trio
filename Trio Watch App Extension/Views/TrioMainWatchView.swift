@@ -94,11 +94,17 @@ struct TrioMainWatchView: View {
                 }.tag(0)
 
                 // Page 2: Glucose chart
-                GlucoseChartView(
-                    glucoseValues: state.glucoseValues,
-                    minYAxisValue: state.minYAxisValue,
-                    maxYAxisValue: state.maxYAxisValue
-                )
+                Group {
+                    if currentPage == 1 {
+                        GlucoseChartView(
+                            glucoseValues: state.glucoseValues,
+                            minYAxisValue: state.minYAxisValue,
+                            maxYAxisValue: state.maxYAxisValue
+                        )
+                    } else {
+                        Color.clear
+                    }
+                }
                 .tag(1)
 
                 // Page 3: Complication Debug View (only constructed when visible)
