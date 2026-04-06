@@ -1,27 +1,29 @@
-From 588eab42d39c71d1dd0bb9f1aa4effd771c49405 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 31 Mar 2026 23:44:39 +0200
+From 1ecec14340fbc72b78c45a8a856c6faff71012a9 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <patch-bot@users.noreply.github.com>
+Date: Mon, 6 Apr 2026 13:56:26 +0200
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
- .../ExtensionDelegate.swift                   |   52 +
- Trio Watch App Extension/TrioWatchApp.swift   |   31 +-
- .../Views/ComplicationDebugView.swift         |  511 ++++++
- .../Views/TrioMainWatchView.swift             |   55 +-
- .../WatchState+Requests.swift                 |   19 +
- Trio Watch App Extension/WatchState.swift     | 1393 +++++++++++++++--
+ .../ExtensionDelegate.swift                   |   53 +
+ Trio Watch App Extension/TrioWatchApp.swift   |   44 +-
+ .../Views/ComplicationDebugView.swift         |  511 +++++
+ .../Views/TrioMainWatchView.swift             |   71 +-
+ .../WatchErrorReporter.swift                  |   20 +-
+ Trio Watch App Extension/WatchLogger.swift    |  117 +-
+ .../WatchState+Requests.swift                 |   24 +
+ Trio Watch App Extension/WatchState.swift     | 1832 +++++++++++++++--
  Trio Watch App/Info.plist                     |   19 +-
  Trio Watch App/TrioWatchApp.entitlements      |   14 +
  Trio Watch Complication/Info.plist            |    2 +
  .../TrioWatchComplication.entitlements        |   10 +
- .../TrioWatchComplication.swift               |  442 +++++-
+ .../TrioWatchComplication.swift               |  442 +++-
  .../TrioWatchComplicationPreview.swift        |  124 ++
  Trio Watch Shared/ComplicationLogBuffer.swift |  347 ++++
- .../TrioComplicationDataStore.swift           | 1082 +++++++++++++
+ .../TrioComplicationDataStore.swift           | 1082 ++++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  Trio/Sources/Models/WatchMessageKeys.swift    |    6 +-
- .../WatchManager/AppleWatchManager.swift      |  595 +++++--
- 17 files changed, 4389 insertions(+), 323 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      |  595 +++++-
+ 19 files changed, 4971 insertions(+), 352 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
@@ -33,30 +35,32 @@ Subject: [PATCH] feat: watch-complication-improvements
 
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
 new file mode 100644
-index 000000000..4b53463a9
+index 000000000..0ef9b4431
 --- /dev/null
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,53 @@
 +import WatchKit
 +
 +final class ExtensionDelegate: NSObject, WKApplicationDelegate {
 +    func applicationDidFinishLaunching() {
 +        // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
 +        TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
++        WatchState.shared.scheduleBackgroundLaunchDisarmIfNeeded()
 +        Task {
 +            await WatchLogger.shared.log(
 +                "event=watch_extension_launched source=wk_application_delegate "
 +                    + "method=applicationDidFinishLaunching",
-+                force: true
++                force: false
 +            )
 +            // Emit App Group diagnostics early, before any snapshot reads/writes.
 +            let diagnostics = TrioComplicationDataStore.shared.diagnosticsSummary(context: "applicationDidFinishLaunching")
-+            await WatchLogger.shared.log(diagnostics, force: true)
++            await WatchLogger.shared.log(diagnostics, force: false)
 +        }
 +        WatchState.shared.scheduleBackgroundRefresh()
 +    }
 +
 +    func applicationDidBecomeActive() {
++        WatchState.shared.handleForegroundActiveEntry()
 +        Task {
 +            await WatchLogger.shared.log(
 +                "event=watch_app_became_active source=wk_application_delegate "
@@ -64,18 +68,17 @@ index 000000000..4b53463a9
 +                force: false
 +            )
 +        }
-+        WatchState.shared.noteAppBecameActive()
-+        WatchState.shared.requestWatchStateUpdate()
 +        // Note: forceComplicationUpdate() is now called in finalizePendingData() after fresh data arrives
 +        // This prevents the race condition where stale data was saved before fresh data arrived
 +    }
 +
 +    func applicationWillResignActive() {
++        WatchState.shared.handleForegroundInactiveOrBackground()
 +        Task {
 +            await WatchLogger.shared.log(
 +                "event=watch_app_resigning_active source=wk_application_delegate "
 +                    + "method=applicationWillResignActive",
-+                force: true
++                force: false
 +            )
 +        }
 +    }
@@ -90,10 +93,10 @@ index 000000000..4b53463a9
 +    }
 +}
 diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
-index ccc8911ca..2fc8e65be 100644
+index ccc8911ca..3650c066e 100644
 --- a/Trio Watch App Extension/TrioWatchApp.swift	
 +++ b/Trio Watch App Extension/TrioWatchApp.swift	
-@@ -1,19 +1,35 @@
+@@ -1,31 +1,49 @@
  import SwiftUI
  import UserNotifications
 +import WatchKit
@@ -106,7 +109,7 @@ index ccc8911ca..2fc8e65be 100644
          WatchNotificationHandler.shared.configure()
 +        Task {
 +            let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
-+            await WatchLogger.shared.log("[DEPLOY] event=watch_app_launch platform=watchos build=\(build)", force: true)
++            await WatchLogger.shared.log("[DEPLOY] event=watch_app_launch platform=watchos build=\(build)")
 +        }
      }
  
@@ -116,31 +119,34 @@ index ccc8911ca..2fc8e65be 100644
          }
 -        .onChange(of: scenePhase) { _, newScenePhase in
 -            if newScenePhase == .active {
+-                Task {
+-                    // Check for crashes and mark as active
+-                    await WatchErrorReporter.shared.startup()
+-                    await WatchErrorReporter.shared.markBecameActive()
+-                    // Flush persisted logs (will query ACKs first, then resend pending payloads)
+-                    await WatchLogger.shared.flushPersistedLogs()
+-                }
+-            } else if newScenePhase == .background || newScenePhase == .inactive {
+-                Task {
+-                    await WatchErrorReporter.shared.markEnteredBackgroundOrInactive()
+-                }
 +        .onChange(of: scenePhase) { oldPhase, newPhase in
 +            let oldToken = watchScenePhaseToken(oldPhase)
 +            let newToken = watchScenePhaseToken(newPhase)
++
++            if newPhase == .active {
++                WatchState.shared.handleForegroundActiveEntry()
++            } else if newPhase == .background || newPhase == .inactive {
++                WatchState.shared.handleForegroundInactiveOrBackground()
++            }
++
 +            let forceFlush = newPhase != .active
 +            Task {
 +                await WatchLogger.shared.log(
 +                    "event=watch_scene_phase_transition old=\(oldToken) new=\(newToken) source=swiftui_environment",
 +                    force: forceFlush
 +                )
-+            }
-+
-+            if newPhase == .active {
-                 Task {
-                     // Check for crashes and mark as active
-                     await WatchErrorReporter.shared.startup()
-@@ -21,7 +37,7 @@ import UserNotifications
-                     // Flush persisted logs (will query ACKs first, then resend pending payloads)
-                     await WatchLogger.shared.flushPersistedLogs()
-                 }
--            } else if newScenePhase == .background || newScenePhase == .inactive {
-+            } else if newPhase == .background || newPhase == .inactive {
-                 Task {
-                     await WatchErrorReporter.shared.markEnteredBackgroundOrInactive()
-                 }
-@@ -29,3 +45,12 @@ import UserNotifications
+             }
          }
      }
  }
@@ -671,7 +677,7 @@ index 000000000..ff9c6637f
 +    }
 +}
 diff --git a/Trio Watch App Extension/Views/TrioMainWatchView.swift b/Trio Watch App Extension/Views/TrioMainWatchView.swift
-index 9e381bcee..fdf522965 100644
+index 9e381bcee..6d34b57d5 100644
 --- a/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 +++ b/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 @@ -3,7 +3,7 @@ import SwiftUI
@@ -707,9 +713,26 @@ index 9e381bcee..fdf522965 100644
  
                      if state.showSyncingAnimation {
                          Image(systemName: "iphone.radiowaves.left.and.right")
-@@ -94,16 +100,53 @@ struct TrioMainWatchView: View {
-                     maxYAxisValue: state.maxYAxisValue
-                 )
+@@ -88,22 +94,65 @@ struct TrioMainWatchView: View {
+                 }.tag(0)
+ 
+                 // Page 2: Glucose chart
+-                GlucoseChartView(
+-                    glucoseValues: state.glucoseValues,
+-                    minYAxisValue: state.minYAxisValue,
+-                    maxYAxisValue: state.maxYAxisValue
+-                )
++                Group {
++                    if currentPage == 1 {
++                        GlucoseChartView(
++                            glucoseValues: state.glucoseValues,
++                            minYAxisValue: state.minYAxisValue,
++                            maxYAxisValue: state.maxYAxisValue
++                        )
++                    } else {
++                        Color.clear
++                    }
++                }
                  .tag(1)
 +
 +                // Page 3: Complication Debug View (only constructed when visible)
@@ -764,31 +787,279 @@ index 9e381bcee..fdf522965 100644
              .onChange(of: state.trend) { _, newTrend in
                  withAnimation {
                      updateRotation(for: newTrend)
+diff --git a/Trio Watch App Extension/WatchErrorReporter.swift b/Trio Watch App Extension/WatchErrorReporter.swift
+index a5bcabd57..6de45a319 100644
+--- a/Trio Watch App Extension/WatchErrorReporter.swift	
++++ b/Trio Watch App Extension/WatchErrorReporter.swift	
+@@ -7,7 +7,7 @@ actor WatchErrorReporter {
+     static let shared = WatchErrorReporter()
+ 
+     private let session = WCSession.default
+-    private let watchLastRunWasForegroundKey = "watchLastRunWasForeground"
++    private static let watchLastRunWasForegroundKey = "watchLastRunWasForeground"
+     private let crashContextKey = "watchAppCrashContext"
+     private let firstLaunchKey = "watchAppHasLaunchedBefore"
+     private let pendingPayloadsKey = "watchPendingPayloads"
+@@ -45,18 +45,18 @@ actor WatchErrorReporter {
+         // First launch
+         if !hasLaunchedBefore {
+             userDefaults.set(true, forKey: firstLaunchKey)
+-            userDefaults.set(false, forKey: watchLastRunWasForegroundKey)
++            userDefaults.set(false, forKey: Self.watchLastRunWasForegroundKey)
+             return
+         }
+ 
+         // Subsequent launches - check if previous run was foreground
+-        let lastRunWasForeground = userDefaults.bool(forKey: watchLastRunWasForegroundKey)
++        let lastRunWasForeground = userDefaults.bool(forKey: Self.watchLastRunWasForegroundKey)
+ 
+         if lastRunWasForeground {
+             // Previous run was foreground and didn't transition to background - likely crashed
+             await reportPotentialCrash()
+             // Clear the marker to prevent repeated reporting in the same session
+-            userDefaults.set(false, forKey: watchLastRunWasForegroundKey)
++            userDefaults.set(false, forKey: Self.watchLastRunWasForegroundKey)
+         }
+     }
+ 
+@@ -167,13 +167,21 @@ actor WatchErrorReporter {
+     }
+ 
+     /// Marks the app as having become active (foreground).
++    static func markBecameActiveImmediately() {
++        UserDefaults.standard.set(true, forKey: Self.watchLastRunWasForegroundKey)
++    }
++
+     func markBecameActive() async {
+-        UserDefaults.standard.set(true, forKey: watchLastRunWasForegroundKey)
++        Self.markBecameActiveImmediately()
+     }
+ 
+     /// Marks the app as having entered background or inactive state.
++    static func markEnteredBackgroundOrInactiveImmediately() {
++        UserDefaults.standard.set(false, forKey: Self.watchLastRunWasForegroundKey)
++    }
++
+     func markEnteredBackgroundOrInactive() async {
+-        UserDefaults.standard.set(false, forKey: watchLastRunWasForegroundKey)
++        Self.markEnteredBackgroundOrInactiveImmediately()
+     }
+ 
+     /// Saves context that should be included if the app crashes.
+diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
+index 0f81f3475..d97e07b5f 100644
+--- a/Trio Watch App Extension/WatchLogger.swift	
++++ b/Trio Watch App Extension/WatchLogger.swift	
+@@ -1,6 +1,46 @@
+ import Foundation
++import WatchKit
+ import WatchConnectivity
+ 
++/// Shared startup transport gate for watch log delivery.
++/// Synchronous access is required so foreground lifecycle code can arm or disarm
++/// suppression before any follow-on log call has a chance to flush.
++enum WatchStartupTransportGate {
++    private static let lock = NSLock()
++    private static var isSuppressed = true
++    private static var activationSequence: Int?
++
++    static func arm(activationSequence: Int?) {
++        lock.lock()
++        defer { lock.unlock() }
++        isSuppressed = true
++        self.activationSequence = activationSequence
++    }
++
++    @discardableResult
++    static func disarm(activationSequence: Int? = nil) -> Bool {
++        lock.lock()
++        defer { lock.unlock() }
++
++        if let activationSequence,
++           let currentActivationSequence = self.activationSequence,
++           currentActivationSequence != activationSequence
++        {
++            return false
++        }
++
++        isSuppressed = false
++        self.activationSequence = nil
++        return true
++    }
++
++    static func snapshot() -> (isSuppressed: Bool, activationSequence: Int?) {
++        lock.lock()
++        defer { lock.unlock() }
++        return (isSuppressed, activationSequence)
++    }
++}
++
+ // MARK: - WCSession send completion (single resume for reply vs error)
+ 
+ /// Ensures `CheckedContinuation.resume` runs at most once when either `replyHandler` or `errorHandler` fires.
+@@ -177,6 +217,65 @@ actor WatchLogger {
+         }
+     }
+ 
++    // Battery context: enable monitoring once per process; all reads on MainActor.
++    private static var hasEnabledBatteryMonitoring = false
++
++    @MainActor
++    private static func batteryContextOnMain() -> String {
++        let device = WKInterfaceDevice.current()
++        if !hasEnabledBatteryMonitoring {
++            hasEnabledBatteryMonitoring = true
++            device.isBatteryMonitoringEnabled = true
++        }
++        let levelText: String
++        if device.batteryLevel >= 0 {
++            levelText = String(Int((device.batteryLevel * 100).rounded()))
++        } else {
++            levelText = "unknown"
++        }
++        let stateText: String
++        switch device.batteryState {
++        case .unknown:
++            stateText = "unknown"
++        case .unplugged:
++            stateText = "unplugged"
++        case .charging:
++            stateText = "charging"
++        case .full:
++            stateText = "full"
++        @unknown default:
++            stateText = "unknown_default"
++        }
++        return "battery_level_percent=\(levelText) battery_state=\(stateText)"
++    }
++
++    private var lastBatteryContext = "battery_level_percent=unknown battery_state=unknown"
++    private var lastBatteryRefreshEpoch: TimeInterval = 0
++    private var batteryRefreshTask: Task<String, Never>?
++
++    private func batteryContextCached(now: TimeInterval = Date().timeIntervalSince1970) async -> String {
++        if now - lastBatteryRefreshEpoch < 60 {
++            return lastBatteryContext
++        }
++        if let existing = batteryRefreshTask {
++            let result = await existing.value
++            let currentNow = Date().timeIntervalSince1970
++            if currentNow - lastBatteryRefreshEpoch >= 60 {
++                lastBatteryContext = result
++                lastBatteryRefreshEpoch = currentNow
++            }
++            return result
++        }
++        let task = Task { await MainActor.run { Self.batteryContextOnMain() } }
++        batteryRefreshTask = task
++        defer { batteryRefreshTask = nil }
++
++        let result = await task.value
++        lastBatteryContext = result
++        lastBatteryRefreshEpoch = Date().timeIntervalSince1970
++        return result
++    }
++
+     // MARK: - Timer
+ 
+     private func startFlushTimer() async {
+@@ -199,7 +298,8 @@ actor WatchLogger {
+     ) async {
+         let shortFile = (file as NSString).lastPathComponent
+         let timestamp = Self.dateFormatter.string(from: Date())
+-        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message)"
++        let batteryContext = await batteryContextCached()
++        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message) \(batteryContext)"
+ 
+         logs.append(entry)
+         if logs.count > maxEntries {
+@@ -246,12 +346,14 @@ actor WatchLogger {
+             || logs.count >= flushSizeThreshold
+ 
+         if shouldFlush {
++            guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
+             await flushToPhone()
+         }
+     }
+ 
+     private func flushToPhone() async {
+         guard !logs.isEmpty else { return }
++        guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
+ 
+         updateCachedCountsIfStale()
+         await logFileInventory()
+@@ -448,19 +550,23 @@ actor WatchLogger {
+ 
+     // MARK: - Persisted log flush + retention
+ 
+-    func flushPersistedLogs() async {
++    func flushPersistedLogs(startupTransportSuppressedOverride: Bool? = nil) async {
++        let startupTransportSuppressed = startupTransportSuppressedOverride
++            ?? WatchStartupTransportGate.snapshot().isSuppressed
+         let lastKnownBuild = UserDefaults.standard.string(
+             forKey: lastKnownBuildKey
+         )
+         if lastKnownBuild != build {
+-            UserDefaults.standard.set(build, forKey: lastKnownBuildKey)
+             await log(
+                 "[UPGRADE] build changed"
+                     + " from \(lastKnownBuild ?? "nil") to \(build)",
+-                force: true
++                force: !startupTransportSuppressed
+             )
++            UserDefaults.standard.set(build, forKey: lastKnownBuildKey)
+         }
+ 
++        guard !startupTransportSuppressed else { return }
++
+         updateCachedCountsIfStale()
+         await logFileInventory()
+ 
+@@ -481,7 +587,7 @@ actor WatchLogger {
+                 && file.lastPathComponent != "watch_log_daily.txt"
+         }
+ 
+-        _ = await applyWatchLogRetention(
++        let validFiles = await applyWatchLogRetention(
+             perPayloadFiles: perPayloadFiles
+         )
+ 
+@@ -644,6 +750,7 @@ actor WatchLogger {
+     // MARK: - Resend pending payloads
+ 
+     func resendPendingPayloads() async {
++        guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
+         guard session.isReachable else { return }
+         guard prepareSessionForImmediateSend() else {
+             await log(
 diff --git a/Trio Watch App Extension/WatchState+Requests.swift b/Trio Watch App Extension/WatchState+Requests.swift
-index d47a971c9..f53d1ce43 100644
+index d47a971c9..e6e00e3da 100644
 --- a/Trio Watch App Extension/WatchState+Requests.swift	
 +++ b/Trio Watch App Extension/WatchState+Requests.swift	
-@@ -234,6 +234,7 @@ extension WatchState {
+@@ -234,6 +234,8 @@ extension WatchState {
              Task {
                  await WatchLogger.shared.log("⌚️ No session available for state update")
              }
++            clearStartupFirstRefreshInFlightOnMain()
 +            loadFallbackDataFromComplication()
              return
          }
  
-@@ -242,6 +243,7 @@ extension WatchState {
+@@ -242,6 +244,8 @@ extension WatchState {
                  await WatchLogger.shared.log("⌚️ Session not activated. Activating...")
              }
              session.activate()
++            clearStartupFirstRefreshInFlightOnMain()
 +            loadFallbackDataFromComplication()
              return
          }
  
-@@ -258,11 +260,28 @@ extension WatchState {
+@@ -258,11 +262,31 @@ extension WatchState {
                      await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
                      await WatchLogger.shared.flushPersistedLogs()
                  }
 +                DispatchQueue.main.async {
++                    self.clearStartupFirstRefreshInFlightOnMain()
 +                    self.loadFallbackDataFromComplication()
 +                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
 +                        self.requestWatchStateUpdate()
@@ -801,6 +1072,7 @@ index d47a971c9..f53d1ce43 100644
 +                Task {
 +                    await WatchLogger.shared.log("WatchState update timeout - using fallback data")
 +                }
++                self?.clearStartupFirstRefreshInFlightOnMain()
 +                self?.loadFallbackDataFromComplication()
              }
 +            syncTimeoutWorkItem = timeoutWorkItem
@@ -809,12 +1081,13 @@ index d47a971c9..f53d1ce43 100644
              Task {
                  await WatchLogger.shared.log("⌚️ Phone not reachable for WatchState update")
              }
++            clearStartupFirstRefreshInFlightOnMain()
 +            loadFallbackDataFromComplication()
          }
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f4fb33fde..9113534f1 100644
+index f4fb33fde..42647a48b 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,20 +1,48 @@
@@ -873,7 +1146,7 @@ index f4fb33fde..9113534f1 100644
      var currentGlucose: String = "--"
      var currentGlucoseColorString: String = "#ffffff"
      var trend: String? = ""
-@@ -28,59 +56,117 @@ import WatchConnectivity
+@@ -28,59 +56,390 @@ import WatchConnectivity
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
@@ -956,10 +1229,30 @@ index f4fb33fde..9113534f1 100644
 +    private let maxTransferRetries = 3
 +    private var retryWorkItem: DispatchWorkItem?
 +
++    // MARK: - Startup coordination
++
++    private let startupWatchStateDelaySeconds: TimeInterval = 2.0
++    private let startupHealthKitDelaySeconds: TimeInterval = 10.0
++    private let startupFlushDelaySeconds: TimeInterval = 10.0
++
++    private var startupActivationSequence = 0
++    private var startupCurrentActivationSequence: Int?
++    private var startupIsForegroundActive = false
++    private var startupBackgroundLaunchDisarmWorkItem: DispatchWorkItem?
++    private var startupDeferredWatchStateWorkItem: DispatchWorkItem?
++    private var startupDeferredHealthKitWorkItem: DispatchWorkItem?
++    private var startupDeferredPersistedLogFlushWorkItem: DispatchWorkItem?
++    private var startupFirstRefreshFiredActivationSequence: Int?
++    private var startupFirstRefreshInFlight = false
++    private var hasInitializedHealthKitSetupInProcess = false
++
 +    // MARK: - HealthKit (R6)
 +
 +    private var healthKitStore: HKHealthStore?
 +    private var glucoseObserverQuery: HKObserverQuery?
++
++    /// Path B4 — max samples for nil-anchor bootstrap (`HKSampleQuery`, descending). **64** ≈ enough for latest + delta/trend context within a dense CGM window while capping peak batch size vs unbounded anchored pulls.
++    private static let hkBootstrapSampleLimit = 64
 +
 +    private var backgroundRefreshCount = 0
 +    private var lastBackgroundRefreshDate: Date?
@@ -1000,14 +1293,267 @@ index f4fb33fde..9113534f1 100644
 +        activationTimestamp = Date()
 +        forcedSinceActivation = false
 +        hasRequestedInitialUpdate = false
-+        Task { await WatchLogger.shared.log("Cold start window active for 60s") }
++        startupFirstRefreshInFlight = false
++    }
++
++    func scheduleBackgroundLaunchDisarmIfNeeded() {
++        assert(Thread.isMainThread, "scheduleBackgroundLaunchDisarmIfNeeded must be called on main thread")
++        startupBackgroundLaunchDisarmWorkItem?.cancel()
++
++        let workItem = DispatchWorkItem { [weak self] in
++            guard let self else { return }
++            self.startupBackgroundLaunchDisarmWorkItem = nil
++            guard !self.startupIsForegroundActive else { return }
++
++            WatchStartupTransportGate.disarm()
++            Task {
++                await WatchLogger.shared.log(
++                    "event=watch_startup_background_launch_disarm"
++                        + " reason=no_foreground_entry"
++                )
++            }
++        }
++
++        startupBackgroundLaunchDisarmWorkItem = workItem
++        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
++    }
++
++    func handleForegroundActiveEntry() {
++        assert(Thread.isMainThread, "handleForegroundActiveEntry must be called on main thread")
++        guard !startupIsForegroundActive else { return }
++
++        startupIsForegroundActive = true
++        startupActivationSequence += 1
++        let activationSequence = startupActivationSequence
++        startupCurrentActivationSequence = activationSequence
++        startupFirstRefreshFiredActivationSequence = nil
++
++        startupBackgroundLaunchDisarmWorkItem?.cancel()
++        startupBackgroundLaunchDisarmWorkItem = nil
++        WatchStartupTransportGate.arm(activationSequence: activationSequence)
++        noteAppBecameActive()
++        WatchErrorReporter.markBecameActiveImmediately()
++        scheduleStartupSequenceOnMain(activationSequence: activationSequence)
++
++        Task {
++            await WatchLogger.shared.log(
++                "event=watch_startup_grace_scheduled"
++                    + " activation_seq=\(activationSequence)"
++                    + " watch_state_delay_s=\(Int(startupWatchStateDelaySeconds))"
++                    + " healthkit_delay_s=\(Int(startupHealthKitDelaySeconds))"
++                    + " flush_delay_s=\(Int(startupFlushDelaySeconds))"
++            )
++            await WatchErrorReporter.shared.startup()
++        }
++    }
++
++    func handleForegroundInactiveOrBackground() {
++        assert(Thread.isMainThread, "handleForegroundInactiveOrBackground must be called on main thread")
++        guard startupIsForegroundActive else { return }
++
++        startupIsForegroundActive = false
++        startupFirstRefreshInFlight = false
++        let activationSequence = startupCurrentActivationSequence
++        let pendingTasks = startupPendingTasksFieldOnMain()
++        cancelStartupSequenceOnMain()
++        startupCurrentActivationSequence = nil
++        WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
++
++        if let activationSequence {
++            WatchStartupTransportGate.disarm(activationSequence: activationSequence)
++            if pendingTasks != "none" {
++                Task {
++                    await WatchLogger.shared.log(
++                        "event=watch_startup_grace_canceled"
++                            + " activation_seq=\(activationSequence)"
++                            + " reason=left_active_before_fire"
++                            + " pending=\(pendingTasks)"
++                    )
++                }
++            }
++        }
++    }
++
++    private func scheduleStartupSequenceOnMain(activationSequence: Int) {
++        assert(Thread.isMainThread, "scheduleStartupSequenceOnMain must be called on main thread")
++        cancelStartupSequenceOnMain()
++
++        let watchStateWorkItem = DispatchWorkItem { [weak self] in
++            self?.fireDeferredStartupWatchStateRefreshOnMain(
++                activationSequence: activationSequence
++            )
++        }
++        startupDeferredWatchStateWorkItem = watchStateWorkItem
++        DispatchQueue.main.asyncAfter(
++            deadline: .now() + startupWatchStateDelaySeconds,
++            execute: watchStateWorkItem
++        )
++
++        let healthKitWorkItem = DispatchWorkItem { [weak self] in
++            self?.fireDeferredStartupHealthKitSetupOnMain(
++                activationSequence: activationSequence
++            )
++        }
++        startupDeferredHealthKitWorkItem = healthKitWorkItem
++        DispatchQueue.main.asyncAfter(
++            deadline: .now() + startupHealthKitDelaySeconds,
++            execute: healthKitWorkItem
++        )
++
++        let flushWorkItem = DispatchWorkItem { [weak self] in
++            self?.fireDeferredStartupPersistedLogFlushOnMain(
++                activationSequence: activationSequence
++            )
++        }
++        startupDeferredPersistedLogFlushWorkItem = flushWorkItem
++        DispatchQueue.main.asyncAfter(
++            deadline: .now() + startupFlushDelaySeconds,
++            execute: flushWorkItem
++        )
++    }
++
++    private func cancelStartupSequenceOnMain() {
++        assert(Thread.isMainThread, "cancelStartupSequenceOnMain must be called on main thread")
++        startupDeferredWatchStateWorkItem?.cancel()
++        startupDeferredWatchStateWorkItem = nil
++        startupDeferredHealthKitWorkItem?.cancel()
++        startupDeferredHealthKitWorkItem = nil
++        startupDeferredPersistedLogFlushWorkItem?.cancel()
++        startupDeferredPersistedLogFlushWorkItem = nil
++    }
++
++    private func startupPendingTasksFieldOnMain() -> String {
++        assert(Thread.isMainThread, "startupPendingTasksFieldOnMain must be called on main thread")
++
++        var pendingTasks: [String] = []
++        if startupDeferredWatchStateWorkItem != nil {
++            pendingTasks.append("watch_state")
++        }
++        if startupDeferredHealthKitWorkItem != nil {
++            pendingTasks.append("healthkit")
++        }
++        if startupDeferredPersistedLogFlushWorkItem != nil {
++            pendingTasks.append("flush")
++        }
++
++        return pendingTasks.isEmpty ? "none" : pendingTasks.joined(separator: "|")
++    }
++
++    private func fireDeferredStartupWatchStateRefreshOnMain(activationSequence: Int) {
++        assert(Thread.isMainThread, "fireDeferredStartupWatchStateRefreshOnMain must be called on main thread")
++        guard startupIsForegroundActive,
++              startupCurrentActivationSequence == activationSequence
++        else { return }
++
++        startupDeferredWatchStateWorkItem = nil
++        startupFirstRefreshFiredActivationSequence = activationSequence
++        hasRequestedInitialUpdate = true
++        startupFirstRefreshInFlight = true
++        showSyncingAnimation = true
++
++        Task {
++            await WatchLogger.shared.log(
++                "event=watch_startup_deferred_watch_state_refresh_fired"
++                    + " activation_seq=\(activationSequence)"
++            )
++        }
++
++        requestWatchStateUpdate()
++    }
++
++    private func fireDeferredStartupHealthKitSetupOnMain(activationSequence: Int) {
++        assert(Thread.isMainThread, "fireDeferredStartupHealthKitSetupOnMain must be called on main thread")
++        guard startupIsForegroundActive,
++              startupCurrentActivationSequence == activationSequence
++        else { return }
++
++        startupDeferredHealthKitWorkItem = nil
++        let alreadyInitialized = hasInitializedHealthKitSetupInProcess
++
++        Task {
++            await WatchLogger.shared.log(
++                "event=watch_startup_deferred_healthkit_setup_fired"
++                    + " activation_seq=\(activationSequence)"
++                    + " already_initialized=\(alreadyInitialized)"
++            )
++        }
++
++        guard !alreadyInitialized else { return }
++
++        hasInitializedHealthKitSetupInProcess = true
++        setupHealthKitBackgroundDelivery()
++    }
++
++    private func fireDeferredStartupPersistedLogFlushOnMain(activationSequence: Int) {
++        assert(Thread.isMainThread, "fireDeferredStartupPersistedLogFlushOnMain must be called on main thread")
++        guard startupIsForegroundActive,
++              startupCurrentActivationSequence == activationSequence
++        else { return }
++
++        startupDeferredPersistedLogFlushWorkItem = nil
++
++        Task {
++            await WatchLogger.shared.log(
++                "event=watch_startup_deferred_persisted_log_flush_fired"
++                    + " activation_seq=\(activationSequence)"
++            )
++            let didDisarm = WatchStartupTransportGate.disarm(
++                activationSequence: activationSequence
++            )
++            await WatchLogger.shared.flushPersistedLogs(
++                startupTransportSuppressedOverride: didDisarm ? false : nil
++            )
++        }
++    }
++
++    private func shouldSuppressStartupSignalOnMain() -> Bool {
++        assert(Thread.isMainThread, "shouldSuppressStartupSignalOnMain must be called on main thread")
++
++        guard activationTimestamp != nil else { return true }
++
++        guard startupIsForegroundActive,
++              let activationSequence = startupCurrentActivationSequence
++        else { return false }
++
++        return startupFirstRefreshFiredActivationSequence != activationSequence
++    }
++
++    private func logStartupSignalSuppressedOnMain() {
++        assert(Thread.isMainThread, "logStartupSignalSuppressedOnMain must be called on main thread")
++        guard startupIsForegroundActive,
++              let activationSequence = startupCurrentActivationSequence
++        else { return }
++
++        Task {
++            await WatchLogger.shared.log(
++                "event=watch_startup_transport_suppressed"
++                    + " activation_seq=\(activationSequence)"
++                    + " path=startup_signal"
++                    + " reason=startup_grace"
++            )
++        }
++    }
++
++    private func requestWatchStateUpdateRespectingStartupGraceOnMain() {
++        assert(Thread.isMainThread, "requestWatchStateUpdateRespectingStartupGraceOnMain must be called on main thread")
++        if shouldSuppressStartupSignalOnMain() {
++            logStartupSignalSuppressedOnMain()
++            return
++        }
++
++        requestWatchStateUpdate()
++    }
++
++    func clearStartupFirstRefreshInFlightOnMain() {
++        assert(Thread.isMainThread, "clearStartupFirstRefreshInFlightOnMain must be called on main thread")
++        startupFirstRefreshInFlight = false
      }
  
 -    /// Configures the WatchConnectivity session if supported on the device
      private func setupSession() {
          if WCSession.isSupported() {
              let session = WCSession.default
-@@ -88,16 +174,228 @@ import WatchConnectivity
+@@ -88,16 +447,372 @@ import WatchConnectivity
              session.activate()
              self.session = session
              Task {
@@ -1018,12 +1564,11 @@ index f4fb33fde..9113534f1 100644
              Task {
 -                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
 +                await WatchLogger.shared.log("WCSession is not supported on this device")
-+            }
-+        }
-+        // R6: independent of WatchConnectivity — HK background delivery is a separate wake path.
-+        setupHealthKitBackgroundDelivery()
-+    }
-+
+             }
+         }
+     }
+ 
+-    // MARK: – Handle Acknowledgement Messages FROM Phone
 +    // MARK: - HealthKit background delivery (R6)
 +
 +    private func setupHealthKitBackgroundDelivery() {
@@ -1038,7 +1583,7 @@ index f4fb33fde..9113534f1 100644
 +                    await WatchLogger.shared.log("❌ hk_authorization_failed granted=\(granted) error=\(error?.localizedDescription ?? "nil")")
 +                }
 +                return
-             }
++            }
 +
 +            store.enableBackgroundDelivery(for: bgType, frequency: .immediate) { success, error in
 +                if let error = error {
@@ -1057,10 +1602,9 @@ index f4fb33fde..9113534f1 100644
 +            }
 +
 +            self.setupGlucoseObserverQuery(store: store, sampleType: bgType)
-         }
-     }
- 
--    // MARK: – Handle Acknowledgement Messages FROM Phone
++        }
++    }
++
 +    private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuantityType) {
 +        healthKitStore = store
 +        let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { [weak self] _, completionHandler, error in
@@ -1080,6 +1624,162 @@ index f4fb33fde..9113534f1 100644
 +        }
 +        store.execute(query)
 +        glucoseObserverQuery = query
++    }
++
++    /// Path B4 — shared post-fetch processing for **both** bootstrap (`HKSampleQuery`) and incremental (`HKAnchoredObjectQuery`) paths. Persists `HKQueryAnchor` when `newAnchor` is non-nil (incremental path). Bootstrap anchor persistence is handled separately via `establishHealthKitGlucoseTimelineAnchorAfterBootstrap` after a successful sample query.
++    private func finishHKGlucoseObserverFetch(
++        fireId: UUID,
++        anchorWasNil: Bool,
++        samples: [HKQuantitySample]?,
++        newAnchor: HKQueryAnchor?,
++        error: Error?,
++        mgDlUnit: HKUnit,
++        completionHandler: @escaping () -> Void
++    ) {
++        let dataStore = TrioComplicationDataStore.shared
++        if let err = error {
++            Task {
++                await WatchLogger.shared.log("❌ hk_observer_query_error fire_id=\(fireId) error=\(err.localizedDescription)")
++            }
++            completionHandler()
++            return
++        }
++
++        let added = samples ?? []
++        // Stable batch events: `hk_sample_query_batch` (bootstrap `HKSampleQuery`) vs `hk_anchored_query_batch` (incremental `HKAnchoredObjectQuery`) — split so Better Stack filters are not misleading (Claude review).
++        let batchEventName = anchorWasNil ? "hk_sample_query_batch" : "hk_anchored_query_batch"
++        Task {
++            await WatchLogger.shared
++                .log("event=\(batchEventName) fire_id=\(fireId) anchor_was_nil=\(anchorWasNil) samples_count=\(added.count)")
++        }
++
++        if let newAnchor,
++           let anchorData = try? NSKeyedArchiver.archivedData(withRootObject: newAnchor, requiringSecureCoding: true) {
++            dataStore.saveHKGlucoseAnchor(anchorData)
++        }
++
++        let sortedByDate = added.sorted { $0.startDate > $1.startDate }
++        if sortedByDate.isEmpty {
++            Task {
++                await WatchLogger.shared.log("⚠️ hk_observer_no_new_samples fire_id=\(fireId)")
++            }
++            completionHandler()
++            return
++        }
++
++        let latest = sortedByDate[0]
++        let latestEpoch = latest.startDate.timeIntervalSince1970
++        let latestMgDl = latest.quantity.doubleValue(for: mgDlUnit)
++
++        if latestEpoch == dataStore.hkLastReceivedGlucoseEpoch() {
++            Task {
++                await WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
++            }
++            completionHandler()
++            return
++        }
++
++        var previousMgDl: Double?
++        var previousEpoch: TimeInterval?
++        if sortedByDate.count >= 2 {
++            let prev = sortedByDate[1]
++            previousMgDl = prev.quantity.doubleValue(for: mgDlUnit)
++            previousEpoch = prev.startDate.timeIntervalSince1970
++        } else {
++            let storedEpoch = dataStore.hkLastReceivedGlucoseEpoch()
++            if storedEpoch > 0 {
++                previousEpoch = storedEpoch
++                previousMgDl = dataStore.hkLastReceivedGlucoseValueMgDl()
++            }
++        }
++
++        let timeDelta = previousEpoch.map { latestEpoch - $0 } ?? 0
++        let plausibilityOK = timeDelta > 0 && timeDelta < 15 * 60
++
++        var deltaString = "--"
++        var trendString = ""
++        var trendDerived = false
++
++        if let prev = previousMgDl, plausibilityOK {
++            let rawDeltaMgDl = latestMgDl - prev
++            let deltaInt = Int(rawDeltaMgDl.rounded())
++            deltaString = String(format: "%+d", deltaInt)
++            trendString = Self.hkTrendString(fromDeltaMgDl: deltaInt)
++            trendDerived = true
++        }
++
++        dataStore.setHKLastReceivedGlucoseEpoch(latestEpoch)
++        dataStore.setHKLastReceivedGlucoseValueMgDl(latestMgDl)
++
++        let readingDate = latest.startDate
++        let glucoseString = String(Int(latestMgDl.rounded()))
++        let syncLag = Int(Date().timeIntervalSince(readingDate))
++
++        // Stable tokens for validation / Better Stack: batch lines use `hk_sample_query_batch` | `hk_anchored_query_batch` above; `query_type` uses `sampleQuery_bootstrap` | `anchoredQuery`. Do not rename casually.
++        let queryLabel = anchorWasNil ? "sampleQuery_bootstrap" : "anchoredQuery"
++        Task {
++            await WatchLogger.shared.log(
++                "🏥 hk_observer_fired fire_id=\(fireId) reading_epoch=\(Int(readingDate.timeIntervalSince1970)) sync_lag=\(syncLag) glucose=\(glucoseString) delta=\(deltaString) trend=\(trendString) trend_derived=\(trendDerived) samples_in_batch=\(sortedByDate.count) query_type=\(queryLabel)"
++            )
++        }
++
++        let snapshot = TrioComplicationSnapshot(
++            glucose: glucoseString,
++            trend: trendString,
++            delta: deltaString,
++            readingDate: readingDate,
++            date: Date(),
++            glucoseColor: nil
++        )
++
++        DispatchQueue.main.async {
++            TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
++            completionHandler()
++        }
++    }
++
++    /// Path B4 — After a successful bounded `HKSampleQuery` bootstrap, persist an `HKQueryAnchor` at the current timeline (“samples from `Date()` onward” + `.strictStartDate` is typically an **empty** forward window) so the next observer cycle uses incremental `HKAnchoredObjectQuery` instead of repeating bootstrap. Calls `completion` when the establishment query finishes (success or failure) so the HK observer callback is not released before the anchor write attempt.
++    ///
++    /// **Memory safety:** Uses `HKObjectQueryNoLimit`, but boundedness relies on the **predicate** yielding an effectively empty forward timeline—not on the limit parameter (ChatGPT review P2).
++    private func establishHealthKitGlucoseTimelineAnchorAfterBootstrap(
++        store: HKHealthStore,
++        bgType: HKQuantityType,
++        fireId: UUID,
++        completion: @escaping () -> Void
++    ) {
++        let now = Date()
++        let predicate = HKQuery.predicateForSamples(withStart: now, end: nil, options: .strictStartDate)
++        let anchorQuery = HKAnchoredObjectQuery(
++            type: bgType,
++            predicate: predicate,
++            anchor: nil,
++            limit: HKObjectQueryNoLimit,
++            resultsHandler: { _, samples, _, newAnchor, error in
++                defer { completion() }
++                if let err = error {
++                    Task {
++                        await WatchLogger.shared
++                            .log("⚠️ hk_bootstrap_anchor_establish_failed fire_id=\(fireId) error=\(err.localizedDescription)")
++                    }
++                    return
++                }
++                guard let newAnchor,
++                      let anchorData = try? NSKeyedArchiver.archivedData(withRootObject: newAnchor, requiringSecureCoding: true)
++                else {
++                    Task {
++                        await WatchLogger.shared.log("⚠️ hk_bootstrap_anchor_establish_no_anchor fire_id=\(fireId)")
++                    }
++                    return
++                }
++                TrioComplicationDataStore.shared.saveHKGlucoseAnchor(anchorData)
++                let n = (samples as? [HKQuantitySample])?.count ?? 0
++                Task {
++                    await WatchLogger.shared
++                        .log("✅ hk_bootstrap_anchor_established fire_id=\(fireId) timeline_predicate_samples_count=\(n)")
++                }
++            }
++        )
++        store.execute(anchorQuery)
 +    }
 +
 +    private func fetchLatestGlucoseFromHealthKit(fireId: UUID, completionHandler: @escaping () -> Void) {
@@ -1111,112 +1811,78 @@ index f4fb33fde..9113534f1 100644
 +            }
 +        }
 +
++        let anchorWasNil = (anchor == nil)
++
 +        // R6.1 — Nil anchor: cap to 24h. With anchor: no date cap. SyncIdentifier filter deferred (see plan §Source Predicate).
-+        let predicate: NSPredicate?
-+        if anchor == nil {
-+            let twentyFourHoursAgo = Date().addingTimeInterval(-24 * 3600)
-+            predicate = HKQuery.predicateForSamples(withStart: twentyFourHoursAgo, end: nil, options: .strictStartDate)
-+        } else {
-+            predicate = nil
++        let twentyFourHoursAgo = Date().addingTimeInterval(-24 * 3600)
++        let bootstrapPredicate = HKQuery.predicateForSamples(withStart: twentyFourHoursAgo, end: nil, options: .strictStartDate)
++
++        // Path B4 — No durable anchor: use descending `HKSampleQuery` so a positive limit still returns the *newest* samples (anchored queries enumerate oldest-first).
++        if anchorWasNil {
++            let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
++            let sampleQuery = HKSampleQuery(
++                sampleType: bgType,
++                predicate: bootstrapPredicate,
++                limit: Self.hkBootstrapSampleLimit,
++                sortDescriptors: [sort]
++            ) { [weak self] _, samples, error in
++                guard let self else {
++                    completionHandler()
++                    return
++                }
++                if error != nil {
++                    self.finishHKGlucoseObserverFetch(
++                        fireId: fireId,
++                        anchorWasNil: true,
++                        samples: samples as? [HKQuantitySample],
++                        newAnchor: nil,
++                        error: error,
++                        mgDlUnit: mgDlUnit,
++                        completionHandler: completionHandler
++                    )
++                    return
++                }
++                let afterBootstrap: () -> Void = {
++                    self.establishHealthKitGlucoseTimelineAnchorAfterBootstrap(
++                        store: store,
++                        bgType: bgType,
++                        fireId: fireId,
++                        completion: completionHandler
++                    )
++                }
++                self.finishHKGlucoseObserverFetch(
++                    fireId: fireId,
++                    anchorWasNil: true,
++                    samples: samples as? [HKQuantitySample],
++                    newAnchor: nil,
++                    error: nil,
++                    mgDlUnit: mgDlUnit,
++                    completionHandler: afterBootstrap
++                )
++            }
++            store.execute(sampleQuery)
++            return
 +        }
 +
 +        let query = HKAnchoredObjectQuery(
 +            type: bgType,
-+            predicate: predicate,
++            predicate: nil,
 +            anchor: anchor,
 +            limit: HKObjectQueryNoLimit,
 +            resultsHandler: { [weak self] _, samples, _, newAnchor, error in
-+                guard self != nil else {
++                guard let self else {
 +                    completionHandler()
 +                    return
 +                }
-+                if let error = error {
-+                    Task {
-+                        await WatchLogger.shared.log("❌ hk_observer_query_error fire_id=\(fireId) error=\(error.localizedDescription)")
-+                    }
-+                    completionHandler()
-+                    return
-+                }
-+                if let newAnchor = newAnchor,
-+                   let anchorData = try? NSKeyedArchiver.archivedData(withRootObject: newAnchor, requiringSecureCoding: true) {
-+                    dataStore.saveHKGlucoseAnchor(anchorData)
-+                }
-+
-+                let added = (samples as? [HKQuantitySample]) ?? []
-+                let sortedByDate = added.sorted { $0.startDate > $1.startDate }
-+                if sortedByDate.isEmpty {
-+                    Task {
-+                        await WatchLogger.shared.log("⚠️ hk_observer_no_new_samples fire_id=\(fireId)")
-+                    }
-+                    completionHandler()
-+                    return
-+                }
-+
-+                let latest = sortedByDate[0]
-+                let latestEpoch = latest.startDate.timeIntervalSince1970
-+                let latestMgDl = latest.quantity.doubleValue(for: mgDlUnit)
-+
-+                if latestEpoch == dataStore.hkLastReceivedGlucoseEpoch() {
-+                    Task {
-+                        await WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
-+                    }
-+                    completionHandler()
-+                    return
-+                }
-+
-+                var previousMgDl: Double?
-+                var previousEpoch: TimeInterval?
-+                if sortedByDate.count >= 2 {
-+                    let prev = sortedByDate[1]
-+                    previousMgDl = prev.quantity.doubleValue(for: mgDlUnit)
-+                    previousEpoch = prev.startDate.timeIntervalSince1970
-+                } else {
-+                    let storedEpoch = dataStore.hkLastReceivedGlucoseEpoch()
-+                    if storedEpoch > 0 {
-+                        previousEpoch = storedEpoch
-+                        previousMgDl = dataStore.hkLastReceivedGlucoseValueMgDl()
-+                    }
-+                }
-+
-+                let timeDelta = previousEpoch.map { latestEpoch - $0 } ?? 0
-+                let plausibilityOK = timeDelta > 0 && timeDelta < 15 * 60
-+
-+                var deltaString = "--"
-+                var trendString = ""
-+                var trendDerived = false
-+
-+                if let prev = previousMgDl, plausibilityOK {
-+                    let rawDeltaMgDl = latestMgDl - prev
-+                    let deltaInt = Int(rawDeltaMgDl.rounded())
-+                    deltaString = String(format: "%+d", deltaInt)
-+                    trendString = Self.hkTrendString(fromDeltaMgDl: deltaInt)
-+                    trendDerived = true
-+                }
-+
-+                dataStore.setHKLastReceivedGlucoseEpoch(latestEpoch)
-+                dataStore.setHKLastReceivedGlucoseValueMgDl(latestMgDl)
-+
-+                let readingDate = latest.startDate
-+                let glucoseString = String(Int(latestMgDl.rounded()))
-+                let syncLag = Int(Date().timeIntervalSince(readingDate))
-+
-+                Task {
-+                    await WatchLogger.shared.log("🏥 hk_observer_fired fire_id=\(fireId) reading_epoch=\(Int(readingDate.timeIntervalSince1970)) sync_lag=\(syncLag) glucose=\(glucoseString) delta=\(deltaString) trend=\(trendString) trend_derived=\(trendDerived) samples_in_batch=\(sortedByDate.count) query_type=anchoredQuery")
-+                }
-+
-+                let snapshot = TrioComplicationSnapshot(
-+                    glucose: glucoseString,
-+                    trend: trendString,
-+                    delta: deltaString,
-+                    readingDate: readingDate,
-+                    date: Date(),
-+                    glucoseColor: nil
++                self.finishHKGlucoseObserverFetch(
++                    fireId: fireId,
++                    anchorWasNil: false,
++                    samples: samples as? [HKQuantitySample],
++                    newAnchor: newAnchor,
++                    error: error,
++                    mgDlUnit: mgDlUnit,
++                    completionHandler: completionHandler
 +                )
-+
-+                DispatchQueue.main.async {
-+                    TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
-+                    completionHandler()
-+                }
 +            }
 +        )
 +        store.execute(query)
@@ -1235,11 +1901,35 @@ index f4fb33fde..9113534f1 100644
 +        }
 +    }
 +
++    /// Path B1 — Summarize inbound WC messages without stringifying nested `glucoseValues` (avoids large transient `String` allocations).
++    private static func watchConnectivityInboundSummary(_ message: [String: Any]) -> String {
++        let topKeys = message.keys.sorted().joined(separator: ",")
++        var parts = ["event=watch_wc_inbound channel=message top_level_keys=\(topKeys)"]
++        if let type = message["type"] as? String {
++            parts.append("type=\(type)")
++        }
++        if let ws = message[WatchMessageKeys.watchState] as? [String: Any] {
++            let gv = ws[WatchMessageKeys.glucoseValues]
++            let gvCount: Int
++            if let arr = gv as? [Any] {
++                gvCount = arr.count
++            } else if gv != nil {
++                gvCount = -1
++            } else {
++                gvCount = 0
++            }
++            let epoch = (ws[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
++            let wsKeys = ws.keys.sorted().joined(separator: ",")
++            parts.append("watchState_keys=\(wsKeys) glucoseValues_count=\(gvCount) reading_epoch=\(epoch)")
++        }
++        return parts.joined(separator: " ")
++    }
++
 +    // MARK: - Acknowledgement handling
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
          Task {
-@@ -106,21 +404,17 @@ import WatchConnectivity
+@@ -106,21 +821,17 @@ import WatchConnectivity
  
          if success {
              Task {
@@ -1263,7 +1953,7 @@ index f4fb33fde..9113534f1 100644
              DispatchQueue.main.async {
                  self.showCommsAnimation = false
              }
-@@ -135,7 +429,7 @@ import WatchConnectivity
+@@ -135,7 +846,7 @@ import WatchConnectivity
  
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                  self.showAcknowledgmentBanner = false
@@ -1272,7 +1962,7 @@ index f4fb33fde..9113534f1 100644
                  Task {
                      await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                  }
-@@ -145,14 +439,12 @@ import WatchConnectivity
+@@ -145,14 +856,12 @@ import WatchConnectivity
  
      // MARK: - WCSessionDelegate
  
@@ -1289,7 +1979,7 @@ index f4fb33fde..9113534f1 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -160,184 +452,556 @@ import WatchConnectivity
+@@ -160,184 +869,570 @@ import WatchConnectivity
  
              if activationState == .activated {
                  Task {
@@ -1297,8 +1987,9 @@ index f4fb33fde..9113534f1 100644
 +                    await WatchLogger.shared.log("Watch session activated with state: \(activationState.rawValue)")
                  }
  
-                 self.forceConditionalWatchStateUpdate()
+-                self.forceConditionalWatchStateUpdate()
 -
++                _ = self.forceConditionalWatchStateUpdate()
                  self.isReachable = session.isReachable
  
                  Task {
@@ -1330,7 +2021,7 @@ index f4fb33fde..9113534f1 100644
 +
          Task {
 -            await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
-+            await WatchLogger.shared.log("Watch received data: \(message)")
++            await WatchLogger.shared.log(Self.watchConnectivityInboundSummary(message))
          }
  
 -        // If the message has a nested "watchState" dictionary with date as TimeInterval
@@ -1344,11 +2035,11 @@ index f4fb33fde..9113534f1 100644
 -            // Check if it's not older than 15 min
              if date >= Date().addingTimeInterval(-15 * 60) {
 +                let extractedEpoch = (watchStateDict[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
-                 Task {
--                    await WatchLogger.shared.log("⌚️ Handling watchState from \(date)")
++                Task {
 +                    await WatchLogger.shared.log("📬 didReceiveMessage reading_epoch=\(extractedEpoch) receive_wall=\(Date().timeIntervalSince1970)")
 +                }
-+                Task {
+                 Task {
+-                    await WatchLogger.shared.log("⌚️ Handling watchState from \(date)")
 +                    await WatchLogger.shared.log("Handling watchState from \(date)")
                  }
                  processWatchMessage(message)
@@ -1358,6 +2049,7 @@ index f4fb33fde..9113534f1 100644
 +                    await WatchLogger.shared.log("Received outdated watchState data (\(date))")
                  }
                  DispatchQueue.main.async {
++                    self.clearStartupFirstRefreshInFlightOnMain()
                      self.showSyncingAnimation = false
 +                    self.completePendingConnectivityTasksOnMain(
 +                        path: "message_outdated",
@@ -1410,6 +2102,7 @@ index f4fb33fde..9113534f1 100644
 +                await WatchLogger.shared.log("Faulty data. Skipping.")
              }
              DispatchQueue.main.async {
++                self.clearStartupFirstRefreshInFlightOnMain()
                  self.showSyncingAnimation = false
 +                self.completePendingConnectivityTasksOnMain(
 +                    path: "message_invalid",
@@ -1478,20 +2171,17 @@ index f4fb33fde..9113534f1 100644
 +                    path: "invalid_no_pending",
 +                    requiresNoPendingContent: true
 +                )
-             }
-             return
-         }
- 
--        WatchStateSnapshot.saveLatestDateToDisk(snapshot.date)
++            }
++            return
++        }
++
 +        // Log using already-decoded readingDate (no extra decode); epoch only when we have it.
 +        let readingDateEpoch = Int(readingDate.timeIntervalSince1970)
 +        lastUserInfoReceiveTimestamp = Date()
 +        Task {
 +            await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
 +        }
- 
--        DispatchQueue.main.async {
--            self.scheduleUIUpdate(with: snapshot.payload)
++
 +        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
 +        // state is not populated here (defaults to nil) because no call site currently sets it.
 +        // If state is ever set during snapshot construction, add it here too — otherwise this
@@ -1509,10 +2199,11 @@ index f4fb33fde..9113534f1 100644
 +                    path: "dedup_no_pending",
 +                    requiresNoPendingContent: true
 +                )
-+            }
-+            return
-+        }
-+
+             }
+             return
+         }
+ 
+-        WatchStateSnapshot.saveLatestDateToDisk(snapshot.date)
 +        DispatchQueue.main.async { [self] in
 +            // R5d: compute gap BEFORE updating timestamp
 +            let gap = lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
@@ -1554,7 +2245,9 @@ index f4fb33fde..9113534f1 100644
 +
 +            // R5d: update timestamp AFTER save
 +            lastDataReceivedAt = Date()
-+
+ 
+-        DispatchQueue.main.async {
+-            self.scheduleUIUpdate(with: snapshot.payload)
 +            // R5d: sleep-gap forced reload (snapshot already saved synchronously above)
 +            if isSleepGap {
 +                let gapDisplay = gap.isInfinite ? "first_receive" : "\(Int(gap))"
@@ -1582,7 +2275,7 @@ index f4fb33fde..9113534f1 100644
 +
 +                retryWorkItem?.cancel()
 +                retryWorkItem = DispatchWorkItem { [weak self] in
-+                    self?.requestWatchStateUpdate()
++                    self?.requestWatchStateUpdateRespectingStartupGraceOnMain()
 +                }
 +
 +                DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: retryWorkItem!)
@@ -1609,8 +2302,7 @@ index f4fb33fde..9113534f1 100644
              if session.isReachable {
 -                self.forceConditionalWatchStateUpdate()
 +                if self.isColdStart, !self.forcedSinceActivation {
-+                    self.forceConditionalWatchStateUpdate()
-+                    self.forcedSinceActivation = true
++                    _ = self.forceConditionalWatchStateUpdate()
 +                }
  
 -                // reset input amounts
@@ -1631,6 +2323,7 @@ index f4fb33fde..9113534f1 100644
 -    ///  - If more than 15 seconds have passed,
 -    ///
 -    /// it will show a syncing animation and request a new watch state update from the iPhone app.
+-    private func forceConditionalWatchStateUpdate() {
 +    // R4: applicationContext safety net — parallel delivery channel from iOS during budget exhaustion.
 +    // R5d: integrated sleep-gap detection (same three-constraint ordering as didReceiveUserInfo).
 +    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
@@ -1672,10 +2365,20 @@ index f4fb33fde..9113534f1 100644
 +        }
 +    }
 +
-     private func forceConditionalWatchStateUpdate() {
++    @discardableResult
++    private func forceConditionalWatchStateUpdate() -> Bool {
 +        assert(Thread.isMainThread, "forceConditionalWatchStateUpdate must be called on main thread")
++        if shouldSuppressStartupSignalOnMain() {
++            logStartupSignalSuppressedOnMain()
++            return false
++        }
++
++        guard !startupFirstRefreshInFlight else {
++            return false
++        }
++
          guard let lastUpdateTimestamp = lastWatchStateUpdate else {
-+            guard !hasRequestedInitialUpdate else { return }
++            guard !hasRequestedInitialUpdate else { return false }
 +            hasRequestedInitialUpdate = true
              Task {
                  await WatchLogger.shared.log("Forcing initial WatchState update")
@@ -1684,8 +2387,9 @@ index f4fb33fde..9113534f1 100644
 -            // If there's no recorded timestamp, we must force a fresh update immediately.
              showSyncingAnimation = true
              requestWatchStateUpdate()
+-            return
 +            forcedSinceActivation = true
-             return
++            return true
          }
  
 -        let now = Date().timeIntervalSince1970
@@ -1702,7 +2406,10 @@ index f4fb33fde..9113534f1 100644
              showSyncingAnimation = true
              requestWatchStateUpdate()
 +            forcedSinceActivation = true
++            return true
 +        }
++
++        return false
 +    }
 +
 +    private func connectivitySessionHasPendingContent() -> Bool {
@@ -1907,7 +2614,7 @@ index f4fb33fde..9113534f1 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -348,7 +1012,7 @@ import WatchConnectivity
+@@ -348,7 +1443,7 @@ import WatchConnectivity
                  }
  
                  Task {
@@ -1916,7 +2623,7 @@ index f4fb33fde..9113534f1 100644
                  }
  
                  switch ackCode {
-@@ -371,26 +1035,63 @@ import WatchConnectivity
+@@ -371,26 +1466,63 @@ import WatchConnectivity
                  }
              }
  
@@ -1989,7 +2696,7 @@ index f4fb33fde..9113534f1 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -399,70 +1100,104 @@ import WatchConnectivity
+@@ -399,70 +1531,106 @@ import WatchConnectivity
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -2107,6 +2814,8 @@ index f4fb33fde..9113534f1 100644
 -            Task {
 -                await WatchLogger.shared.log("Updated lastWatchStateUpdate: \(timestamp)")
 -            }
++        startupFirstRefreshInFlight = false
++
 +        if let date = dateValue(from: message[WatchMessageKeys.date]) {
 +            lastWatchStateUpdate = date
 +            forcedSinceActivation = false
@@ -2118,7 +2827,7 @@ index f4fb33fde..9113534f1 100644
          if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
              self.currentGlucose = currentGlucose
          }
-@@ -494,29 +1229,27 @@ import WatchConnectivity
+@@ -494,29 +1662,27 @@ import WatchConnectivity
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
              glucoseValues = glucoseData.compactMap { data in
                  guard let glucose = data["glucose"] as? Double,
@@ -2160,7 +2869,7 @@ index f4fb33fde..9113534f1 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -537,41 +1270,371 @@ import WatchConnectivity
+@@ -537,41 +1703,371 @@ import WatchConnectivity
              }
          }
  
@@ -2265,8 +2974,8 @@ index f4fb33fde..9113534f1 100644
 +            let readingEpoch = Int(readingDate.timeIntervalSince1970)
 +            Task {
 +                await WatchLogger.shared.log("⏱️ userInfo_decoded reading_epoch=\(readingEpoch) decode_ms=\(decodeMs)")
-             }
-         }
++            }
++        }
 +        if fromUserInfo {
 +            lastUserInfoReceiveTimestamp = nil
 +        }
@@ -2276,46 +2985,33 @@ index f4fb33fde..9113534f1 100644
 +        Task {
 +            await WatchLogger.shared.log("🔄 forceComplicationUpdate called")
 +        }
- 
--        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
--            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
--                maxCarbs = decimalValue
++
 +        guard !currentGlucose.isEmpty,
 +              !currentGlucose.contains("??"),
 +              !currentGlucose.localizedCaseInsensitiveContains("error")
 +        else {
 +            Task {
 +                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: invalid glucose '\(currentGlucose)'")
-             }
++            }
 +            return
-         }
- 
--        if let maxFatValue = message[WatchMessageKeys.maxFat] {
--            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
--                maxFat = decimalValue
++        }
++
 +        if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
 +            guard glucoseValue >= 40 && glucoseValue <= 400 else {
 +                Task {
 +                    await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
 +                }
 +                return
-             }
-         }
- 
--        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
--            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
--                maxProtein = decimalValue
++            }
++        }
++
 +        guard let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp else {
 +            Task {
 +                await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: no valid CGM reading timestamp")
-             }
++            }
 +            return
-         }
- 
--        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
--            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
--                // limit minimum to 0.05 to avoid dealing with 0.025 increments
--                self.bolusIncrement = max(decimalValue, 0.05)
++        }
++
 +        let snapshot = TrioComplicationSnapshot(
 +            glucose: currentGlucose,
 +            trend: trend ?? "",
@@ -2343,13 +3039,10 @@ index f4fb33fde..9113534f1 100644
 +           Date().timeIntervalSince(lastReload) < 300 {
 +            Task {
 +                await WatchLogger.shared.log("💤 sleep_gap_reload_skipped reason=rate_limited last_reload_ago=\(Int(Date().timeIntervalSince(lastReload)))s")
-             }
++            }
 +            return
-         }
- 
--        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] {
--            if let booleanValue = confirmBolusFaster as? Bool {
--                self.confirmBolusFaster = booleanValue
++        }
++
 +        // Diagnostic snapshot read: measures I/O latency and detects stale-backlog scenarios.
 +        // No snapshot-age guard — callers save before calling this, so latestSnapshot() reflects
 +        // just-saved data. A freshness guard would block the reload in precisely the scenario
@@ -2377,7 +3070,10 @@ index f4fb33fde..9113534f1 100644
 +                await WatchLogger.shared.log("💤 sleep_gap_reload_firing reading_epoch=\(snapshotEpoch) snapshot_age=\(snapshotAgeDisplay) gap=\(gapDisplay)s read_ms=\(snapshotReadMs)")
              }
          }
-+
+ 
+-        if let maxCarbsValue = message[WatchMessageKeys.maxCarbs] {
+-            if let decimalValue = (maxCarbsValue as? NSNumber)?.decimalValue {
+-                maxCarbs = decimalValue
 +        store.setLastWidgetReloadAt(Date())
 +        store.forceReload(scheduleRetry: false)
 +    }
@@ -2403,9 +3099,12 @@ index f4fb33fde..9113534f1 100644
 +                        await WatchLogger.shared.log("Scheduled background refresh at \(refreshDate)")
 +                    }
 +                }
-+            }
-+        }
-+
+             }
+         }
+ 
+-        if let maxFatValue = message[WatchMessageKeys.maxFat] {
+-            if let decimalValue = (maxFatValue as? NSNumber)?.decimalValue {
+-                maxFat = decimalValue
 +        func handleBackgroundTasks(_ tasks: Set<WKRefreshBackgroundTask>) {
 +            Task {
 +                await WatchLogger.shared.log("Handling background tasks: \(tasks.count)")
@@ -2469,34 +3168,44 @@ index f4fb33fde..9113534f1 100644
 +                } else {
 +                    task.setTaskCompletedWithSnapshot(false)
 +                }
-+            }
-+        }
+             }
+         }
 +    #endif
-+
+ 
+-        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
+-            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
+-                maxProtein = decimalValue
 +    func loadFallbackDataFromComplication() {
 +        guard let snapshot = TrioComplicationDataStore.shared.latestSnapshot() else {
 +            DispatchQueue.main.async {
 +                self.showSyncingAnimation = false
-+            }
+             }
 +            return
-+        }
-+
+         }
+ 
+-        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
+-            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
+-                // limit minimum to 0.05 to avoid dealing with 0.025 increments
+-                self.bolusIncrement = max(decimalValue, 0.05)
 +        if let lastUpdate = lastWatchStateUpdate,
 +           Date().timeIntervalSince(lastUpdate) <= 15
 +        {
 +            DispatchQueue.main.async {
 +                self.showSyncingAnimation = false
-+            }
+             }
 +            return
-+        }
-+
+         }
+ 
+-        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] {
+-            if let booleanValue = confirmBolusFaster as? Bool {
+-                self.confirmBolusFaster = booleanValue
 +        DispatchQueue.main.async {
 +            self.currentGlucose = snapshot.glucose
 +            self.trend = snapshot.trend
 +            self.delta = snapshot.delta
 +            if let glucoseColor = snapshot.glucoseColor {
 +                self.currentGlucoseColorString = glucoseColor
-+            }
+             }
 +            self.lastWatchStateUpdate = snapshot.readingDate
 +            self.showSyncingAnimation = false
 +            self.syncTimeoutWorkItem?.cancel()
@@ -2547,7 +3256,7 @@ index f4fb33fde..9113534f1 100644
 +        }
 +        if dateValue(from: message[WatchMessageKeys.date]) != nil {
 +            return .rejectedDateOnly
-+        }
+         }
 +        return .missing
      }
  }
