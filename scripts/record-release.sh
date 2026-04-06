@@ -355,7 +355,7 @@ get_upstream_branch_sha() {
     exit 1
   fi
 
-  # GitHub Actions fallback: query upstream directly without requiring a local remote.
+  # Fallback: query upstream directly without requiring a local remote.
   upstream_repo="${UPSTREAM_REPO:-nightscout/Trio}"
   upstream_url="https://github.com/${upstream_repo}.git"
   upstream_sha="$(git ls-remote --heads "$upstream_url" "$upstream_branch" 2>/dev/null | awk 'NR==1 {print $1}')"
@@ -407,8 +407,6 @@ ensure_sha_on_github() {
 
 # Read stage summary if available
 get_stage_summary() {
-  local summary_file="build/artifacts/stage-summary.txt"
-  
   # Also check common locations
   local candidates=(
     "build/artifacts/stage-summary.txt"
