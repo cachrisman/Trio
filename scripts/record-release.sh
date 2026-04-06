@@ -4,9 +4,11 @@ set -euo pipefail
 # record-release.sh
 # Creates/updates GitHub Release for shipped builds (after TestFlight upload)
 #
-# Version: 1.3.0
+# Version: 1.3.1
 #
 # Changelog:
+#   1.3.1 - Make upstream SHA lookup GitHub Actions-safe when no 'upstream' remote exists
+#         - Resolve upstream branch SHA via UPSTREAM_REPO/UPSTREAM_BRANCH with git ls-remote fallback
 #   1.3.0 - Upload dSYM zip to both public and private GitHub releases
 #         - Add DSYM_PATH env var and auto-detection via find_dsym_path()
 #         - dSYM upload is best-effort (warns but does not fail if missing)
@@ -325,25 +327,37 @@ get_patch_metadata() {
   echo "[$patches_str]"
 }
 
-# Get upstream/dev SHA
+# Get upstream branch SHA
 get_upstream_dev_sha() {
-  # Require upstream remote to be configured
-  if ! git remote | grep -q "^upstream$"; then
-    echo "ERROR: 'upstream' remote is not configured. Configure it with:" >&2
-    echo "  git remote add upstream https://github.com/nightscout/Trio.git" >&2
+  local upstream_branch upstream_sha upstream_repo upstream_url
+  upstream_branch="${UPSTREAM_BRANCH:-dev}"
+  upstream_sha=""
+
+  # Preferred path: use configured upstream remote when available.
+  if git remote get-url upstream >/dev/null 2>&1; then
+    if ! git fetch upstream "$upstream_branch" >/dev/null 2>&1; then
+      echo "ERROR: Failed to fetch upstream/$upstream_branch. Check network connectivity and remote configuration." >&2
+      exit 1
+    fi
+
+    upstream_sha="$(git rev-parse "upstream/$upstream_branch" 2>/dev/null || echo "")"
+    if [[ -n "$upstream_sha" ]]; then
+      echo "$upstream_sha"
+      return
+    fi
+
+    echo "ERROR: Cannot resolve upstream/$upstream_branch from configured upstream remote." >&2
     exit 1
   fi
 
-  # Fetch and resolve upstream/dev
-  if ! git fetch upstream dev >/dev/null 2>&1; then
-    echo "ERROR: Failed to fetch upstream/dev. Check network connectivity and remote configuration." >&2
-    exit 1
-  fi
+  # GitHub Actions fallback: query upstream directly without requiring a local remote.
+  upstream_repo="${UPSTREAM_REPO:-nightscout/Trio}"
+  upstream_url="https://github.com/${upstream_repo}.git"
+  upstream_sha="$(git ls-remote --heads "$upstream_url" "$upstream_branch" 2>/dev/null | awk 'NR==1 {print $1}')"
 
-  local upstream_sha
-  upstream_sha="$(git rev-parse "upstream/dev" 2>/dev/null || echo "")"
   if [[ -z "$upstream_sha" ]]; then
-    echo "ERROR: Cannot resolve upstream/dev. Ensure the upstream remote points to the correct repository." >&2
+    echo "ERROR: Cannot resolve ${upstream_repo}:${upstream_branch} via ls-remote." >&2
+    echo "Configure a local 'upstream' remote or set UPSTREAM_REPO/UPSTREAM_BRANCH correctly." >&2
     exit 1
   fi
 
@@ -413,16 +427,17 @@ generate_release_body() {
   local build="$2"
   local context="$3"
   local tag="$4"
-  local upstream_dev_sha="$5"
-  local fork_sha="$6"
-  local patches_json="$7"
+  local upstream_branch="$5"
+  local upstream_dev_sha="$6"
+  local fork_sha="$7"
+  local patches_json="$8"
 
   local body="Trio v${version} (${build}) ${context}
 
 Tag: ${tag}
 
 Built from:
-- upstream/dev: ${upstream_dev_sha}
+- upstream/${upstream_branch}: ${upstream_dev_sha}
 - fork: ${fork_sha}
 
 Patches:"
@@ -581,10 +596,11 @@ main() {
   local release_title="Trio v${version} (${build}) ${context}"
 
   # Get git SHAs
-  local upstream_dev_sha fork_sha
+  local upstream_branch upstream_dev_sha fork_sha
+  upstream_branch="${UPSTREAM_BRANCH:-dev}"
   upstream_dev_sha="$(get_upstream_dev_sha)"
   fork_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
-  echo "[record-release] Upstream/dev SHA: ${upstream_dev_sha:0:12}"
+  echo "[record-release] Upstream/${upstream_branch} SHA: ${upstream_dev_sha:0:12}"
   echo "[record-release] Fork SHA: ${fork_sha:0:12}"
 
   # Ensure we have a fork SHA to point the tag at
@@ -708,7 +724,7 @@ PYTHON_EOF
 
   # Generate release body
   local release_body
-  release_body="$(generate_release_body "$version" "$build" "$context" "$tag" "$upstream_dev_sha" "$fork_sha" "$patches_json")"
+  release_body="$(generate_release_body "$version" "$build" "$context" "$tag" "$upstream_branch" "$upstream_dev_sha" "$fork_sha" "$patches_json")"
 
   # Create/update GitHub Release
   echo "[record-release] Creating/updating GitHub Release..."
