@@ -4,9 +4,12 @@ set -euo pipefail
 # record-release.sh
 # Creates/updates GitHub Release for shipped builds (after TestFlight upload)
 #
-# Version: 1.3.1
+# Version: 1.3.2
 #
 # Changelog:
+#   1.3.2 - Document upstream lookup env vars in usage output
+#         - Rename upstream SHA helper/locals to branch-agnostic naming
+#         - Record upstreamBranch + upstreamBranchSha in manifest base metadata
 #   1.3.1 - Make upstream SHA lookup GitHub Actions-safe when no 'upstream' remote exists
 #         - Resolve upstream branch SHA via UPSTREAM_REPO/UPSTREAM_BRANCH with git ls-remote fallback
 #   1.3.0 - Upload dSYM zip to both public and private GitHub releases
@@ -37,6 +40,8 @@ Environment variables:
   DSYM_PATH                   - Path to dSYM zip (auto-detected if not set; optional)
   GITHUB_REPOSITORY           - Repository in owner/name format (auto-detected in CI)
   TRIO_BUILDS_PRIVATE_REPO    - Private backup repository (default: cachrisman/trio-builds-private)
+  UPSTREAM_REPO               - Upstream repository for base SHA lookup (default: nightscout/Trio)
+  UPSTREAM_BRANCH             - Upstream branch for base SHA lookup (default: dev)
 USAGE
 }
 
@@ -328,7 +333,7 @@ get_patch_metadata() {
 }
 
 # Get upstream branch SHA
-get_upstream_dev_sha() {
+get_upstream_branch_sha() {
   local upstream_branch upstream_sha upstream_repo upstream_url
   upstream_branch="${UPSTREAM_BRANCH:-dev}"
   upstream_sha=""
@@ -428,7 +433,7 @@ generate_release_body() {
   local context="$3"
   local tag="$4"
   local upstream_branch="$5"
-  local upstream_dev_sha="$6"
+  local upstream_branch_sha="$6"
   local fork_sha="$7"
   local patches_json="$8"
 
@@ -437,7 +442,7 @@ generate_release_body() {
 Tag: ${tag}
 
 Built from:
-- upstream/${upstream_branch}: ${upstream_dev_sha}
+- upstream/${upstream_branch}: ${upstream_branch_sha}
 - fork: ${fork_sha}
 
 Patches:"
@@ -596,11 +601,11 @@ main() {
   local release_title="Trio v${version} (${build}) ${context}"
 
   # Get git SHAs
-  local upstream_branch upstream_dev_sha fork_sha
+  local upstream_branch upstream_branch_sha fork_sha
   upstream_branch="${UPSTREAM_BRANCH:-dev}"
-  upstream_dev_sha="$(get_upstream_dev_sha)"
+  upstream_branch_sha="$(get_upstream_branch_sha)"
   fork_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
-  echo "[record-release] Upstream/${upstream_branch} SHA: ${upstream_dev_sha:0:12}"
+  echo "[record-release] Upstream/${upstream_branch} SHA: ${upstream_branch_sha:0:12}"
   echo "[record-release] Fork SHA: ${fork_sha:0:12}"
 
   # Ensure we have a fork SHA to point the tag at
@@ -667,7 +672,8 @@ manifest = {
         "buildNumber": "$build"
     },
     "base": {
-        "upstreamDevSha": "$upstream_dev_sha",
+        "upstreamBranch": "$upstream_branch",
+        "upstreamBranchSha": "$upstream_branch_sha",
         "forkSha": "$fork_sha"
     },
     "release": {
@@ -724,7 +730,7 @@ PYTHON_EOF
 
   # Generate release body
   local release_body
-  release_body="$(generate_release_body "$version" "$build" "$context" "$tag" "$upstream_branch" "$upstream_dev_sha" "$fork_sha" "$patches_json")"
+  release_body="$(generate_release_body "$version" "$build" "$context" "$tag" "$upstream_branch" "$upstream_branch_sha" "$fork_sha" "$patches_json")"
 
   # Create/update GitHub Release
   echo "[record-release] Creating/updating GitHub Release..."
