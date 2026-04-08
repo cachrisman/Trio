@@ -279,12 +279,12 @@ actor WatchErrorReporter {
     func storePendingPayload(payloadId: String, type: String, filePath: String?) async {
         var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
 
-        let record: [String: Any] = [
+        var record: [String: Any] = [
             "payloadId": payloadId,
             "type": type,
-            "filePath": filePath as Any,
             "createdAtEpoch": Date().timeIntervalSince1970
         ]
+        if let filePath { record["filePath"] = filePath }
 
         pendingPayloads.append(record)
 
@@ -296,6 +296,10 @@ actor WatchErrorReporter {
             }
             return true
         }
+        guard JSONSerialization.isValidJSONObject(pendingPayloads) else {
+            UserDefaults.standard.removeObject(forKey: pendingPayloadsKey)
+            return
+        }
 
         UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
     }
@@ -305,6 +309,10 @@ actor WatchErrorReporter {
         var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
         pendingPayloads.removeAll { record in
             record["payloadId"] as? String == payloadId
+        }
+        guard JSONSerialization.isValidJSONObject(pendingPayloads) else {
+            UserDefaults.standard.removeObject(forKey: pendingPayloadsKey)
+            return
         }
         UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
     }
