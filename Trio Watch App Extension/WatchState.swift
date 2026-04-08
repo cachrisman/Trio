@@ -137,6 +137,12 @@ enum BackgroundTaskWindowCounter {
     private var startupFirstRefreshInFlight = false
     private var hasInitializedHealthKitSetupInProcess = false
 
+    /// Resident memory sample budget — see `Helper/WatchResidentTelemetry.swift`.
+    var residentTelemetryBudget = WatchResidentTelemetryBudget()
+
+    /// Set when the root SwiftUI main view’s `.onAppear` ran before `startupCurrentActivationSequence` existed; flushed after the next foreground activation is established.
+    private var pendingResidentSampleFirstMainView = false
+
     // MARK: - HealthKit (R6)
 
     private var healthKitStore: HKHealthStore?
@@ -218,6 +224,8 @@ enum BackgroundTaskWindowCounter {
         let activationSequence = startupActivationSequence
         startupCurrentActivationSequence = activationSequence
         startupFirstRefreshFiredActivationSequence = nil
+        residentTelemetryBudget.resetForNewActivation(activationSequence)
+        flushPendingFirstMainViewResidentSampleIfNeeded()
 
         startupBackgroundLaunchDisarmWorkItem?.cancel()
         startupBackgroundLaunchDisarmWorkItem = nil
@@ -242,6 +250,8 @@ enum BackgroundTaskWindowCounter {
         assert(Thread.isMainThread, "handleForegroundInactiveOrBackground must be called on main thread")
         guard startupIsForegroundActive else { return }
 
+        pendingResidentSampleFirstMainView = false
+
         startupIsForegroundActive = false
         startupFirstRefreshInFlight = false
         let activationSequence = startupCurrentActivationSequence
@@ -263,6 +273,31 @@ enum BackgroundTaskWindowCounter {
                 }
             }
         }
+    }
+
+    /// Root main view (`TrioMainWatchView`) `.onAppear` — **main thread only.** Latches `first_main_view` until `startupCurrentActivationSequence` exists if needed.
+    func noteMainWatchRootViewAppearedForResidentTelemetry() {
+        assert(Thread.isMainThread, "noteMainWatchRootViewAppearedForResidentTelemetry must be called on main thread")
+        guard WatchResidentTelemetryGate.isEnabled else { return }
+        if let seq = startupCurrentActivationSequence {
+            emitResidentMemorySample(checkpoint: "first_main_view", activationSequence: seq)
+        } else {
+            pendingResidentSampleFirstMainView = true
+        }
+    }
+
+    /// Chart tab (page 1) became visible — **main thread only.**
+    func noteChartTabBecameVisibleForResidentTelemetry() {
+        assert(Thread.isMainThread, "noteChartTabBecameVisibleForResidentTelemetry must be called on main thread")
+        emitResidentMemorySample(checkpoint: "chart_visible", activationSequence: startupCurrentActivationSequence)
+    }
+
+    private func flushPendingFirstMainViewResidentSampleIfNeeded() {
+        assert(Thread.isMainThread, "flushPendingFirstMainViewResidentSampleIfNeeded must be called on main thread")
+        guard pendingResidentSampleFirstMainView else { return }
+        guard let seq = startupCurrentActivationSequence else { return }
+        pendingResidentSampleFirstMainView = false
+        emitResidentMemorySample(checkpoint: "first_main_view", activationSequence: seq)
     }
 
     private func scheduleStartupSequenceOnMain(activationSequence: Int) {
@@ -349,6 +384,11 @@ enum BackgroundTaskWindowCounter {
             )
         }
 
+        emitResidentMemorySample(
+            checkpoint: "deferred_watch_state_fired",
+            activationSequence: activationSequence
+        )
+
         requestWatchStateUpdate()
     }
 
@@ -394,6 +434,12 @@ enum BackgroundTaskWindowCounter {
             await WatchLogger.shared.flushPersistedLogs(
                 startupTransportSuppressedOverride: didDisarm ? false : nil
             )
+            await MainActor.run {
+                self.emitResidentMemorySample(
+                    checkpoint: "post_startup_flush",
+                    activationSequence: activationSequence
+                )
+            }
         }
     }
 
@@ -538,6 +584,14 @@ enum BackgroundTaskWindowCounter {
         Task {
             await WatchLogger.shared
                 .log("event=\(batchEventName) fire_id=\(fireId) anchor_was_nil=\(anchorWasNil) samples_count=\(added.count)")
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.emitResidentMemorySample(
+                checkpoint: "hk_batch",
+                activationSequence: self.startupCurrentActivationSequence
+            )
         }
 
         if let newAnchor,
@@ -1738,6 +1792,11 @@ enum BackgroundTaskWindowCounter {
         }
 
         saveComplicationSnapshot(from: message, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
+
+        emitResidentMemorySample(
+            checkpoint: "first_watch_state_apply",
+            activationSequence: startupCurrentActivationSequence
+        )
     }
 
     private func saveComplicationSnapshot(from message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {

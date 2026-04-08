@@ -149,6 +149,13 @@ struct TrioMainWatchView: View {
 
                 state.bolusAmount = 0
                 state.recommendedBolus = 0
+
+                state.noteMainWatchRootViewAppearedForResidentTelemetry()
+            }
+            .onChange(of: currentPage) { _, newPage in
+                if newPage == 1 {
+                    state.noteChartTabBecameVisibleForResidentTelemetry()
+                }
             }
             .background(trioBackgroundColor)
             .tabViewStyle(.verticalPage)
