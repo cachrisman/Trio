@@ -1,4 +1,4 @@
-# AGENTS.md — v13
+# AGENTS.md — v14
 
 Instructions for AI agents working in this repository.
 
@@ -22,8 +22,12 @@ Read first:
 5) **Do not hand-edit patch files to fix apply failures.**
    - Fix code and regenerate the patch.
 
-6) **Do not manually edit `Trio.xcodeproj/project.pbxproj`.**
-   - Target membership, build settings, and similar project structure changes must be driven by the sync scripts: `scripts/sync_project_files.rb` and `scripts/sync_project_files_config.rb`. Add or update configuration in `sync_project_files_config.rb` (e.g. `TARGET_GLOBS`, `TARGET_BUILD_SETTINGS`). The sync script is run during the build process; do not run it manually.
+6) **Do not modify Xcode project files or run project sync from an agent session.**
+	-	Do not manually edit `Trio.xcodeproj/project.pbxproj`.
+	-	Do not run `scripts/sync_project_files.rb` or invoke it indirectly from an agent session, including via ruby, shell commands, editor tasks, wrapper scripts, or other automation.
+	-	Canonical Xcode project updates occur only through the repository’s normal build/sync workflow. Agents must not force project regeneration.
+	-	When adding files, put them in the correct repo location and update `scripts/sync_project_files_config.rb` (e.g. `TARGET_GLOBS`, `TARGET_BUILD_SETTINGS`, `TARGET_PACKAGE_DEPS`) only if explicitly required by the requested change. Otherwise, leave project refresh to the canonical workflow.
+	-	In summaries, state when project membership refresh is expected later and confirm that the agent did not edit `project.pbxproj` or run sync.
 
 7) **Do not commit/push** unless explicitly asked.
    - Summarize changes first.
@@ -441,6 +445,9 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v14 (2026-04-08 12:21 CET)
+- **Xcode project file modification:** New safety rule **6** — agents must not edit `Trio.xcodeproj/project.pbxproj` or run `scripts/sync_project_files.rb` directly or indirectly from an agent session. Canonical project refresh occurs only through the normal build/sync workflow; agents must not force project regeneration.
 
 ### v13 (2026-04-03 22:49 CET)
 - **Agent verification vs. compilation:** New safety rule **10** — do not run `xcodebuild` or other Xcode CLI builds to verify ordinary implementation work; do not start `ci/local-build.sh` as a routine post-change compile check. Verification is static review, `scripts/patch-test.sh` when applicable, and tests that do not require a full Xcode build; direct users to `local-build.sh` for compile confirmation. **Agent sandbox notes** updated to reinforce this (builds only when the user requested a build).
