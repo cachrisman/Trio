@@ -1,5 +1,45 @@
 import Foundation
+import WatchKit
 import WatchConnectivity
+
+/// Shared startup transport gate for watch log delivery.
+/// Synchronous access is required so foreground lifecycle code can arm or disarm
+/// suppression before any follow-on log call has a chance to flush.
+enum WatchStartupTransportGate {
+    private static let lock = NSLock()
+    private static var isSuppressed = true
+    private static var activationSequence: Int?
+
+    static func arm(activationSequence: Int?) {
+        lock.lock()
+        defer { lock.unlock() }
+        isSuppressed = true
+        self.activationSequence = activationSequence
+    }
+
+    @discardableResult
+    static func disarm(activationSequence: Int? = nil) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let activationSequence,
+           let currentActivationSequence = self.activationSequence,
+           currentActivationSequence != activationSequence
+        {
+            return false
+        }
+
+        isSuppressed = false
+        self.activationSequence = nil
+        return true
+    }
+
+    static func snapshot() -> (isSuppressed: Bool, activationSequence: Int?) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (isSuppressed, activationSequence)
+    }
+}
 
 // MARK: - WCSession send completion (single resume for reply vs error)
 
@@ -177,6 +217,65 @@ actor WatchLogger {
         }
     }
 
+    // Battery context: enable monitoring once per process; all reads on MainActor.
+    private static var hasEnabledBatteryMonitoring = false
+
+    @MainActor
+    private static func batteryContextOnMain() -> String {
+        let device = WKInterfaceDevice.current()
+        if !hasEnabledBatteryMonitoring {
+            hasEnabledBatteryMonitoring = true
+            device.isBatteryMonitoringEnabled = true
+        }
+        let levelText: String
+        if device.batteryLevel >= 0 {
+            levelText = String(Int((device.batteryLevel * 100).rounded()))
+        } else {
+            levelText = "unknown"
+        }
+        let stateText: String
+        switch device.batteryState {
+        case .unknown:
+            stateText = "unknown"
+        case .unplugged:
+            stateText = "unplugged"
+        case .charging:
+            stateText = "charging"
+        case .full:
+            stateText = "full"
+        @unknown default:
+            stateText = "unknown_default"
+        }
+        return "battery_level_percent=\(levelText) battery_state=\(stateText)"
+    }
+
+    private var lastBatteryContext = "battery_level_percent=unknown battery_state=unknown"
+    private var lastBatteryRefreshEpoch: TimeInterval = 0
+    private var batteryRefreshTask: Task<String, Never>?
+
+    private func batteryContextCached(now: TimeInterval = Date().timeIntervalSince1970) async -> String {
+        if now - lastBatteryRefreshEpoch < 60 {
+            return lastBatteryContext
+        }
+        if let existing = batteryRefreshTask {
+            let result = await existing.value
+            let currentNow = Date().timeIntervalSince1970
+            if currentNow - lastBatteryRefreshEpoch >= 60 {
+                lastBatteryContext = result
+                lastBatteryRefreshEpoch = currentNow
+            }
+            return result
+        }
+        let task = Task { await MainActor.run { Self.batteryContextOnMain() } }
+        batteryRefreshTask = task
+        defer { batteryRefreshTask = nil }
+
+        let result = await task.value
+        lastBatteryContext = result
+        lastBatteryRefreshEpoch = Date().timeIntervalSince1970
+        return result
+    }
+
     // MARK: - Timer
 
     private func startFlushTimer() async {
@@ -199,7 +298,8 @@ actor WatchLogger {
     ) async {
         let shortFile = (file as NSString).lastPathComponent
         let timestamp = Self.dateFormatter.string(from: Date())
-        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message)"
+        let batteryContext = await batteryContextCached()
+        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message) \(batteryContext)"
 
         logs.append(entry)
         if logs.count > maxEntries {
@@ -246,12 +346,14 @@ actor WatchLogger {
             || logs.count >= flushSizeThreshold
 
         if shouldFlush {
+            guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
             await flushToPhone()
         }
     }
 
     private func flushToPhone() async {
         guard !logs.isEmpty else { return }
+        guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
 
         updateCachedCountsIfStale()
         await logFileInventory()
@@ -448,18 +550,22 @@ actor WatchLogger {
 
     // MARK: - Persisted log flush + retention
 
-    func flushPersistedLogs() async {
+    func flushPersistedLogs(startupTransportSuppressedOverride: Bool? = nil) async {
+        let startupTransportSuppressed = startupTransportSuppressedOverride
+            ?? WatchStartupTransportGate.snapshot().isSuppressed
         let lastKnownBuild = UserDefaults.standard.string(
             forKey: lastKnownBuildKey
         )
         if lastKnownBuild != build {
-            UserDefaults.standard.set(build, forKey: lastKnownBuildKey)
             await log(
                 "[UPGRADE] build changed"
                     + " from \(lastKnownBuild ?? "nil") to \(build)",
-                force: true
+                force: !startupTransportSuppressed
             )
+            UserDefaults.standard.set(build, forKey: lastKnownBuildKey)
         }
+
+        guard !startupTransportSuppressed else { return }
 
         updateCachedCountsIfStale()
         await logFileInventory()
@@ -481,7 +587,7 @@ actor WatchLogger {
                 && file.lastPathComponent != "watch_log_daily.txt"
         }
 
-        _ = await applyWatchLogRetention(
+        let validFiles = await applyWatchLogRetention(
             perPayloadFiles: perPayloadFiles
         )
 
@@ -644,6 +750,7 @@ actor WatchLogger {
     // MARK: - Resend pending payloads
 
     func resendPendingPayloads() async {
+        guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
         guard session.isReachable else { return }
         guard prepareSessionForImmediateSend() else {
             await log(
