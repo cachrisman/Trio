@@ -1,8 +1,8 @@
 # Watch foreground launch — memory / jetsam investigation
 
 **Document:** `03-watch-foreground-launch-memory-investigation.md`  
-**Version:** 1.6  
-**Last updated:** 2026-04-06 15:48 CET  
+**Version:** 1.8  
+**Last updated:** 2026-04-08 21:45 CEST  
 **Status:** Final  
 **Scope:** Trio Watch App Extension (`Trio Watch App Extension/`), shared complication store (`Trio Watch Shared/`), and iPhone-side watch payload construction (`Trio/Sources/Services/WatchManager/AppleWatchManager.swift`) as needed to bound payload size.  
 **Branch reviewed:** `feature/watch-complication-improvements` (Trio worktree).  
@@ -19,6 +19,8 @@
 **Path A — Startup load shedding (already in tree):** Defers first `requestWatchStateUpdate()` by 2s, HealthKit setup by 10s, and persisted log flush by 10s, and suppresses log transport until the first deferred refresh fires (`WatchState.handleForegroundActiveEntry`, `fireDeferredStartupWatchStateRefreshOnMain`, `WatchStartupTransportGate`). That reduces **contention and WC traffic** early; it does **not** remove the **288-point chart payload** once it arrives, nor **verbatim message logging**—those gaps are why parent planning treats **Path B** as the **primary footprint track** while **Path A** remains a **parallel pressure-reduction** track.
 
 **Post-investigation implementation (2026-04-06):** **Path B** **B3** now gates **`GlucoseChartView`** behind the chart **`TabView`** page (`currentPage == 1`), so launch no longer pays full **Charts** / **`PointMark`** construction until the user opens that tab. **B1** and **B4** address ranked items **3** and **4** below (trimmed WC logging; bounded nil-anchor HK bootstrap + anchor establishment). **Field:** TestFlight **152** reported **stable foreground launch** without jetsam/forced closure — **supportive** for the hypothesis that **eager chart construction at first frame** was a dominant launch allocator alongside payload/logging/HK risk. This doc’s **launch-path map** and ranked list remain the **investigation-time** baseline unless a paragraph explicitly says **current tree**.
+
+**Post-investigation implementation (2026-04-08):** TestFlight **153+** ships **Path B** **B6** — field **`task_info`** **`TASK_VM_INFO.phys_footprint`** samples as **`event=watch_resident_sample`** / **`phys_footprint_mib`** at named checkpoints (see **02** § **B6**, **04** § **B6**). This provides **TestFlight-class** numeric resident evidence for **B0** clause **2** without Mac-tethered Instruments when combined with implementation-log repro notes — see **02** implementation log **2026-04-08 18:02 CEST**. **B0** exit gate **closed** — **02** implementation log **2026-04-08 21:45 CET** (device run + **B6** table; clause **3** via **2026-04-06 13:48 CET** waiver).
 
 ---
 
@@ -337,6 +339,14 @@ This section records **post–doc-1.4** device behavior, a new archived jetsam d
 ---
 
 ## Changelog
+
+### v1.8 (2026-04-08 21:45 CET)
+
+- **Executive summary:** **Post-investigation implementation (2026-04-08)** — **153+** / **B6**; **B0** gate **closed** pointer (**02** **2026-04-08 21:45 CET**).
+
+### v1.7 (2026-04-08 18:02 CEST)
+
+- **Executive summary:** **Post-investigation implementation (2026-04-08)** — TestFlight **153**, **B6** field resident telemetry; pointer to **02** implementation log **2026-04-08 18:02 CEST** and **B0** clause **2**.
 
 ### v1.6 (2026-04-06 15:48 CET)
 

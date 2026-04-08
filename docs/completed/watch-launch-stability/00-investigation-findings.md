@@ -1,9 +1,9 @@
 # Watch Launch Stability — Investigation Findings
 
-**Version:** v1.12
+**Version:** v1.14
 **Created:** 2026-04-01 09:31 CEST
-**Last updated:** 2026-04-06 15:48 CET
-**Status:** Updated — primary foreground-launch jetsam symptom mitigated in field (TestFlight **152**+); residual gates remain in **02** / **04**.
+**Last updated:** 2026-04-08 21:45 CEST
+**Status:** Updated — primary foreground-launch jetsam symptom mitigated in field (TestFlight **152**+); **153+** ships **B6** field resident telemetry; **Path B** **B5** and **B0** exit gates **closed** in **02** / **04** (**2026-04-08** — implementation log **2026-04-08 21:33 CEST** / **21:45 CET**). Optional **B2** payload-shaping work remains **when prioritized** ( **04** pre-B2 signed **2026-04-06**).
 
 Design: [01-startup-load-shedding-design.md](01-startup-load-shedding-design.md)
 Implementation plan: [02-startup-load-shedding-implementation-plan.md](02-startup-load-shedding-implementation-plan.md)
@@ -32,7 +32,11 @@ The connectivity background-task state machine remains a real follow-up candidat
 
 ### Field validation summary (2026-04-06)
 
-After shipping **Path B** **B3** — lazy **`GlucoseChartView`** construction (chart page built only when the user selects that **`TabView`** page) — together with **Path A** startup load shedding and **Path B** **B1** / **B4** (trimmed WC inbound logging; bounded nil-anchor HealthKit bootstrap and anchor establishment), **TestFlight build 152** is reported to **launch and stay in the foreground** without **jetsam** or a forced return to the clock face — the failure mode captured in **§ 4** and the April **2026** timeline. That outcome **supports** the investigation thread that **eager `Charts` / chart-page construction at first frame** was a major contributor to **launch-time resident pressure** alongside large WC payloads and logging amplifiers. It does **not** replace formal **B5** documentation, optional **B2** work, or deferred **B0** resident checkpoints where those are still required for sign-off — see [02-startup-load-shedding-implementation-plan.md](02-startup-load-shedding-implementation-plan.md) implementation log (**2026-04-06 15:23 CET**) and [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md) pre-B2 sign-off.
+After shipping **Path B** **B3** — lazy **`GlucoseChartView`** construction (chart page built only when the user selects that **`TabView`** page) — together with **Path A** startup load shedding and **Path B** **B1** / **B4** (trimmed WC inbound logging; bounded nil-anchor HealthKit bootstrap and anchor establishment), **TestFlight build 152** is reported to **launch and stay in the foreground** without **jetsam** or a forced return to the clock face — the failure mode captured in **§ 4** and the April **2026** timeline. That outcome **supports** the investigation thread that **eager `Charts` / chart-page construction at first frame** was a major contributor to **launch-time resident pressure** alongside large WC payloads and logging amplifiers. **B5** (foreground-open / jetsam validation) and **B0** (measurement / repro gate) are **documented closed** for this initiative — see [02-startup-load-shedding-implementation-plan.md](02-startup-load-shedding-implementation-plan.md) implementation log (**2026-04-08 21:33 CEST**, **2026-04-08 21:45 CET**) and [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md) § **B5** / **B0** closure. Optional **B2** implementation remains **when prioritized** ([04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md) pre-B2 table **2026-04-06**).
+
+### Field telemetry note (2026-04-08)
+
+**TestFlight 153+** includes **Path B** **B6** — in-process **`TASK_VM_INFO.phys_footprint`** samples via **`event=watch_resident_sample`** / **`phys_footprint_mib`** (default **on** on TestFlight / sandbox receipt per **04** § **B6**). Better Stack spot-checks show resident-sample lines in the hot tier — see [02-startup-load-shedding-implementation-plan.md](02-startup-load-shedding-implementation-plan.md) implementation log (**2026-04-08 18:02 CEST**). **B6** supported **B0** clause **2** numeric evidence; **B5** and the full **B0** checklist are **closed** in **02** / **04** (**2026-04-08** — **2026-04-08 21:33 CEST** / **21:45 CET**).
 
 ---
 
@@ -125,7 +129,7 @@ The most important findings across those reports (and consistent with reproducib
 | 2026-04-03 | `JetsamEvent-2026-04-03-164956.ips` | watchOS kills `Trio Watch App` while **`active` / `frontmost`** for **`highwater`** | Confirms **`highwater`** appears in **device** diagnostics, not only narrative reports. |
 | 2026-04-03 | `JetsamEvent-2026-04-03-165709.ips` | watchOS kills `Trio Watch App` for **`per-process-limit`** | Second same-day capture; reinforces **`per-process-limit`** alongside **`highwater`** as observed reason strings. |
 | (ongoing) | Reproducible foreground-open jetsam (same class of symptom) | `per-process-limit` / `highwater` (and potentially others) | Confirms memory-budget termination is a **repeatable** manifestation of the user-reported forced return to the clock face; establishes **Path B** as the **primary** footprint track and keeps **Path A** as a **parallel pressure-reduction** track. |
-| 2026-04-06 | TestFlight **152** / **B3** lazy chart + **B1**/**B4** + Path **A** in tree | Field report: stable watch **launch and foreground** without jetsam/forced closure | **Supportive** validation for the **eager chart at launch** hypothesis; formal **B5** matrix and residual gates in **02** / **04**. |
+| 2026-04-06 | TestFlight **152** / **B3** lazy chart + **B1**/**B4** + Path **A** in tree | Field report: stable watch **launch and foreground** without jetsam/forced closure | **Supportive** validation for the **eager chart at launch** hypothesis; **B5** / **B0** formally **closed** **2026-04-08** (see **02** implementation log **21:33** / **21:45 CET**). |
 
 
 ---
@@ -319,7 +323,7 @@ Do not start by reverting build 142 `applicationContext`.
 
 ### Path B — Watch foreground memory-hardening / launch footprint reduction (primary track)
 
-Execute the **Path B** phases in [02-startup-load-shedding-implementation-plan.md](02-startup-load-shedding-implementation-plan.md), grounded in [03-watch-foreground-launch-memory-investigation.md](03-watch-foreground-launch-memory-investigation.md). **B0 exit** and **pre-B2 product decisions** are gated in [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md) and **02** § B0 / B2. Path B directly targets **resident footprint** and **launch object-graph size**: payload shaping / history limits, reduction of duplicate on-watch state, lazy or deferred chart and heavy detail surfaces, elimination of payload-stringifying logging amplifiers, bounded HealthKit startup batch behavior, and **launch memory instrumentation** to validate impact.
+Execute the **Path B** phases in [02-startup-load-shedding-implementation-plan.md](02-startup-load-shedding-implementation-plan.md), grounded in [03-watch-foreground-launch-memory-investigation.md](03-watch-foreground-launch-memory-investigation.md). **B0** exit and **B5** validation are **closed** for this initiative (**02** / **04**, **2026-04-08**). **Pre-B2** product decisions remain in [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md) for **B2** coding **when prioritized**. Path B directly targets **resident footprint** and **launch object-graph size**: payload shaping / history limits, reduction of duplicate on-watch state, lazy or deferred chart and heavy detail surfaces, elimination of payload-stringifying logging amplifiers, bounded HealthKit startup batch behavior, and **launch memory instrumentation** to validate impact.
 
 **Path B is a required remediation track and should begin immediately**; **Path A should continue in parallel as sequencing allows**; **ordering between tracks remains a delivery decision**. Repeated foreground-launch jetsam with **`per-process-limit` / `highwater`** establishes **urgency**; it does **not** by itself prove a unique mandatory lockstep ship order with Path A. **Path A** remains valuable in parallel because it reduces **launch-time transport/scheduling amplifiers** that may compound pressure.
 
@@ -355,6 +359,14 @@ No additional substantive disagreements were introduced by the latest ChatGPT / 
 ---
 
 ## Changelog
+
+### v1.14 (2026-04-08 21:45 CET)
+
+- **Initiative closure alignment:** **Status**, **§ Field validation summary**, **§ Field telemetry note**, **Consolidated timeline** (**2026-04-06** row), and **Path B recommendation** updated so **B5** / **B0** are **not** described as open; pointers to **02** implementation log **2026-04-08 21:33 CEST** / **21:45 CET** and **04** § **B5** / **B0** closure. Optional **B2** called out explicitly.
+
+### v1.13 (2026-04-08 18:02 CEST)
+
+- **Field telemetry:** **§ Field telemetry note (2026-04-08)** — TestFlight **153**, **B6** **`watch_resident_sample`** / **`phys_footprint_mib`** live on TF/sandbox (pointer to **02** implementation log **2026-04-08 18:02 CEST**). **Status** line notes **153** + **B6**; does not claim **B5**/**B0** closed.
 
 ### v1.12 (2026-04-06 15:48 CET)
 

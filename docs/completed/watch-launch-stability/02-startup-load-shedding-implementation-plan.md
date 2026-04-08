@@ -1,8 +1,8 @@
 # Watch Launch Stability — Implementation Plan (Path A & Path B)
 
-**Version:** v2.15  
+**Version:** v2.28  
 **Created:** 2026-04-01 09:31 CEST  
-**Last updated:** 2026-04-06 16:07 CET  
+**Last updated:** 2026-04-08 21:54 CEST  
 **Status:** Final  
 
 **Filename note:** This file remains `02-startup-load-shedding-implementation-plan.md` for stable links; the **title** reflects **Path A** (startup load shedding) and **Path B** (foreground memory-hardening).
@@ -14,11 +14,11 @@ Launch memory investigation: [03-watch-foreground-launch-memory-investigation.md
 
 This document implements **two remediation paths**. **Path B — Watch foreground memory-hardening / launch footprint reduction** is the **primary remediation track** for the **observed memory-budget closure** on foreground launch/open. **Path A — Startup load shedding / launch pressure reduction** remains a **justified parallel** track (transport/scheduling amplifiers that may compound resident pressure). **Path B is a required remediation track and should begin immediately**; **Path A should continue in parallel as sequencing allows** (see [00-investigation-findings.md](00-investigation-findings.md))—the docs do **not** claim the evidence proves both must ship in lockstep.
 
-**Naming:** Path A work is labeled **A1, A2, A3**. Path B work is labeled **B0–B5**. These namespaces are intentionally disjoint (there is no “Path A phase B”).
+**Naming:** Path A work is labeled **A1, A2, A3**. Path B work is labeled **B0–B6**. These namespaces are intentionally disjoint (there is no “Path A phase B”). **B6** is optional **field resident telemetry** (not a third “Path C” — see § **B6** below and [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md) § **B6**).
 
 **Jetsam reasons:** Validation checks both **`per-process-limit`** and **`highwater`**. **00** § 4 and **04** § Jetsam reason strings inventory **three** archived `.ips` files (`2026-04-01` + two `2026-04-03` captures); **`per-process-limit`** and **`highwater`** both appear **on-device** in that set.
 
-**Current field status (2026-04-06):** TestFlight **152** combines **Path A** startup load shedding with **Path B** **B1**, **B3** (lazy **`GlucoseChartView`** until the chart tab is selected), and **B4**. Field report: **first open after install** succeeded — stable watch launch and foreground without jetsam or forced closure to the clock face (no multi-open “burn-in” needed for subjective confidence) — see implementation log **2026-04-06 15:23 CET** and **§ B5 — Attempt matrix** below. **04** pre-B2 **owner / date decided** filled (**Charlie Chrisman**, **2026-04-06**) so **B2** is unblocked for sequencing. Optional: complete **B5** rows **2–10** (Mac-tethered protocol); deferred **B0** resident checkpoints; **B2** coding when prioritized.
+**Current field status (2026-04-08):** TestFlight **152** remains the primary **2026-04-06** field report: **Path A** startup load shedding plus **Path B** **B1**, **B3** (lazy **`GlucoseChartView`** until the chart tab is selected), and **B4** — stable watch launch / foreground without jetsam or forced return to the clock face on first open (see implementation log **2026-04-06 15:23 CET** and **§ B5 — Attempt matrix**). **TestFlight 153+** includes **B6** field resident memory telemetry (**`event=watch_resident_sample`**, **`phys_footprint_mib`**, checkpoint tokens, **`activation_seq`** where applicable) — default **on** on **DEBUG** / **sandbox receipt** (TestFlight) per **04** § **B6**; **production App Store** remains **`UserDefaults`** opt-in. **TestFlight 154** used for **B0** clause **1–2** closure run (implementation log **2026-04-08 21:45 CET**). **04** pre-B2 **owner / date decided** (**Charlie Chrisman**, **2026-04-06**) — **B2** coding when prioritized. **Path B — § B5:** **closed** — **2026-04-08 21:33 CEST** — formal **10× Mac-tethered** protocol **waived** (**infeasible**); **10× untethered** session **S2** + matrix + logs accepted as **conclusive** validation (see **04** § **B5 closure**, implementation log **2026-04-08 21:33 CEST**). **Path B — § B0 exit gate:** **closed** — **2026-04-08 21:45 CET** — device run + per-checkpoint **`TASK_VM_INFO.phys_footprint`** evidence (**B6**) + clause **3** satisfied by **2026-04-06 13:48 CET** chart A/B waiver (see implementation log **2026-04-08 21:45 CET**, **04** § **B0 closure**).
 
 ---
 
@@ -70,7 +70,7 @@ Implement footprint-focused mitigations informed by [03-watch-foreground-launch-
 
 ## Path A — Startup load shedding / launch pressure reduction
 
-**A1–A3** below are **Path A** work items. **B0–B5** are **Path B** work items. The **A*** and **B*** numeric labels are separate namespaces (there is no “Path A phase B”).
+**A1–A3** below are **Path A** work items. **B0–B6** are **Path B** work items (**B6** optional telemetry — see § **B6**). The **A*** and **B*** numeric labels are separate namespaces (there is no “Path A phase B”).
 
 ---
 
@@ -90,7 +90,7 @@ Fallback ship boundary if a smaller step is needed:
 
 - ship **A1 and A2** first, then **A3**
 
-**Path B sequencing:** B0 (instrumentation) should begin early enough to measure B1–B4 tranches, but **B1** (logging amplifier removal) is **high-confidence** and can land as soon as practical **alongside** Path A. Exact ordering of B2–B4 may depend on product/UI constraints; B5 validates the combined outcome.
+**Path B sequencing:** B0 (instrumentation) should begin early enough to measure B1–B4 tranches, but **B1** (logging amplifier removal) is **high-confidence** and can land as soon as practical **alongside** Path A. Exact ordering of B2–B4 may depend on product/UI constraints; B5 validates the combined outcome. Optional **B6** (field resident samples) can ship after core mitigations when **B0** clause **2** numeric evidence via TestFlight is desired — see § **B6**.
 
 ---
 
@@ -331,15 +331,17 @@ Startup grace handling must be enforced **before any transport-capable branch in
 - **Do not** log full WC message bodies in production instrumentation paths.
 - **Acceptance (minimum):** documented repro checklist + captured measurement notes per build; enables before/after comparison for B2–B4.
 
-#### B0 exit gate (required before starting B2 or B3)
+#### B0 exit gate (required before starting B2 or **new** B3-class chart work — **closed** for this initiative **2026-04-08 21:45 CET**)
 
-**Do not start B2 or B3** until B0 meets **all** of the following (mirror + detail in [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md) § B0 exit gate):
+**Do not start B2** or **greenfield** chart/footprint changes that **require** a fresh **B0** record until B0 meets **all** of the following (mirror + detail in [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md) § B0 exit gate). **B3** (lazy chart) shipped **2026-04-06** under **2026-04-06 13:48 CET** waiver before this formal closure.
 
 1. **Device run recorded** for a named Trio + watchOS build, covering at least: cold launch, first frame, after deferred watch-state fires, after first large WC payload handled, +10s HealthKit path, +10s log flush path.
 2. **Per-checkpoint evidence:** resident sample (memory gauge, `task_vm_info`, Instruments mark, or equivalent) **or** written **infeasibility** with reason and reviewer sign-off.
 3. **Chart cost isolation:** one **chart vs no-chart** (or doc 03 Charts A/B) comparison build **or** explicit **deferral decision** with owner, rationale, and follow-up.
 
 Waiving the gate for a given milestone requires a **written waiver** in the implementation log stating which clause is waived and why.
+
+**Status (2026-04-08):** **Closed** — **2026-04-08 21:45 CET** — all three clauses satisfied or waived per implementation log **2026-04-08 21:45 CET** (device run + **B6** numeric evidence + **2026-04-06 13:48 CET** clause **3** waiver). **04** § **B0 closure**.
 
 ### B1 — Eliminate full-message logging and other memory amplifiers (**H**)
 
@@ -363,7 +365,9 @@ Waiving the gate for a given milestone requires a **written waiver** in the impl
 
 **Goal:** avoid paying full `Charts` / `GlucoseChartView` cost when the chart page is not visible—**pending** runtime confirmation of `TabView` page eagerness on target OS builds.
 
-**Gate:** Same **B0 exit gate** as B2 (do not start B3 until B0 is closed or waived in writing).
+**Status:** **Complete** — **2026-04-06** (implementation log **2026-04-06 13:50 CET**); shipped under **B0** waiver **2026-04-06 13:48 CET**. Formal **B0** exit gate **closed** **2026-04-08 21:45 CET**.
+
+**Gate (for future chart/footprint changes):** Same **B0 exit gate** as B2 if a **new** lazy-chart or chart-memory change needs a fresh measurement record.
 
 - Implement lazy construction aligned with the debug-page gating pattern (doc 03): build chart page content when selected, unless profiling proves it ineffective.
 - Consider downsampling for `PointMark` series even when the chart is visible.
@@ -379,44 +383,99 @@ Waiving the gate for a given milestone requires a **written waiver** in the impl
 
 ### B5 — Repeated foreground-open memory / jetsam validation (**M**)
 
+**Status:** **Closed — complete — 2026-04-08 21:33 CEST** (waiver + substitute protocol — see **§ B5 — Mac-tether waiver** below and implementation log **2026-04-08 21:33 CEST**).
+
 **Goal:** confirm Path B tranches improve the **observed** failure mode.
 
-- Run the **same class** of tethered foreground-open attempts as Path A validation, extended to capture **`highwater`** as well as `per-process-limit`.
+- Run the **same class** of foreground-open attempts as Path A validation, extended to capture **`highwater`** as well as `per-process-limit` (see **§ Validation** and attempt matrix).
 - Treat **recurrence** after B1–B4 as a signal to **iterate** Path B (not automatic proof that Path A failed).
 - **Acceptance:** recorded attempt matrix + jetsam outcomes + correlation notes (which build, which Path B tranches included).
 
+#### B5 — Mac-tether waiver (formal protocol **infeasible**)
+
+The **original** written protocol called for **10×** attempts with the **Apple Watch connected to a Mac** (USB / developer pairing) **during each attempt** so **`JetsamEvent` / sysdiagnose** export is practical on kill (**§ Validation**, matrix **§ B5**).
+
+**Finding:** **Mac-tethered** scripted repeats are **infeasible** in the owner’s validation environment — a **reliable watch↔Mac tether** for **10** consecutive, identically scripted foreground opens is **not** available / not practical for sign-off (**owner:** Charlie Chrisman).
+
+**Waiver (explicit):** The **10× Mac-tethered** requirement for **B5** formal closure is **waived**.
+
+**Substitute evidence (accepted for conclusive B5 closure):** **10× untethered** foreground-open session **S2** (**2026-04-08** ~**19:20–19:25** local; implementation log **2026-04-08 21:30 CEST**), matrix rows **2–11**, **iPhone → Watch → Diagnostic Logs:** no new files, **Better Stack** corroboration (**`19:18–19:28` UTC** query — **`watch_startup_*`**, **`watch_resident_sample`**, no **`jetsam` / `per-process-limit` / `highwater`** substring in sampled window). This is **accepted** as satisfying **B5** for this initiative. **Future** builds may repeat **tethered** validation if tooling/setup changes.
+
 #### B5 — Attempt matrix (living record)
 
-**Protocol (same class as Path A — § Validation):** at least **10** **tethered** foreground-open attempts from the **clock face** with the paired phone in its **normal connected** state; after the run set, inspect device diagnostics for any new **`JetsamEvent`** naming **`Trio Watch App`** with **`reason=per-process-limit`** or **`highwater`** (export filename + UTC timestamp if found). **B5** extends Path A by **recording** those outcomes next to the **build** and **Path B tranche** set.
+**Protocol (baseline text — superseded for closure by waiver above):** the **original** target was at least **10** **Mac-tethered** foreground-open attempts from the **clock face** with the paired phone in its **normal connected** state; after the run set, inspect device diagnostics for any new **`JetsamEvent`** naming **`Trio Watch App`** with **`reason=per-process-limit`** or **`highwater`**. **Recorded closure** uses the **untethered** substitute (session **S2**) per **§ B5 — Mac-tether waiver**.
 
-**Terminology — “tethered” vs normal use:** In this protocol, **tethered** means the **Apple Watch is connected to a Mac with a data-capable link** (USB / developer-pairing setup) **during the attempt**, so **Console.app** / **sysdiagnose** / diagnostic export is practical if a kill happens. It does **not** mean “paired to iPhone” (that is normal for all attempts). **Untethered** / **field** use is everyday opens from the clock face **without** the Mac cable — valuable signal (matrix **row 1**), but **row 1** stays **Partial** relative to the formal **10× Mac-tethered** row count unless you intentionally run the same steps while tethered and record them in **2–10**.
+**Terminology — “tethered” vs normal use:** **Tethered** means the **Apple Watch is connected to a Mac with a data-capable link** (USB / developer-pairing setup) **during the attempt**. **Untethered** / **field** use is opens from the clock face **without** the Mac cable. Matrix **row 1** + **session S2** (rows **2–11**) are **untethered**; **B5** is nonetheless **closed** under the **2026-04-08** waiver.
 
-**Build / tranche correlation (validation window — 2026-04-06)**
+**Build / tranche correlation (validation windows: 2026-04-06 primary; TF 153 adds B6)**
 
 | Field | Recorded value |
 |--------|----------------|
-| **Trio / watch build** | TestFlight **152** (stable-launch field report; contrast **build 150** `per-process-limit` baseline in B0 waiver entry **2026-04-06 13:48 CET**) |
+| **Trio / watch build** | TestFlight **152** — stable-launch field report (**2026-04-06**; contrast **build 150** `per-process-limit` baseline in B0 waiver entry **2026-04-06 13:48 CET**). **TestFlight 153** — adds **B6** resident telemetry (**2026-04-08** deploy); see implementation log **2026-04-08 18:02 CEST**. |
 | **Hardware / OS class** | Same device class as archived captures in this initiative (**Watch6,15**, **watchOS 26.x** in **03** / `.ips` headers) — record exact **watchOS** build (e.g. **23S620**) on the matrix when completing tethered rows |
 | **Path A in build?** | **Yes** — startup grace, deferred first watch-state refresh / HealthKit / persisted-log flush, transport suppression (**02** § A1–A3) |
-| **Path B in build** | **B1** ✅ trimmed WC inbound logging · **B3** ✅ lazy **`GlucoseChartView`** (`currentPage == 1`) · **B4** ✅ bounded nil-anchor HK bootstrap + anchor establishment · **B2** not implemented (optional; **04** pre-B2 signed **2026-04-06**) |
-| **Telemetry corroboration (non-authoritative)** | Implementation log **2026-04-06 15:23 CET**: Better Stack hot-tier spot-check — no `message` substring match for jetsam / `per-process-limit` / `highwater` in the sampled window; `watch_startup_*`, `watch_wc_inbound`, `hk_sample_query_batch` / `hk_anchored_query_batch` present |
+| **Path B in build** | **B1** ✅ trimmed WC inbound logging · **B3** ✅ lazy **`GlucoseChartView`** (`currentPage == 1`) · **B4** ✅ bounded nil-anchor HK bootstrap + anchor establishment · **B6** ✅ field resident samples (**TF 153+**; sandbox/TestFlight default **on**) · **B2** not implemented (optional; **04** pre-B2 signed **2026-04-06**) |
+| **Telemetry corroboration (non-authoritative)** | **152 window:** Implementation log **2026-04-06 15:23 CET** — Better Stack hot-tier spot-check: no `message` substring match for jetsam / `per-process-limit` / `highwater` in the sampled window; `watch_startup_*`, `watch_wc_inbound`, `hk_sample_query_batch` / `hk_anchored_query_batch` present. **153+:** `event=watch_resident_sample` / `phys_footprint_mib` / `checkpoint=` lines — implementation log **2026-04-08 18:02 CEST**. **2026-04-08 B5 batch (untethered):** implementation log **2026-04-08 21:30 CEST** — Better Stack query window **`19:18–19:28` UTC** (`watch_startup_*`, `watch_resident_sample`, no jetsam substring match). |
 
 **Foreground-open attempts**
 
 | # | When (local) | Protocol | New `JetsamEvent` for `Trio Watch App`? | Reason (if any) | Forced closure (subjective) | Notes |
 |---|----------------|----------|----------------------------------------|-------------------|-----------------------------|--------|
 | **1** | **~2026-04-06** (post–TF **152** deploy) | **Partial** — **untethered** field / daily use; **not** the formal Mac-tethered ×10 clock-face protocol | **None reported** (no diagnostic export cited) | — | **None reported** | **First open** after **152** reached the watch: **immediate** success (no issues). User did **not** need many or dozens of opens to gain confidence — contrast pre–**B3** baseline (**build 150** jetsam ~98ms). **Chart tab** opened at least once on **152** — **no** kill. Corroboration: impl log **15:23 CET** + Better Stack bullets above. |
-| **2** | *TBD* | **Mac-tethered**; clock face → open Trio | *fill Y/N* | *`per-process-limit` / `highwater` / —* | *fill* | *Optional: `.ips` filename* |
-| **3** | *TBD* | Same | *fill* | *fill* | *fill* | |
-| **4** | *TBD* | Same | *fill* | *fill* | *fill* | |
-| **5** | *TBD* | Same | *fill* | *fill* | *fill* | |
-| **6** | *TBD* | Same | *fill* | *fill* | *fill* | |
-| **7** | *TBD* | Same | *fill* | *fill* | *fill* | |
-| **8** | *TBD* | Same | *fill* | *fill* | *fill* | |
-| **9** | *TBD* | Same | *fill* | *fill* | *fill* | |
-| **10** | *TBD* | Same | *fill* | *fill* | *fill* | |
+| **2** | **2026-04-08** ~**19:20–19:25** (author local · BS **`19:24:07`–`19:25:51` UTC**) | **Untethered** — clock face → **tap complication** → Trio; **15 s** in app; return to clock face; **5 s**; **1/10** | **No** (none cited; iPhone **Watch → General → Diagnostic Logs**: **no files**) | — | **No** | **TF 153.** **B5** closure — **Mac-tether waived** (**§ B5 — Mac-tether waiver**); **S2** attempt **1/10**. Impl log **21:30** / **21:33 CEST**. |
+| **3** | same session | same pattern · **2/10** | **No** | — | **No** | bundled **S2** |
+| **4** | same session | same pattern · **3/10** | **No** | — | **No** | bundled **S2** |
+| **5** | same session | same pattern · **4/10** | **No** | — | **No** | bundled **S2** |
+| **6** | same session | same pattern · **5/10** | **No** | — | **No** | bundled **S2** |
+| **7** | same session | same pattern · **6/10** | **No** | — | **No** | bundled **S2** |
+| **8** | same session | same pattern · **7/10** | **No** | — | **No** | bundled **S2** |
+| **9** | same session | same pattern · **8/10** | **No** | — | **No** | bundled **S2** |
+| **10** | same session | same pattern · **9/10** | **No** | — | **No** | bundled **S2** |
+| **11** | same session | same pattern · **10/10** | **No** | — | **No** | bundled **S2** — session end |
 
-**How to close B5 formally:** fill **2–10** under the Path A protocol (or add rows **11+** if you want extra margin). If every tethered row is **No** jetsam / **No** forced closure, record that explicitly and optionally attach a one-line “diagnostics reviewed through (date)” note.
+**B5 closure (conclusive):** **2026-04-08 21:33 CEST** — **10× Mac-tethered** protocol **waived** (**infeasible**); **session S2** (rows **2–11**) + diagnostics + Better Stack **accepted** as **complete** validation. See **§ B5 — Mac-tether waiver** and implementation log **2026-04-08 21:33 CEST**.
+
+### B6 — Field resident memory telemetry (**M**, optional)
+
+**Naming:** **B6** — not **Path C.** A new path would mean a separate remediation initiative. **B6** is **Path B** optional **measurement** to satisfy or support **B0** exit gate clause **2** (numeric evidence) using the **same** binary class (e.g. TestFlight) when **Instruments** on the daily-driver install is impractical.
+
+**Goal:** Emit **structured** **`WatchLogger`** lines (→ phone → aggregation e.g. Better Stack) at **named checkpoints**, using **one** Mach metric only — see metric and schema below.
+
+**Design:** [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md) § **B6**.
+
+**Metric (must match 04):** `task_info` (**`TASK_VM_INFO`**) → **`phys_footprint`** (bytes) → convert to **MiB** only; log as **`phys_footprint_mib=<double>`**. No other memory fields in v1 unless spec is revised and versioned.
+
+**Log schema (final):** **`event=watch_resident_sample`** **`checkpoint=<token>`** **`phys_footprint_mib=<n>`** **`activation_seq=<n>`** when the watch app has a **current startup / foreground activation sequence** — **required** for normal startup-path checkpoints; **omit** **`activation_seq`** for **`hk_batch`** only when the **first** qualifying batch occurs **before** a sequence exists (**process-scoped**, still **one line per process** — **04**). Reuse **`WatchLogger.log`** so build / battery / file context match other lines.
+
+**Rollout (explicit):** **On** — **`#if DEBUG`**. **On** — **TestFlight** and other **sandbox-receipt** installs (`Bundle.main.appStoreReceiptURL` **`lastPathComponent == "sandboxReceipt"`**). **Off** — **production App Store** (non-sandbox receipt) unless **`UserDefaults`** **`com.trio.watch.residentTelemetryEnabled`** is **`true`**. Record the gate in the implementation log when shipping.
+
+**Sampling budget (hard):**
+
+- **≤ 1** line per **`checkpoint`** value **per** **`activation_seq`**.
+- **≤ 6** lines **total** per activation (one per **listed** checkpoint token — **six** tokens — maximum if all fire). Process-scoped **`hk_batch`** without **`activation_seq`** does not count toward this per-activation cap.
+- **`hk_batch`:** **first** HK observer batch completion after deferred HK setup for this **process** only (**conservative** — no re-emit on later HK fires in the same process unless the spec is revised). If **`startupCurrentActivationSequence`** is **nil** at first batch, emit **without** **`activation_seq`** (still one line per process).
+- **`chart_visible`:** **≤ 1** per activation when user opens chart tab.
+
+**Checkpoint tokens and semantics:**
+
+| `checkpoint` | When to sample (semantics) |
+|--------------|----------------------------|
+| `first_main_view` | **Root-view appearance checkpoint** — after main watch **`TabView`** / root UI is up (e.g. end of **`TrioMainWatchView`** `.onAppear`); **earliest practical “UI is up” hook** — **first-frame proxy**, not GPU frame timing. |
+| `deferred_watch_state_fired` | **Around** coordinator deferred refresh: **after** `event=watch_startup_deferred_watch_state_refresh_fired` is logged, **before** / as **`requestWatchStateUpdate()`** runs — measures **scheduling / outbound ask**, **not** yet the large merged payload. |
+| `first_watch_state_apply` | **After** first **`processRawDataForWatchState`** (or equivalent) **completes** applying watch state for this **activation** — **post-payload** memory-relevant checkpoint (**once** per `activation_seq`). |
+| `hk_batch` | **After** shared HK completion logs **`hk_sample_query_batch` / `hk_anchored_query_batch`** for the **first** qualifying batch (per budget above). **`activation_seq`** included when **`startupCurrentActivationSequence`** is non-**nil**; **omitted** if the first batch occurs **before** any activation sequence (process-scoped). |
+| `post_startup_flush` | **After** `await WatchLogger.shared.flushPersistedLogs(...)` **returns** in the deferred **10 s** startup Task — **local** flush routine finished; **phone delivery** may still be asynchronous. |
+| `chart_visible` (optional) | **Once** per activation when chart page becomes visible (**B3**). |
+
+**Implementation steps:**
+
+1. **Helper:** New utility: `task_info` + **`TASK_VM_INFO`** → **`phys_footprint`** → **MiB**; return optional `Double`; **no crash** on failure.
+2. **Emitter:** **`emitResidentMemorySample(checkpoint:activationSequence:)`** emits **`event=watch_resident_sample`** and enforces the sampling budget. Pass **`activationSequence`** whenever **`WatchState`** has a current sequence; **`hk_batch`** may pass **`nil`** so the first process batch is not dropped when no sequence exists yet (line omits **`activation_seq`**). Budget: **≤ 1** per **`checkpoint`** per **`activation_seq`** (where applicable) and **≤ 6** per activation (listed tokens); **`hk_batch`** also **once per process** (process-scoped line without **`activation_seq`** does not use the per-activation total).
+3. **Hook** emitter at rows in the table above (exact call sites in code during implementation).
+4. **Threading:** **Main** for UI checkpoints; HK path may **`DispatchQueue.main.async`** before sample if needed.
+5. **Transport / Better Stack:** Grace window may delay phone flush; query **wide** windows. Unreachable phone ⇒ queue — still valid for **B0** if documented.
+
+**Acceptance:** **Named** build + repro method yields **`event=watch_resident_sample`** lines with **`phys_footprint_mib`** for each expected checkpoint (subject to budget); implementation log ties to **B0** clause **2**. **Out of scope:** Instruments allocation trees; per-frame sampling; alternate `event=` names.
 
 ---
 
@@ -475,8 +534,8 @@ ORDER BY dt
 
 - If the repro window is older than the hot tier, use the documented `remote(...) UNION ALL s3Cluster(...)` form from `docs/process/betterstack-guide.md` with the same attempt-scoped time bounds.
 - Treat the attempt-scoped Better Stack query as corroboration for startup transport behavior, not as the sole source of truth; device-side diagnostics remain authoritative for jetsam.
-- Run at least 10 tethered foreground-open attempts on the target watch model, target watchOS build, and target Trio build, starting each attempt from the clock face with the paired phone in its normal connected state.
-- Capture device console / diagnostics for that run set and check whether any new watch `JetsamEvent` during those attempts names `Trio Watch App` with `reason=per-process-limit` **or** `highwater`.
+- **B5 (closed 2026-04-08):** the **10× Mac-tethered** variant is **waived** — see **§ B5 — Mac-tether waiver**; **10× untethered** session **S2** + matrix accepted as **conclusive**. **Original** text: run at least **10** **Mac-tethered** foreground-open attempts on the target watch model, target watchOS build, and target Trio build, starting each attempt from the clock face with the paired phone in its normal connected state.
+- Capture device console / diagnostics for that run set and check whether any new watch `JetsamEvent` during those attempts names `Trio Watch App` with `reason=per-process-limit` **or** `highwater` (substitute evidence per **§ B5** when tether **waived**).
 - No Trio `per-process-limit` / `highwater` jetsam across that protocol is **supportive** evidence for Path A’s goals; it does **not** remove the need for **Path B** while repeated jetsam remains a field risk.
 - If Trio `per-process-limit` / `highwater` jetsam recurs during that protocol, **continue Path B** (B0–B5) before widening scope to the connectivity background-task state machine.
 
@@ -486,6 +545,7 @@ ORDER BY dt
 - **Also satisfy each phase-local acceptance block** for **B1–B4** in this plan (logging amplifiers, payload shaping, lazy chart, bounded HealthKit query) before declaring a Path B tranche “complete” for sign-off purposes—B5 alone is not sufficient if B1–B4 acceptance was skipped.
 - Correlate evidence with structured logs (**counts**, not full payloads).
 - Optional: follow doc 03’s **Charts isolation A/B** and **HealthKit A/B** suggestions when prioritizing B3/B4.
+- **B6 (field — TestFlight 153+):** **`event=watch_resident_sample`** with **`phys_footprint_mib`** ( **`TASK_VM_INFO.phys_footprint`** ) and **`activation_seq`** on startup-path lines supports **B0** clause **2** numeric evidence without Mac-tethered Instruments on the TF binary — see § **B6** for schema and rollout (implementation log **2026-04-08 18:02 CEST**).
 
 Outcome handling (combined):
 
@@ -498,22 +558,109 @@ Outcome handling (combined):
 
 ## Implementation log
 
+### 2026-04-08 21:45 CET — **B0** exit gate **closed** (clauses **1–3**); Better Stack corroboration
+
+**Author:** **Charlie Chrisman**. **Trio / watch build:** TestFlight **154** (`v0.6.0.81(154)` on **`Trio Started`** line; **`[DEPLOY] event=watch_app_launch` `build=154`**). **Clause 1 — device run (named build):** Single structured cold-open session documented against **Better Stack** Trio source hot tier **`remote(t491594_trio_logs)`**, query window **2026-04-08 19:39:30–19:41:15 UTC** (attempt-scoped; full startup grace + deferred timers for **`activation_seq=1`**). **Repro:** cold launch after prior process start — **`Trio Started`** **19:39:37 UTC**; foreground chain **19:40:28** UTC **`[DEPLOY]`** + **`event=watch_startup_grace_scheduled`** (`watch_state_delay_s=2`, `healthkit_delay_s=10`, `flush_delay_s=10`). **Checkpoint order (UTC) vs doc 03 / § B6:**
+
+| B0 checkpoint (gate text) | Better Stack corroboration (message substrings / `event=`) |
+|---------------------------|------------------------------------------------------------|
+| Cold launch | **`Trio Started: …(154)`** **19:39:37 UTC**; **`[DEPLOY] event=watch_app_launch` `platform=watchos` `build=154`** **19:40:28 UTC** |
+| First frame | **`event=watch_resident_sample` `checkpoint=first_main_view`** **`phys_footprint_mib=6.657`** **`activation_seq=1`** **19:40:28 UTC** |
+| After deferred watch-state fires | **`event=watch_startup_deferred_watch_state_refresh_fired`** **`activation_seq=1`**; **`checkpoint=deferred_watch_state_fired`** **`phys_footprint_mib=10.688`** — **19:40:30 UTC** |
+| After first large WC payload handled (metadata only) | **`event=watch_wc_inbound`** `glucoseValues_count=287` `reading_epoch=1775676978`; **`checkpoint=first_watch_state_apply`** **`phys_footprint_mib=10.641`** **`activation_seq=1`** — **19:40:30 UTC** (“first large” = first applied watch-state for this activation per **02** § **B6**). |
+| +10s HealthKit path | **`event=watch_startup_deferred_healthkit_setup_fired`** `already_initialized=false` **19:40:38 UTC**; **`event=hk_anchored_query_batch`**; **`checkpoint=hk_batch`** **`phys_footprint_mib=10.469`** **19:40:39 UTC** |
+| +10s log flush path | **`event=watch_startup_deferred_persisted_log_flush_fired`** **19:40:39 UTC**; **`checkpoint=post_startup_flush`** **`phys_footprint_mib=10.469`** **`activation_seq=1`** **19:40:39 UTC** |
+
+**03 → B6 mapping (reviewer):** cold launch / deploy → grace + **`Trio Started`**; “first frame” → **`first_main_view`**; deferred refresh → **`deferred_watch_state_fired`** + **`watch_startup_deferred_watch_state_refresh_fired`**; WC apply → **`first_watch_state_apply`** + **`watch_wc_inbound`** counts; +10s HK → deferred HK fired + **`hk_batch`**; +10s flush → deferred flush fired + **`post_startup_flush`**.
+
+**Clause 2 — per-checkpoint numeric evidence (`TASK_VM_INFO` equivalent):** Same run — **`event=watch_resident_sample`** lines with **`phys_footprint_mib`** at each row above; metric definition **04** / **02** § **B6**. **Evidence table (build TF 154, `activation_seq=1`, UTC as in clause 1):**
+
+| Checkpoint | Evidence source | `phys_footprint_mib` | UTC |
+|------------|-----------------|----------------------|-----|
+| First frame (`first_main_view`) | `watch_resident_sample` | **6.657** | 19:40:28 |
+| Deferred watch-state fired | `watch_resident_sample` | **10.688** | 19:40:30 |
+| First watch-state apply (post-WC merge) | `watch_resident_sample` | **10.641** | 19:40:30 |
+| HK batch (post–deferred HK setup) | `watch_resident_sample` | **10.469** | 19:40:39 |
+| Post-startup flush (local flush complete) | `watch_resident_sample` | **10.469** | 19:40:39 |
+
+**Clause 3 — chart cost isolation:** **Closed** without a separate chart A/B build — clause **3** satisfied by existing written waiver **2026-04-06 13:48 CET** ( **`build=150`** **`JetsamEvent`** causal evidence; **B3** lazy **`GlucoseChartView`** as mitigation). **Owner:** Charlie Chrisman. **04** § **Pre-B3 notes:** chart A/B was deferred; **B3** ships lazy chart until the chart tab is selected — assumptions for footprint work without an A/B remain as in **04** pre-B2 / **B3** completion log **2026-04-06 13:50 CET**.
+
+**Outcome:** **B0** exit gate **complete** for this initiative — **2026-04-08 21:45 CET**. **Docs:** **04** § **B0 closure**; this file **header** “current field status”; changelog **v2.27**.
+
+### 2026-04-08 21:33 CEST — **B5** **closed:** Mac-tether protocol **waived** (**infeasible**); **S2** untethered **10×** **accepted** as **conclusive**
+
+- **Waiver:** Formal **10× Mac-tethered** foreground-open protocol (**§ Validation** / **§ B5**) is **infeasible** — **reliable Apple Watch ↔ Mac USB / developer tether** for **10** consecutive scripted opens is **not** available / not practical for owner validation (**Charlie Chrisman**).
+- **Decision:** **Waive** the **Mac-tether** requirement for **B5** formal closure. **Substitute:** **session S2** — **10× untethered** attempts (**2026-04-08** ~**19:20–19:25** local; matrix rows **2–11**); **iPhone → Watch → Diagnostic Logs:** **no files**; **Better Stack** corroboration (implementation log **2026-04-08 21:30 CEST** query window).
+- **Outcome:** **B5** is **closed**, **completed**, and **finished conclusively** for this initiative as of **2026-04-08 21:33 CEST**. **Docs:** **§ B5 — Mac-tether waiver**, **§ B5 — Attempt matrix** closure line, **04** § **B5 closure**, **current field status** (this file).
+
+### 2026-04-08 21:30 CEST — **B5** session **S2:** 10× foreground open (untethered); Better Stack corroboration
+
+- **Protocol (author):** **2026-04-08** ~**19:20–19:25** local — **10** repeats: open **Trio** from **clock face** via **complication tap** → wait **15 s** in app → return to **clock face** → wait **5 s** → repeat. **Subjective:** **no** forced return to clock face from app kill; **iPhone → Watch app → General → Diagnostic Logs:** **no files** listed.
+- **Tethering:** **Untethered** field session — see **2026-04-08 21:33 CEST** entry (**Mac-tether waived**; **S2** accepted for **B5** closure).
+- **Better Stack (Trio source, hot `remote(t491594_trio_logs)`):** Queried **`19:18–19:28` UTC** on **2026-04-08** (covers BS **`19:24:07`–`19:25:51` UTC** activity). Rows include **`event=watch_resident_sample`** (**`phys_footprint_mib`**, **`checkpoint=`**, **`activation_seq`** **1**–**9**), **`event=watch_startup_grace_scheduled`**, **`watch_startup_transport_suppressed`**, **`watch_startup_deferred_*_fired`**, **`watch_startup_grace_canceled`** (`reason=left_active_before_fire` — consistent with short foreground visits). **No** `message` substring match for **`jetsam`**, **`per-process-limit`**, or **`highwater`** in that window (**non-authoritative**; hot tier only — use **hot ∪ S3** for older windows per **`docs/process/betterstack-guide.md`**).
+- **Matrix:** **§ B5 — Attempt matrix** — rows **2–11** (**10** attempts, **session S2**); **build** **153** implied by ongoing TF field (structured `build=` not queried on every line in this pass).
+
+### 2026-04-08 18:02 CEST — TestFlight **153** deployed; **B6** resident telemetry **live** in field
+
+- **Deploy:** TestFlight **153** built and deployed; watch logs show **`build=153`** on **`[DEPLOY] event=watch_app_launch`**, **`Trio Started: …(153)`**, and **`[UPGRADE] build changed from 152 to 153`** (Better Stack Trio source, hot tier — **non-authoritative** corroboration).
+- **B6:** Multiple **`event=watch_resident_sample`** lines with **`phys_footprint_mib`** and **`checkpoint=`** (e.g. `first_main_view`, `deferred_watch_state_fired`, `first_watch_state_apply`, `hk_batch`, `post_startup_flush`, `chart_visible` — subject to budget / user navigation) and **`activation_seq`** where applicable — aligns with **02** / **04** § **B6** schema. Use **hot ∪ S3** time-bounded queries per **`docs/process/betterstack-guide.md`** for history outside the hot buffer.
+- **Initiative — what remains (historical at 18:02 CET — superseded):** At this timestamp, **B5** / **B0** were still **open**; subsequent closure **2026-04-08 21:33 CEST** (**B5**) and **2026-04-08 21:45 CET** (**B0**) — see implementation log entries **2026-04-08 21:33 CEST** / **21:45 CET** and **04** § **B5** / **B0** closure. **B2** payload shaping when prioritized (**04** pre-B2 signed).
+
+### 2026-04-08 13:05 CEST — B6 per-activation sample cap **6** (spec/code); **11:41** rollout clarification
+
+- **Issue:** **≤ 7** per activation in **02** / **04** and **`maxSamplesPerActivation = 7`** did not match **six** defined checkpoint tokens — spec/code mismatch and an unused slot.
+- **Change:** **`maxSamplesPerActivation = 6`** (`WatchResidentTelemetry.swift`); **02** § **B6** sampling + emitter bullets; **04** v1.9. **11:41** log entry: **Rollout note** — superseded by **2026-04-08 12:40 CEST**.
+- **Where:** `Trio Watch App Extension/Helper/WatchResidentTelemetry.swift`; **04** / **02** (this file).
+
+### 2026-04-08 12:55 CEST — **`hk_batch`** process-scoped when **`activation_seq`** nil (review)
+
+- **Feedback:** **`hk_batch`** was routed with **`startupCurrentActivationSequence`**, which can be **nil**; **`consumeIfAllowed`** required a non-nil sequence, so the **first-per-process** sample could be **lost** — mismatched with **04** (optional **`activation_seq`** for process-scoped) and **`hk_batch`** semantics.
+- **Evaluation:** Adopt **preferred** fix — **`hk_batch`** **only** may use **`activationSequence == nil`**; budget path reserves **one** process-scoped emit **without** **`activation_seq`** on the log line; **`rollbackConsume`** handles **`task_info`** failure for that path. **`emitResidentMemorySample`** appends **`activation_seq`** only when non-**nil**.
+- **Docs:** **04** v1.8 (`hk_batch` bullet); **02** § **B6** log schema, sampling bullet, table row, emitter step; **Rollout (explicit)** line (**DEBUG** / **sandbox receipt** / **production App Store** + **`UserDefaults`**).
+- **Where:** `Trio Watch App Extension/Helper/WatchResidentTelemetry.swift`.
+
+### 2026-04-08 12:40 CEST — Resident telemetry rollout: TestFlight default **on**
+
+- **Issue:** Prior gate (**DEBUG** on; **Release** + **`UserDefaults`**, default **false**) left **TestFlight** with **no** practical way to enable **`event=watch_resident_sample`** without a separate UI writing **`UserDefaults`**.
+- **Change:** **`WatchResidentTelemetryGate`** — **`#if DEBUG`** → **on**; **`#else`** if **`Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"`** (TestFlight / sandbox) → **on**; else **`UserDefaults`** **`com.trio.watch.residentTelemetryEnabled`** for **production App Store** opt-in. Docs: **04** v1.7, **02** § **B6** rollout line.
+- **Where:** `Trio Watch App Extension/Helper/WatchResidentTelemetry.swift`; **04** / **02** (this file).
+
+### 2026-04-08 12:35 CEST — Resident memory telemetry follow-up (review feedback + naming)
+
+- **Feedback (summary):** (1) **`first_main_view`** could be **dropped** if `TrioMainWatchView` `.onAppear` ran **before** `startupCurrentActivationSequence` existed — budget rejects `activationSequence == nil`, so the checkpoint was silently lost for that activation. **Fix required** (not a nit). (2) Minor: emit read Mach footprint **before** budget check — slightly inefficient. (3) Minor: record **actual shipping gate** in the log (**DEBUG** vs Release **`UserDefaults`**). (4) Request: **avoid** API names tied to plan path step labels (e.g. **`b6`** prefixes / step-number coupling) — prefer **semantic** names.
+- **Evaluation:** **Accepted (1), (2), (3), (4).** Did **not** relax the budget helper to allow `first_main_view` without `activation_seq` — keeps correlation rules in **04** / resident telemetry § intact.
+- **Code changes (Trio worktree):**
+  - **`first_main_view`:** `pendingResidentSampleFirstMainView` latches when the root view appears with **no** sequence yet; **`flushPendingFirstMainViewResidentSampleIfNeeded()`** runs after **`residentTelemetryBudget.resetForNewActivation`** inside **`handleForegroundActiveEntry()`**; **`pendingResidentSampleFirstMainView = false`** on **`handleForegroundInactiveOrBackground()`** to avoid stale state.
+  - **Naming:** `residentTelemetryBudget` (was `b6ResidentTelemetryBudget`); **`emitResidentMemorySample`** (was `emitWatchResidentSample`); **`noteMainWatchRootViewAppearedForResidentTelemetry()`**, **`noteChartTabBecameVisibleForResidentTelemetry()`** — **`TrioMainWatchView`** calls these instead of path-step-prefixed accessors.
+  - **Efficiency / correctness:** **`WatchResidentTelemetryBudget.rollbackConsume`** if `task_info` fails **after** a budget slot was consumed.
+- **Shipping gate (record — superseded 2026-04-08 12:40 CEST):** was **`#if DEBUG`** + **Release** **`UserDefaults`** only — see **2026-04-08 12:40 CEST** entry for **TestFlight / sandbox receipt** default **on**.
+- **Where:** `Helper/WatchResidentTelemetry.swift`, `WatchState.swift`, `Views/TrioMainWatchView.swift`.
+- **Acceptance:** Static review; **no** `xcodebuild` in this pass.
+
+### 2026-04-08 11:41 CEST — **B6** field resident memory telemetry (execution pass)
+
+- **Step / scope:** **02** § **B6** — `task_info` **`TASK_VM_INFO.phys_footprint`** → **`phys_footprint_mib`**, **`event=watch_resident_sample`**, hard sampling budget, checkpoint hooks per **04** § **B6**.
+- **What:** Added `Helper/WatchResidentTelemetry.swift` (**`WatchResidentMemory`**, **`WatchResidentTelemetryGate`**, **`WatchResidentTelemetryBudget`**, **`WatchState.emitWatchResidentSample`**). **Rollout:** `#if DEBUG` **on**; Release **off** unless `UserDefaults` key `com.trio.watch.residentTelemetryEnabled` is **true**. **Hooks:** `first_main_view` + `chart_visible` — `TrioMainWatchView`; `deferred_watch_state_fired` — `fireDeferredStartupWatchStateRefreshOnMain` after deferred refresh log, before `requestWatchStateUpdate()`; `first_watch_state_apply` — end of `processRawDataForWatchState`; `hk_batch` — `finishHKGlucoseObserverFetch` after HK batch log (`main.async`); `post_startup_flush` — after `flushPersistedLogs` in deferred startup task (`MainActor.run`). Budget reset on each `handleForegroundActiveEntry`. **`scripts/sync_project_files.rb`** run to add the new file to the **Trio Watch App** target.
+- **Rollout note:** The **Rollout** sentence in **What** reflects this first pass only; **superseded** by **2026-04-08 12:40 CEST** (DEBUG + sandbox receipt / TestFlight default **on**; production App Store opt-in via **`UserDefaults`** — see that entry).
+- **Where:** `Trio Watch App Extension/Helper/WatchResidentTelemetry.swift`, `WatchState.swift`, `Views/TrioMainWatchView.swift`, `Trio.xcodeproj/project.pbxproj` (sync script).
+- **Acceptance:** Static review + project sync; **no** `xcodebuild` / device run in this pass (per **04-execute-implementation-plan** / **AGENTS.md**). **Follow-up:** `ci/local-build.sh` or Xcode build on **`Trio`** worktree; TestFlight / Better Stack spot-check for `event=watch_resident_sample` when gate enabled.
+
 ### 2026-04-06 15:23 CET — Field validation: **TestFlight build 152** (Path B tranche + Path A); Better Stack corroboration
 
 - **Device outcome (authoritative):** After deploy of **build 152**, the watch app **launches successfully** with **no jetsam** and **no system forced closure**, in contrast to the pre–Path B behavior (e.g. build 150 baseline in the **2026-04-06 13:48 CET** waiver).
-- **Plan alignment:** Matches the **combined** outcome branch in **Validation → Outcome handling**: Path B tranches (B1, B3, B4 landed; B2 still gated) plus Path A startup behavior, with **B5-style** foreground-open stability as the user-visible signal. This is **strong supportive evidence**; it does **not** by itself close every checkbox in **§ Validation** (e.g. formal **10-run tethered matrix**, explicit **`highwater` / `per-process-limit`** capture in diagnostics for that run set, **B0** clauses **1–2** resident checkpoints deferred from the B0 waiver).
+- **Plan alignment:** Matches the **combined** outcome branch in **Validation → Outcome handling**: Path B tranches (B1, B3, B4 landed; B2 still gated) plus Path A startup behavior, with **B5-style** foreground-open stability as the user-visible signal. This is **strong supportive evidence**. **Historical at 15:23 CET:** remaining **§ Validation** / **B0** / **B5** items were **later closed** — **B5** **2026-04-08 21:33 CEST**, **B0** **2026-04-08 21:45 CET** (implementation log entries **21:33** / **21:45 CET**).
 - **Better Stack (Trio source, last ~24–48h hot tier, corroboration only):**
   - **No** log rows in the queried window whose `message` matched **jetsam**, **per-process-limit**, or **highwater** (substring search on `JSONExtract(raw, 'message', …)`). Trio does not emit build numbers on every line; absence of jetsam strings is **consistent with** stable watch sessions but is **not** a substitute for on-device `JetsamEvent` / Instruments review.
   - **Path A — startup coordinator / grace:** Recent rows include `event=watch_startup_grace_scheduled` (2s / 10s / 10s delays), `event=watch_startup_transport_suppressed` (`reason=startup_grace`), `event=watch_startup_deferred_watch_state_refresh_fired`, `event=watch_startup_deferred_healthkit_setup_fired`, `event=watch_startup_deferred_persisted_log_flush_fired`, and `event=watch_startup_grace_canceled` when the app left active before pending work — aligned with expected suppression / deferral / cancellation observability.
   - **Path B — B1 / B4:** `event=watch_wc_inbound` lines show **keys and metadata only** (no full glucose array stringification). `event=hk_sample_query_batch` with `anchor_was_nil=true` and `samples_count=64` confirms the **bounded** nil-anchor bootstrap path; `event=hk_anchored_query_batch` with `anchor_was_nil=false` and small batch counts on incremental fires.
-- **Next steps (see project evaluation below):** Optional formal **B5** attempt matrix + device-side jetsam export for build 152; complete **B0** deferred checkpoints if sign-off requires numbers; unblock **B2** via doc **04** pre-B2 table when ready.
+- **Next steps (historical at 15:23 CET — superseded):** Subsequent closure recorded **2026-04-08** (**B5** / **B0**); **B2** when prioritized (**04** pre-B2 signed **2026-04-06**).
 
 ### 2026-04-06 13:50 CET — Path **B3** complete: lazy chart tab construction (`feature/watch-complication-improvements`)
 
 - **What:** Chart page (`GlucoseChartView`) is no longer constructed eagerly on every `TabView` load. Page index 1 uses the same gating pattern as the debug tab: **`GlucoseChartView` is built only when `currentPage == 1`**, otherwise a **`Color.clear`** placeholder keeps the tab slot without paying `Charts` / `PointMark` cost until the user switches to the chart.
 - **Where:** `Trio Watch App Extension/Views/TrioMainWatchView.swift`
 - **Plan alignment:** **B3** — Lazy or deferred chart/history construction (this document); follows doc **03** debug-page gating precedent.
-- **Acceptance / verification:** Code-level laziness requirement for B3 is satisfied. **B0** clause 3 was **waived** (see **2026-04-06 13:48 CET** entry) in lieu of a separate chart A/B Instruments build; **clause 1–2** resident checkpoints remain **deferred to B5** per that waiver. Optional future work: downsampling for `PointMark` when chart is visible (plan bullet) — not required to mark B3 “complete” for the launch-footprint gate addressed here.
+- **Acceptance / verification:** Code-level laziness requirement for B3 is satisfied. **B0** clause 3 was **waived** (see **2026-04-06 13:48 CET** entry) in lieu of a separate chart A/B Instruments build; **clause 1–2** were **deferred** at that time (later **closed** via **B6** + **B0** run **2026-04-08 21:45 CET**). Optional future work: downsampling for `PointMark` when chart is visible (plan bullet) — not required to mark B3 “complete” for the launch-footprint gate addressed here.
 
 ### 2026-04-06 13:48 CET — B0 gate waiver: proceeding to B3 (`feature/watch-complication-improvements`)
 
@@ -678,6 +825,58 @@ Outcome handling (combined):
 ---
 
 ## Changelog
+
+### v2.28 (2026-04-08 21:54 CET)
+
+- **Cross-doc consistency (initiative closure):** **§ B0** heading / gate text vs shipped **B3**; **§ B3** status complete; **2026-04-08 18:02 CEST** impl log “what remains” superseded; **2026-04-06 15:23 CET** / **13:50 CET** bullets **superseded** pointers to **B5**/**B0** closure; **v2.27** changelog **04** ref **v1.13**. **00**/**01**/**03**/**04** aligned (see sibling changelogs).
+
+### v2.27 (2026-04-08 21:45 CET)
+
+- **§ B0 exit gate — CLOSED:** Implementation log **2026-04-08 21:45 CET** — **Clause 1** device run (**TF 154**, Better Stack **`19:39:30–19:41:15` UTC** window, **`activation_seq=1`**); **Clause 2** per-checkpoint **`phys_footprint_mib`** table (**B6**); **Clause 3** via **2026-04-06 13:48 CET** chart A/B waiver + **B3**. **Header** “current field status”; **04** § **B0 closure** **v1.13**.
+
+### v2.26 (2026-04-08 21:33 CEST)
+
+- **§ B5 — CLOSED:** **Mac-tether** **10×** protocol **waived** (**infeasible**); **session S2** (**10× untethered**) + matrix + diagnostics + Better Stack **accepted** as **conclusive** validation. New **§ B5 — Mac-tether waiver**; **§ Validation** Path A bullet; matrix row **2** note + closure line; implementation log **2026-04-08 21:33 CEST**; **04** § **B5 closure**, **v1.11**. **Current field status** + **18:02** initiative bullet (**B5** removed from open items).
+
+### v2.25 (2026-04-08 21:30 CEST)
+
+- **§ B5 — Attempt matrix:** **Session S2** — **10×** untethered foreground opens (**2026-04-08** ~**19:20–19:25** local; BS **`19:24:07`–`19:25:51` UTC**); rows **2–11**; iPhone Diagnostics **no files**; Better Stack corroboration (implementation log **2026-04-08 21:30 CEST**). **Formal Mac-tethered ×10** still **open** or **waive**. **Current field status** + **18:02** initiative bullet updated.
+
+### v2.24 (2026-04-08 18:02 CEST)
+
+- **Field status:** TestFlight **153** deployed; **B6** resident telemetry **live** (TF/sandbox default **on**); Better Stack spot-check; implementation log **2026-04-08 18:02 CEST**. **§ B5** correlation table + **Path B** row note **B6**; **current field status** paragraph updated. **Initiative remainder:** **B5** tethered matrix **2–10**; **B0** full gate; **B2** when prioritized.
+
+### v2.23 (2026-04-08 13:05 CEST)
+
+- **§ B6 — per-activation sample cap (six tokens):** **≤ 6** lines per activation; **`maxSamplesPerActivation = 6`**; **04** v1.9; **11:41** rollout **Rollout note** (superseded **12:40**); implementation log **2026-04-08 13:05 CEST**.
+
+### v2.22 (2026-04-08 12:55 CEST)
+
+- **§ B6 — `hk_batch` + docs:** Process-scoped **`hk_batch`** when **`activation_seq`** absent (omit on log line); **04** v1.8; **02** schema / budget / table / emitter / **Rollout (explicit)**; implementation log **2026-04-08 12:55 CEST**.
+
+### v2.21 (2026-04-08 12:40 CEST)
+
+- **§ B6 rollout + implementation log:** **TestFlight / sandbox receipt** default **on**; **production App Store** **`UserDefaults`** opt-in. New log entry **2026-04-08 12:40 CEST**; **12:35** shipping-gate bullet marked superseded. **04** v1.7.
+
+### v2.20 (2026-04-08 12:35 CEST)
+
+- **§ Implementation log:** **2026-04-08 12:35 CEST** — review follow-up: **`first_main_view`** latch + flush on foreground activation; pending cleared on inactive; **`rollbackConsume`** on `task_info` failure; semantic renames (no **`b6`** / plan-step prefixes in API); recorded **shipping gate** (**DEBUG** + **`com.trio.watch.residentTelemetryEnabled`**).
+
+### v2.19 (2026-04-08 11:41 CEST)
+
+- **§ B6 — Implementation log:** Recorded **2026-04-08 11:41 CEST** execution pass — code in **`Trio`** worktree (`WatchResidentTelemetry.swift`, `WatchState`, `TrioMainWatchView`), rollout gate, hooks, acceptance / follow-up. **Current field status** updated (**B6** implemented).
+
+### v2.18 (2026-04-08 11:17 CET)
+
+- **§ B6:** External review — **`hk_batch`** = **first per process** only (removed per-activation alternative). **`activation_seq`:** required when sequence exists; optional only outside activation. **`first_main_view`** row wording softened. Emitter bullet: log `activation_seq` whenever non-nil. **Log schema** paragraph aligned with **04**. **§ Validation → Path B:** optional **B6** bullet mentions **`activation_seq`**. Cross-ref **04** v1.6.
+
+### v2.17 (2026-04-08 11:10 CET)
+
+- **B6:** External review — pin **`TASK_VM_INFO.phys_footprint` → `phys_footprint_mib` (MiB)**; finalize schema and **`event=watch_resident_sample`**; **rollout** (default off Release); **hard sampling budget**; **checkpoint semantics** table (`deferred_watch_state_fired` vs `first_watch_state_apply` vs `post_startup_flush` after `flushPersistedLogs` returns). **§ Validation** B6 bullet updated.
+
+### v2.16 (2026-04-08 10:24 CET)
+
+- **Path B — B6:** New § **B6 — Field resident memory telemetry** (optional): in-process **`task_info`** samples via **`WatchLogger`**, checkpoint tokens, threading, acceptance, **B0** clause **2** linkage. **Naming** line now **B0–B6**; **Path B sequencing** + **Current field status** + **§ Validation → Path B** updated. **Not Path C** — design in **04** § **B6**.
 
 ### v2.15 (2026-04-06 16:07 CET)
 

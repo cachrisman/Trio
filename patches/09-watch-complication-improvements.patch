@@ -1,30 +1,32 @@
-From 1ecec14340fbc72b78c45a8a856c6faff71012a9 Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <patch-bot@users.noreply.github.com>
-Date: Mon, 6 Apr 2026 13:56:26 +0200
+From f276e5b84731b55594c23278567bed23f4105688 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Wed, 8 Apr 2026 21:19:23 +0200
 Subject: [PATCH] feat: watch-complication-improvements
 
 ---
  .../ExtensionDelegate.swift                   |   53 +
+ .../Helper/WatchResidentTelemetry.swift       |  139 ++
  Trio Watch App Extension/TrioWatchApp.swift   |   44 +-
  .../Views/ComplicationDebugView.swift         |  511 +++++
- .../Views/TrioMainWatchView.swift             |   71 +-
- .../WatchErrorReporter.swift                  |   20 +-
+ .../Views/TrioMainWatchView.swift             |   78 +-
+ .../WatchErrorReporter.swift                  |   32 +-
  Trio Watch App Extension/WatchLogger.swift    |  117 +-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 1832 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 1891 +++++++++++++++--
  Trio Watch App/Info.plist                     |   19 +-
  Trio Watch App/TrioWatchApp.entitlements      |   14 +
  Trio Watch Complication/Info.plist            |    2 +
  .../TrioWatchComplication.entitlements        |   10 +
  .../TrioWatchComplication.swift               |  442 +++-
  .../TrioWatchComplicationPreview.swift        |  124 ++
- Trio Watch Shared/ComplicationLogBuffer.swift |  347 ++++
+ Trio Watch Shared/ComplicationLogBuffer.swift |  347 +++
  .../TrioComplicationDataStore.swift           | 1082 ++++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  Trio/Sources/Models/WatchMessageKeys.swift    |    6 +-
  .../WatchManager/AppleWatchManager.swift      |  595 +++++-
- 19 files changed, 4971 insertions(+), 352 deletions(-)
+ 20 files changed, 5186 insertions(+), 354 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
+ create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
  create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
  create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
@@ -90,6 +92,151 @@ index 000000000..0ef9b4431
 +            )
 +        }
 +        WatchState.shared.handleBackgroundTasks(backgroundTasks)
++    }
++}
+diff --git a/Trio Watch App Extension/Helper/WatchResidentTelemetry.swift b/Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
+new file mode 100644
+index 000000000..dfff34c68
+--- /dev/null
++++ b/Trio Watch App Extension/Helper/WatchResidentTelemetry.swift	
+@@ -0,0 +1,139 @@
++import Darwin
++import Foundation
++
++// MARK: - Field resident memory telemetry (watch)
++
++/// Rollout gate for resident memory samples. Policy: **04** / plan **02** (resident sample §).
++enum WatchResidentTelemetryGate {
++    /// Opt-in for **production App Store** builds when the receipt is not sandbox (see `hasSandboxAppStoreReceipt`).
++    private static let userDefaultsKey = "com.trio.watch.residentTelemetryEnabled"
++
++    /// `true` when `Bundle.main.appStoreReceiptURL` ends with **`sandboxReceipt`** — includes **TestFlight** and other sandbox-distributed builds. Production App Store builds use the **`receipt`** filename instead.
++    private static var hasSandboxAppStoreReceipt: Bool {
++        Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
++    }
++
++    static var isEnabled: Bool {
++        #if DEBUG
++        return true
++        #else
++        if hasSandboxAppStoreReceipt {
++            return true
++        }
++        return UserDefaults.standard.bool(forKey: userDefaultsKey)
++        #endif
++    }
++}
++
++/// Reads **`TASK_VM_INFO.phys_footprint`** (bytes) → **MiB** only (design **04**).
++enum WatchResidentMemory {
++    static func physFootprintMebibytes() -> Double? {
++        var info = task_vm_info_data_t()
++        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
++        let kr: kern_return_t = withUnsafeMutablePointer(to: &info) { ptr in
++            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
++                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), rebound, &count)
++            }
++        }
++        guard kr == KERN_SUCCESS else { return nil }
++        return Double(info.phys_footprint) / (1024.0 * 1024.0)
++    }
++}
++
++// MARK: - Budget
++
++/// Per-activation sample cap + **`hk_batch`** once per process (plan **02**).
++struct WatchResidentTelemetryBudget {
++    /// Matches the **six** activation-scoped checkpoint tokens; **`hk_batch`** with **`activationSequence == nil`** is process-scoped and does not use this counter.
++    private static let maxSamplesPerActivation = 6
++
++    private static let checkpointTokens: Set<String> = [
++        "first_main_view",
++        "deferred_watch_state_fired",
++        "first_watch_state_apply",
++        "hk_batch",
++        "post_startup_flush",
++        "chart_visible"
++    ]
++
++    private var budgetActivationSeq: Int?
++    private var firedCheckpoints: Set<String> = []
++    private var totalThisActivation: Int = 0
++    private var hkBatchEmittedThisProcess = false
++
++    mutating func resetForNewActivation(_ seq: Int) {
++        budgetActivationSeq = seq
++        firedCheckpoints.removeAll()
++        totalThisActivation = 0
++    }
++
++    /// Returns `true` if this checkpoint should emit (caller logs after).
++    /// **`hk_batch`** may use **`activationSequence == nil`** for the process-scoped first batch when no foreground activation sequence exists yet (omit `activation_seq` on the log line — design **04**).
++    mutating func consumeIfAllowed(checkpoint: String, activationSequence: Int?) -> Bool {
++        guard Self.checkpointTokens.contains(checkpoint) else { return false }
++
++        if checkpoint == "hk_batch", hkBatchEmittedThisProcess {
++            return false
++        }
++
++        if activationSequence == nil {
++            guard checkpoint == "hk_batch" else { return false }
++            hkBatchEmittedThisProcess = true
++            return true
++        }
++
++        guard let seq = activationSequence else { return false }
++
++        guard budgetActivationSeq == seq else { return false }
++        guard totalThisActivation < Self.maxSamplesPerActivation else { return false }
++        guard !firedCheckpoints.contains(checkpoint) else { return false }
++
++        firedCheckpoints.insert(checkpoint)
++        totalThisActivation += 1
++        if checkpoint == "hk_batch" {
++            hkBatchEmittedThisProcess = true
++        }
++        return true
++    }
++
++    /// Undo `consumeIfAllowed` when `task_info` fails after the budget slot was reserved.
++    mutating func rollbackConsume(checkpoint: String, activationSequence: Int?) {
++        if checkpoint == "hk_batch", activationSequence == nil {
++            hkBatchEmittedThisProcess = false
++            return
++        }
++        guard let seq = activationSequence, budgetActivationSeq == seq else { return }
++        guard firedCheckpoints.remove(checkpoint) != nil else { return }
++        totalThisActivation = max(0, totalThisActivation - 1)
++        if checkpoint == "hk_batch" {
++            hkBatchEmittedThisProcess = false
++        }
++    }
++}
++
++// MARK: - WatchState emission
++
++extension WatchState {
++    /// **Main thread only.** Structured **`event=watch_resident_sample`** line (plan **02**).
++    func emitResidentMemorySample(checkpoint: String, activationSequence: Int?) {
++        assert(Thread.isMainThread, "emitResidentMemorySample must run on main")
++        guard WatchResidentTelemetryGate.isEnabled else { return }
++        guard residentTelemetryBudget.consumeIfAllowed(checkpoint: checkpoint, activationSequence: activationSequence)
++        else { return }
++        guard let mib = WatchResidentMemory.physFootprintMebibytes() else {
++            residentTelemetryBudget.rollbackConsume(checkpoint: checkpoint, activationSequence: activationSequence)
++            return
++        }
++
++        let mibStr = String(format: "%.3f", mib)
++        var line =
++            "event=watch_resident_sample checkpoint=\(checkpoint) phys_footprint_mib=\(mibStr)"
++        if let seq = activationSequence {
++            line += " activation_seq=\(seq)"
++        }
++
++        Task {
++            await WatchLogger.shared.log(line)
++        }
 +    }
 +}
 diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
@@ -677,7 +824,7 @@ index 000000000..ff9c6637f
 +    }
 +}
 diff --git a/Trio Watch App Extension/Views/TrioMainWatchView.swift b/Trio Watch App Extension/Views/TrioMainWatchView.swift
-index 9e381bcee..6d34b57d5 100644
+index 9e381bcee..51999791d 100644
 --- a/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 +++ b/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 @@ -3,7 +3,7 @@ import SwiftUI
@@ -713,7 +860,7 @@ index 9e381bcee..6d34b57d5 100644
  
                      if state.showSyncingAnimation {
                          Image(systemName: "iphone.radiowaves.left.and.right")
-@@ -88,22 +94,65 @@ struct TrioMainWatchView: View {
+@@ -88,22 +94,72 @@ struct TrioMainWatchView: View {
                  }.tag(0)
  
                  // Page 2: Glucose chart
@@ -779,6 +926,13 @@ index 9e381bcee..6d34b57d5 100644
 +
                  state.bolusAmount = 0
                  state.recommendedBolus = 0
++
++                state.noteMainWatchRootViewAppearedForResidentTelemetry()
++            }
++            .onChange(of: currentPage) { _, newPage in
++                if newPage == 1 {
++                    state.noteChartTabBecameVisibleForResidentTelemetry()
++                }
              }
              .background(trioBackgroundColor)
              .tabViewStyle(.verticalPage)
@@ -788,7 +942,7 @@ index 9e381bcee..6d34b57d5 100644
                  withAnimation {
                      updateRotation(for: newTrend)
 diff --git a/Trio Watch App Extension/WatchErrorReporter.swift b/Trio Watch App Extension/WatchErrorReporter.swift
-index a5bcabd57..6de45a319 100644
+index a5bcabd57..8858c3438 100644
 --- a/Trio Watch App Extension/WatchErrorReporter.swift	
 +++ b/Trio Watch App Extension/WatchErrorReporter.swift	
 @@ -7,7 +7,7 @@ actor WatchErrorReporter {
@@ -846,6 +1000,43 @@ index a5bcabd57..6de45a319 100644
      }
  
      /// Saves context that should be included if the app crashes.
+@@ -271,12 +279,12 @@ actor WatchErrorReporter {
+     func storePendingPayload(payloadId: String, type: String, filePath: String?) async {
+         var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
+ 
+-        let record: [String: Any] = [
++        var record: [String: Any] = [
+             "payloadId": payloadId,
+             "type": type,
+-            "filePath": filePath as Any,
+             "createdAtEpoch": Date().timeIntervalSince1970
+         ]
++        if let filePath { record["filePath"] = filePath }
+ 
+         pendingPayloads.append(record)
+ 
+@@ -288,6 +296,10 @@ actor WatchErrorReporter {
+             }
+             return true
+         }
++        guard JSONSerialization.isValidJSONObject(pendingPayloads) else {
++            UserDefaults.standard.removeObject(forKey: pendingPayloadsKey)
++            return
++        }
+ 
+         UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
+     }
+@@ -298,6 +310,10 @@ actor WatchErrorReporter {
+         pendingPayloads.removeAll { record in
+             record["payloadId"] as? String == payloadId
+         }
++        guard JSONSerialization.isValidJSONObject(pendingPayloads) else {
++            UserDefaults.standard.removeObject(forKey: pendingPayloadsKey)
++            return
++        }
+         UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
+     }
+ 
 diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
 index 0f81f3475..d97e07b5f 100644
 --- a/Trio Watch App Extension/WatchLogger.swift	
@@ -1087,7 +1278,7 @@ index d47a971c9..e6e00e3da 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f4fb33fde..42647a48b 100644
+index f4fb33fde..5b72af7de 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,20 +1,48 @@
@@ -1146,7 +1337,7 @@ index f4fb33fde..42647a48b 100644
      var currentGlucose: String = "--"
      var currentGlucoseColorString: String = "#ffffff"
      var trend: String? = ""
-@@ -28,59 +56,390 @@ import WatchConnectivity
+@@ -28,59 +56,436 @@ import WatchConnectivity
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
@@ -1246,6 +1437,12 @@ index f4fb33fde..42647a48b 100644
 +    private var startupFirstRefreshInFlight = false
 +    private var hasInitializedHealthKitSetupInProcess = false
 +
++    /// Resident memory sample budget — see `Helper/WatchResidentTelemetry.swift`.
++    var residentTelemetryBudget = WatchResidentTelemetryBudget()
++
++    /// Set when the root SwiftUI main view’s `.onAppear` ran before `startupCurrentActivationSequence` existed; flushed after the next foreground activation is established.
++    private var pendingResidentSampleFirstMainView = false
++
 +    // MARK: - HealthKit (R6)
 +
 +    private var healthKitStore: HKHealthStore?
@@ -1327,6 +1524,8 @@ index f4fb33fde..42647a48b 100644
 +        let activationSequence = startupActivationSequence
 +        startupCurrentActivationSequence = activationSequence
 +        startupFirstRefreshFiredActivationSequence = nil
++        residentTelemetryBudget.resetForNewActivation(activationSequence)
++        flushPendingFirstMainViewResidentSampleIfNeeded()
 +
 +        startupBackgroundLaunchDisarmWorkItem?.cancel()
 +        startupBackgroundLaunchDisarmWorkItem = nil
@@ -1351,6 +1550,8 @@ index f4fb33fde..42647a48b 100644
 +        assert(Thread.isMainThread, "handleForegroundInactiveOrBackground must be called on main thread")
 +        guard startupIsForegroundActive else { return }
 +
++        pendingResidentSampleFirstMainView = false
++
 +        startupIsForegroundActive = false
 +        startupFirstRefreshInFlight = false
 +        let activationSequence = startupCurrentActivationSequence
@@ -1372,6 +1573,31 @@ index f4fb33fde..42647a48b 100644
 +                }
 +            }
 +        }
++    }
++
++    /// Root main view (`TrioMainWatchView`) `.onAppear` — **main thread only.** Latches `first_main_view` until `startupCurrentActivationSequence` exists if needed.
++    func noteMainWatchRootViewAppearedForResidentTelemetry() {
++        assert(Thread.isMainThread, "noteMainWatchRootViewAppearedForResidentTelemetry must be called on main thread")
++        guard WatchResidentTelemetryGate.isEnabled else { return }
++        if let seq = startupCurrentActivationSequence {
++            emitResidentMemorySample(checkpoint: "first_main_view", activationSequence: seq)
++        } else {
++            pendingResidentSampleFirstMainView = true
++        }
++    }
++
++    /// Chart tab (page 1) became visible — **main thread only.**
++    func noteChartTabBecameVisibleForResidentTelemetry() {
++        assert(Thread.isMainThread, "noteChartTabBecameVisibleForResidentTelemetry must be called on main thread")
++        emitResidentMemorySample(checkpoint: "chart_visible", activationSequence: startupCurrentActivationSequence)
++    }
++
++    private func flushPendingFirstMainViewResidentSampleIfNeeded() {
++        assert(Thread.isMainThread, "flushPendingFirstMainViewResidentSampleIfNeeded must be called on main thread")
++        guard pendingResidentSampleFirstMainView else { return }
++        guard let seq = startupCurrentActivationSequence else { return }
++        pendingResidentSampleFirstMainView = false
++        emitResidentMemorySample(checkpoint: "first_main_view", activationSequence: seq)
 +    }
 +
 +    private func scheduleStartupSequenceOnMain(activationSequence: Int) {
@@ -1458,6 +1684,11 @@ index f4fb33fde..42647a48b 100644
 +            )
 +        }
 +
++        emitResidentMemorySample(
++            checkpoint: "deferred_watch_state_fired",
++            activationSequence: activationSequence
++        )
++
 +        requestWatchStateUpdate()
 +    }
 +
@@ -1503,6 +1734,12 @@ index f4fb33fde..42647a48b 100644
 +            await WatchLogger.shared.flushPersistedLogs(
 +                startupTransportSuppressedOverride: didDisarm ? false : nil
 +            )
++            await MainActor.run {
++                self.emitResidentMemorySample(
++                    checkpoint: "post_startup_flush",
++                    activationSequence: activationSequence
++                )
++            }
 +        }
 +    }
 +
@@ -1553,22 +1790,20 @@ index f4fb33fde..42647a48b 100644
      private func setupSession() {
          if WCSession.isSupported() {
              let session = WCSession.default
-@@ -88,16 +447,372 @@ import WatchConnectivity
+@@ -88,16 +493,380 @@ import WatchConnectivity
              session.activate()
              self.session = session
              Task {
 -                await WatchLogger.shared.log("⌚️ WCSession setup complete.")
 +                await WatchLogger.shared.log("WCSession setup complete.")
-             }
-         } else {
-             Task {
--                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
++            }
++        } else {
++            Task {
 +                await WatchLogger.shared.log("WCSession is not supported on this device")
-             }
-         }
-     }
- 
--    // MARK: – Handle Acknowledgement Messages FROM Phone
++            }
++        }
++    }
++
 +    // MARK: - HealthKit background delivery (R6)
 +
 +    private func setupHealthKitBackgroundDelivery() {
@@ -1651,6 +1886,14 @@ index f4fb33fde..42647a48b 100644
 +        Task {
 +            await WatchLogger.shared
 +                .log("event=\(batchEventName) fire_id=\(fireId) anchor_was_nil=\(anchorWasNil) samples_count=\(added.count)")
++        }
++
++        DispatchQueue.main.async { [weak self] in
++            guard let self else { return }
++            self.emitResidentMemorySample(
++                checkpoint: "hk_batch",
++                activationSequence: self.startupCurrentActivationSequence
++            )
 +        }
 +
 +        if let newAnchor,
@@ -1804,12 +2047,13 @@ index f4fb33fde..42647a48b 100644
 +                Task {
 +                    await WatchLogger.shared.log("⚠️ hk_anchor_decode_failed fire_id=\(fireId)")
 +                }
-+            }
-+        } else {
-+            Task {
+             }
+         } else {
+             Task {
+-                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
 +                await WatchLogger.shared.log("⚠️ hk_observer_nil_anchor fire_id=\(fireId)")
-+            }
-+        }
+             }
+         }
 +
 +        let anchorWasNil = (anchor == nil)
 +
@@ -1886,8 +2130,9 @@ index f4fb33fde..42647a48b 100644
 +            }
 +        )
 +        store.execute(query)
-+    }
-+
+     }
+ 
+-    // MARK: – Handle Acknowledgement Messages FROM Phone
 +    /// R6.1 — Same integer threshold semantics as BloodGlucose.Direction.init(trend:) (raw direction strings).
 +    private static func hkTrendString(fromDeltaMgDl delta: Int) -> String {
 +        switch delta {
@@ -1929,7 +2174,7 @@ index f4fb33fde..42647a48b 100644
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
          Task {
-@@ -106,21 +821,17 @@ import WatchConnectivity
+@@ -106,21 +875,17 @@ import WatchConnectivity
  
          if success {
              Task {
@@ -1953,7 +2198,7 @@ index f4fb33fde..42647a48b 100644
              DispatchQueue.main.async {
                  self.showCommsAnimation = false
              }
-@@ -135,7 +846,7 @@ import WatchConnectivity
+@@ -135,7 +900,7 @@ import WatchConnectivity
  
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                  self.showAcknowledgmentBanner = false
@@ -1962,7 +2207,7 @@ index f4fb33fde..42647a48b 100644
                  Task {
                      await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                  }
-@@ -145,14 +856,12 @@ import WatchConnectivity
+@@ -145,14 +910,12 @@ import WatchConnectivity
  
      // MARK: - WCSessionDelegate
  
@@ -1979,7 +2224,7 @@ index f4fb33fde..42647a48b 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -160,184 +869,570 @@ import WatchConnectivity
+@@ -160,184 +923,570 @@ import WatchConnectivity
  
              if activationState == .activated {
                  Task {
@@ -2035,11 +2280,11 @@ index f4fb33fde..42647a48b 100644
 -            // Check if it's not older than 15 min
              if date >= Date().addingTimeInterval(-15 * 60) {
 +                let extractedEpoch = (watchStateDict[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
-+                Task {
-+                    await WatchLogger.shared.log("📬 didReceiveMessage reading_epoch=\(extractedEpoch) receive_wall=\(Date().timeIntervalSince1970)")
-+                }
                  Task {
 -                    await WatchLogger.shared.log("⌚️ Handling watchState from \(date)")
++                    await WatchLogger.shared.log("📬 didReceiveMessage reading_epoch=\(extractedEpoch) receive_wall=\(Date().timeIntervalSince1970)")
++                }
++                Task {
 +                    await WatchLogger.shared.log("Handling watchState from \(date)")
                  }
                  processWatchMessage(message)
@@ -2145,7 +2390,8 @@ index f4fb33fde..42647a48b 100644
 +        case let .found(date):
 +            readingDate = date
 +        case .rejectedDateOnly:
-+            Task {
+             Task {
+-                await WatchLogger.shared.log("⌚️ Ignoring outdated or duplicate WatchState snapshot", force: true)
 +                await WatchLogger.shared.log(
 +                    "Invalid snapshot received: no CGM reading timestamp"
 +                        + " (top-level date is state/snapshot time only — not used as reading)"
@@ -2159,8 +2405,7 @@ index f4fb33fde..42647a48b 100644
 +            }
 +            return
 +        case .missing:
-             Task {
--                await WatchLogger.shared.log("⌚️ Ignoring outdated or duplicate WatchState snapshot", force: true)
++            Task {
 +                await WatchLogger.shared.log(
 +                    "Invalid snapshot received: no valid CGM reading timestamp"
 +                        + " (no reading_epoch, glucoseValues samples, or parseable date)"
@@ -2614,7 +2859,7 @@ index f4fb33fde..42647a48b 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -348,7 +1443,7 @@ import WatchConnectivity
+@@ -348,7 +1497,7 @@ import WatchConnectivity
                  }
  
                  Task {
@@ -2623,7 +2868,7 @@ index f4fb33fde..42647a48b 100644
                  }
  
                  switch ackCode {
-@@ -371,26 +1466,63 @@ import WatchConnectivity
+@@ -371,26 +1520,63 @@ import WatchConnectivity
                  }
              }
  
@@ -2696,7 +2941,7 @@ index f4fb33fde..42647a48b 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -399,70 +1531,106 @@ import WatchConnectivity
+@@ -399,70 +1585,106 @@ import WatchConnectivity
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -2827,7 +3072,7 @@ index f4fb33fde..42647a48b 100644
          if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
              self.currentGlucose = currentGlucose
          }
-@@ -494,29 +1662,27 @@ import WatchConnectivity
+@@ -494,29 +1716,27 @@ import WatchConnectivity
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
              glucoseValues = glucoseData.compactMap { data in
                  guard let glucose = data["glucose"] as? Double,
@@ -2869,7 +3114,7 @@ index f4fb33fde..42647a48b 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -537,41 +1703,371 @@ import WatchConnectivity
+@@ -537,41 +1757,376 @@ import WatchConnectivity
              }
          }
  
@@ -2911,6 +3156,11 @@ index f4fb33fde..42647a48b 100644
 +        }
 +
 +        saveComplicationSnapshot(from: message, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
++
++        emitResidentMemorySample(
++            checkpoint: "first_watch_state_apply",
++            activationSequence: startupCurrentActivationSequence
++        )
 +    }
 +
 +    private func saveComplicationSnapshot(from message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {

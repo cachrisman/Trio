@@ -1,8 +1,8 @@
 # Watch Launch Stability — Startup Load Shedding Design
 
-**Version:** v1.12
+**Version:** v1.14
 **Created:** 2026-04-01 09:31 CEST
-**Last updated:** 2026-04-06 15:48 CET
+**Last updated:** 2026-04-08 21:45 CEST
 **Status:** Final
 
 Findings: [00-investigation-findings.md](00-investigation-findings.md)
@@ -374,11 +374,23 @@ Exact APIs, file touch lists, and acceptance tests belong in the **implementatio
 
 ### Field outcome note (2026-04-06)
 
-**TestFlight build 152** (see [02-startup-load-shedding-implementation-plan.md](02-startup-load-shedding-implementation-plan.md) implementation log): **`GlucoseChartView` is built only when the chart `TabView` page is selected** (**B3**), matching the lazy pattern called out in doc **03**. Together with **Path A** startup deferral/suppression and **B1**/**B4** mitigations, the watch app is reported to **launch and remain stable in the foreground** without the prior **jetsam / forced return to the clock face**. **Pre-B2** product sign-off (**Charlie Chrisman**, **2026-04-06**) is recorded in [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md). Formal **B5** documentation and optional **B2** work remain in **02**.
+**TestFlight build 152** (see [02-startup-load-shedding-implementation-plan.md](02-startup-load-shedding-implementation-plan.md) implementation log): **`GlucoseChartView` is built only when the chart `TabView` page is selected** (**B3**), matching the lazy pattern called out in doc **03**. Together with **Path A** startup deferral/suppression and **B1**/**B4** mitigations, the watch app is reported to **launch and remain stable in the foreground** without the prior **jetsam / forced return to the clock face**. **Pre-B2** product sign-off (**Charlie Chrisman**, **2026-04-06**) is recorded in [04-watch-foreground-memory-hardening-design.md](04-watch-foreground-memory-hardening-design.md). **B5** and **B0** are **closed** for this initiative (**02** implementation log **2026-04-08 21:33 CEST** / **21:45 CET**). Optional **B2** payload-shaping work remains **when prioritized** (**02** / **04**).
+
+### Field outcome note (2026-04-08)
+
+**TestFlight 153+** ships **Path B** **B6** — field **`TASK_VM_INFO.phys_footprint`** samples via **`event=watch_resident_sample`** / **`phys_footprint_mib`** (default **on** on TestFlight / sandbox receipt; **04** § **B6**). See [02-startup-load-shedding-implementation-plan.md](02-startup-load-shedding-implementation-plan.md) implementation log **2026-04-08 18:02 CEST**. **B6** supported **B0** clause **2**; **B5** and **B0** are **closed** (**2026-04-08** — **02** **2026-04-08 21:33 CEST** / **21:45 CET**).
 
 ---
 
 ## Changelog
+
+### v1.14 (2026-04-08 21:45 CET)
+
+- **Path B — field outcomes:** **§ Field outcome note (2026-04-06)** and **§ Field outcome note (2026-04-08)** — **B5** / **B0** no longer described as open; optional **B2** called out; **153+** wording.
+
+### v1.13 (2026-04-08 18:02 CEST)
+
+- **Path B:** **§ Field outcome note (2026-04-08)** — TestFlight **153**, **B6** resident telemetry live; pointer to **02** implementation log **2026-04-08 18:02 CEST**.
 
 ### v1.12 (2026-04-06 15:48 CET)
 
