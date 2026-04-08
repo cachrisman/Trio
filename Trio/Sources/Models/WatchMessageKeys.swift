@@ -1,6 +1,6 @@
 enum WatchMessageKeys {
     // Request/Response Keys
-    static let date = "date"
+    static let date = "date" // ⚠️ BUILD TIME, not CGM reading time — use readingEpoch for CGM timestamp
     static let units = "units"
     static let requestWatchUpdate = "requestWatchUpdate"
     static let watchState = "watchState"
@@ -43,6 +43,10 @@ enum WatchMessageKeys {
     static let maxYAxisValue = "maxYAxisValue"
     static let overridePresets = "overridePresets"
     static let tempTargetPresets = "tempTargetPresets"
+
+    // Transfer Metadata Keys
+    static let readingEpoch = "reading_epoch"
+    static let transferEnqueuedAt = "transfer_enqueued_at"
 
     // Limits and Settings Keys
     static let maxBolus = "maxBolus"
