@@ -7,7 +7,7 @@ actor WatchErrorReporter {
     static let shared = WatchErrorReporter()
 
     private let session = WCSession.default
-    private let watchLastRunWasForegroundKey = "watchLastRunWasForeground"
+    private static let watchLastRunWasForegroundKey = "watchLastRunWasForeground"
     private let crashContextKey = "watchAppCrashContext"
     private let firstLaunchKey = "watchAppHasLaunchedBefore"
     private let pendingPayloadsKey = "watchPendingPayloads"
@@ -45,18 +45,18 @@ actor WatchErrorReporter {
         // First launch
         if !hasLaunchedBefore {
             userDefaults.set(true, forKey: firstLaunchKey)
-            userDefaults.set(false, forKey: watchLastRunWasForegroundKey)
+            userDefaults.set(false, forKey: Self.watchLastRunWasForegroundKey)
             return
         }
 
         // Subsequent launches - check if previous run was foreground
-        let lastRunWasForeground = userDefaults.bool(forKey: watchLastRunWasForegroundKey)
+        let lastRunWasForeground = userDefaults.bool(forKey: Self.watchLastRunWasForegroundKey)
 
         if lastRunWasForeground {
             // Previous run was foreground and didn't transition to background - likely crashed
             await reportPotentialCrash()
             // Clear the marker to prevent repeated reporting in the same session
-            userDefaults.set(false, forKey: watchLastRunWasForegroundKey)
+            userDefaults.set(false, forKey: Self.watchLastRunWasForegroundKey)
         }
     }
 
@@ -167,13 +167,21 @@ actor WatchErrorReporter {
     }
 
     /// Marks the app as having become active (foreground).
+    static func markBecameActiveImmediately() {
+        UserDefaults.standard.set(true, forKey: Self.watchLastRunWasForegroundKey)
+    }
+
     func markBecameActive() async {
-        UserDefaults.standard.set(true, forKey: watchLastRunWasForegroundKey)
+        Self.markBecameActiveImmediately()
     }
 
     /// Marks the app as having entered background or inactive state.
+    static func markEnteredBackgroundOrInactiveImmediately() {
+        UserDefaults.standard.set(false, forKey: Self.watchLastRunWasForegroundKey)
+    }
+
     func markEnteredBackgroundOrInactive() async {
-        UserDefaults.standard.set(false, forKey: watchLastRunWasForegroundKey)
+        Self.markEnteredBackgroundOrInactiveImmediately()
     }
 
     /// Saves context that should be included if the app crashes.
@@ -271,12 +279,12 @@ actor WatchErrorReporter {
     func storePendingPayload(payloadId: String, type: String, filePath: String?) async {
         var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
 
-        let record: [String: Any] = [
+        var record: [String: Any] = [
             "payloadId": payloadId,
             "type": type,
-            "filePath": filePath as Any,
             "createdAtEpoch": Date().timeIntervalSince1970
         ]
+        if let filePath { record["filePath"] = filePath }
 
         pendingPayloads.append(record)
 
@@ -288,6 +296,10 @@ actor WatchErrorReporter {
             }
             return true
         }
+        guard JSONSerialization.isValidJSONObject(pendingPayloads) else {
+            UserDefaults.standard.removeObject(forKey: pendingPayloadsKey)
+            return
+        }
 
         UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
     }
@@ -297,6 +309,10 @@ actor WatchErrorReporter {
         var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
         pendingPayloads.removeAll { record in
             record["payloadId"] as? String == payloadId
+        }
+        guard JSONSerialization.isValidJSONObject(pendingPayloads) else {
+            UserDefaults.standard.removeObject(forKey: pendingPayloadsKey)
+            return
         }
         UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
     }
