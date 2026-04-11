@@ -141,9 +141,9 @@ enum BackgroundTaskWindowCounter {
     /// Resident memory sample budget — see `Helper/WatchResidentTelemetry.swift`.
     var residentTelemetryBudget = WatchResidentTelemetryBudget()
 
-    /// Foreground-only Dexcom G7 direct BLE eavesdrop path (lazy — no launch-time BLE work).
-    /// `@Observable` synthesizes accessors for stored properties; `lazy` requires `@ObservationIgnored` here.
-    @ObservationIgnored private lazy var g7DirectBLEManager = G7DirectBLEManager()
+    /// Foreground-only Dexcom G7 direct BLE eavesdrop path. `@ObservationIgnored` — not part of `WatchState` observation.
+    /// `G7DirectBLEManager` does not create `CBCentralManager` until `startScanning()`; avoid `lazy` here (`@Observable` + `lazy` breaks macro expansion).
+    @ObservationIgnored private let g7DirectBLEManager = G7DirectBLEManager()
 
     /// Set when the root SwiftUI main view’s `.onAppear` ran before `startupCurrentActivationSequence` existed; flushed after the next foreground activation is established.
     private var pendingResidentSampleFirstMainView = false
