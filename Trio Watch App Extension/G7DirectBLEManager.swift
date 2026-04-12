@@ -920,7 +920,11 @@ extension G7DirectBLEManager: WKExtendedRuntimeSessionDelegate {
         }
     }
 
-    func extendedRuntimeSession(_ session: WKExtendedRuntimeSession, didInvalidateWith error: Error?) {
+    func extendedRuntimeSession(
+        _ session: WKExtendedRuntimeSession,
+        didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason,
+        error: (any Error)?
+    ) {
         // Resolve identity **before** clearing `extendedSession`: otherwise the teardown guard would see `nil` and skip
         // `teardownSession` for legitimate **error** invalidations of the current session (ChatGPT / Claude review).
         Task { @MainActor [weak self] in
@@ -932,10 +936,13 @@ extension G7DirectBLEManager: WKExtendedRuntimeSessionDelegate {
             if isCurrentSession {
                 self.extendedSession = nil
             }
-            await self.logG7Ble("event=g7_ble_ext_session_invalidated error=\(error?.localizedDescription ?? "none")")
-            // Only tear down BLE on **error** invalidation for the **current** session — intentional `invalidate()` (renewal)
-            // uses `error == nil` and must not disconnect; stale delegates after renewal must not tear down either.
-            guard error != nil, isCurrentSession, self.scanningStarted, self.peripheral != nil else { return }
+            let errDesc = error.map { $0.localizedDescription } ?? "none"
+            await self.logG7Ble(
+                "event=g7_ble_ext_session_invalidated reason=\(String(describing: reason)) error=\(errDesc)"
+            )
+            // Only tear down BLE on **error** invalidation for the **current** session — normal / renewal paths use other
+            // `reason` values and must not disconnect here; stale delegates after renewal must not tear down either.
+            guard reason == .error, isCurrentSession, self.scanningStarted, self.peripheral != nil else { return }
             self.teardownSession(reason: "ext_session_invalidated", isFailure: true)
         }
     }
