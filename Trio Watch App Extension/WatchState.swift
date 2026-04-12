@@ -1,5 +1,6 @@
 import Foundation
 import HealthKit
+import Observation
 import SwiftUI
 import WatchConnectivity
 import WatchKit
@@ -140,6 +141,18 @@ enum BackgroundTaskWindowCounter {
     /// Resident memory sample budget — see `Helper/WatchResidentTelemetry.swift`.
     var residentTelemetryBudget = WatchResidentTelemetryBudget()
 
+    /// Foreground-only Dexcom G7 direct BLE eavesdrop path. `@ObservationIgnored` — not part of `WatchState` observation.
+    /// `G7DirectBLEManager` does not create `CBCentralManager` until `startScanning()`; avoid `lazy` here (`@Observable` + `lazy` breaks macro expansion).
+    @ObservationIgnored private let g7DirectBLEManager = G7DirectBLEManager()
+
+    /// Start of the current foreground segment — used for `g7_ble_lifecycle` `active_window_s` / `active_window_ms` (duration of that segment).
+    private var g7ForegroundActiveSegmentStartedAt: Date?
+    /// Set when leaving active (`inactive` path) so a later SwiftUI `.background` phase can emit `phase=background` without falsely logging background on plain inactive.
+    private var g7PendingBackgroundLifecycleSessionId: String?
+
+    /// Latest `CBPeripheral.name` for the active G7 from iPhone (`WatchMessageKeys.activeG7PeripheralName`). `nil` = no filter / legacy phone payload without key.
+    @ObservationIgnored private var phoneActiveG7PeripheralName: String?
+
     /// Set when the root SwiftUI main view’s `.onAppear` ran before `startupCurrentActivationSequence` existed; flushed after the next foreground activation is established.
     private var pendingResidentSampleFirstMainView = false
 
@@ -220,6 +233,8 @@ enum BackgroundTaskWindowCounter {
         guard !startupIsForegroundActive else { return }
 
         startupIsForegroundActive = true
+        g7PendingBackgroundLifecycleSessionId = nil
+        g7ForegroundActiveSegmentStartedAt = Date()
         startupActivationSequence += 1
         let activationSequence = startupActivationSequence
         startupCurrentActivationSequence = activationSequence
@@ -244,11 +259,58 @@ enum BackgroundTaskWindowCounter {
             )
             await WatchErrorReporter.shared.startup()
         }
+
+        g7DirectBLEManager.applyForegroundActiveEntry(activePeripheralName: phoneActiveG7PeripheralName)
+        if let g7Sid = g7DirectBLEManager.currentG7SessionId {
+            Task {
+                await WatchLogger.shared.log(
+                    "event=g7_ble_lifecycle phase=active reason=scenePhase_change g7_session=\(g7Sid)"
+                )
+            }
+        }
     }
 
-    func handleForegroundInactiveOrBackground() {
+    /// `ScenePhase` after transition: **`.inactive` / `.background`** do **not** call **`g7DirectBLEManager.stop()`** — direct BLE + **`WKExtendedRuntimeSession`** continue until OS expiry / invalidation / protocol teardown (see design). Still performs startup / transport bookkeeping when leaving the active UI. Call from **`TrioWatchApp`** `.onChange(of: scenePhase)` only — not **`ExtensionDelegate`** (single driver for `g7_ble_lifecycle`).
+    func handleForegroundInactiveOrBackground(scenePhase newPhase: ScenePhase) {
         assert(Thread.isMainThread, "handleForegroundInactiveOrBackground must be called on main thread")
+
+        if newPhase == .background {
+            // Rare: `.background` without a prior `.inactive` in the same transition — still anchor renewal. Normal path:
+            // `.inactive` already called `noteSceneLeftActiveUi` and set `startupIsForegroundActive = false`, so this is skipped.
+            if startupIsForegroundActive {
+                g7DirectBLEManager.noteSceneLeftActiveUi(at: Date())
+            }
+            if let sid = g7PendingBackgroundLifecycleSessionId {
+                g7PendingBackgroundLifecycleSessionId = nil
+                Task {
+                    await WatchLogger.shared.log(
+                        "event=g7_ble_lifecycle phase=background reason=scenePhase_change ble_continues=true g7_session=\(sid)"
+                    )
+                }
+            }
+            return
+        }
+
+        guard newPhase == .inactive else { return }
         guard startupIsForegroundActive else { return }
+
+        let sceneLeftActiveAt = Date()
+        g7DirectBLEManager.noteSceneLeftActiveUi(at: sceneLeftActiveAt)
+
+        let g7Sid = g7DirectBLEManager.currentG7SessionId
+        let g7SegmentStart = g7ForegroundActiveSegmentStartedAt
+        let g7ActiveWindowS = g7SegmentStart.map { Int(sceneLeftActiveAt.timeIntervalSince($0)) } ?? 0
+        let g7ActiveWindowMs = g7SegmentStart.map { Int(sceneLeftActiveAt.timeIntervalSince($0) * 1000.0) } ?? 0
+
+        if let sid = g7Sid {
+            g7PendingBackgroundLifecycleSessionId = sid
+            Task {
+                await WatchLogger.shared.log(
+                    "event=g7_ble_lifecycle phase=inactive reason=scenePhase_change ble_continues=true g7_session=\(sid) active_window_s=\(g7ActiveWindowS) active_window_ms=\(g7ActiveWindowMs)"
+                )
+            }
+        }
+        g7ForegroundActiveSegmentStartedAt = nil
 
         pendingResidentSampleFirstMainView = false
 
@@ -1047,6 +1109,10 @@ enum BackgroundTaskWindowCounter {
 
         let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
 
+        DispatchQueue.main.async { [weak self] in
+            self?.applyPhoneActiveG7PeripheralNameIfPresent(from: payload)
+        }
+
         let readingDate: Date
         switch resolveEffectiveCGMReadingDate(from: payload) {
         case let .found(date):
@@ -1219,6 +1285,7 @@ enum BackgroundTaskWindowCounter {
         let readingResolution = resolveEffectiveCGMReadingDate(from: payload)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.applyPhoneActiveG7PeripheralNameIfPresent(from: payload)
             let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             self.saveComplicationSnapshot(from: payload)
             if case .found = readingResolution {
@@ -1531,6 +1598,14 @@ enum BackgroundTaskWindowCounter {
         }
     }
 
+    /// Updates `phoneActiveG7PeripheralName` when iPhone sends `WatchMessageKeys.activeG7PeripheralName` (including `""` to clear). If the key is absent (older iPhone build), leaves the cache unchanged.
+    private func applyPhoneActiveG7PeripheralNameIfPresent(from payload: [String: Any]) {
+        guard payload[WatchMessageKeys.activeG7PeripheralName] != nil else { return }
+        let trimmed = (payload[WatchMessageKeys.activeG7PeripheralName] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        phoneActiveG7PeripheralName = trimmed.isEmpty ? nil : trimmed
+    }
+
     private func scheduleUIUpdate(
         with newData: [String: Any],
         fromUserInfo: Bool = false,
@@ -1548,6 +1623,8 @@ enum BackgroundTaskWindowCounter {
             }
             return
         }
+
+        applyPhoneActiveG7PeripheralNameIfPresent(from: newData)
 
         guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
             Task {
@@ -1628,6 +1705,8 @@ enum BackgroundTaskWindowCounter {
             }
             return
         }
+
+        applyPhoneActiveG7PeripheralNameIfPresent(from: pendingData)
 
         Task {
             await WatchLogger.shared.log("Finalizing pending data")
