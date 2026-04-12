@@ -145,6 +145,11 @@ enum BackgroundTaskWindowCounter {
     /// `G7DirectBLEManager` does not create `CBCentralManager` until `startScanning()`; avoid `lazy` here (`@Observable` + `lazy` breaks macro expansion).
     @ObservationIgnored private let g7DirectBLEManager = G7DirectBLEManager()
 
+    /// Start of the current foreground segment — used for `g7_ble_lifecycle` `active_window_s` / `active_window_ms` (duration of that segment).
+    private var g7ForegroundActiveSegmentStartedAt: Date?
+    /// Set when leaving active (`inactive` path) so a later SwiftUI `.background` phase can emit `phase=background` without falsely logging background on plain inactive.
+    private var g7PendingBackgroundLifecycleSessionId: String?
+
     /// Set when the root SwiftUI main view’s `.onAppear` ran before `startupCurrentActivationSequence` existed; flushed after the next foreground activation is established.
     private var pendingResidentSampleFirstMainView = false
 
@@ -225,6 +230,8 @@ enum BackgroundTaskWindowCounter {
         guard !startupIsForegroundActive else { return }
 
         startupIsForegroundActive = true
+        g7PendingBackgroundLifecycleSessionId = nil
+        g7ForegroundActiveSegmentStartedAt = Date()
         startupActivationSequence += 1
         let activationSequence = startupActivationSequence
         startupCurrentActivationSequence = activationSequence
@@ -251,13 +258,59 @@ enum BackgroundTaskWindowCounter {
         }
 
         g7DirectBLEManager.startScanning()
+        if let g7Sid = g7DirectBLEManager.currentG7SessionId {
+            Task {
+                await WatchLogger.shared.log(
+                    "event=g7_ble_lifecycle phase=active reason=scenePhase_change g7_session=\(g7Sid)"
+                )
+            }
+        }
     }
 
-    func handleForegroundInactiveOrBackground() {
+    /// `ScenePhase` after transition: **`.inactive`** tears down BLE; **`.background`** only logs `phase=background` (session id from prior inactive). Call from **`TrioWatchApp`** `.onChange(of: scenePhase)` only — not **`ExtensionDelegate`** (single driver for `g7_ble_lifecycle`).
+    func handleForegroundInactiveOrBackground(scenePhase newPhase: ScenePhase) {
         assert(Thread.isMainThread, "handleForegroundInactiveOrBackground must be called on main thread")
+
+        if newPhase == .background {
+            if let sid = g7PendingBackgroundLifecycleSessionId {
+                g7PendingBackgroundLifecycleSessionId = nil
+                Task {
+                    await WatchLogger.shared.log(
+                        "event=g7_ble_lifecycle phase=background reason=scenePhase_change g7_session=\(sid)"
+                    )
+                }
+            }
+            return
+        }
+
+        guard newPhase == .inactive else { return }
         guard startupIsForegroundActive else { return }
 
+        let g7Sid = g7DirectBLEManager.currentG7SessionId
+        let g7SegmentStart = g7ForegroundActiveSegmentStartedAt
+        let g7Now = Date()
+        let g7ActiveWindowS = g7SegmentStart.map { Int(g7Now.timeIntervalSince($0)) } ?? 0
+        let g7ActiveWindowMs = g7SegmentStart.map { Int(g7Now.timeIntervalSince($0) * 1000.0) } ?? 0
+
+        if let sid = g7Sid {
+            g7PendingBackgroundLifecycleSessionId = sid
+            Task {
+                await WatchLogger.shared.log(
+                    "event=g7_ble_lifecycle phase=inactive reason=scenePhase_change g7_session=\(sid) active_window_s=\(g7ActiveWindowS)"
+                )
+            }
+        }
+
         g7DirectBLEManager.stop()
+
+        if let sid = g7Sid {
+            Task {
+                await WatchLogger.shared.log(
+                    "event=g7_ble_lifecycle phase=inactive reason=stop_requested g7_session=\(sid) active_window_ms=\(g7ActiveWindowMs)"
+                )
+            }
+        }
+        g7ForegroundActiveSegmentStartedAt = nil
 
         pendingResidentSampleFirstMainView = false
 

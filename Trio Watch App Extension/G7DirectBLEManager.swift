@@ -50,6 +50,31 @@ final class G7DirectBLEManager: NSObject {
     /// Scheduled reconnect after unexpected teardown while foreground scanning is still desired.
     private var reconnectWorkItem: DispatchWorkItem?
 
+    // MARK: - Instrumentation (report 03 Tier 1)
+
+    /// New UUID string each `startScanning()` — all `g7_ble_*` lines append this when set.
+    private var g7SessionID: String?
+    /// Wall-clock when a peripheral was discovered (for `ms_since_discover` on connect).
+    private var discoverWallClock: Date?
+    /// Last `stage=` label emitted (`event=g7_ble_stage`); transition-only.
+    private var lastInstrumentationStage: String?
+    private var connectTimeoutWorkItem: DispatchWorkItem?
+    private var gattSetupTimeoutWorkItem: DispatchWorkItem?
+    private var firstEgvTimeoutWorkItem: DispatchWorkItem?
+    /// Dedupe: at most one `g7_ble_timeout` per stage string per session.
+    private var timeoutEmittedKeys: Set<String> = []
+    private var lastNonEgControlLogAt: Date?
+
+    private enum G7BLEInstrumentation {
+        static let connectTimeoutSeconds: TimeInterval = 30
+        static let gattSetupTimeoutSeconds: TimeInterval = 60
+        static let firstEgvTimeoutSeconds: TimeInterval = 90
+        static let nonEgControlLogMinInterval: TimeInterval = 1.0
+    }
+
+    /// Exposed for `WatchState` `g7_ble_lifecycle` lines after `startScanning()`.
+    var currentG7SessionId: String? { g7SessionID }
+
     // MARK: - Public API
 
     /// Start scanning — call only when the watch app is in the foreground.
@@ -67,8 +92,14 @@ final class G7DirectBLEManager: NSObject {
         reconnectWorkItem = nil
 
         scanningStarted = true
+        g7SessionID = UUID().uuidString
+        timeoutEmittedKeys.removeAll()
+        lastInstrumentationStage = nil
+        discoverWallClock = nil
+        cancelInstrumentationTimeouts()
         loggedScanStartThisRequest = false
         connectionState = .scanning
+        emitStageIfChanged("scanning")
         // Cancel any in-flight connection before clearing state — avoids orphan links if `startScanning` runs while connected (e.g. rescan / reconnect path).
         if let existing = peripheral {
             pendingDisconnectReason = "startScanning_rescan"
@@ -86,7 +117,7 @@ final class G7DirectBLEManager: NSObject {
             )
             loggedScanStartThisRequest = true
             Task {
-                await logG7("event=g7_ble_scan_started")
+                await logG7Ble("event=g7_ble_scan_started")
             }
         case .unknown:
             // `centralManagerDidUpdateState` starts the scan when powered on.
@@ -94,7 +125,7 @@ final class G7DirectBLEManager: NSObject {
         default:
             let reason = String(describing: central.state.rawValue)
             Task {
-                await logG7("event=g7_ble_error error=bluetooth_unavailable state=\(reason)")
+                await logG7Ble("event=g7_ble_error error=bluetooth_unavailable state=\(reason)")
             }
             connectionState = .error("Bluetooth unavailable (\(reason))")
             scanningStarted = false
@@ -119,6 +150,7 @@ final class G7DirectBLEManager: NSObject {
     // MARK: - Session reset
 
     private func resetSessionState() {
+        discoverWallClock = nil
         dataService = nil
         authenticationCharacteristic = nil
         controlCharacteristic = nil
@@ -133,16 +165,20 @@ final class G7DirectBLEManager: NSObject {
     private func teardownSession(reason: String, isFailure: Bool = true) {
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
+        cancelInstrumentationTimeouts()
         resetSessionState()
         peripheral = nil
         connectionState = isFailure ? .error(reason) : .disconnected(reason: reason)
         Task {
-            await logG7(
+            await logG7Ble(
                 "event=g7_ble_disconnected reason=\(reason) failure=\(isFailure ? "true" : "false")"
             )
         }
         // Reconnect only after non-failure teardowns (e.g. clean peripheral disconnect). Protocol / discovery failures (`isFailure == true`) skip the 7s rescan to avoid a deterministic connect → fail → loop when auth or GATT setup is broken.
         if scanningStarted, !isFailure {
+            Task {
+                await logG7Ble("event=g7_ble_reconnect_scheduled delay_s=7")
+            }
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.scanningStarted else { return }
                 self.startScanning()
@@ -154,8 +190,93 @@ final class G7DirectBLEManager: NSObject {
 
     // MARK: - Logging
 
-    private func logG7(_ message: String) async {
-        await WatchLogger.shared.log(message)
+    /// Appends `g7_session=` when the session id exists and the line does not already include it.
+    /// Forwards `#fileID` / `#line` / `#function` into `WatchLogger` so log metadata reflects the **call site**, not this helper.
+    private func logG7Ble(
+        _ message: String,
+        function: String = #function,
+        file: String = #fileID,
+        line: Int = #line
+    ) async {
+        var out = message
+        if let sid = g7SessionID, !out.contains("g7_session=") {
+            out += " g7_session=\(sid)"
+        }
+        await WatchLogger.shared.log(out, function: function, file: file, line: line)
+    }
+
+    private func emitStageIfChanged(_ stage: String) {
+        guard lastInstrumentationStage != stage else { return }
+        lastInstrumentationStage = stage
+        Task {
+            await logG7Ble("event=g7_ble_stage stage=\(stage)")
+        }
+    }
+
+    private func cancelInstrumentationTimeouts() {
+        connectTimeoutWorkItem?.cancel()
+        connectTimeoutWorkItem = nil
+        gattSetupTimeoutWorkItem?.cancel()
+        gattSetupTimeoutWorkItem = nil
+        firstEgvTimeoutWorkItem?.cancel()
+        firstEgvTimeoutWorkItem = nil
+    }
+
+    private func timeoutDedupeKey(stage: String) -> String {
+        "\(g7SessionID ?? "none")-\(stage)"
+    }
+
+    private func shouldEmitTimeout(stage: String) -> Bool {
+        let key = timeoutDedupeKey(stage: stage)
+        guard !timeoutEmittedKeys.contains(key) else { return false }
+        timeoutEmittedKeys.insert(key)
+        return true
+    }
+
+    private func scheduleConnectTimeout() {
+        connectTimeoutWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { await self.handleTimeout(stage: "awaiting_connect") }
+        }
+        connectTimeoutWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + G7BLEInstrumentation.connectTimeoutSeconds,
+            execute: work
+        )
+    }
+
+    private func scheduleGattSetupTimeout() {
+        gattSetupTimeoutWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { await self.handleTimeout(stage: "awaiting_gatt_setup") }
+        }
+        gattSetupTimeoutWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + G7BLEInstrumentation.gattSetupTimeoutSeconds,
+            execute: work
+        )
+    }
+
+    private func scheduleFirstEgvTimeout() {
+        firstEgvTimeoutWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { await self.handleTimeout(stage: "awaiting_first_egv") }
+        }
+        firstEgvTimeoutWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + G7BLEInstrumentation.firstEgvTimeoutSeconds,
+            execute: work
+        )
+    }
+
+    private func handleTimeout(stage: String) async {
+        guard scanningStarted else { return }
+        guard shouldEmitTimeout(stage: stage) else { return }
+        await logG7Ble("event=g7_ble_timeout stage=\(stage)")
+        teardownSession(reason: "timeout_\(stage)", isFailure: true)
     }
 
     // MARK: - EGV parse & save
@@ -163,12 +284,29 @@ final class G7DirectBLEManager: NSObject {
     private func handleEGVPayload(_ data: Data) {
         guard data.count >= 19 else {
             Task {
-                await logG7("event=g7_ble_error error=egv_short count=\(data.count)")
+                await logG7Ble("event=g7_ble_error error=egv_short count=\(data.count)")
             }
             return
         }
 
-        guard data[0] == 0x4E else { return }
+        guard data[0] == 0x4E else {
+            let now = Date()
+            if lastNonEgControlLogAt == nil
+                || now.timeIntervalSince(lastNonEgControlLogAt!) >= G7BLEInstrumentation.nonEgControlLogMinInterval
+            {
+                lastNonEgControlLogAt = now
+                let op = data[0]
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_control_opcode opcode=\(op) len=\(data.count)"
+                    )
+                }
+            }
+            return
+        }
+
+        firstEgvTimeoutWorkItem?.cancel()
+        firstEgvTimeoutWorkItem = nil
 
         guard
             let txTime = data.readUInt32LE(offset: 2),
@@ -176,7 +314,7 @@ final class G7DirectBLEManager: NSObject {
             let glucoseRaw = data.readUInt16LE(offset: 12)
         else {
             Task {
-                await logG7("event=g7_ble_error error=egv_parse_bounds")
+                await logG7Ble("event=g7_ble_error error=egv_parse_bounds")
             }
             return
         }
@@ -205,7 +343,7 @@ final class G7DirectBLEManager: NSObject {
         } else {
             guard txTime > 0 else {
                 Task {
-                    await logG7("event=g7_ble_error error=egv_txtime_invalid tx_time=\(txTime)")
+                    await logG7Ble("event=g7_ble_error error=egv_txtime_invalid tx_time=\(txTime)")
                 }
                 return
             }
@@ -222,7 +360,7 @@ final class G7DirectBLEManager: NSObject {
         let glucoseField = glucose.map { String($0) } ?? "nil"
         let trendField = trendRate.map { String($0) } ?? "nil"
         Task {
-            await logG7(
+            await logG7Ble(
                 "event=g7_ble_egv_received glucose=\(glucoseField)"
                     + " trend=\(trendField)"
                     + " reading_epoch=\(readingEpoch)"
@@ -247,7 +385,7 @@ final class G7DirectBLEManager: NSObject {
         TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
 
         Task {
-            await logG7("event=g7_ble_snapshot_saved glucose=\(glucose)")
+            await logG7Ble("event=g7_ble_snapshot_saved glucose=\(glucose)")
         }
     }
 
@@ -275,11 +413,12 @@ final class G7DirectBLEManager: NSObject {
 
     private func sendAuthRequest() {
         guard let cbPeripheral = peripheral, let auth = authenticationCharacteristic else { return }
+        emitStageIfChanged("authenticating")
         let payload = Data([0x01, 0x00])
         cbPeripheral.writeValue(payload, for: auth, type: .withResponse)
         connectionState = .authenticating
         Task {
-            await logG7("event=g7_ble_auth_request_sent")
+            await logG7Ble("event=g7_ble_auth_request_sent")
         }
     }
 
@@ -290,16 +429,17 @@ final class G7DirectBLEManager: NSObject {
         switch opcode {
         case 0x03:
             Task {
-                await logG7("event=g7_ble_auth_challenge_received opcode=0x03")
+                await logG7Ble("event=g7_ble_auth_challenge_received opcode=0x03")
             }
         // Eavesdrop: do not respond to the challenge.
         case 0x05:
             let authenticated = data.count >= 2 && data[1] == 1
             Task {
-                await logG7("event=g7_ble_authenticated authenticated=\(authenticated)")
+                await logG7Ble("event=g7_ble_authenticated authenticated=\(authenticated)")
             }
             guard authenticated else { return }
             guard let activePeripheral = self.peripheral else { return }
+            emitStageIfChanged("connected")
             connectionState = .connected
             controlNotificationsReady = false
             backfillNotificationsReady = false
@@ -319,6 +459,8 @@ final class G7DirectBLEManager: NSObject {
         // EGV is requested on control once control notifications are ready (DiaBLE sequence); backfill is separate.
         guard controlNotificationsReady, !egvRequestSent else { return }
         egvRequestSent = true
+        emitStageIfChanged("awaiting_egv")
+        scheduleFirstEgvTimeout()
         cbPeripheral.writeValue(Data([0x4E]), for: control, type: .withResponse)
     }
 }
@@ -336,7 +478,7 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         guard !loggedScanStartThisRequest else { return }
         loggedScanStartThisRequest = true
         Task {
-            await logG7("event=g7_ble_scan_started")
+            await logG7Ble("event=g7_ble_scan_started")
         }
     }
 
@@ -351,25 +493,44 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         self.peripheral = peripheral
         peripheral.delegate = self
         connectionState = .connecting
+        discoverWallClock = Date()
+        emitStageIfChanged("connecting")
         let name = peripheral.name ?? "unknown"
         Task {
-            await logG7("event=g7_ble_peripheral_discovered peripheral=\(name)")
+            await logG7Ble("event=g7_ble_peripheral_discovered peripheral=\(name)")
+            await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name)")
         }
+        scheduleConnectTimeout()
         central?.connect(peripheral, options: nil)
     }
 
     func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        connectTimeoutWorkItem?.cancel()
+        connectTimeoutWorkItem = nil
+        gattSetupTimeoutWorkItem?.cancel()
+        gattSetupTimeoutWorkItem = nil
+        scheduleGattSetupTimeout()
+        emitStageIfChanged("discovering_services")
         let name = peripheral.name ?? "unknown"
+        let msDiscover: Int?
+        if let t0 = discoverWallClock {
+            msDiscover = Int(Date().timeIntervalSince(t0) * 1000.0)
+        } else {
+            msDiscover = nil
+        }
+        let msField = msDiscover.map { " ms_since_discover=\($0)" } ?? ""
         Task {
-            await logG7("event=g7_ble_connected peripheral=\(name)")
+            await logG7Ble("event=g7_ble_connected peripheral=\(name)\(msField)")
         }
         peripheral.discoverServices([G7BLEUUID.dataService])
     }
 
     func centralManager(_: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        connectTimeoutWorkItem?.cancel()
+        connectTimeoutWorkItem = nil
         let reason = error?.localizedDescription ?? "didFailToConnect"
         Task {
-            await logG7("event=g7_ble_error error=\(reason)")
+            await logG7Ble("event=g7_ble_error error=\(reason)")
         }
         teardownSession(reason: reason)
     }
@@ -392,7 +553,7 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         }
         Task {
             if error != nil {
-                await logG7("event=g7_ble_error error=\(reason)")
+                await logG7Ble("event=g7_ble_error error=\(reason)")
             }
         }
         teardownSession(reason: reason, isFailure: isFailure)
@@ -405,7 +566,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
             Task {
-                await logG7("event=g7_ble_error error=\(error.localizedDescription)")
+                await logG7Ble("event=g7_ble_error error=\(error.localizedDescription)")
             }
             teardownSession(reason: "discover_services")
             return
@@ -413,12 +574,16 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         guard let services = peripheral.services else { return }
         guard let svc = services.first(where: { $0.uuid == G7BLEUUID.dataService }) else {
             Task {
-                await logG7("event=g7_ble_error error=data_service_missing")
+                await logG7Ble("event=g7_ble_error error=data_service_missing")
             }
             teardownSession(reason: "no_data_service")
             return
         }
         dataService = svc
+        Task {
+            await logG7Ble("event=g7_ble_services_discovered")
+        }
+        emitStageIfChanged("discovering_characteristics")
         peripheral.discoverCharacteristics(
             [G7BLEUUID.authentication, G7BLEUUID.control, G7BLEUUID.backfill],
             for: svc
@@ -428,7 +593,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         if let error {
             Task {
-                await logG7("event=g7_ble_error error=\(error.localizedDescription)")
+                await logG7Ble("event=g7_ble_error error=\(error.localizedDescription)")
             }
             teardownSession(reason: "discover_characteristics")
             return
@@ -453,10 +618,14 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
               backfillCharacteristic != nil
         else {
             Task {
-                await logG7("event=g7_ble_error error=characteristics_incomplete")
+                await logG7Ble("event=g7_ble_error error=characteristics_incomplete")
             }
             teardownSession(reason: "characteristics_incomplete")
             return
+        }
+
+        Task {
+            await logG7Ble("event=g7_ble_characteristics_discovered")
         }
 
         if let auth = authenticationCharacteristic {
@@ -467,13 +636,24 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         if let error {
             Task {
-                await logG7("event=g7_ble_error error=\(error.localizedDescription)")
+                await logG7Ble("event=g7_ble_error error=\(error.localizedDescription)")
             }
             teardownSession(reason: "notification_state")
             return
         }
 
         guard characteristic.isNotifying else { return }
+
+        let charName: String
+        switch characteristic.uuid {
+        case G7BLEUUID.authentication: charName = "auth"
+        case G7BLEUUID.control: charName = "control"
+        case G7BLEUUID.backfill: charName = "backfill"
+        default: charName = "unknown"
+        }
+        Task {
+            await logG7Ble("event=g7_ble_notify_state char=\(charName) notifying=true")
+        }
 
         switch characteristic.uuid {
         case G7BLEUUID.authentication:
@@ -487,12 +667,21 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         default:
             break
         }
+
+        cancelGattSetupTimeoutWhenNotifyChannelsReady()
+    }
+
+    /// Clears `awaiting_gatt_setup` timeout once **control** and **backfill** notifications are enabled (auth alone is not full GATT readiness for the data path).
+    private func cancelGattSetupTimeoutWhenNotifyChannelsReady() {
+        guard controlNotificationsReady, backfillNotificationsReady else { return }
+        gattSetupTimeoutWorkItem?.cancel()
+        gattSetupTimeoutWorkItem = nil
     }
 
     func peripheral(_: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error {
             Task {
-                await logG7("event=g7_ble_error error=\(error.localizedDescription)")
+                await logG7Ble("event=g7_ble_error error=\(error.localizedDescription)")
             }
             return
         }
@@ -512,18 +701,32 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
     }
 
     func peripheral(_: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard let error else { return }
-        if characteristic.uuid == G7BLEUUID.authentication {
-            Task {
-                await logG7("event=g7_ble_error error=\(error.localizedDescription)")
+        if let error {
+            if characteristic.uuid == G7BLEUUID.authentication {
+                Task {
+                    await logG7Ble("event=g7_ble_error error=\(error.localizedDescription)")
+                }
+                teardownSession(reason: "write_failed_auth", isFailure: true)
+            } else {
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_write_error_nonfatal characteristic=\(characteristic.uuid.uuidString) error=\(error.localizedDescription)"
+                    )
+                }
             }
-            teardownSession(reason: "write_failed_auth", isFailure: true)
-        } else {
+            return
+        }
+        switch characteristic.uuid {
+        case G7BLEUUID.authentication:
             Task {
-                await logG7(
-                    "event=g7_ble_write_error_nonfatal characteristic=\(characteristic.uuid.uuidString) error=\(error.localizedDescription)"
-                )
+                await logG7Ble("event=g7_ble_write_ok write=auth_init")
             }
+        case G7BLEUUID.control:
+            Task {
+                await logG7Ble("event=g7_ble_write_ok write=egv_request")
+            }
+        default:
+            break
         }
     }
 }
