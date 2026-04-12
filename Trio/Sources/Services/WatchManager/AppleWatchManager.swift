@@ -2,6 +2,7 @@ import Combine
 import CoreData
 import FirebaseCrashlytics
 import Foundation
+import G7SensorKit
 import Swinject
 import UIKit
 import WatchConnectivity
@@ -29,6 +30,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     @Injected() private var bolusCalculationManager: BolusCalculationManager!
     @Injected() private var iobService: IOBService!
     @Injected() private var notificationsManager: UserNotificationsManager!
+    @Injected() private var fetchGlucoseManager: FetchGlucoseManager!
 
     private var units: GlucoseUnits = .mgdL
     private var glucoseColorScheme: GlucoseColorScheme = .staticColor
@@ -542,6 +544,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         return dict
     }
 
+    /// Value for `WatchMessageKeys.activeG7PeripheralName`: exact active G7 Bluetooth name, or `""` when not on G7 / unknown so the watch clears BLE filtering.
+    private func activeG7PeripheralNameForWatchPayload() -> String {
+        guard let g7 = fetchGlucoseManager.cgmManager as? G7CGMManager else {
+            return ""
+        }
+        guard let raw = g7.sensorName?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return ""
+        }
+        return raw
+    }
+
     // MARK: - Session Readiness & Queue Management (R1b)
 
     /// Shared session readiness helper — used by cancelStaleQueuedTransfers and sendDataToWatch.
@@ -757,8 +770,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         // R1a: stamp enqueue time immediately before transfer calls
         fullMessage[WatchMessageKeys.transferEnqueuedAt] = Date().timeIntervalSince1970
 
+        fullMessage[WatchMessageKeys.activeG7PeripheralName] = activeG7PeripheralNameForWatchPayload()
+
         // R3: Build complication payload from explicit allowlist.
         // Uses safe if-let inserts to avoid Optional-as-Any bridging issues.
+        // Tuple `.0` is the `fullMessage` key; `.1` is a debug label only (loops read `fullMessage[key]`).
         var complicationMessage: [String: Any] = [:]
         let complicationAllowlist: [(String, String)] = [
             (WatchMessageKeys.currentGlucose, "currentGlucose"),
@@ -768,6 +784,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             (WatchMessageKeys.readingEpoch, "readingEpoch"),
             (WatchMessageKeys.transferEnqueuedAt, "transferEnqueuedAt"),
             (WatchMessageKeys.date, "date"),
+            (WatchMessageKeys.activeG7PeripheralName, "activeG7PeripheralName"),
         ]
         for (key, name) in complicationAllowlist {
             if let value = fullMessage[key] {

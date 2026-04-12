@@ -1,6 +1,7 @@
 import CoreBluetooth
 import Foundation
 import Observation
+import WatchKit
 
 // MARK: - UUIDs (Dexcom G7 data service — DiaBLE/Dexcom IPA verified)
 
@@ -75,9 +76,64 @@ final class G7DirectBLEManager: NSObject {
     /// Exposed for `WatchState` `g7_ble_lifecycle` lines after `startScanning()`.
     var currentG7SessionId: String? { g7SessionID }
 
+    /// When set, only connect to a peripheral whose `name` matches exactly (e.g. active `DXCMxx`). `nil` = first matching advertisement (legacy behavior).
+    var activePeripheralName: String?
+
+    private var extendedSession: WKExtendedRuntimeSession?
+    private var sessionStartedAt: Date?
+    private var egvReceivedThisSession = false
+    /// Set when **`WatchState`** leaves **`ScenePhase.active`** so **`applyForegroundActiveEntry`** can renew **`WKExtendedRuntimeSession`** after a watch-face detour.
+    private var lastSceneLeftActiveUiAt: Date?
+
+    private enum G7BLEExtendedRuntime {
+        /// Product: anchor ~1h extended-runtime budget from **last time the app UI was active** (renew on re-entry after inactive/background when still within this window).
+        static let foregroundReentryRenewalMaxAwaySeconds: TimeInterval = 3600
+    }
+
     // MARK: - Public API
 
-    /// Start scanning — call only when the watch app is in the foreground.
+    /// Record that the app UI left **`ScenePhase.active`** (Digital Crown / inactive). Enables extended-runtime renewal on the next **`applyForegroundActiveEntry`**.
+    func noteSceneLeftActiveUi(at date: Date) {
+        lastSceneLeftActiveUiAt = date
+    }
+
+    /// Called when `ScenePhase` becomes **`.active`**. Applies the phone-supplied **`activePeripheralName`** filter,
+    /// **renews `WKExtendedRuntimeSession`** when returning from inactive/background within **`foregroundReentryRenewalMaxAwaySeconds`**
+    /// so the ~1h budget can anchor to **last active UI**, then starts BLE only when there is no in-flight scan/connect/stream (**`scanning`…`connected`**).
+    func applyForegroundActiveEntry(activePeripheralName: String?) {
+        self.activePeripheralName = activePeripheralName
+        if activePeripheralName != nil {
+            Task {
+                await logG7Ble("event=g7_ble_active_name_applied filtered=true")
+            }
+        }
+
+        if let leftAt = lastSceneLeftActiveUiAt {
+            lastSceneLeftActiveUiAt = nil
+            let away = Date().timeIntervalSince(leftAt)
+            let awaySec = max(0, Int(away.rounded(.down)))
+            if awaySec > 0, away < G7BLEExtendedRuntime.foregroundReentryRenewalMaxAwaySeconds {
+                renewExtendedRuntimeSessionAfterForegroundReentry(awaySeconds: awaySec)
+            } else if awaySec > 0 {
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_ext_session_renewal_skipped reason=away_not_under_1h away_s=\(awaySec)"
+                    )
+                }
+            }
+        }
+
+        if shouldSkipFullStartScanningAfterForegroundReentry() {
+            Task {
+                await logG7Ble("event=g7_ble_foreground_reentry_skipped reason=ble_session_in_progress")
+            }
+            return
+        }
+        startScanning()
+    }
+
+    /// Begins (or restarts) scanning for G7 advertisements. Prefer **`applyForegroundActiveEntry`** from **`WatchState`**
+    /// so returning to the app does not tear down an already-running session.
     func startScanning() {
         if central == nil {
             central = CBCentralManager(
@@ -93,6 +149,7 @@ final class G7DirectBLEManager: NSObject {
 
         scanningStarted = true
         g7SessionID = UUID().uuidString
+        sessionStartedAt = Date()
         timeoutEmittedKeys.removeAll()
         lastInstrumentationStage = nil
         discoverWallClock = nil
@@ -132,8 +189,12 @@ final class G7DirectBLEManager: NSObject {
         }
     }
 
-    /// Stop scanning and disconnect.
+    /// Explicit teardown: stop scanning, disconnect, invalidate **`WKExtendedRuntimeSession`**, and reset session state.
+    /// **Not** invoked from **`ScenePhase`** — scene **`.inactive` / `.background`** do not end direct BLE; the OS ends the
+    /// extended runtime window via **`WKExtendedRuntimeSessionDelegate`**. Reserve **`stop()`** for future explicit
+    /// product controls (e.g. settings), tests, or emergency shutdown paths.
     func stop() {
+        invalidateExtendedSession(reason: "stop_requested")
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         scanningStarted = false
@@ -144,6 +205,48 @@ final class G7DirectBLEManager: NSObject {
         } else {
             pendingDisconnectReason = nil
             teardownSession(reason: "stop_requested", isFailure: false)
+        }
+    }
+
+    /// When **`scanningStarted`** and the connection pipeline is still live, a full **`startScanning()`** would cancel the
+    /// peripheral and reset **`g7_session`** — avoid that on foreground re-entry after the user viewed the watch face.
+    private func shouldSkipFullStartScanningAfterForegroundReentry() -> Bool {
+        guard scanningStarted else { return false }
+        switch connectionState {
+        case .scanning, .connecting, .authenticating, .connected:
+            return true
+        case .idle, .disconnected, .error:
+            return false
+        }
+    }
+
+    /// Invalidates any existing extended session, then starts a **new** `WKExtendedRuntimeSession` while BLE is still live so
+    /// watchOS can grant a fresh budget (~1h from **this** foreground re-entry when within the renewal window).
+    private func renewExtendedRuntimeSessionAfterForegroundReentry(awaySeconds: Int) {
+        invalidateExtendedSession(reason: "foreground_reentry_renewal")
+        startNewExtendedRuntimeSessionIfConnected(reason: "foreground_reentry", awaySeconds: awaySeconds)
+    }
+
+    /// After `didDiscover` or foreground re-entry while connected — `delegate` logs `g7_ble_ext_session_started`.
+    private func beginExtendedRuntimeSession() {
+        let ext = WKExtendedRuntimeSession()
+        ext.delegate = self
+        extendedSession = ext
+        ext.start()
+    }
+
+    /// When already past discovery (connecting…connected), attach a new extended session (used after invalidating the prior session).
+    private func startNewExtendedRuntimeSessionIfConnected(reason: String, awaySeconds: Int) {
+        guard peripheral != nil else { return }
+        switch connectionState {
+        case .connecting, .authenticating, .connected:
+            break
+        default:
+            return
+        }
+        beginExtendedRuntimeSession()
+        Task {
+            await logG7Ble("event=g7_ble_ext_session_renewal reason=\(reason) away_s=\(awaySeconds)")
         }
     }
 
@@ -159,19 +262,58 @@ final class G7DirectBLEManager: NSObject {
         egvRequestSent = false
         controlNotificationsReady = false
         backfillNotificationsReady = false
+        egvReceivedThisSession = false
+    }
+
+    private func invalidateExtendedSession(reason: String) {
+        guard extendedSession != nil else { return }
+        extendedSession?.invalidate()
+        extendedSession = nil
+        Task {
+            await logG7Ble("event=g7_ble_ext_session_ended reason=\(reason)")
+        }
+    }
+
+    private func mapSessionOutcome(reason: String, isFailure: Bool, egvReceived: Bool) -> String {
+        if reason == "stop_requested" { return "cancelled" }
+        if reason.hasPrefix("timeout_") { return "timeout" }
+        if egvReceived, !isFailure { return "success" }
+        if isFailure { return "failure" }
+        return "incomplete"
     }
 
     /// - Parameter isFailure: When `true`, sets `connectionState` to `.error` (protocol / BLE failure). When `false`, uses `.disconnected` (clean stop or non-error teardown).
     private func teardownSession(reason: String, isFailure: Bool = true) {
+        assert(Thread.isMainThread, "teardownSession must run on the main queue (CBCentralManager delegate queue)")
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         cancelInstrumentationTimeouts()
+
+        let outcomeSid = g7SessionID
+        let startedAt = sessionStartedAt
+        let egvDone = egvReceivedThisSession
+        let finalStage = lastInstrumentationStage
+        let durationMs: Int
+        if let t0 = startedAt {
+            durationMs = Int(Date().timeIntervalSince(t0) * 1000.0)
+        } else {
+            durationMs = 0
+        }
+        let outcome = mapSessionOutcome(reason: reason, isFailure: isFailure, egvReceived: egvDone)
+        let stageField = finalStage ?? "none"
+
+        invalidateExtendedSession(reason: reason)
+
         resetSessionState()
+        sessionStartedAt = nil
         peripheral = nil
         connectionState = isFailure ? .error(reason) : .disconnected(reason: reason)
         Task {
             await logG7Ble(
                 "event=g7_ble_disconnected reason=\(reason) failure=\(isFailure ? "true" : "false")"
+            )
+            await logG7Ble(
+                "event=g7_ble_session_outcome outcome=\(outcome) final_stage=\(stageField) duration_ms=\(durationMs) g7_session=\(outcomeSid ?? "none")"
             )
         }
         // Reconnect only after non-failure teardowns (e.g. clean peripheral disconnect). Protocol / discovery failures (`isFailure == true`) skip the 7s rescan to avoid a deterministic connect → fail → loop when auth or GATT setup is broken.
@@ -370,6 +512,8 @@ final class G7DirectBLEManager: NSObject {
 
         guard let glucose else { return }
 
+        egvReceivedThisSession = true
+
         let trendString = Self.trendString(fromRateMgDlPerMin: trendRate)
 
         let snapshot = TrioComplicationSnapshot(
@@ -383,6 +527,9 @@ final class G7DirectBLEManager: NSObject {
 
         // Synchronous save on main — same queue as CB delegate (`CBCentralManager` uses `.main`).
         TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
+
+        // Do not invalidate `WKExtendedRuntimeSession` here: product intent is to keep listening for subsequent
+        // CGM samples and updating the complication store until `stop()` / teardown or the OS ends the session.
 
         Task {
             await logG7Ble("event=g7_ble_snapshot_saved glucose=\(glucose)")
@@ -486,18 +633,29 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         _: CBCentralManager,
         didDiscover peripheral: CBPeripheral,
         advertisementData _: [String: Any],
-        rssi _: NSNumber
+        rssi: NSNumber
     ) {
         guard scanningStarted else { return }
+        let name = peripheral.name ?? "unknown"
+        if let active = activePeripheralName, !active.isEmpty, name != active {
+            Task {
+                await logG7Ble("event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor")
+            }
+            return
+        }
+
         central?.stopScan()
         self.peripheral = peripheral
         peripheral.delegate = self
         connectionState = .connecting
         discoverWallClock = Date()
         emitStageIfChanged("connecting")
-        let name = peripheral.name ?? "unknown"
+
+        // TODO: validate WKExtendedRuntimeSession honored for BLE-connect use case on device
+        beginExtendedRuntimeSession()
+
         Task {
-            await logG7Ble("event=g7_ble_peripheral_discovered peripheral=\(name)")
+            await logG7Ble("event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi.intValue)")
             await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name)")
         }
         scheduleConnectTimeout()
@@ -528,18 +686,32 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
     func centralManager(_: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         connectTimeoutWorkItem?.cancel()
         connectTimeoutWorkItem = nil
-        let reason = error?.localizedDescription ?? "didFailToConnect"
-        Task {
-            await logG7Ble("event=g7_ble_error error=\(reason)")
+        let name = peripheral.name ?? "unknown"
+        if let err = error {
+            let ns = err as NSError
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_connect_failed peripheral=\(name) error_domain=\(ns.domain) error_code=\(ns.code) error_desc=\(ns.localizedDescription)"
+                )
+            }
+        } else {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_connect_failed peripheral=\(name) error_domain=none error_code=-1 error_desc=none"
+                )
+            }
         }
-        teardownSession(reason: reason)
+        teardownSession(reason: "connect_failed", isFailure: true)
     }
 
     func centralManager(_: CBCentralManager, didDisconnectPeripheral _: CBPeripheral, error: Error?) {
         let override = pendingDisconnectReason
         pendingDisconnectReason = nil
         // Intentional cancel before a new scan — `startScanning` already reset state; skip teardown + reconnect scheduling.
+        // Intentionally does not emit `g7_ble_session_outcome`: the session id is reset at the top of the next
+        // `startScanning()`; correlating outcome lines to rescans would duplicate or confuse metrics.
         if override == "startScanning_rescan" {
+            invalidateExtendedSession(reason: "startScanning_rescan")
             return
         }
         let reason = override ?? (error?.localizedDescription ?? "disconnected")
@@ -727,6 +899,44 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
             }
         default:
             break
+        }
+    }
+}
+
+// MARK: - WKExtendedRuntimeSessionDelegate
+
+extension G7DirectBLEManager: WKExtendedRuntimeSessionDelegate {
+    func extendedRuntimeSessionDidStart(_: WKExtendedRuntimeSession) {
+        Task {
+            await logG7Ble("event=g7_ble_ext_session_started")
+        }
+    }
+
+    func extendedRuntimeSessionWillExpire(_ session: WKExtendedRuntimeSession) {
+        Task { @MainActor in
+            guard let ext = extendedSession, ext === session else { return }
+            await logG7Ble("event=g7_ble_ext_session_expiring")
+            teardownSession(reason: "ext_session_expired", isFailure: false)
+        }
+    }
+
+    func extendedRuntimeSession(_ session: WKExtendedRuntimeSession, didInvalidateWith error: Error?) {
+        // Resolve identity **before** clearing `extendedSession`: otherwise the teardown guard would see `nil` and skip
+        // `teardownSession` for legitimate **error** invalidations of the current session (ChatGPT / Claude review).
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let isCurrentSession: Bool = {
+                guard let ext = self.extendedSession else { return false }
+                return ext === session
+            }()
+            if isCurrentSession {
+                self.extendedSession = nil
+            }
+            await self.logG7Ble("event=g7_ble_ext_session_invalidated error=\(error?.localizedDescription ?? "none")")
+            // Only tear down BLE on **error** invalidation for the **current** session — intentional `invalidate()` (renewal)
+            // uses `error == nil` and must not disconnect; stale delegates after renewal must not tear down either.
+            guard error != nil, isCurrentSession, self.scanningStarted, self.peripheral != nil else { return }
+            self.teardownSession(reason: "ext_session_invalidated", isFailure: true)
         }
     }
 }

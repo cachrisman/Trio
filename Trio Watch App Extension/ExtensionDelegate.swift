@@ -32,7 +32,7 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func applicationWillResignActive() {
-        // G7 BLE stop + `g7_ble_lifecycle` inactive/background: single driver is `TrioWatchApp` `.onChange(of: scenePhase)` — avoid duplicating `WatchState.handleForegroundInactiveOrBackground` here.
+        // `g7_ble_lifecycle` inactive/background + startup bookkeeping: single driver is `TrioWatchApp` `.onChange(of: scenePhase)` — avoid duplicating `WatchState.handleForegroundInactiveOrBackground` here. Direct BLE is **not** stopped on resign/inactive (extended runtime continues until OS expiry).
         Task {
             await WatchLogger.shared.log(
                 "event=watch_app_resigning_active source=wk_application_delegate "
