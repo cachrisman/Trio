@@ -1047,7 +1047,10 @@ cd "$TEMP_WORKTREE" || {
 
 # Apply tracked file changes
 if [ "${#TRACKED_FILES[@]}" -gt 0 ]; then
-  if ! "${diff_patch_cmd[@]}" -- "${TRACKED_FILES[@]}" | git apply --whitespace=fix; then
+  # --index is required so submodule gitlink updates (mode 160000) are recorded; without it,
+  # git apply reports success but the index/worktree may omit the gitlink change and the
+  # synthetic commit can drop paths like G7SensorKit.
+  if ! "${diff_patch_cmd[@]}" -- "${TRACKED_FILES[@]}" | git apply --index --whitespace=fix; then
     print_error "Failed to apply diff in temporary worktree"
     exit 1
   fi
