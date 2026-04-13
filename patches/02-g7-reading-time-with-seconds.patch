@@ -1,6 +1,6 @@
-From c2c0e7977b2311b61a4756663a4039c4c8a98d71 Mon Sep 17 00:00:00 2001
+From 9cfde4a8e68b4eea43998302f3274bcdb68a01e9 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Wed, 4 Mar 2026 21:55:24 +0100
+Date: Tue, 14 Apr 2026 00:24:02 +0200
 Subject: [PATCH] Update G7SensorKit (show reading timestamp with seconds)
 
 ---
@@ -9,25 +9,25 @@ Subject: [PATCH] Update G7SensorKit (show reading timestamp with seconds)
  2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/.gitmodules b/.gitmodules
-index ca2bf7849..83cc6918b 100644
+index 640982671..c344f7474 100644
 --- a/.gitmodules
 +++ b/.gitmodules
-@@ -20,7 +20,7 @@
- 	branch = trio
+@@ -15,7 +15,7 @@
+ 	url = https://github.com/loopandlearn/OmniBLE.git
  [submodule "G7SensorKit"]
  	path = G7SensorKit
 -	url = https://github.com/loopandlearn/G7SensorKit.git
 +	url = https://github.com/cachrisman/G7SensorKit.git
- 	branch = trio
  [submodule "OmniKit"]
  	path = OmniKit
+ 	url = https://github.com/loopandlearn/OmniKit.git
 diff --git a/G7SensorKit b/G7SensorKit
-index 0c0930500..8b212ce48 160000
+index 4d0780db0..b791cf56c 160000
 --- a/G7SensorKit
 +++ b/G7SensorKit
 @@ -1 +1 @@
--Subproject commit 0c093050084b63d7af0dc99307dba09239eb3180
-+Subproject commit 8b212ce48e7de768e918481e4480bcd204754c09
+-Subproject commit 4d0780db06c7c95b3a3bf3cdb2f2838d521e411a
++Subproject commit b791cf56c3c75d660cc30927d643543a470e0e4f
 -- 
 2.50.1 (Apple Git-155)
 
