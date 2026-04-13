@@ -33,6 +33,11 @@ enum BackgroundTaskWindowCounter {
     }
 }
 
+enum WatchCurrentDataSource {
+    case phoneRelay
+    case directBLE
+}
+
 @Observable final class WatchState: NSObject, WCSessionDelegate {
     static let shared = WatchState()
 
@@ -41,6 +46,7 @@ enum BackgroundTaskWindowCounter {
     var session: WCSession?
     var isReachable = false
     var lastWatchStateUpdate: Date?
+    var currentWatchDataSource: WatchCurrentDataSource?
 
     // MARK: - Main view metrics
 
@@ -144,6 +150,16 @@ enum BackgroundTaskWindowCounter {
     /// Foreground-only Dexcom G7 direct BLE eavesdrop path. `@ObservationIgnored` — not part of `WatchState` observation.
     /// `G7DirectBLEManager` does not create `CBCentralManager` until `startScanning()`; avoid `lazy` here (`@Observable` + `lazy` breaks macro expansion).
     @ObservationIgnored private let g7DirectBLEManager = G7DirectBLEManager()
+
+    /// Exposes the direct BLE manager to the existing watch debug view without changing the watch data flow.
+    var g7DebugManager: G7DirectBLEManager { g7DirectBLEManager }
+
+    /// Tracks the last live source that actually updated the current watch UI state. This avoids comparing mixed
+    /// reading/message timestamps when the debug screen needs to answer whether the current values came from
+    /// phone relay or the direct-BLE observer path.
+    var isUsingPhoneRelayForCurrentWatchData: Bool {
+        currentWatchDataSource == .phoneRelay
+    }
 
     /// Start of the current foreground segment — used for `g7_ble_lifecycle` `active_window_s` / `active_window_ms` (duration of that segment).
     private var g7ForegroundActiveSegmentStartedAt: Date?
@@ -1604,6 +1620,7 @@ enum BackgroundTaskWindowCounter {
         let trimmed = (payload[WatchMessageKeys.activeG7PeripheralName] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         phoneActiveG7PeripheralName = trimmed.isEmpty ? nil : trimmed
+        g7DirectBLEManager.updatePhoneActivePeripheralName(phoneActiveG7PeripheralName)
     }
 
     private func scheduleUIUpdate(
@@ -1779,6 +1796,8 @@ enum BackgroundTaskWindowCounter {
         if let delta = message[WatchMessageKeys.delta] as? String {
             self.delta = delta
         }
+
+        currentWatchDataSource = .phoneRelay
 
         if let iob = message[WatchMessageKeys.iob] as? String {
             self.iob = iob
@@ -2159,6 +2178,21 @@ enum BackgroundTaskWindowCounter {
             self.showSyncingAnimation = false
             self.syncTimeoutWorkItem?.cancel()
         }
+    }
+
+    func applyDirectBleSnapshot(_ snapshot: TrioComplicationSnapshot) {
+        assert(Thread.isMainThread, "applyDirectBleSnapshot must be called on the main thread")
+        currentGlucose = snapshot.glucose
+        trend = snapshot.trend
+        delta = snapshot.delta
+        if let glucoseColor = snapshot.glucoseColor {
+            currentGlucoseColorString = glucoseColor
+        }
+        lastWatchStateUpdate = snapshot.readingDate
+        currentWatchDataSource = .directBLE
+        showSyncingAnimation = false
+        syncTimeoutWorkItem?.cancel()
+        syncTimeoutWorkItem = nil
     }
 
     private func dateValue(from value: Any?) -> Date? {

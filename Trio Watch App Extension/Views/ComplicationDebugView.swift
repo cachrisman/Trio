@@ -1,11 +1,14 @@
+import Combine
 import SwiftUI
 import WatchKit
 
 struct ComplicationDebugView: View {
     @State private var snapshot: TrioComplicationSnapshot?
+    @State private var watchState = WatchState.shared
     @State private var showConfirmation = false
     @State private var confirmationMessage = ""
     @State private var refreshTrigger = UUID()
+    @State private var autoRefreshTick = Date()
 
     @State private var watchLogCount: Int = 0
     @State private var watchLogBytes: UInt64 = 0
@@ -15,6 +18,11 @@ struct ComplicationDebugView: View {
     @State private var isLoadingLogFiles: Bool = false
 
     private let dataStore = TrioComplicationDataStore.shared
+    private let autoRefreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+
+    private var g7Manager: G7DirectBLEManager {
+        watchState.g7DebugManager
+    }
 
     var body: some View {
         ScrollView {
@@ -25,19 +33,25 @@ struct ComplicationDebugView: View {
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 2: Log Files
+                // SECTION 2: Direct BLE / G7 Observer
+                sectionHeader("DIRECT BLE / G7 OBSERVER")
+                directBleObserverView
+
+                Divider().padding(.vertical, 4)
+
+                // SECTION 3: Log Files
                 sectionHeader("LOG FILES")
                 logFilesView
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 3: Reload Status
+                // SECTION 4: Reload Status
                 sectionHeader("RELOAD STATUS")
                 reloadStatusView
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 4: Actions
+                // SECTION 5: Actions
                 sectionHeader("ACTIONS")
                 actionsView
             }
@@ -47,6 +61,10 @@ struct ComplicationDebugView: View {
         .onAppear {
             loadSnapshot()
             loadLogFileStats()
+        }
+        .onReceive(autoRefreshTimer) { date in
+            autoRefreshTick = date
+            loadSnapshot()
         }
         .overlay(confirmationOverlay)
         .id(refreshTrigger)
@@ -238,6 +256,52 @@ struct ComplicationDebugView: View {
                     .foregroundColor(.green)
                 }
             }
+        }
+        .font(.caption)
+    }
+
+    // MARK: - Direct BLE Observer Section
+
+    private var directBleObserverView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            debugRow("Mode:", value: "Direct BLE Observer")
+            debugRow("Session owner:", value: "Dexcom G7 app")
+            debugRow("Using phone relay:", value: yesNo(watchState.isUsingPhoneRelayForCurrentWatchData))
+            debugRow("Stage:", value: g7Manager.debugConnectionStageLabel, valueColor: stageColor(g7Manager.debugConnectionStageLabel))
+
+            Divider().padding(.vertical, 2)
+
+            debugRow("Peripheral:", value: g7Manager.lastSeenPeripheralName ?? "--")
+            debugRow("RSSI:", value: g7Manager.lastSeenPeripheralRSSI.map { String($0) } ?? "--")
+            debugRow("Last discover:", value: formatOptionalTime(g7Manager.lastSeenPeripheralAt))
+            debugRow("Filter armed:", value: yesNo(g7Manager.hasActivePeripheralNameFilter))
+
+            Divider().padding(.vertical, 2)
+
+            debugRow("Auth notify:", value: yesNo(g7Manager.authNotificationsReady))
+            debugRow("J-PAKE skipped:", value: yesNo(g7Manager.jpakeSkippedInObserver))
+            debugRow("Last auth opcode:", value: g7Manager.lastAuthOpcodeHex ?? "--")
+            debugRow("Authenticated:", value: yesNo(g7Manager.observerAuthenticated))
+            debugRow("Bonded:", value: yesNo(g7Manager.observerBonded))
+            debugRow("Control notify:", value: yesNo(g7Manager.controlNotificationsReady))
+
+            Divider().padding(.vertical, 2)
+
+            debugRow("Last EGV:", value: formatOptionalTime(g7Manager.lastEgvReceivedAt))
+            debugRow("Glucose:", value: g7Manager.lastGlucoseValue.map { String($0) } ?? "--")
+            debugRow("Reading age:", value: formatOptionalAge(g7Manager.lastReadingDate))
+            debugRow("Sequence:", value: g7Manager.lastSequenceNumber.map { String($0) } ?? "--")
+            debugRow("Snapshot save:", value: g7Manager.lastSnapshotSaveResult ?? "--")
+            debugRow("Snapshot time:", value: formatOptionalTime(g7Manager.lastSnapshotSaveAt))
+
+            Divider().padding(.vertical, 2)
+
+            debugRow("g7_session:", value: truncateSessionID(g7Manager.currentG7SessionId))
+            debugRow("Last disconnect:", value: g7Manager.lastDisconnectReason ?? "--")
+            debugRow("Reconnect scheduled:", value: yesNo(g7Manager.reconnectScheduled))
+            debugRow("Timeout stage:", value: g7Manager.debugTimeoutStage ?? "--")
+            debugRow("Request block:", value: g7Manager.lastEgvRequestBlockedReason ?? "--")
+            debugRow("Ext runtime:", value: yesNo(g7Manager.isExtendedRuntimeSessionActive))
         }
         .font(.caption)
     }
@@ -452,6 +516,17 @@ struct ComplicationDebugView: View {
             .padding(.top, 4)
     }
 
+    private func debugRow(_ title: String, value: String, valueColor: Color = .primary) -> some View {
+        HStack(alignment: .top) {
+            Text(title)
+            Spacer(minLength: 8)
+            Text(value)
+                .foregroundColor(valueColor)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+    }
+
     private func loadSnapshot() {
         snapshot = dataStore.latestSnapshot()
     }
@@ -465,10 +540,16 @@ struct ComplicationDebugView: View {
     }
 
     private func formatTime(_ date: Date) -> String {
+        _ = autoRefreshTick
         if date == .distantPast { return "--" }
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return formatter.string(from: date)
+    }
+
+    private func formatOptionalTime(_ date: Date?) -> String {
+        guard let date else { return "--" }
+        return formatTime(date)
     }
 
     private func formatAge(_ date: Date) -> String {
@@ -477,6 +558,11 @@ struct ComplicationDebugView: View {
         if seconds < 60 { return "\(seconds)s ago" }
         if seconds < 3600 { return "\(seconds / 60)m ago" }
         return "\(seconds / 3600)h ago"
+    }
+
+    private func formatOptionalAge(_ date: Date?) -> String {
+        guard let date else { return "--" }
+        return formatAge(date)
     }
 
     private func ageColor(_ date: Date) -> Color {
@@ -501,6 +587,28 @@ struct ComplicationDebugView: View {
             return ".../" + components.suffix(2).joined(separator: "/")
         }
         return path
+    }
+
+    private func truncateSessionID(_ sessionID: String?) -> String {
+        guard let sessionID else { return "--" }
+        return String(sessionID.prefix(8))
+    }
+
+    private func yesNo(_ value: Bool) -> String {
+        value ? "yes" : "no"
+    }
+
+    private func stageColor(_ stage: String) -> Color {
+        switch stage {
+        case "Connected":
+            return .green
+        case "Error":
+            return .red
+        case "Awaiting auth", "Awaiting control", "Awaiting EGV", "Connecting", "Scanning":
+            return .yellow
+        default:
+            return .secondary
+        }
     }
 }
 

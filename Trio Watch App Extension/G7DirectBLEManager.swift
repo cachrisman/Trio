@@ -12,6 +12,7 @@ private enum G7BLEUUID {
     static let authentication = CBUUID(string: "F8083535-849E-531C-C594-30F1F86A4EA5")
     static let control = CBUUID(string: "F8083534-849E-531C-C594-30F1F86A4EA5")
     static let backfill = CBUUID(string: "F8083536-849E-531C-C594-30F1F86A4EA5")
+    static let jPake = CBUUID(string: "F8083538-849E-531C-C594-30F1F86A4EA5")
 }
 
 // MARK: - Connection state
@@ -39,17 +40,25 @@ final class G7DirectBLEManager: NSObject {
     private var authenticationCharacteristic: CBCharacteristic?
     private var controlCharacteristic: CBCharacteristic?
     private var backfillCharacteristic: CBCharacteristic?
+    private var jPakeCharacteristic: CBCharacteristic?
 
     /// Wall-clock sensor activation inferred from the first successful EGV (`now - txTime`).
     private var storedActivationWallClock: Date?
     private var egvRequestSent = false
-    private var controlNotificationsReady = false
-    private var backfillNotificationsReady = false
+    private(set) var authNotificationsReady = false
+    private(set) var controlNotificationsReady = false
+    private(set) var jpakeSkippedInObserver = false
+    private(set) var observerAuthenticated = false
+    private(set) var observerBonded = false
+    private(set) var statusGateSatisfied = false
+    private(set) var lastAuthOpcodeSeen: UInt8?
+    private(set) var awaitingFirstEgv = false
     private var scanningStarted = false
     /// Prevents duplicate `g7_ble_scan_started` when both `startScanning` and `centralManagerDidUpdateState` run.
     private var loggedScanStartThisRequest = false
     /// Scheduled reconnect after unexpected teardown while foreground scanning is still desired.
     private var reconnectWorkItem: DispatchWorkItem?
+    private(set) var reconnectScheduled = false
 
     // MARK: - Instrumentation (report 03 Tier 1)
 
@@ -65,6 +74,24 @@ final class G7DirectBLEManager: NSObject {
     /// Dedupe: at most one `g7_ble_timeout` per stage string per session.
     private var timeoutEmittedKeys: Set<String> = []
     private var lastNonEgControlLogAt: Date?
+    /// Dedupe for blocked-state classifiers (`attach_blocked`, `status_gate_blocked`, `egv_request_blocked`).
+    private var blockedStateEmittedKeys: Set<String> = []
+    private(set) var activeTimeoutStage: String?
+    private(set) var lastTimedOutStage: String?
+
+    // MARK: - Debug view state
+
+    private(set) var lastSeenPeripheralName: String?
+    private(set) var lastSeenPeripheralRSSI: Int?
+    private(set) var lastSeenPeripheralAt: Date?
+    private(set) var lastEgvReceivedAt: Date?
+    private(set) var lastGlucoseValue: Int?
+    private(set) var lastReadingDate: Date?
+    private(set) var lastSequenceNumber: Int?
+    private(set) var lastSnapshotSaveResult: String?
+    private(set) var lastSnapshotSaveAt: Date?
+    private(set) var lastDisconnectReason: String?
+    private(set) var lastEgvRequestBlockedReason: String?
 
     private enum G7BLEInstrumentation {
         static let connectTimeoutSeconds: TimeInterval = 30
@@ -76,8 +103,47 @@ final class G7DirectBLEManager: NSObject {
     /// Exposed for `WatchState` `g7_ble_lifecycle` lines after `startScanning()`.
     var currentG7SessionId: String? { g7SessionID }
 
-    /// When set, only connect to a peripheral whose `name` matches exactly (e.g. active `DXCMxx`). `nil` = first matching advertisement (legacy behavior).
+    /// When set, only connect to a peripheral whose `name` matches exactly (e.g. active `DXCMxx`).
+    /// `nil` means scan/readiness may continue, but attach is blocked until the phone supplies the active sensor filter.
     var activePeripheralName: String?
+
+    var hasActivePeripheralNameFilter: Bool {
+        guard let activePeripheralName else { return false }
+        return !activePeripheralName.isEmpty
+    }
+
+    var isExtendedRuntimeSessionActive: Bool {
+        extendedSession != nil
+    }
+
+    var lastAuthOpcodeHex: String? {
+        guard let lastAuthOpcodeSeen else { return nil }
+        return String(format: "0x%02X", lastAuthOpcodeSeen)
+    }
+
+    var debugConnectionStageLabel: String {
+        switch connectionState {
+        case .idle, .disconnected:
+            return "Idle"
+        case .scanning:
+            return "Scanning"
+        case .connecting:
+            return "Connecting"
+        case .authenticating:
+            if statusGateSatisfied && !controlNotificationsReady {
+                return "Awaiting control"
+            }
+            return "Awaiting auth"
+        case .connected:
+            return awaitingFirstEgv ? "Awaiting EGV" : "Connected"
+        case .error:
+            return "Error"
+        }
+    }
+
+    var debugTimeoutStage: String? {
+        activeTimeoutStage ?? lastTimedOutStage
+    }
 
     private var extendedSession: WKExtendedRuntimeSession?
     private var sessionStartedAt: Date?
@@ -101,12 +167,7 @@ final class G7DirectBLEManager: NSObject {
     /// **renews `WKExtendedRuntimeSession`** when returning from inactive/background within **`foregroundReentryRenewalMaxAwaySeconds`**
     /// so the ~1h budget can anchor to **last active UI**, then starts BLE only when there is no in-flight scan/connect/stream (**`scanning`…`connected`**).
     func applyForegroundActiveEntry(activePeripheralName: String?) {
-        self.activePeripheralName = activePeripheralName
-        if activePeripheralName != nil {
-            Task {
-                await logG7Ble("event=g7_ble_active_name_applied filtered=true")
-            }
-        }
+        _ = setActivePeripheralName(activePeripheralName, logIfChanged: true)
 
         if let leftAt = lastSceneLeftActiveUiAt {
             lastSceneLeftActiveUiAt = nil
@@ -132,6 +193,29 @@ final class G7DirectBLEManager: NSObject {
         startScanning()
     }
 
+    /// Updates the phone-supplied active peripheral name while the watch is already running so a late WatchConnectivity
+    /// payload can arm the filter and trigger a fresh scan pass without waiting for another foreground transition.
+    func updatePhoneActivePeripheralName(_ activePeripheralName: String?) {
+        let hadFilter = hasActivePeripheralNameFilter
+        let changed = setActivePeripheralName(activePeripheralName, logIfChanged: true)
+        guard changed, scanningStarted else { return }
+        if let currentPeripheral = peripheral,
+           let activePeripheralName = self.activePeripheralName
+        {
+            let currentName = currentPeripheral.name ?? lastSeenPeripheralName ?? "unknown"
+            guard currentName != activePeripheralName else { return }
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_peripheral_skipped peripheral=\(currentName) reason=not_active_sensor source=phone_filter_update"
+                )
+            }
+            startScanning()
+            return
+        }
+        guard hasActivePeripheralNameFilter, (!hadFilter || peripheral == nil) else { return }
+        startScanning()
+    }
+
     /// Begins (or restarts) scanning for G7 advertisements. Prefer **`applyForegroundActiveEntry`** from **`WatchState`**
     /// so returning to the app does not tear down an already-running session.
     func startScanning() {
@@ -151,10 +235,12 @@ final class G7DirectBLEManager: NSObject {
         g7SessionID = UUID().uuidString
         sessionStartedAt = Date()
         timeoutEmittedKeys.removeAll()
+        blockedStateEmittedKeys.removeAll()
         lastInstrumentationStage = nil
         discoverWallClock = nil
         cancelInstrumentationTimeouts()
         loggedScanStartThisRequest = false
+        reconnectScheduled = false
         connectionState = .scanning
         emitStageIfChanged("scanning")
         // Cancel any in-flight connection before clearing state — avoids orphan links if `startScanning` runs while connected (e.g. rescan / reconnect path).
@@ -166,21 +252,32 @@ final class G7DirectBLEManager: NSObject {
         resetSessionState()
         central.stopScan()
 
+        _ = emitAttachBlockedIfNeeded(source: "scan_start")
+
         // Attach to a G7 already connected at the watchOS level (e.g. Dexcom Watch app) without waiting for an advertisement.
         if let retrieved = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.advertisement]).first {
             let name = retrieved.name ?? "unknown"
-            Task {
-                await logG7Ble("event=g7_ble_retrieved_connected peripheral=\(name)")
-            }
-            if let active = activePeripheralName, !active.isEmpty, name != active {
+            updateLastSeenPeripheral(name: name, rssi: nil)
+            if hasActivePeripheralNameFilter {
                 Task {
-                    await logG7Ble(
-                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved"
-                    )
+                    await logG7Ble("event=g7_ble_retrieved_connected peripheral=\(name)")
+                }
+                if let active = activePeripheralName, name != active {
+                    Task {
+                        await logG7Ble(
+                            "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved"
+                        )
+                    }
+                } else {
+                    beginConnectToG7Peripheral(retrieved, name: name, rssi: 0, source: "retrieved")
+                    return
                 }
             } else {
-                beginConnectToG7Peripheral(retrieved, name: name, rssi: 0, source: "retrieved")
-                return
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved"
+                    )
+                }
             }
         }
 
@@ -276,11 +373,24 @@ final class G7DirectBLEManager: NSObject {
         authenticationCharacteristic = nil
         controlCharacteristic = nil
         backfillCharacteristic = nil
+        jPakeCharacteristic = nil
         storedActivationWallClock = nil
         egvRequestSent = false
+        authNotificationsReady = false
         controlNotificationsReady = false
-        backfillNotificationsReady = false
+        jpakeSkippedInObserver = false
+        observerAuthenticated = false
+        observerBonded = false
+        statusGateSatisfied = false
+        lastAuthOpcodeSeen = nil
+        awaitingFirstEgv = false
+        activeTimeoutStage = nil
         egvReceivedThisSession = false
+        lastEgvRequestBlockedReason = nil
+    }
+
+    private func clearEgvRequestBlockedReason() {
+        lastEgvRequestBlockedReason = nil
     }
 
     private func invalidateExtendedSession(reason: String) {
@@ -325,6 +435,8 @@ final class G7DirectBLEManager: NSObject {
         resetSessionState()
         sessionStartedAt = nil
         peripheral = nil
+        lastDisconnectReason = reason
+        reconnectScheduled = false
         connectionState = isFailure ? .error(reason) : .disconnected(reason: reason)
         Task {
             await logG7Ble(
@@ -339,8 +451,10 @@ final class G7DirectBLEManager: NSObject {
             Task {
                 await logG7Ble("event=g7_ble_reconnect_scheduled delay_s=7")
             }
+            reconnectScheduled = true
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.scanningStarted else { return }
+                self.reconnectScheduled = false
                 self.startScanning()
             }
             reconnectWorkItem = work
@@ -380,6 +494,7 @@ final class G7DirectBLEManager: NSObject {
         gattSetupTimeoutWorkItem = nil
         firstEgvTimeoutWorkItem?.cancel()
         firstEgvTimeoutWorkItem = nil
+        activeTimeoutStage = nil
     }
 
     private func timeoutDedupeKey(stage: String) -> String {
@@ -395,9 +510,12 @@ final class G7DirectBLEManager: NSObject {
 
     private func scheduleConnectTimeout() {
         connectTimeoutWorkItem?.cancel()
+        activeTimeoutStage = "awaiting_connect"
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            Task { await self.handleTimeout(stage: "awaiting_connect") }
+            Task { @MainActor in
+                await self.handleTimeout(stage: "awaiting_connect")
+            }
         }
         connectTimeoutWorkItem = work
         DispatchQueue.main.asyncAfter(
@@ -408,9 +526,12 @@ final class G7DirectBLEManager: NSObject {
 
     private func scheduleGattSetupTimeout() {
         gattSetupTimeoutWorkItem?.cancel()
+        activeTimeoutStage = "awaiting_gatt_setup"
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            Task { await self.handleTimeout(stage: "awaiting_gatt_setup") }
+            Task { @MainActor in
+                await self.handleTimeout(stage: "awaiting_gatt_setup")
+            }
         }
         gattSetupTimeoutWorkItem = work
         DispatchQueue.main.asyncAfter(
@@ -421,9 +542,12 @@ final class G7DirectBLEManager: NSObject {
 
     private func scheduleFirstEgvTimeout() {
         firstEgvTimeoutWorkItem?.cancel()
+        activeTimeoutStage = "awaiting_first_egv"
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            Task { await self.handleTimeout(stage: "awaiting_first_egv") }
+            Task { @MainActor in
+                await self.handleTimeout(stage: "awaiting_first_egv")
+            }
         }
         firstEgvTimeoutWorkItem = work
         DispatchQueue.main.asyncAfter(
@@ -432,9 +556,12 @@ final class G7DirectBLEManager: NSObject {
         )
     }
 
+    @MainActor
     private func handleTimeout(stage: String) async {
         guard scanningStarted else { return }
         guard shouldEmitTimeout(stage: stage) else { return }
+        activeTimeoutStage = nil
+        lastTimedOutStage = stage
         await logG7Ble("event=g7_ble_timeout stage=\(stage)")
         teardownSession(reason: "timeout_\(stage)", isFailure: true)
     }
@@ -467,9 +594,14 @@ final class G7DirectBLEManager: NSObject {
 
         firstEgvTimeoutWorkItem?.cancel()
         firstEgvTimeoutWorkItem = nil
+        awaitingFirstEgv = false
+        if activeTimeoutStage == "awaiting_first_egv" {
+            activeTimeoutStage = nil
+        }
 
         guard
             let txTime = data.readUInt32LE(offset: 2),
+            let sequenceNumber = data.readUInt16LE(offset: 6),
             let egvAge = data.readUInt16LE(offset: 10),
             let glucoseRaw = data.readUInt16LE(offset: 12)
         else {
@@ -516,6 +648,10 @@ final class G7DirectBLEManager: NSObject {
         )
         let readingEpoch = Int(readingDate.timeIntervalSince1970)
         let dataAgeSeconds = max(0, Int(Date().timeIntervalSince(readingDate)))
+        lastReadingDate = readingDate
+        lastSequenceNumber = Int(sequenceNumber)
+        lastEgvReceivedAt = Date()
+        lastGlucoseValue = glucose
 
         let glucoseField = glucose.map { String($0) } ?? "nil"
         let trendField = trendRate.map { String($0) } ?? "nil"
@@ -545,13 +681,17 @@ final class G7DirectBLEManager: NSObject {
 
         // Synchronous save on main — same queue as CB delegate (`CBCentralManager` uses `.main`).
         TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
+        WatchState.shared.applyDirectBleSnapshot(snapshot)
 
         // Do not invalidate `WKExtendedRuntimeSession` here: product intent is to keep listening for subsequent
         // CGM samples and updating the complication store until `stop()` / teardown or the OS ends the session.
 
         Task {
             await logG7Ble("event=g7_ble_snapshot_saved glucose=\(glucose)")
+            await logG7Ble("event=g7_ble_watch_state_updated glucose=\(glucose) reading_epoch=\(readingEpoch)")
         }
+        lastSnapshotSaveResult = "saved"
+        lastSnapshotSaveAt = Date()
     }
 
     /// Converts G7 trend rate (mg/dL/min) to a ~5-minute delta and applies **R6.1** thresholds (parity with `WatchState.hkTrendString(fromDeltaMgDl:)`).
@@ -576,20 +716,10 @@ final class G7DirectBLEManager: NSObject {
 
     // MARK: - Auth / subscribe / EGV request
 
-    private func sendAuthRequest() {
-        guard let cbPeripheral = peripheral, let auth = authenticationCharacteristic else { return }
-        emitStageIfChanged("authenticating")
-        let payload = Data([0x01, 0x00])
-        cbPeripheral.writeValue(payload, for: auth, type: .withResponse)
-        connectionState = .authenticating
-        Task {
-            await logG7Ble("event=g7_ble_auth_request_sent")
-        }
-    }
-
     private func handleAuthenticationNotification(_ data: Data) {
         guard !data.isEmpty else { return }
         let opcode = data[0]
+        lastAuthOpcodeSeen = opcode
 
         switch opcode {
         case 0x03:
@@ -599,21 +729,32 @@ final class G7DirectBLEManager: NSObject {
         // Eavesdrop: do not respond to the challenge.
         case 0x05:
             let authenticated = data.count >= 2 && data[1] == 1
+            let bonded = data.count >= 3 && data[2] == 1
+            observerAuthenticated = authenticated
+            observerBonded = bonded
             Task {
-                await logG7Ble("event=g7_ble_authenticated authenticated=\(authenticated)")
+                await logG7Ble(
+                    "event=g7_ble_status_reply authenticated=\(authenticated) bonded=\(bonded)"
+                )
             }
-            guard authenticated else { return }
+            guard authenticated, bonded else {
+                emitStatusGateBlocked(authenticated: authenticated, bonded: bonded)
+                emitEgvRequestBlockedIfNeeded(reason: "status_gate_not_satisfied")
+                return
+            }
+            clearEgvRequestBlockedReason()
             guard let activePeripheral = self.peripheral else { return }
-            emitStageIfChanged("connected")
-            connectionState = .connected
-            controlNotificationsReady = false
-            backfillNotificationsReady = false
+            statusGateSatisfied = true
+            guard !controlNotificationsReady else {
+                cancelGattSetupTimeoutWhenObserverReady()
+                trySendEGVRequestIfReady()
+                return
+            }
             if let control = controlCharacteristic {
                 activePeripheral.setNotifyValue(true, for: control)
+                emitEgvRequestBlockedIfNeeded(reason: "control_not_ready")
             }
-            if let backfill = backfillCharacteristic {
-                activePeripheral.setNotifyValue(true, for: backfill)
-            }
+            cancelGattSetupTimeoutWhenObserverReady()
         default:
             break
         }
@@ -621,11 +762,24 @@ final class G7DirectBLEManager: NSObject {
 
     private func trySendEGVRequestIfReady() {
         guard let cbPeripheral = peripheral, let control = controlCharacteristic else { return }
+        guard statusGateSatisfied else {
+            emitEgvRequestBlockedIfNeeded(reason: "status_gate_not_satisfied")
+            return
+        }
         // EGV is requested on control once control notifications are ready (DiaBLE sequence); backfill is separate.
-        guard controlNotificationsReady, !egvRequestSent else { return }
+        guard controlNotificationsReady else {
+            emitEgvRequestBlockedIfNeeded(reason: "control_not_ready")
+            return
+        }
+        guard !egvRequestSent else { return }
+        clearEgvRequestBlockedReason()
         egvRequestSent = true
+        awaitingFirstEgv = true
         emitStageIfChanged("awaiting_egv")
         scheduleFirstEgvTimeout()
+        Task {
+            await logG7Ble("event=g7_ble_egv_request_sent opcode=0x4E")
+        }
         cbPeripheral.writeValue(Data([0x4E]), for: control, type: .withResponse)
     }
 
@@ -635,7 +789,11 @@ final class G7DirectBLEManager: NSObject {
         self.peripheral = peripheral
         peripheral.delegate = self
         connectionState = .connecting
-        discoverWallClock = Date()
+        let now = Date()
+        discoverWallClock = now
+        lastSeenPeripheralName = name
+        lastSeenPeripheralRSSI = rssi
+        lastSeenPeripheralAt = now
         emitStageIfChanged("connecting")
         beginExtendedRuntimeSession()
         Task {
@@ -678,7 +836,12 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
     ) {
         guard scanningStarted else { return }
         let name = peripheral.name ?? "unknown"
-        if let active = activePeripheralName, !active.isEmpty, name != active {
+        updateLastSeenPeripheral(name: name, rssi: rssi.intValue)
+        guard hasActivePeripheralNameFilter else {
+            _ = emitAttachBlockedIfNeeded(source: "did_discover")
+            return
+        }
+        if let active = activePeripheralName, name != active {
             Task {
                 await logG7Ble("event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor")
             }
@@ -784,7 +947,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         }
         emitStageIfChanged("discovering_characteristics")
         peripheral.discoverCharacteristics(
-            [G7BLEUUID.authentication, G7BLEUUID.control, G7BLEUUID.backfill],
+            [G7BLEUUID.authentication, G7BLEUUID.control, G7BLEUUID.backfill, G7BLEUUID.jPake],
             for: svc
         )
     }
@@ -807,14 +970,15 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
                 controlCharacteristic = characteristic
             case G7BLEUUID.backfill:
                 backfillCharacteristic = characteristic
+            case G7BLEUUID.jPake:
+                jPakeCharacteristic = characteristic
             default:
                 break
             }
         }
 
         guard authenticationCharacteristic != nil,
-              controlCharacteristic != nil,
-              backfillCharacteristic != nil
+              controlCharacteristic != nil
         else {
             Task {
                 await logG7Ble("event=g7_ble_error error=characteristics_incomplete")
@@ -825,6 +989,12 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
 
         Task {
             await logG7Ble("event=g7_ble_characteristics_discovered")
+        }
+        jpakeSkippedInObserver = true
+        Task {
+            await logG7Ble(
+                "event=g7_ble_jpake_skipped mode=observer available=\(jPakeCharacteristic != nil)"
+            )
         }
 
         if let auth = authenticationCharacteristic {
@@ -848,6 +1018,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         case G7BLEUUID.authentication: charName = "auth"
         case G7BLEUUID.control: charName = "control"
         case G7BLEUUID.backfill: charName = "backfill"
+        case G7BLEUUID.jPake: charName = "jpake"
         default: charName = "unknown"
         }
         Task {
@@ -856,25 +1027,41 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
 
         switch characteristic.uuid {
         case G7BLEUUID.authentication:
-            sendAuthRequest()
+            authNotificationsReady = true
+            connectionState = .authenticating
+            emitStageIfChanged("authenticating")
+            Task {
+                await logG7Ble("event=g7_ble_auth_notify_enabled")
+            }
         case G7BLEUUID.control:
             controlNotificationsReady = true
+            clearEgvRequestBlockedReason()
+            connectionState = .connected
+            Task {
+                await logG7Ble("event=g7_ble_control_notify_enabled")
+            }
+            cancelGattSetupTimeoutWhenObserverReady()
             trySendEGVRequestIfReady()
         case G7BLEUUID.backfill:
-            backfillNotificationsReady = true
-            trySendEGVRequestIfReady()
+            break
+        case G7BLEUUID.jPake:
+            break
         default:
             break
         }
 
-        cancelGattSetupTimeoutWhenNotifyChannelsReady()
+        cancelGattSetupTimeoutWhenObserverReady()
     }
 
-    /// Clears `awaiting_gatt_setup` timeout once **control** and **backfill** notifications are enabled (auth alone is not full GATT readiness for the data path).
-    private func cancelGattSetupTimeoutWhenNotifyChannelsReady() {
-        guard controlNotificationsReady, backfillNotificationsReady else { return }
+    /// Clears `awaiting_gatt_setup` timeout once the observer path has completed its startup-ready gate:
+    /// auth notifications enabled, `0x05 authenticated=true bonded=true`, and control notifications enabled.
+    private func cancelGattSetupTimeoutWhenObserverReady() {
+        guard authNotificationsReady, statusGateSatisfied, controlNotificationsReady else { return }
         gattSetupTimeoutWorkItem?.cancel()
         gattSetupTimeoutWorkItem = nil
+        if activeTimeoutStage == "awaiting_gatt_setup" {
+            activeTimeoutStage = nil
+        }
     }
 
     func peripheral(_: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -901,25 +1088,14 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
 
     func peripheral(_: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error {
-            if characteristic.uuid == G7BLEUUID.authentication {
-                Task {
-                    await logG7Ble("event=g7_ble_error error=\(error.localizedDescription)")
-                }
-                teardownSession(reason: "write_failed_auth", isFailure: true)
-            } else {
-                Task {
-                    await logG7Ble(
-                        "event=g7_ble_write_error_nonfatal characteristic=\(characteristic.uuid.uuidString) error=\(error.localizedDescription)"
-                    )
-                }
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_write_error_nonfatal characteristic=\(characteristic.uuid.uuidString) error=\(error.localizedDescription)"
+                )
             }
             return
         }
         switch characteristic.uuid {
-        case G7BLEUUID.authentication:
-            Task {
-                await logG7Ble("event=g7_ble_write_ok write=auth_init")
-            }
         case G7BLEUUID.control:
             Task {
                 await logG7Ble("event=g7_ble_write_ok write=egv_request")
@@ -990,5 +1166,65 @@ private extension Data {
             | (UInt32(self[offset + 1]) << 8)
             | (UInt32(self[offset + 2]) << 16)
             | (UInt32(self[offset + 3]) << 24)
+    }
+}
+
+private extension G7DirectBLEManager {
+    func setActivePeripheralName(_ activePeripheralName: String?, logIfChanged: Bool) -> Bool {
+        let normalized = Self.normalizedPeripheralName(activePeripheralName)
+        let changed = self.activePeripheralName != normalized
+        self.activePeripheralName = normalized
+        guard changed, logIfChanged else { return changed }
+        let filtered = normalized != nil
+        Task {
+            await logG7Ble("event=g7_ble_active_name_applied filtered=\(filtered)")
+        }
+        return changed
+    }
+
+    static func normalizedPeripheralName(_ activePeripheralName: String?) -> String? {
+        let trimmed = activePeripheralName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func updateLastSeenPeripheral(name: String, rssi: Int?) {
+        lastSeenPeripheralName = name
+        lastSeenPeripheralRSSI = rssi
+        lastSeenPeripheralAt = Date()
+    }
+
+    @discardableResult
+    func emitAttachBlockedIfNeeded(source: String) -> Bool {
+        guard !hasActivePeripheralNameFilter else { return false }
+        return emitBlockedStateIfNeeded(
+            key: "attach:missing_active_sensor_filter:\(source)",
+            message: "event=g7_ble_attach_blocked reason=missing_active_sensor_filter source=\(source)"
+        )
+    }
+
+    func emitStatusGateBlocked(authenticated: Bool, bonded: Bool) {
+        _ = emitBlockedStateIfNeeded(
+            key: "status_gate:\(authenticated):\(bonded)",
+            message:
+            "event=g7_ble_status_gate_blocked authenticated=\(authenticated) bonded=\(bonded)"
+        )
+    }
+
+    func emitEgvRequestBlockedIfNeeded(reason: String) {
+        lastEgvRequestBlockedReason = reason
+        _ = emitBlockedStateIfNeeded(
+            key: "egv_request:\(reason)",
+            message: "event=g7_ble_egv_request_blocked reason=\(reason)"
+        )
+    }
+
+    @discardableResult
+    func emitBlockedStateIfNeeded(key: String, message: String) -> Bool {
+        guard !blockedStateEmittedKeys.contains(key) else { return false }
+        blockedStateEmittedKeys.insert(key)
+        Task {
+            await logG7Ble(message)
+        }
+        return true
     }
 }
