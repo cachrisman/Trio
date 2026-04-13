@@ -166,6 +166,24 @@ final class G7DirectBLEManager: NSObject {
         resetSessionState()
         central.stopScan()
 
+        // Attach to a G7 already connected at the watchOS level (e.g. Dexcom Watch app) without waiting for an advertisement.
+        if let retrieved = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.advertisement]).first {
+            let name = retrieved.name ?? "unknown"
+            Task {
+                await logG7Ble("event=g7_ble_retrieved_connected peripheral=\(name)")
+            }
+            if let active = activePeripheralName, !active.isEmpty, name != active {
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved"
+                    )
+                }
+            } else {
+                beginConnectToG7Peripheral(retrieved, name: name, rssi: 0, source: "retrieved")
+                return
+            }
+        }
+
         switch central.state {
         case .poweredOn:
             central.scanForPeripherals(
@@ -610,6 +628,28 @@ final class G7DirectBLEManager: NSObject {
         scheduleFirstEgvTimeout()
         cbPeripheral.writeValue(Data([0x4E]), for: control, type: .withResponse)
     }
+
+    /// Shared path for advertisement discovery and `retrieveConnectedPeripherals` attach (DiaBLE-style).
+    private func beginConnectToG7Peripheral(_ peripheral: CBPeripheral, name: String, rssi: Int, source: String?) {
+        central?.stopScan()
+        self.peripheral = peripheral
+        peripheral.delegate = self
+        connectionState = .connecting
+        discoverWallClock = Date()
+        emitStageIfChanged("connecting")
+        beginExtendedRuntimeSession()
+        Task {
+            if let source {
+                await logG7Ble("event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi) source=\(source)")
+                await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name) source=\(source)")
+            } else {
+                await logG7Ble("event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi)")
+                await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name)")
+            }
+        }
+        scheduleConnectTimeout()
+        central?.connect(peripheral, options: nil)
+    }
 }
 
 // MARK: - CBCentralManagerDelegate
@@ -617,6 +657,7 @@ final class G7DirectBLEManager: NSObject {
 extension G7DirectBLEManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         guard scanningStarted, central.state == .poweredOn else { return }
+        guard connectionState == .scanning else { return }
         central.stopScan()
         central.scanForPeripherals(
             withServices: [G7BLEUUID.advertisement],
@@ -644,22 +685,8 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
             return
         }
 
-        central?.stopScan()
-        self.peripheral = peripheral
-        peripheral.delegate = self
-        connectionState = .connecting
-        discoverWallClock = Date()
-        emitStageIfChanged("connecting")
-
         // TODO: validate WKExtendedRuntimeSession honored for BLE-connect use case on device
-        beginExtendedRuntimeSession()
-
-        Task {
-            await logG7Ble("event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi.intValue)")
-            await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name)")
-        }
-        scheduleConnectTimeout()
-        central?.connect(peripheral, options: nil)
+        beginConnectToG7Peripheral(peripheral, name: name, rssi: rssi.intValue, source: nil)
     }
 
     func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
