@@ -46,7 +46,21 @@ enum WatchCurrentDataSource {
 
     var session: WCSession?
     var isReachable = false
+    /// Phone relay **only**: `WatchMessageKeys.date` monotonic gate for `scheduleUIUpdate` — **not** the sole signal for main-watch UI staleness (see `effectiveWatchUiFreshnessAt`).
     var lastWatchStateUpdate: Date?
+    /// Latest CGM **reading** time applied from direct BLE or merged from phone relay — guards against replay/stale EGV without using `lastWatchStateUpdate` for ordering.
+    private(set) var lastDirectBleAppliedReadingDate: Date?
+    /// Wall time when direct BLE or complication-cache hydration last advanced **main watch UI** freshness — **not** used for WC merge ordering.
+    private(set) var lastDirectBleUiFreshnessAt: Date?
+    /// For **`TrioMainWatchView.isWatchStateDated`** / chart background refresh only — `max` of phone state time and BLE/cache UI freshness.
+    var effectiveWatchUiFreshnessAt: Date? {
+        switch (lastWatchStateUpdate, lastDirectBleUiFreshnessAt) {
+        case (nil, nil): return nil
+        case (let a?, nil): return a
+        case (nil, let b?): return b
+        case (let a?, let b?): return max(a, b)
+        }
+    }
     var currentWatchDataSource: WatchCurrentDataSource?
 
     // MARK: - Main view metrics
@@ -1127,10 +1141,6 @@ enum WatchCurrentDataSource {
 
         let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
 
-        DispatchQueue.main.async { [weak self] in
-            self?.applyPhoneActiveG7PeripheralNameIfPresent(from: payload)
-        }
-
         let readingDate: Date
         switch resolveEffectiveCGMReadingDate(from: payload) {
         case let .found(date):
@@ -1303,7 +1313,6 @@ enum WatchCurrentDataSource {
         let readingResolution = resolveEffectiveCGMReadingDate(from: payload)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.applyPhoneActiveG7PeripheralNameIfPresent(from: payload)
             let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             self.saveComplicationSnapshot(from: payload)
             if case .found = readingResolution {
@@ -1661,8 +1670,6 @@ enum WatchCurrentDataSource {
             return
         }
 
-        applyPhoneActiveG7PeripheralNameIfPresent(from: newData)
-
         guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
             Task {
                 await WatchLogger.shared.log("Invalid date format in WatchState data")
@@ -1690,6 +1697,8 @@ enum WatchCurrentDataSource {
             }
             return
         }
+
+        applyPhoneActiveG7PeripheralNameIfPresent(from: newData)
 
         DispatchQueue.main.async {
             self.showSyncingAnimation = true
@@ -1796,6 +1805,14 @@ enum WatchCurrentDataSource {
         if let date = dateValue(from: message[WatchMessageKeys.date]) {
             lastWatchStateUpdate = date
             forcedSinceActivation = false
+        }
+
+        if case let .found(readingDate) = resolveEffectiveCGMReadingDate(from: message) {
+            if let existing = lastDirectBleAppliedReadingDate {
+                lastDirectBleAppliedReadingDate = max(existing, readingDate)
+            } else {
+                lastDirectBleAppliedReadingDate = readingDate
+            }
         }
 
         syncTimeoutWorkItem?.cancel()
@@ -2081,8 +2098,7 @@ enum WatchCurrentDataSource {
 
     #if os(watchOS)
         func scheduleBackgroundRefresh() {
-            let hasRecentData = lastWatchStateUpdate != nil &&
-                Date().timeIntervalSince(lastWatchStateUpdate!) < 300
+            let hasRecentData = effectiveWatchUiFreshnessAt.map { Date().timeIntervalSince($0) < 300 } ?? false
 
             let nextInterval: TimeInterval
             if isReachable {
@@ -2178,8 +2194,8 @@ enum WatchCurrentDataSource {
             return
         }
 
-        if let lastUpdate = lastWatchStateUpdate,
-           Date().timeIntervalSince(lastUpdate) <= 15
+        if let fresh = effectiveWatchUiFreshnessAt,
+           Date().timeIntervalSince(fresh) <= 15
         {
             DispatchQueue.main.async {
                 self.showSyncingAnimation = false
@@ -2194,21 +2210,43 @@ enum WatchCurrentDataSource {
             if let glucoseColor = snapshot.glucoseColor {
                 self.currentGlucoseColorString = glucoseColor
             }
-            self.lastWatchStateUpdate = snapshot.readingDate
+            self.lastDirectBleUiFreshnessAt = snapshot.date
+            if let existing = self.lastDirectBleAppliedReadingDate {
+                self.lastDirectBleAppliedReadingDate = max(existing, snapshot.readingDate)
+            } else {
+                self.lastDirectBleAppliedReadingDate = snapshot.readingDate
+            }
             self.showSyncingAnimation = false
             self.syncTimeoutWorkItem?.cancel()
         }
     }
 
+    /// Wall-clock UI freshness from complication snapshot hydration (e.g. main view `onAppear`). Does not update `lastWatchStateUpdate`.
+    /// Merges `snapshot.readingDate` into `lastDirectBleAppliedReadingDate` with **`max`**, matching phone relay behavior.
+    func noteComplicationSnapshotUiFreshness(_ snapshot: TrioComplicationSnapshot) {
+        lastDirectBleUiFreshnessAt = snapshot.date
+        if let existing = lastDirectBleAppliedReadingDate {
+            lastDirectBleAppliedReadingDate = max(existing, snapshot.readingDate)
+        } else {
+            lastDirectBleAppliedReadingDate = snapshot.readingDate
+        }
+    }
+
     func applyDirectBleSnapshot(_ snapshot: TrioComplicationSnapshot) {
         assert(Thread.isMainThread, "applyDirectBleSnapshot must be called on the main thread")
+        // Monotonic guard on CGM reading time only — do not bump `lastWatchStateUpdate` (phone `WatchMessageKeys.date`
+        // ordering for WC) so a partial direct-BLE glucose update cannot block a later, richer WC payload for the same era.
+        if let lastR = lastDirectBleAppliedReadingDate, snapshot.readingDate <= lastR {
+            return
+        }
+        lastDirectBleAppliedReadingDate = snapshot.readingDate
+        lastDirectBleUiFreshnessAt = snapshot.date
         currentGlucose = snapshot.glucose
         trend = snapshot.trend
         delta = snapshot.delta
         if let glucoseColor = snapshot.glucoseColor {
             currentGlucoseColorString = glucoseColor
         }
-        lastWatchStateUpdate = snapshot.readingDate
         currentWatchDataSource = .directBLE
         showSyncingAnimation = false
         syncTimeoutWorkItem?.cancel()

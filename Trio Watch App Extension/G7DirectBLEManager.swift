@@ -6,8 +6,11 @@ import WatchKit
 // MARK: - UUIDs (Dexcom G7 data service — DiaBLE/Dexcom IPA verified)
 
 private enum G7BLEUUID {
-    /// Advertisement service for scanning
+    /// Advertisement service for scanning (`scanForPeripherals` filter — Dexcom G7 advertises this UUID).
     static let advertisement = CBUUID(string: "FEBC")
+    /// Primary GATT service on an established G7 connection. Use this (not `advertisement`) for
+    /// `retrieveConnectedPeripherals(withServices:)` — CoreBluetooth matches **implemented GATT services**;
+    /// `FEBC` is for discovery/ads and may not appear as a connected service UUID for retrieval.
     static let dataService = CBUUID(string: "F8083532-849E-531C-C594-30F1F86A4EA5")
     static let authentication = CBUUID(string: "F8083535-849E-531C-C594-30F1F86A4EA5")
     static let control = CBUUID(string: "F8083534-849E-531C-C594-30F1F86A4EA5")
@@ -56,6 +59,14 @@ final class G7DirectBLEManager: NSObject {
     private var scanningStarted = false
     /// Prevents duplicate `g7_ble_scan_started` when both `startScanning` and `centralManagerDidUpdateState` run.
     private var loggedScanStartThisRequest = false
+    /// Phase E: `first_attempt` on `g7_ble_pre_connect` — reset in `startScanning()`.
+    private var connectAttemptsSinceStartScanning = 0
+    /// Phase E: `preserved_session` on `g7_ble_pre_connect` — set when `applyForegroundActiveEntry` skips a full `startScanning()`; cleared when `startScanning()` runs.
+    private var sessionPreservedAcrossForegroundReentry = false
+    /// Phase E: `cbcentral_allocated_in_start_scanning` on `g7_ble_pre_connect` — `true` only when this **`startScanning()`** call allocated `CBCentralManager` (`central` was `nil`). Not “fresh for this connect” on preserved-session paths that skip `startScanning()`.
+    private var centralManagerAllocatedInLastStartScanning = false
+    /// Phase E: `discover_count_for_target` — increments on each `didDiscover` for the active-name filter match; reset in `startScanning()`.
+    private var discoverCountForActiveTarget = 0
     /// Scheduled reconnect after unexpected teardown while foreground scanning is still desired.
     private var reconnectWorkItem: DispatchWorkItem?
     private(set) var reconnectScheduled = false
@@ -185,6 +196,7 @@ final class G7DirectBLEManager: NSObject {
         }
 
         if shouldSkipFullStartScanningAfterForegroundReentry() {
+            sessionPreservedAcrossForegroundReentry = true
             Task {
                 await logG7Ble("event=g7_ble_foreground_reentry_skipped reason=ble_session_in_progress")
             }
@@ -219,19 +231,30 @@ final class G7DirectBLEManager: NSObject {
     /// Begins (or restarts) scanning for G7 advertisements. Prefer **`applyForegroundActiveEntry`** from **`WatchState`**
     /// so returning to the app does not tear down an already-running session.
     func startScanning() {
+        let allocatedNewCentral: Bool
         if central == nil {
             central = CBCentralManager(
                 delegate: self,
                 queue: .main,
-                options: [CBCentralManagerOptionShowPowerAlertKey: false]
+                options: [
+                    CBCentralManagerOptionShowPowerAlertKey: false,
+                    CBCentralManagerOptionRestoreIdentifierKey: "TrioG7DirectBLE"
+                ]
             )
+            allocatedNewCentral = true
+        } else {
+            allocatedNewCentral = false
         }
         guard let central else { return }
+        centralManagerAllocatedInLastStartScanning = allocatedNewCentral
 
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
 
         scanningStarted = true
+        sessionPreservedAcrossForegroundReentry = false
+        connectAttemptsSinceStartScanning = 0
+        discoverCountForActiveTarget = 0
         g7SessionID = UUID().uuidString
         sessionStartedAt = Date()
         timeoutEmittedKeys.removeAll()
@@ -252,7 +275,7 @@ final class G7DirectBLEManager: NSObject {
         resetSessionState()
         central.stopScan()
 
-        let retrievedPeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.advertisement])
+        let retrievedPeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.dataService])
         Task {
             await logG7Ble(
                 "event=g7_ble_retrieve_result count=\(retrievedPeripherals.count) filter_armed=\(hasActivePeripheralNameFilter)"
@@ -275,7 +298,14 @@ final class G7DirectBLEManager: NSObject {
                         )
                     }
                 } else {
-                    beginConnectToG7Peripheral(retrieved, name: name, rssi: 0, source: "retrieved")
+                    beginConnectToG7Peripheral(
+                        retrieved,
+                        name: name,
+                        rssi: 0,
+                        source: "retrieved",
+                        isConnectableAdvertisement: "unknown",
+                        discoverCountForTarget: discoverCountForActiveTarget
+                    )
                     return
                 }
             } else {
@@ -787,8 +817,30 @@ final class G7DirectBLEManager: NSObject {
         cbPeripheral.writeValue(Data([0x4E]), for: control, type: .withResponse)
     }
 
+    /// Last 8 hex digits of the peripheral UUID (no dashes) — bounded correlation without full UUID spam.
+    private func peripheralIdShort(_ peripheral: CBPeripheral) -> String {
+        let hex = peripheral.identifier.uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        return String(hex.suffix(8))
+    }
+
+    /// `CBAdvertisementDataIsConnectable` when present; otherwise `unknown` (for `g7_ble_pre_connect` `is_connectable=`).
+    private func isConnectableFromAdvertisement(_ advertisementData: [String: Any]) -> String {
+        guard let n = advertisementData[CBAdvertisementDataIsConnectable] as? NSNumber else {
+            return "unknown"
+        }
+        return n.boolValue ? "true" : "false"
+    }
+
     /// Shared path for advertisement discovery and `retrieveConnectedPeripherals` attach (DiaBLE-style).
-    private func beginConnectToG7Peripheral(_ peripheral: CBPeripheral, name: String, rssi: Int, source: String?) {
+    private func beginConnectToG7Peripheral(
+        _ peripheral: CBPeripheral,
+        name: String,
+        rssi: Int,
+        source: String?,
+        isConnectableAdvertisement: String,
+        discoverCountForTarget: Int
+    ) {
+        let idShort = peripheralIdShort(peripheral)
         central?.stopScan()
         self.peripheral = peripheral
         peripheral.delegate = self
@@ -803,15 +855,38 @@ final class G7DirectBLEManager: NSObject {
         logExtendedRuntimeSessionSkipped(source: "connect")
         Task {
             if let source {
-                await logG7Ble("event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi) source=\(source)")
-                await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name) source=\(source)")
+                await logG7Ble(
+                    "event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi) source=\(source) peripheral_id_short=\(idShort)"
+                )
+                await logG7Ble(
+                    "event=g7_ble_connect_attempt peripheral=\(name) source=\(source) peripheral_id_short=\(idShort)"
+                )
             } else {
-                await logG7Ble("event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi)")
-                await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name)")
+                await logG7Ble(
+                    "event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi) peripheral_id_short=\(idShort)"
+                )
+                await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name) peripheral_id_short=\(idShort)")
             }
         }
-        scheduleConnectTimeout()
+        let firstAttempt = connectAttemptsSinceStartScanning == 0
+        connectAttemptsSinceStartScanning += 1
+        let preConnectSource: String = {
+            switch source {
+            case nil, "scan": return "scan"
+            default: return "retrieved"
+            }
+        }()
+        let peripheralState = peripheral.state.rawValue
+        let centralState = central?.state.rawValue ?? -1
+        let preserved = sessionPreservedAcrossForegroundReentry
+        let cbCentralAllocatedInStartScanning = centralManagerAllocatedInLastStartScanning
+        Task {
+            await logG7Ble(
+                "event=g7_ble_pre_connect peripheral_state=\(peripheralState) central_state=\(centralState) source=\(preConnectSource) first_attempt=\(firstAttempt) preserved_session=\(preserved) is_connectable=\(isConnectableAdvertisement) discover_count_for_target=\(discoverCountForTarget) peripheral_id_short=\(idShort) cbcentral_allocated_in_start_scanning=\(cbCentralAllocatedInStartScanning)"
+            )
+        }
         central?.connect(peripheral, options: nil)
+        scheduleConnectTimeout()
     }
 }
 
@@ -822,6 +897,53 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         guard scanningStarted, central.state == .poweredOn else { return }
         guard connectionState == .scanning else { return }
         central.stopScan()
+
+        // Phase E: retrieve before scan (closer DiaBLE parity — see initiative docs). Scan only if we do not attach from retrieval.
+        let retrievedOnPoweredOn = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.dataService])
+        let first = retrievedOnPoweredOn.first
+        let firstName = first?.name ?? "unknown"
+        let firstState = first.map { Int($0.state.rawValue) } ?? -1
+        let firstIdShort = first.map { peripheralIdShort($0) } ?? "none"
+        Task {
+            await logG7Ble(
+                "event=g7_ble_retrieve_on_powered_on count=\(retrievedOnPoweredOn.count) first_name=\(firstName) first_state=\(firstState) peripheral_id_short=\(firstIdShort)"
+            )
+        }
+
+        if let retrievedPeripheral = first {
+            _ = emitAttachBlockedIfNeeded(source: "powered_on_retrieve")
+            let name = retrievedPeripheral.name ?? "unknown"
+            updateLastSeenPeripheral(name: name, rssi: nil)
+            if hasActivePeripheralNameFilter {
+                Task {
+                    await logG7Ble("event=g7_ble_retrieved_connected peripheral=\(name)")
+                }
+                if let active = activePeripheralName, name != active {
+                    Task {
+                        await logG7Ble(
+                            "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved"
+                        )
+                    }
+                } else {
+                    beginConnectToG7Peripheral(
+                        retrievedPeripheral,
+                        name: name,
+                        rssi: 0,
+                        source: "retrieved",
+                        isConnectableAdvertisement: "unknown",
+                        discoverCountForTarget: discoverCountForActiveTarget
+                    )
+                    return
+                }
+            } else {
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved"
+                    )
+                }
+            }
+        }
+
         central.scanForPeripherals(
             withServices: [G7BLEUUID.advertisement],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
@@ -833,10 +955,17 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         }
     }
 
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        let keys = dict.keys.sorted().joined(separator: ",")
+        Task {
+            await logG7Ble("event=g7_ble_will_restore_state keys=\(keys)")
+        }
+    }
+
     func centralManager(
         _: CBCentralManager,
         didDiscover peripheral: CBPeripheral,
-        advertisementData _: [String: Any],
+        advertisementData: [String: Any],
         rssi: NSNumber
     ) {
         guard scanningStarted else { return }
@@ -853,8 +982,17 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
             return
         }
 
+        discoverCountForActiveTarget += 1
+        let isConn = isConnectableFromAdvertisement(advertisementData)
         // TODO: validate WKExtendedRuntimeSession honored for BLE-connect use case on device
-        beginConnectToG7Peripheral(peripheral, name: name, rssi: rssi.intValue, source: nil)
+        beginConnectToG7Peripheral(
+            peripheral,
+            name: name,
+            rssi: rssi.intValue,
+            source: "scan",
+            isConnectableAdvertisement: isConn,
+            discoverCountForTarget: discoverCountForActiveTarget
+        )
     }
 
     func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
