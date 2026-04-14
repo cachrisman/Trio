@@ -235,7 +235,8 @@ final class G7DirectBLEManager: NSObject {
         if central == nil {
             central = CBCentralManager(
                 delegate: self,
-                queue: .main,
+                // F2 parity experiment: match DiaBLE's `CBCentralManager` init while keeping delegate work on the main queue.
+                queue: nil,
                 options: [
                     CBCentralManagerOptionShowPowerAlertKey: false,
                     CBCentralManagerOptionRestoreIdentifierKey: "TrioG7DirectBLE"
