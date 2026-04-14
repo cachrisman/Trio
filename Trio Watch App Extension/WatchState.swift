@@ -40,6 +40,7 @@ enum WatchCurrentDataSource {
 
 @Observable final class WatchState: NSObject, WCSessionDelegate {
     static let shared = WatchState()
+    private static let activeG7PeripheralNameAppGroupKey = "g7_active_peripheral_name"
 
     // MARK: - WatchConnectivity
 
@@ -206,6 +207,7 @@ enum WatchCurrentDataSource {
 
     override init() {
         super.init()
+        loadCachedActiveG7PeripheralName()
         setupSession()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -1620,7 +1622,25 @@ enum WatchCurrentDataSource {
         let trimmed = (payload[WatchMessageKeys.activeG7PeripheralName] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         phoneActiveG7PeripheralName = trimmed.isEmpty ? nil : trimmed
+        if let suiteName = TrioComplicationDataStore.shared.appGroupID,
+           let suite = UserDefaults(suiteName: suiteName)
+        {
+            if let name = phoneActiveG7PeripheralName {
+                suite.set(name, forKey: WatchState.activeG7PeripheralNameAppGroupKey)
+            } else {
+                suite.removeObject(forKey: WatchState.activeG7PeripheralNameAppGroupKey)
+            }
+        }
         g7DirectBLEManager.updatePhoneActivePeripheralName(phoneActiveG7PeripheralName)
+    }
+
+    private func loadCachedActiveG7PeripheralName() {
+        guard let suiteName = TrioComplicationDataStore.shared.appGroupID,
+              let suite = UserDefaults(suiteName: suiteName)
+        else { return }
+        let cached = suite.string(forKey: WatchState.activeG7PeripheralNameAppGroupKey)
+        let trimmed = cached?.trimmingCharacters(in: .whitespacesAndNewlines)
+        phoneActiveG7PeripheralName = (trimmed?.isEmpty == false) ? trimmed : nil
     }
 
     private func scheduleUIUpdate(

@@ -252,10 +252,16 @@ final class G7DirectBLEManager: NSObject {
         resetSessionState()
         central.stopScan()
 
-        _ = emitAttachBlockedIfNeeded(source: "scan_start")
+        let retrievedPeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.advertisement])
+        Task {
+            await logG7Ble(
+                "event=g7_ble_retrieve_result count=\(retrievedPeripherals.count) filter_armed=\(hasActivePeripheralNameFilter)"
+            )
+        }
 
         // Attach to a G7 already connected at the watchOS level (e.g. Dexcom Watch app) without waiting for an advertisement.
-        if let retrieved = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.advertisement]).first {
+        _ = emitAttachBlockedIfNeeded(source: "scan_start")
+        if let retrieved = retrievedPeripherals.first {
             let name = retrieved.name ?? "unknown"
             updateLastSeenPeripheral(name: name, rssi: nil)
             if hasActivePeripheralNameFilter {
@@ -359,10 +365,8 @@ final class G7DirectBLEManager: NSObject {
         default:
             return
         }
-        beginExtendedRuntimeSession()
-        Task {
-            await logG7Ble("event=g7_ble_ext_session_renewal reason=\(reason) away_s=\(awaySeconds)")
-        }
+        // TODO: WKExtendedRuntimeSession disabled for didConnect isolation test — re-enable after validating.
+        logExtendedRuntimeSessionSkipped(source: reason, awaySeconds: awaySeconds)
     }
 
     // MARK: - Session reset
@@ -795,7 +799,8 @@ final class G7DirectBLEManager: NSObject {
         lastSeenPeripheralRSSI = rssi
         lastSeenPeripheralAt = now
         emitStageIfChanged("connecting")
-        beginExtendedRuntimeSession()
+        // TODO: WKExtendedRuntimeSession disabled for didConnect isolation test — re-enable after validating.
+        logExtendedRuntimeSessionSkipped(source: "connect")
         Task {
             if let source {
                 await logG7Ble("event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi) source=\(source)")
@@ -1170,6 +1175,16 @@ private extension Data {
 }
 
 private extension G7DirectBLEManager {
+    func logExtendedRuntimeSessionSkipped(source: String, awaySeconds: Int? = nil) {
+        Task {
+            var message = "event=g7_ble_ext_session_skipped reason=isolation_test source=\(source)"
+            if let awaySeconds {
+                message += " away_s=\(awaySeconds)"
+            }
+            await logG7Ble(message)
+        }
+    }
+
     func setActivePeripheralName(_ activePeripheralName: String?, logIfChanged: Bool) -> Bool {
         let normalized = Self.normalizedPeripheralName(activePeripheralName)
         let changed = self.activePeripheralName != normalized
