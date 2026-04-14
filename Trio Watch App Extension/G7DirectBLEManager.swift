@@ -251,6 +251,17 @@ final class G7DirectBLEManager: NSObject {
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
 
+        let priorSessionID = g7SessionID
+        let canceledConnectTimeoutForRescan = peripheral != nil && cancelConnectTimeoutIfNeeded()
+        if canceledConnectTimeoutForRescan {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_connect_timeout_canceled reason=startScanning_rescan",
+                    sessionID: priorSessionID
+                )
+            }
+        }
+
         scanningStarted = true
         sessionPreservedAcrossForegroundReentry = false
         connectAttemptsSinceStartScanning = 0
@@ -449,6 +460,8 @@ final class G7DirectBLEManager: NSObject {
         assert(Thread.isMainThread, "teardownSession must run on the main queue (CBCentralManager delegate queue)")
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
+        let connectTimeoutCancelReason = reason == "stop_requested" ? "stop_requested" : "teardown"
+        let canceledConnectTimeout = cancelConnectTimeoutIfNeeded()
         cancelInstrumentationTimeouts()
 
         let outcomeSid = g7SessionID
@@ -473,6 +486,9 @@ final class G7DirectBLEManager: NSObject {
         reconnectScheduled = false
         connectionState = isFailure ? .error(reason) : .disconnected(reason: reason)
         Task {
+            if canceledConnectTimeout {
+                await logG7Ble("event=g7_ble_connect_timeout_canceled reason=\(connectTimeoutCancelReason)")
+            }
             await logG7Ble(
                 "event=g7_ble_disconnected reason=\(reason) failure=\(isFailure ? "true" : "false")"
             )
@@ -502,12 +518,13 @@ final class G7DirectBLEManager: NSObject {
     /// Forwards `#fileID` / `#line` / `#function` into `WatchLogger` so log metadata reflects the **call site**, not this helper.
     private func logG7Ble(
         _ message: String,
+        sessionID: String? = nil,
         function: String = #function,
         file: String = #fileID,
         line: Int = #line
     ) async {
         var out = message
-        if let sid = g7SessionID, !out.contains("g7_session=") {
+        if let sid = sessionID ?? g7SessionID, !out.contains("g7_session=") {
             out += " g7_session=\(sid)"
         }
         await WatchLogger.shared.log(out, function: function, file: file, line: line)
@@ -529,6 +546,16 @@ final class G7DirectBLEManager: NSObject {
         firstEgvTimeoutWorkItem?.cancel()
         firstEgvTimeoutWorkItem = nil
         activeTimeoutStage = nil
+    }
+
+    private func cancelConnectTimeoutIfNeeded() -> Bool {
+        guard connectTimeoutWorkItem != nil else { return false }
+        connectTimeoutWorkItem?.cancel()
+        connectTimeoutWorkItem = nil
+        if activeTimeoutStage == "awaiting_connect" {
+            activeTimeoutStage = nil
+        }
+        return true
     }
 
     private func timeoutDedupeKey(stage: String) -> String {
@@ -556,6 +583,11 @@ final class G7DirectBLEManager: NSObject {
             deadline: .now() + G7BLEInstrumentation.connectTimeoutSeconds,
             execute: work
         )
+        Task {
+            await logG7Ble(
+                "event=g7_ble_connect_timeout_armed timeout_s=\(Int(G7BLEInstrumentation.connectTimeoutSeconds))"
+            )
+        }
     }
 
     private func scheduleGattSetupTimeout() {
@@ -594,6 +626,16 @@ final class G7DirectBLEManager: NSObject {
     private func handleTimeout(stage: String) async {
         guard scanningStarted else { return }
         guard shouldEmitTimeout(stage: stage) else { return }
+        switch stage {
+        case "awaiting_connect":
+            connectTimeoutWorkItem = nil
+        case "awaiting_gatt_setup":
+            gattSetupTimeoutWorkItem = nil
+        case "awaiting_first_egv":
+            firstEgvTimeoutWorkItem = nil
+        default:
+            break
+        }
         activeTimeoutStage = nil
         lastTimedOutStage = stage
         await logG7Ble("event=g7_ble_timeout stage=\(stage)")
@@ -996,13 +1038,13 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        connectTimeoutWorkItem?.cancel()
-        connectTimeoutWorkItem = nil
+        let canceledConnectTimeout = cancelConnectTimeoutIfNeeded()
         gattSetupTimeoutWorkItem?.cancel()
         gattSetupTimeoutWorkItem = nil
         scheduleGattSetupTimeout()
         emitStageIfChanged("discovering_services")
         let name = peripheral.name ?? "unknown"
+        let idShort = peripheralIdShort(peripheral)
         let msDiscover: Int?
         if let t0 = discoverWallClock {
             msDiscover = Int(Date().timeIntervalSince(t0) * 1000.0)
@@ -1011,24 +1053,40 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         }
         let msField = msDiscover.map { " ms_since_discover=\($0)" } ?? ""
         Task {
+            await logG7Ble("event=g7_ble_did_connect peripheral=\(name) peripheral_id_short=\(idShort)")
+            if canceledConnectTimeout {
+                await logG7Ble("event=g7_ble_connect_timeout_canceled reason=did_connect")
+            }
             await logG7Ble("event=g7_ble_connected peripheral=\(name)\(msField)")
         }
         peripheral.discoverServices([G7BLEUUID.dataService])
     }
 
     func centralManager(_: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        connectTimeoutWorkItem?.cancel()
-        connectTimeoutWorkItem = nil
+        let canceledConnectTimeout = cancelConnectTimeoutIfNeeded()
         let name = peripheral.name ?? "unknown"
+        let idShort = peripheralIdShort(peripheral)
         if let err = error {
             let ns = err as NSError
             Task {
+                await logG7Ble(
+                    "event=g7_ble_did_fail_to_connect peripheral=\(name) peripheral_id_short=\(idShort) error_domain=\(ns.domain) error_code=\(ns.code) error_desc=\(ns.localizedDescription)"
+                )
+                if canceledConnectTimeout {
+                    await logG7Ble("event=g7_ble_connect_timeout_canceled reason=did_fail_to_connect")
+                }
                 await logG7Ble(
                     "event=g7_ble_connect_failed peripheral=\(name) error_domain=\(ns.domain) error_code=\(ns.code) error_desc=\(ns.localizedDescription)"
                 )
             }
         } else {
             Task {
+                await logG7Ble(
+                    "event=g7_ble_did_fail_to_connect peripheral=\(name) peripheral_id_short=\(idShort) error_domain=none error_code=-1 error_desc=none"
+                )
+                if canceledConnectTimeout {
+                    await logG7Ble("event=g7_ble_connect_timeout_canceled reason=did_fail_to_connect")
+                }
                 await logG7Ble(
                     "event=g7_ble_connect_failed peripheral=\(name) error_domain=none error_code=-1 error_desc=none"
                 )
@@ -1037,17 +1095,17 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         teardownSession(reason: "connect_failed", isFailure: true)
     }
 
-    func centralManager(_: CBCentralManager, didDisconnectPeripheral _: CBPeripheral, error: Error?) {
+    func centralManager(_: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         let override = pendingDisconnectReason
         pendingDisconnectReason = nil
+        let cancelReason = override == "stop_requested" ? "stop_requested" : "teardown"
+        let canceledConnectTimeout = cancelConnectTimeoutIfNeeded()
         // Intentional cancel before a new scan — `startScanning` already reset state; skip teardown + reconnect scheduling.
         // Intentionally does not emit `g7_ble_session_outcome`: the session id is reset at the top of the next
         // `startScanning()`; correlating outcome lines to rescans would duplicate or confuse metrics.
-        if override == "startScanning_rescan" {
-            invalidateExtendedSession(reason: "startScanning_rescan")
-            return
-        }
         let reason = override ?? (error?.localizedDescription ?? "disconnected")
+        let name = peripheral.name ?? lastSeenPeripheralName ?? "unknown"
+        let idShort = peripheralIdShort(peripheral)
         let isFailure: Bool
         if override == "stop_requested" {
             isFailure = false
@@ -1056,10 +1114,30 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         } else {
             isFailure = false
         }
-        Task {
-            if error != nil {
+        if let err = error {
+            let ns = err as NSError
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_did_disconnect peripheral=\(name) peripheral_id_short=\(idShort) reason=\(reason) error_domain=\(ns.domain) error_code=\(ns.code) error_desc=\(ns.localizedDescription)"
+                )
+                if canceledConnectTimeout {
+                    await logG7Ble("event=g7_ble_connect_timeout_canceled reason=\(cancelReason)")
+                }
                 await logG7Ble("event=g7_ble_error error=\(reason)")
             }
+        } else {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_did_disconnect peripheral=\(name) peripheral_id_short=\(idShort) reason=\(reason) error_domain=none error_code=-1 error_desc=none"
+                )
+                if canceledConnectTimeout {
+                    await logG7Ble("event=g7_ble_connect_timeout_canceled reason=\(cancelReason)")
+                }
+            }
+        }
+        if override == "startScanning_rescan" {
+            invalidateExtendedSession(reason: "startScanning_rescan")
+            return
         }
         teardownSession(reason: reason, isFailure: isFailure)
     }
