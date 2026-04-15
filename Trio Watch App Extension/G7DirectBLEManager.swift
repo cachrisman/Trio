@@ -169,6 +169,11 @@ final class G7DirectBLEManager: NSObject {
 
     // MARK: - Public API
 
+    override init() {
+        super.init()
+        _ = ensureCentralManagerInitialized()
+    }
+
     /// Record that the app UI left **`ScenePhase.active`** (Digital Crown / inactive). Enables extended-runtime renewal on the next **`applyForegroundActiveEntry`**.
     func noteSceneLeftActiveUi(at date: Date) {
         lastSceneLeftActiveUiAt = date
@@ -231,21 +236,7 @@ final class G7DirectBLEManager: NSObject {
     /// Begins (or restarts) scanning for G7 advertisements. Prefer **`applyForegroundActiveEntry`** from **`WatchState`**
     /// so returning to the app does not tear down an already-running session.
     func startScanning() {
-        let allocatedNewCentral: Bool
-        if central == nil {
-            central = CBCentralManager(
-                delegate: self,
-                // F2 parity experiment: match DiaBLE's `CBCentralManager` init while keeping delegate work on the main queue.
-                queue: nil,
-                options: [
-                    CBCentralManagerOptionShowPowerAlertKey: false,
-                    CBCentralManagerOptionRestoreIdentifierKey: "TrioG7DirectBLE"
-                ]
-            )
-            allocatedNewCentral = true
-        } else {
-            allocatedNewCentral = false
-        }
+        let allocatedNewCentral = ensureCentralManagerInitialized()
         guard let central else { return }
         centralManagerAllocatedInLastStartScanning = allocatedNewCentral
 
@@ -381,6 +372,20 @@ final class G7DirectBLEManager: NSObject {
         case .idle, .disconnected, .error:
             return false
         }
+    }
+
+    private func ensureCentralManagerInitialized() -> Bool {
+        guard central == nil else { return false }
+        central = CBCentralManager(
+            delegate: self,
+            // F2 parity experiment: match DiaBLE's `CBCentralManager` init while keeping delegate work on the main queue.
+            queue: nil,
+            options: [
+                CBCentralManagerOptionShowPowerAlertKey: false,
+                CBCentralManagerOptionRestoreIdentifierKey: "TrioG7DirectBLE"
+            ]
+        )
+        return true
     }
 
     /// Invalidates any existing extended session, then starts a **new** `WKExtendedRuntimeSession` while BLE is still live so

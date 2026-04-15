@@ -163,7 +163,7 @@ enum WatchCurrentDataSource {
     var residentTelemetryBudget = WatchResidentTelemetryBudget()
 
     /// Foreground-only Dexcom G7 direct BLE eavesdrop path. `@ObservationIgnored` — not part of `WatchState` observation.
-    /// `G7DirectBLEManager` does not create `CBCentralManager` until `startScanning()`; avoid `lazy` here (`@Observable` + `lazy` breaks macro expansion).
+    /// `G7DirectBLEManager` owns an already-lived `CBCentralManager`; avoid `lazy` here (`@Observable` + `lazy` breaks macro expansion).
     @ObservationIgnored private let g7DirectBLEManager = G7DirectBLEManager()
 
     /// Exposes the direct BLE manager to the existing watch debug view without changing the watch data flow.
