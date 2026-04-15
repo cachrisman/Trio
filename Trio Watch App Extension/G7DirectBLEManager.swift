@@ -333,7 +333,7 @@ final class G7DirectBLEManager: NSObject {
         case .poweredOn:
             central.scanForPeripherals(
                 withServices: [G7BLEUUID.advertisement],
-                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+                options: nil
             )
             loggedScanStartThisRequest = true
             Task {
@@ -989,7 +989,7 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
 
         central.scanForPeripherals(
             withServices: [G7BLEUUID.advertisement],
-            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+            options: nil
         )
         guard !loggedScanStartThisRequest else { return }
         loggedScanStartThisRequest = true
