@@ -21,8 +21,9 @@ struct TrioMainWatchView: View {
     @State private var selectedTreatment: TreatmentOption?
 
     var isWatchStateDated: Bool {
-        // If `lastWatchStateUpdate` is nil, treat as "dated"
-        guard let lastUpdateTimestamp = state.lastWatchStateUpdate else {
+        // `lastWatchStateUpdate` is WC-only monotonic; main UI freshness uses `effectiveWatchUiFreshnessAt`
+        // (phone state time vs direct-BLE / complication hydration wall times).
+        guard let lastUpdateTimestamp = state.effectiveWatchUiFreshnessAt else {
             return true
         }
         let now = Date()
@@ -131,11 +132,10 @@ struct TrioMainWatchView: View {
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
-                    state.lastWatchStateUpdate = snapshot.readingDate
+                    state.noteComplicationSnapshotUiFreshness(snapshot)
                     state.showSyncingAnimation = true
                 } else if let snapshot = cachedSnapshot,
-                          let lastUpdate = state.lastWatchStateUpdate,
-                          snapshot.readingDate > lastUpdate
+                          snapshot.readingDate > (state.lastDirectBleAppliedReadingDate ?? .distantPast)
                 {
                     state.currentGlucose = snapshot.glucose
                     state.trend = snapshot.trend
@@ -143,7 +143,7 @@ struct TrioMainWatchView: View {
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
-                    state.lastWatchStateUpdate = snapshot.readingDate
+                    state.noteComplicationSnapshotUiFreshness(snapshot)
                     state.showSyncingAnimation = false
                 }
 

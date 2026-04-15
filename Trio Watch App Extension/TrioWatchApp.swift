@@ -25,7 +25,7 @@ import WatchKit
             if newPhase == .active {
                 WatchState.shared.handleForegroundActiveEntry()
             } else if newPhase == .background || newPhase == .inactive {
-                WatchState.shared.handleForegroundInactiveOrBackground()
+                WatchState.shared.handleForegroundInactiveOrBackground(scenePhase: newPhase)
             }
 
             let forceFlush = newPhase != .active
