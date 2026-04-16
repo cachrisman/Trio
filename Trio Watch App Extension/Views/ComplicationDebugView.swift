@@ -3,6 +3,19 @@ import SwiftUI
 import WatchKit
 
 struct ComplicationDebugView: View {
+    private struct BleChecklistGate: Identifiable {
+        let label: String
+        let isSatisfied: Bool
+
+        var id: String { label }
+    }
+
+    private enum BleChecklistStatus {
+        case satisfied
+        case blocker
+        case pending
+    }
+
     @State private var snapshot: TrioComplicationSnapshot?
     @State private var watchState = WatchState.shared
     @State private var showConfirmation = false
@@ -267,41 +280,47 @@ struct ComplicationDebugView: View {
             debugRow("Mode:", value: "Direct BLE Observer")
             debugRow("Session owner:", value: "Dexcom G7 app")
             debugRow("Using phone relay:", value: yesNo(watchState.isUsingPhoneRelayForCurrentWatchData))
-            debugRow("Stage:", value: g7Manager.debugConnectionStageLabel, valueColor: stageColor(g7Manager.debugConnectionStageLabel))
 
             Divider().padding(.vertical, 2)
 
-            debugRow("Peripheral:", value: g7Manager.lastSeenPeripheralName ?? "--")
-            debugRow("RSSI:", value: g7Manager.lastSeenPeripheralRSSI.map { String($0) } ?? "--")
-            debugRow("Last discover:", value: formatOptionalTime(g7Manager.lastSeenPeripheralAt))
-            debugRow("Filter armed:", value: yesNo(g7Manager.hasActivePeripheralNameFilter))
+            sectionHeader("LATEST SESSION FUNNEL")
+            Text("First yellow row = first unsatisfied gate")
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(bleChecklistGates.enumerated()), id: \.element.id) { index, gate in
+                    bleChecklistRow(label: gate.label, status: bleChecklistStatus(for: gate, index: index))
+                }
+            }
+            .padding(.top, 2)
 
             Divider().padding(.vertical, 2)
 
-            debugRow("Auth notify:", value: yesNo(g7Manager.authNotificationsReady))
-            debugRow("J-PAKE skipped:", value: yesNo(g7Manager.jpakeSkippedInObserver))
-            debugRow("Last auth opcode:", value: g7Manager.lastAuthOpcodeHex ?? "--")
-            debugRow("Authenticated:", value: yesNo(g7Manager.observerAuthenticated))
-            debugRow("Bonded:", value: yesNo(g7Manager.observerBonded))
-            debugRow("Control notify:", value: yesNo(g7Manager.controlNotificationsReady))
-
-            Divider().padding(.vertical, 2)
-
-            debugRow("Last EGV:", value: formatOptionalTime(g7Manager.lastEgvReceivedAt))
-            debugRow("Glucose:", value: g7Manager.lastGlucoseValue.map { String($0) } ?? "--")
-            debugRow("Reading age:", value: formatOptionalAge(g7Manager.lastReadingDate))
-            debugRow("Sequence:", value: g7Manager.lastSequenceNumber.map { String($0) } ?? "--")
-            debugRow("Snapshot save:", value: g7Manager.lastSnapshotSaveResult ?? "--")
-            debugRow("Snapshot time:", value: formatOptionalTime(g7Manager.lastSnapshotSaveAt))
-
-            Divider().padding(.vertical, 2)
-
-            debugRow("g7_session:", value: truncateSessionID(g7Manager.currentG7SessionId))
-            debugRow("Last disconnect:", value: g7Manager.lastDisconnectReason ?? "--")
-            debugRow("Reconnect scheduled:", value: yesNo(g7Manager.reconnectScheduled))
-            debugRow("Timeout stage:", value: g7Manager.debugTimeoutStage ?? "--")
-            debugRow("Request block:", value: g7Manager.lastEgvRequestBlockedReason ?? "--")
-            debugRow("Ext runtime:", value: yesNo(g7Manager.isExtendedRuntimeSessionActive))
+            sectionHeader("CURRENT BLOCKER")
+            debugRow(
+                "Current stage:",
+                value: g7Manager.debugCurrentProtocolStageLabel,
+                valueColor: stageColor(g7Manager.debugCurrentProtocolStageLabel)
+            )
+            debugMultilineRow(
+                "Last blocked reason:",
+                value: humanizeDebugValue(g7Manager.lastBlockedReason),
+                valueColor: blockerColor(g7Manager.lastBlockedReason)
+            )
+            debugRow(
+                "Last timeout stage:",
+                value: humanizeDebugValue(g7Manager.debugTimeoutStage)
+            )
+            debugMultilineRow(
+                "Last disconnect reason:",
+                value: humanizeDebugValue(g7Manager.lastDisconnectReason)
+            )
+            debugMultilineRow(
+                "Current session id:",
+                value: g7Manager.currentG7SessionId ?? "--",
+                monospaced: true
+            )
         }
         .font(.caption)
     }
@@ -527,6 +546,23 @@ struct ComplicationDebugView: View {
         }
     }
 
+    private func debugMultilineRow(
+        _ title: String,
+        value: String,
+        valueColor: Color = .primary,
+        monospaced: Bool = false
+    ) -> some View {
+        HStack(alignment: .top) {
+            Text(title)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(monospaced ? .system(size: 9, design: .monospaced) : .caption)
+                .foregroundColor(valueColor)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func loadSnapshot() {
         snapshot = dataStore.latestSnapshot()
     }
@@ -547,22 +583,12 @@ struct ComplicationDebugView: View {
         return formatter.string(from: date)
     }
 
-    private func formatOptionalTime(_ date: Date?) -> String {
-        guard let date else { return "--" }
-        return formatTime(date)
-    }
-
     private func formatAge(_ date: Date) -> String {
         if date == .distantPast { return "--" }
         let seconds = Int(Date().timeIntervalSince(date))
         if seconds < 60 { return "\(seconds)s ago" }
         if seconds < 3600 { return "\(seconds / 60)m ago" }
         return "\(seconds / 3600)h ago"
-    }
-
-    private func formatOptionalAge(_ date: Date?) -> String {
-        guard let date else { return "--" }
-        return formatAge(date)
     }
 
     private func ageColor(_ date: Date) -> Color {
@@ -589,26 +615,137 @@ struct ComplicationDebugView: View {
         return path
     }
 
-    private func truncateSessionID(_ sessionID: String?) -> String {
-        guard let sessionID else { return "--" }
-        return String(sessionID.prefix(8))
-    }
-
     private func yesNo(_ value: Bool) -> String {
         value ? "yes" : "no"
     }
 
     private func stageColor(_ stage: String) -> Color {
-        switch stage {
-        case "Connected":
+        switch normalizedStageKey(stage) {
+        case "connected":
             return .green
-        case "Error":
+        case "error":
             return .red
-        case "Awaiting auth", "Awaiting control", "Awaiting EGV", "Connecting", "Scanning":
+        case "authenticating",
+            "awaiting_auth",
+            "awaiting_connect",
+            "awaiting_control",
+            "awaiting_egv",
+            "awaiting_first_egv",
+            "awaiting_gatt_setup",
+            "connecting",
+            "discovering_characteristics",
+            "discovering_services",
+            "scanning":
             return .yellow
         default:
             return .secondary
         }
+    }
+
+    private var bleChecklistGates: [BleChecklistGate] {
+        [
+            BleChecklistGate(label: "Filter armed", isSatisfied: g7Manager.latestSessionFilterArmed),
+            BleChecklistGate(label: "Target matched", isSatisfied: g7Manager.latestSessionTargetMatched),
+            BleChecklistGate(label: "Pre-connect sane", isSatisfied: g7Manager.latestSessionPreConnectSane),
+            BleChecklistGate(label: "Connect attempt", isSatisfied: g7Manager.latestSessionConnectAttempted),
+            BleChecklistGate(label: "Did connect", isSatisfied: g7Manager.latestSessionDidConnect),
+            BleChecklistGate(label: "Services discovered", isSatisfied: g7Manager.latestSessionServicesDiscovered),
+            BleChecklistGate(label: "Characteristics callback returned", isSatisfied: g7Manager.latestSessionCharacteristicsCallbackReturned),
+            BleChecklistGate(label: "Required characteristics present", isSatisfied: g7Manager.latestSessionRequiredCharacteristicsPresent),
+            BleChecklistGate(label: "Auth notify enabled", isSatisfied: g7Manager.latestSessionAuthNotifyEnabled),
+            BleChecklistGate(label: "J-PAKE skipped", isSatisfied: g7Manager.latestSessionJpakeSkipped),
+            BleChecklistGate(label: "0x03 seen", isSatisfied: g7Manager.latestSessionSawAuthChallenge03),
+            BleChecklistGate(label: "0x05 authenticated", isSatisfied: g7Manager.latestSessionAuthenticated),
+            BleChecklistGate(label: "0x05 bonded", isSatisfied: g7Manager.latestSessionBonded),
+            BleChecklistGate(label: "Control notify enabled", isSatisfied: g7Manager.latestSessionControlNotifyEnabled),
+            BleChecklistGate(label: "0x4E sent", isSatisfied: g7Manager.latestSessionEgvRequestSent),
+            BleChecklistGate(label: "0x4E received", isSatisfied: g7Manager.latestSessionEgvResponseReceived),
+            BleChecklistGate(label: "Snapshot saved", isSatisfied: g7Manager.latestSessionSnapshotSaved)
+        ]
+    }
+
+    private var firstUnsatisfiedChecklistIndex: Int? {
+        bleChecklistGates.firstIndex(where: { !$0.isSatisfied })
+    }
+
+    private func bleChecklistStatus(for gate: BleChecklistGate, index: Int) -> BleChecklistStatus {
+        if gate.isSatisfied {
+            return .satisfied
+        }
+        if firstUnsatisfiedChecklistIndex == index {
+            return .blocker
+        }
+        return .pending
+    }
+
+    private func bleChecklistRow(label: String, status: BleChecklistStatus) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: checklistSymbol(for: status))
+                .foregroundColor(checklistColor(for: status))
+                .frame(width: 12)
+            Text(label)
+                .foregroundColor(checklistColor(for: status))
+                .fontWeight(status == .blocker ? .semibold : .regular)
+            Spacer()
+        }
+    }
+
+    private func checklistSymbol(for status: BleChecklistStatus) -> String {
+        switch status {
+        case .satisfied:
+            return "checkmark.circle.fill"
+        case .blocker:
+            return "exclamationmark.circle.fill"
+        case .pending:
+            return "circle"
+        }
+    }
+
+    private func checklistColor(for status: BleChecklistStatus) -> Color {
+        switch status {
+        case .satisfied:
+            return .green
+        case .blocker:
+            return .yellow
+        case .pending:
+            return .secondary
+        }
+    }
+
+    private func blockerColor(_ rawValue: String?) -> Color {
+        guard let rawValue, !rawValue.isEmpty else { return .secondary }
+        return .yellow
+    }
+
+    private func normalizedStageKey(_ stage: String) -> String {
+        stage
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "_")
+    }
+
+    private func humanizeDebugValue(_ rawValue: String?) -> String {
+        guard let rawValue, !rawValue.isEmpty else { return "--" }
+        switch rawValue {
+        case "service_discovery_failed":
+            return "Service discovery failed"
+        case "no_data_service":
+            return "No data service"
+        case "characteristic_discovery_failed":
+            return "Characteristic discovery failed"
+        case let value where value.hasPrefix("no_required_characteristic"):
+            return value
+                .replacingOccurrences(of: "no_required_characteristic", with: "No required characteristic")
+        case let value where value.hasPrefix("notify_failed"):
+            return value
+                .replacingOccurrences(of: "notify_failed", with: "Notify failed")
+                .replacingOccurrences(of: "_", with: " ")
+        default:
+            break
+        }
+        let humanized = rawValue.replacingOccurrences(of: "_", with: " ")
+        guard let first = humanized.first else { return "--" }
+        return first.uppercased() + humanized.dropFirst()
     }
 }
 
