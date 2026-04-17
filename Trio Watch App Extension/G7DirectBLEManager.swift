@@ -8,9 +8,9 @@ import WatchKit
 private enum G7BLEUUID {
     /// Advertisement service for scanning (`scanForPeripherals` filter — Dexcom G7 advertises this UUID).
     static let advertisement = CBUUID(string: "FEBC")
-    /// Primary GATT service on an established G7 connection. Use this (not `advertisement`) for
-    /// `retrieveConnectedPeripherals(withServices:)` — CoreBluetooth matches **implemented GATT services**;
-    /// `FEBC` is for discovery/ads and may not appear as a connected service UUID for retrieval.
+    /// Primary GATT service on an established G7 connection. This remains the primary retrieval UUID.
+    /// F5 also queries `advertisement` / FEBC in parallel as a diagnostic experiment only, not because FEBC
+    /// is already established as a valid connected-service retrieval key on watchOS.
     static let dataService = CBUUID(string: "F8083532-849E-531C-C594-30F1F86A4EA5")
     static let authentication = CBUUID(string: "F8083535-849E-531C-C594-30F1F86A4EA5")
     static let control = CBUUID(string: "F8083534-849E-531C-C594-30F1F86A4EA5")
@@ -67,6 +67,11 @@ final class G7DirectBLEManager: NSObject {
     private var centralManagerAllocatedInLastStartScanning = false
     /// Phase E: `discover_count_for_target` — increments on each `didDiscover` for the active-name filter match; reset in `startScanning()`.
     private var discoverCountForActiveTarget = 0
+    /// F5: suppress duplicate `connect()` attempts when multiple retrieval paths surface the same peripheral within
+    /// one attach cycle. Here "attach cycle" means one `startScanning()` session / `g7_session`; the set is cleared
+    /// when a new scan cycle begins. This is an intentional diagnostic tradeoff for F5: a later re-sighting of the
+    /// same peripheral in the same attach cycle will be suppressed rather than retried automatically.
+    private var attemptedConnectPeripheralIdentifiers: Set<UUID> = []
     /// Scheduled reconnect after unexpected teardown while foreground scanning is still desired.
     private var reconnectWorkItem: DispatchWorkItem?
     private(set) var reconnectScheduled = false
@@ -290,6 +295,7 @@ final class G7DirectBLEManager: NSObject {
         sessionPreservedAcrossForegroundReentry = false
         connectAttemptsSinceStartScanning = 0
         discoverCountForActiveTarget = 0
+        attemptedConnectPeripheralIdentifiers.removeAll()
         g7SessionID = UUID().uuidString
         sessionStartedAt = Date()
         timeoutEmittedKeys.removeAll()
@@ -311,43 +317,77 @@ final class G7DirectBLEManager: NSObject {
         resetSessionState()
         central.stopScan()
 
-        let retrievedPeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.dataService])
-        Task {
-            await logG7Ble(
-                "event=g7_ble_retrieve_result count=\(retrievedPeripherals.count) filter_armed=\(hasActivePeripheralNameFilter)"
-            )
-        }
+        let retrievedDataServicePeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.dataService])
+        let retrievedFebcPeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.advertisement])
+        logRetrievalDiagnostics(
+            event: "g7_ble_retrieve_result",
+            dataServicePeripherals: retrievedDataServicePeripherals,
+            febcPeripherals: retrievedFebcPeripherals
+        )
 
         // Attach to a G7 already connected at the watchOS level (e.g. Dexcom Watch app) without waiting for an advertisement.
         _ = emitAttachBlockedIfNeeded(source: "scan_start")
-        if let retrieved = retrievedPeripherals.first {
-            let name = retrieved.name ?? "unknown"
-            updateLastSeenPeripheral(name: name, rssi: nil)
-            if hasActivePeripheralNameFilter {
-                Task {
-                    await logG7Ble("event=g7_ble_retrieved_connected peripheral=\(name)")
-                }
-                if let active = activePeripheralName, name != active {
-                    Task {
-                        await logG7Ble(
-                            "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved"
-                        )
-                    }
-                } else {
-                    beginConnectToG7Peripheral(
-                        retrieved,
-                        name: name,
-                        rssi: 0,
-                        source: "retrieved",
-                        isConnectableAdvertisement: "unknown",
-                        discoverCountForTarget: discoverCountForActiveTarget
-                    )
-                    return
-                }
-            } else {
+        if let selected = selectRetrievedPeripheralForAttach(
+            dataServicePeripherals: retrievedDataServicePeripherals,
+            febcPeripherals: retrievedFebcPeripherals
+        ) {
+            updateLastSeenPeripheral(name: selected.name, rssi: nil)
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_retrieved_attach_selected peripheral=\(selected.name) source=\(selected.source)"
+                )
+            }
+            beginConnectToG7Peripheral(
+                selected.peripheral,
+                name: selected.name,
+                rssi: 0,
+                source: selected.source,
+                isConnectableAdvertisement: "unknown",
+                discoverCountForTarget: discoverCountForActiveTarget
+            )
+            return
+        }
+
+        if !hasActivePeripheralNameFilter {
+            if let retrieved = retrievedDataServicePeripherals.first {
+                let name = retrieved.name ?? "unknown"
                 Task {
                     await logG7Ble(
-                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved"
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved_data_service"
+                    )
+                }
+            }
+            if let retrieved = firstDistinctPeripheral(
+                in: retrievedFebcPeripherals,
+                excluding: Set(retrievedDataServicePeripherals.map(\.identifier))
+            ) {
+                let name = retrieved.name ?? "unknown"
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved_febc"
+                    )
+                }
+            }
+        } else {
+            if let retrieved = retrievedDataServicePeripherals.first,
+               !doesPeripheralMatchActiveFilter(retrieved)
+            {
+                let name = retrieved.name ?? "unknown"
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved_data_service"
+                    )
+                }
+            }
+            if let retrieved = firstDistinctPeripheral(
+                in: retrievedFebcPeripherals,
+                excluding: Set(retrievedDataServicePeripherals.map(\.identifier))
+            ), !doesPeripheralMatchActiveFilter(retrieved)
+            {
+                let name = retrieved.name ?? "unknown"
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved_febc"
                     )
                 }
             }
@@ -478,10 +518,16 @@ final class G7DirectBLEManager: NSObject {
         switch resolvedReason {
         case "status_gate_not_satisfied":
             guard lastBlockedReason.hasPrefix("status_gate_not_satisfied") else { return }
+        case "authenticated_false":
+            guard lastBlockedReason == "authenticated_false" else { return }
+        case "bonded_false":
+            guard lastBlockedReason == "bonded_false" else { return }
         case "notify_failed_auth":
             guard lastBlockedReason.hasPrefix("notify_failed (char=auth") else { return }
         case "notify_failed_control":
             guard lastBlockedReason.hasPrefix("notify_failed (char=control") else { return }
+        case "control_notify_not_enabled":
+            guard lastBlockedReason == "control_notify_not_enabled" else { return }
         default:
             guard lastBlockedReason == resolvedReason else { return }
         }
@@ -489,14 +535,20 @@ final class G7DirectBLEManager: NSObject {
     }
 
     private func clearEgvRequestBlockedReason(resolvedReason: String? = nil) {
-        if let resolvedReason {
+        clearEgvRequestBlockedReason(resolvedReasons: resolvedReason.map { [$0] } ?? [])
+    }
+
+    private func clearEgvRequestBlockedReason(resolvedReasons: [String]) {
+        guard !resolvedReasons.isEmpty else {
+            lastEgvRequestBlockedReason = nil
+            return
+        }
+        for resolvedReason in resolvedReasons {
             if lastEgvRequestBlockedReason == resolvedReason {
                 lastEgvRequestBlockedReason = nil
             }
             clearBlockedReasonIfResolved(resolvedReason)
-            return
         }
-        lastEgvRequestBlockedReason = nil
     }
 
     private func resetLatestSessionGateProgress(filterArmed: Bool) {
@@ -948,6 +1000,84 @@ final class G7DirectBLEManager: NSObject {
         return missing.isEmpty ? "none" : missing.joined(separator: ",")
     }
 
+    private func boundedServiceUUIDList(_ uuids: [CBUUID], maxCount: Int = 8) -> String {
+        guard !uuids.isEmpty else { return "none" }
+        let list = uuids.prefix(maxCount).map(\.uuidString)
+        let suffix = uuids.count > maxCount ? ",more" : ""
+        return list.joined(separator: ",") + suffix
+    }
+
+    private func boundedPeripheralShortList(_ identifiers: [UUID], maxCount: Int = 4) -> String {
+        guard !identifiers.isEmpty else { return "none" }
+        let shorts = identifiers.prefix(maxCount).map { identifier in
+            let hex = identifier.uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            return String(hex.suffix(8))
+        }
+        let suffix = identifiers.count > maxCount ? ",more" : ""
+        return shorts.joined(separator: ",") + suffix
+    }
+
+    private func doesPeripheralMatchActiveFilter(_ peripheral: CBPeripheral) -> Bool {
+        guard let active = activePeripheralName else { return false }
+        return (peripheral.name ?? "unknown") == active
+    }
+
+    private func firstDistinctPeripheral(in peripherals: [CBPeripheral], excluding excluded: Set<UUID>) -> CBPeripheral? {
+        peripherals.first(where: { !excluded.contains($0.identifier) })
+    }
+
+    private func selectRetrievedPeripheralForAttach(
+        dataServicePeripherals: [CBPeripheral],
+        febcPeripherals: [CBPeripheral]
+    ) -> (peripheral: CBPeripheral, name: String, source: String)? {
+        // F5 stays within the current attach policy: only select a retrieval candidate when the active-name
+        // filter is armed, and still require exact-name equality. This means the retrieval diagnostic is measuring
+        // retrieval behavior under today's attach policy, not all possible retrieval opportunities. The surrounding
+        // skip logging is summarized rather than exhaustive: it logs representative non-matching candidates, not
+        // every returned peripheral in each retrieval set.
+        guard hasActivePeripheralNameFilter else { return nil }
+        if let peripheral = dataServicePeripherals.first(where: { doesPeripheralMatchActiveFilter($0) }) {
+            let name = peripheral.name ?? "unknown"
+            return (peripheral, name, "retrieved_data_service")
+        }
+        let excluded = Set(dataServicePeripherals.map(\.identifier))
+        if let peripheral = febcPeripherals.first(where: {
+            doesPeripheralMatchActiveFilter($0) && !excluded.contains($0.identifier)
+        }) {
+            let name = peripheral.name ?? "unknown"
+            return (peripheral, name, "retrieved_febc")
+        }
+        return nil
+    }
+
+    private func logRetrievalDiagnostics(
+        event: String,
+        dataServicePeripherals: [CBPeripheral],
+        febcPeripherals: [CBPeripheral]
+    ) {
+        let dataIdentifiers = dataServicePeripherals.map(\.identifier)
+        let febcIdentifiers = febcPeripherals.map(\.identifier)
+        let overlap = Array(Set(dataIdentifiers).intersection(Set(febcIdentifiers)))
+            .sorted { $0.uuidString < $1.uuidString }
+        let overlapShorts = boundedPeripheralShortList(overlap)
+        let firstData = dataServicePeripherals.first
+        let firstFebc = febcPeripherals.first
+        let firstDataName = firstData?.name ?? "unknown"
+        let firstFebcName = firstFebc?.name ?? "unknown"
+        let firstDataState = firstData.map { Int($0.state.rawValue) } ?? -1
+        let firstFebcState = firstFebc.map { Int($0.state.rawValue) } ?? -1
+        let firstDataIdShort = firstData.map { peripheralIdShort($0) } ?? "none"
+        let firstFebcIdShort = firstFebc.map { peripheralIdShort($0) } ?? "none"
+        Task {
+            await logG7Ble(
+                "event=\(event) retrieval_uuid=data_service count=\(dataServicePeripherals.count) overlap_count=\(overlap.count) overlap_ids_short=\(overlapShorts) first_name=\(firstDataName) first_state=\(firstDataState) peripheral_id_short=\(firstDataIdShort)"
+            )
+            await logG7Ble(
+                "event=\(event) retrieval_uuid=febc count=\(febcPeripherals.count) overlap_count=\(overlap.count) overlap_ids_short=\(overlapShorts) first_name=\(firstFebcName) first_state=\(firstFebcState) peripheral_id_short=\(firstFebcIdShort)"
+            )
+        }
+    }
+
     private func setNotifyBlockedReasonIfNeeded(
         charName: String,
         reason: String,
@@ -991,10 +1121,16 @@ final class G7DirectBLEManager: NSObject {
             }
             guard authenticated, bonded else {
                 emitStatusGateBlocked(authenticated: authenticated, bonded: bonded)
-                emitEgvRequestBlockedIfNeeded(reason: "status_gate_not_satisfied")
+                if !authenticated {
+                    emitEgvRequestBlockedIfNeeded(reason: "authenticated_false")
+                } else {
+                    emitEgvRequestBlockedIfNeeded(reason: "bonded_false")
+                }
                 return
             }
-            clearEgvRequestBlockedReason(resolvedReason: "status_gate_not_satisfied")
+            clearEgvRequestBlockedReason(
+                resolvedReasons: ["status_gate_not_satisfied", "authenticated_false", "bonded_false"]
+            )
             guard let activePeripheral = self.peripheral else { return }
             statusGateSatisfied = true
             guard !controlNotificationsReady else {
@@ -1004,7 +1140,7 @@ final class G7DirectBLEManager: NSObject {
             }
             if let control = controlCharacteristic {
                 activePeripheral.setNotifyValue(true, for: control)
-                emitEgvRequestBlockedIfNeeded(reason: "control_not_ready")
+                emitEgvRequestBlockedIfNeeded(reason: "control_notify_not_enabled")
             }
             cancelGattSetupTimeoutWhenObserverReady()
         default:
@@ -1015,16 +1151,29 @@ final class G7DirectBLEManager: NSObject {
     private func trySendEGVRequestIfReady() {
         guard let cbPeripheral = peripheral, let control = controlCharacteristic else { return }
         guard statusGateSatisfied else {
-            emitEgvRequestBlockedIfNeeded(reason: "status_gate_not_satisfied")
+            if !observerAuthenticated {
+                emitEgvRequestBlockedIfNeeded(reason: "authenticated_false")
+            } else if !observerBonded {
+                emitEgvRequestBlockedIfNeeded(reason: "bonded_false")
+            } else {
+                emitEgvRequestBlockedIfNeeded(reason: "status_gate_not_satisfied")
+            }
             return
         }
         // EGV is requested on control once control notifications are ready (DiaBLE sequence); backfill is separate.
         guard controlNotificationsReady else {
-            emitEgvRequestBlockedIfNeeded(reason: "control_not_ready")
+            emitEgvRequestBlockedIfNeeded(reason: "control_notify_not_enabled")
             return
         }
         guard !egvRequestSent else { return }
-        clearEgvRequestBlockedReason(resolvedReason: "control_not_ready")
+        clearEgvRequestBlockedReason(
+            resolvedReasons: [
+                "status_gate_not_satisfied",
+                "authenticated_false",
+                "bonded_false",
+                "control_notify_not_enabled"
+            ]
+        )
         egvRequestSent = true
         latestSessionEgvRequestSent = true
         awaitingFirstEgv = true
@@ -1059,6 +1208,16 @@ final class G7DirectBLEManager: NSObject {
         isConnectableAdvertisement: String,
         discoverCountForTarget: Int
     ) {
+        if attemptedConnectPeripheralIdentifiers.contains(peripheral.identifier) {
+            let idShort = peripheralIdShort(peripheral)
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_connect_suppressed reason=duplicate_peripheral_in_attach_cycle source=\(source ?? "scan") peripheral=\(name) peripheral_id_short=\(idShort)"
+                )
+            }
+            return
+        }
+        attemptedConnectPeripheralIdentifiers.insert(peripheral.identifier)
         let idShort = peripheralIdShort(peripheral)
         central?.stopScan()
         self.peripheral = peripheral
@@ -1089,12 +1248,7 @@ final class G7DirectBLEManager: NSObject {
         }
         let firstAttempt = connectAttemptsSinceStartScanning == 0
         connectAttemptsSinceStartScanning += 1
-        let preConnectSource: String = {
-            switch source {
-            case nil, "scan": return "scan"
-            default: return "retrieved"
-            }
-        }()
+        let preConnectSource = source ?? "scan"
         let peripheralState = peripheral.state.rawValue
         let centralState = central?.state.rawValue ?? -1
         let preserved = sessionPreservedAcrossForegroundReentry
@@ -1124,47 +1278,77 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         guard connectionState == .scanning else { return }
         central.stopScan()
 
-        // Phase E: retrieve before scan (closer DiaBLE parity — see initiative docs). Scan only if we do not attach from retrieval.
-        let retrievedOnPoweredOn = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.dataService])
-        let first = retrievedOnPoweredOn.first
-        let firstName = first?.name ?? "unknown"
-        let firstState = first.map { Int($0.state.rawValue) } ?? -1
-        let firstIdShort = first.map { peripheralIdShort($0) } ?? "none"
-        Task {
-            await logG7Ble(
-                "event=g7_ble_retrieve_on_powered_on count=\(retrievedOnPoweredOn.count) first_name=\(firstName) first_state=\(firstState) peripheral_id_short=\(firstIdShort)"
+        // Phase E/F5: retrieve before scan (closer DiaBLE parity) and compare data-service vs FEBC retrieval without duplicate connects.
+        let retrievedDataServicePeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.dataService])
+        let retrievedFebcPeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.advertisement])
+        logRetrievalDiagnostics(
+            event: "g7_ble_retrieve_on_powered_on",
+            dataServicePeripherals: retrievedDataServicePeripherals,
+            febcPeripherals: retrievedFebcPeripherals
+        )
+
+        if let selected = selectRetrievedPeripheralForAttach(
+            dataServicePeripherals: retrievedDataServicePeripherals,
+            febcPeripherals: retrievedFebcPeripherals
+        ) {
+            _ = emitAttachBlockedIfNeeded(source: "powered_on_retrieve")
+            updateLastSeenPeripheral(name: selected.name, rssi: nil)
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_retrieved_attach_selected peripheral=\(selected.name) source=\(selected.source)"
+                )
+            }
+            beginConnectToG7Peripheral(
+                selected.peripheral,
+                name: selected.name,
+                rssi: 0,
+                source: selected.source,
+                isConnectableAdvertisement: "unknown",
+                discoverCountForTarget: discoverCountForActiveTarget
             )
+            return
         }
 
-        if let retrievedPeripheral = first {
-            _ = emitAttachBlockedIfNeeded(source: "powered_on_retrieve")
-            let name = retrievedPeripheral.name ?? "unknown"
-            updateLastSeenPeripheral(name: name, rssi: nil)
-            if hasActivePeripheralNameFilter {
-                Task {
-                    await logG7Ble("event=g7_ble_retrieved_connected peripheral=\(name)")
-                }
-                if let active = activePeripheralName, name != active {
-                    Task {
-                        await logG7Ble(
-                            "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved"
-                        )
-                    }
-                } else {
-                    beginConnectToG7Peripheral(
-                        retrievedPeripheral,
-                        name: name,
-                        rssi: 0,
-                        source: "retrieved",
-                        isConnectableAdvertisement: "unknown",
-                        discoverCountForTarget: discoverCountForActiveTarget
-                    )
-                    return
-                }
-            } else {
+        if !hasActivePeripheralNameFilter {
+            if let retrieved = retrievedDataServicePeripherals.first {
+                let name = retrieved.name ?? "unknown"
                 Task {
                     await logG7Ble(
-                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved"
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved_data_service"
+                    )
+                }
+            }
+            if let retrieved = firstDistinctPeripheral(
+                in: retrievedFebcPeripherals,
+                excluding: Set(retrievedDataServicePeripherals.map(\.identifier))
+            ) {
+                let name = retrieved.name ?? "unknown"
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved_febc"
+                    )
+                }
+            }
+        } else {
+            if let retrieved = retrievedDataServicePeripherals.first,
+               !doesPeripheralMatchActiveFilter(retrieved)
+            {
+                let name = retrieved.name ?? "unknown"
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved_data_service"
+                    )
+                }
+            }
+            if let retrieved = firstDistinctPeripheral(
+                in: retrievedFebcPeripherals,
+                excluding: Set(retrievedDataServicePeripherals.map(\.identifier))
+            ), !doesPeripheralMatchActiveFilter(retrieved)
+            {
+                let name = retrieved.name ?? "unknown"
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved_febc"
                     )
                 }
             }
@@ -1230,6 +1414,10 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         emitStageIfChanged("discovering_services")
         let name = peripheral.name ?? "unknown"
         let idShort = peripheralIdShort(peripheral)
+        let cachedServices = peripheral.services
+        let servicesCached = cachedServices != nil
+        let cachedServiceCount = cachedServices?.count ?? 0
+        let cachedHasDataService = cachedServices?.contains(where: { $0.uuid == G7BLEUUID.dataService }) ?? false
         let msDiscover: Int?
         if let t0 = discoverWallClock {
             msDiscover = Int(Date().timeIntervalSince(t0) * 1000.0)
@@ -1238,7 +1426,9 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         }
         let msField = msDiscover.map { " ms_since_discover=\($0)" } ?? ""
         Task {
-            await logG7Ble("event=g7_ble_did_connect peripheral=\(name) peripheral_id_short=\(idShort)")
+            await logG7Ble(
+                "event=g7_ble_did_connect peripheral=\(name) peripheral_id_short=\(idShort) services_cached=\(servicesCached) cached_service_count=\(cachedServiceCount) cached_has_data_service=\(cachedHasDataService)"
+            )
             if canceledConnectTimeout {
                 await logG7Ble("event=g7_ble_connect_timeout_canceled reason=did_connect")
             }
@@ -1335,20 +1525,21 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         let services = peripheral.services ?? []
         let serviceCount = services.count
         let hasDataService = services.contains(where: { $0.uuid == G7BLEUUID.dataService })
+        let serviceUUIDs = boundedServiceUUIDList(services.map(\.uuid))
         let errorFields = errorLogFields(error)
         if error == nil {
             latestSessionServicesDiscovered = true
         }
         Task {
             await logG7Ble(
-                "event=g7_ble_did_discover_services_entered service_count=\(serviceCount) has_data_service=\(hasDataService) \(errorFields)"
+                "event=g7_ble_did_discover_services_entered service_count=\(serviceCount) has_data_service=\(hasDataService) service_uuids=\(serviceUUIDs) \(errorFields)"
             )
         }
         if let error {
             lastBlockedReason = "service_discovery_failed"
             Task {
                 await logG7Ble(
-                    "event=g7_ble_services_discovery_failed service_count=\(serviceCount) has_data_service=\(hasDataService) \(errorFields)"
+                    "event=g7_ble_services_discovery_failed service_count=\(serviceCount) has_data_service=\(hasDataService) service_uuids=\(serviceUUIDs) \(errorFields)"
                 )
                 await logG7Ble("event=g7_ble_error error=\(error.localizedDescription)")
             }
@@ -1359,7 +1550,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
             lastBlockedReason = "no_data_service"
             Task {
                 await logG7Ble(
-                    "event=g7_ble_services_discovery_failed service_count=\(serviceCount) has_data_service=false \(errorFields)"
+                    "event=g7_ble_services_discovery_failed service_count=\(serviceCount) has_data_service=false service_uuids=\(serviceUUIDs) \(errorFields)"
                 )
                 await logG7Ble("event=g7_ble_error error=data_service_missing")
             }
@@ -1369,7 +1560,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         dataService = svc
         Task {
             await logG7Ble(
-                "event=g7_ble_services_discovered service_count=\(serviceCount) has_data_service=true"
+                "event=g7_ble_services_discovered service_count=\(serviceCount) has_data_service=true service_uuids=\(serviceUUIDs)"
             )
         }
         emitStageIfChanged("discovering_characteristics")
@@ -1502,7 +1693,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
             clearBlockedReasonIfResolved("notify_failed_control")
             controlNotificationsReady = true
             latestSessionControlNotifyEnabled = true
-            clearEgvRequestBlockedReason(resolvedReason: "control_not_ready")
+            clearEgvRequestBlockedReason(resolvedReason: "control_notify_not_enabled")
             connectionState = .connected
             Task {
                 await logG7Ble("event=g7_ble_control_notify_enabled")
@@ -1678,7 +1869,13 @@ private extension G7DirectBLEManager {
     }
 
     func emitStatusGateBlocked(authenticated: Bool, bonded: Bool) {
-        lastBlockedReason = "status_gate_not_satisfied (auth=\(authenticated), bond=\(bonded))"
+        if !authenticated {
+            lastBlockedReason = "authenticated_false"
+        } else if !bonded {
+            lastBlockedReason = "bonded_false"
+        } else {
+            lastBlockedReason = "status_gate_not_satisfied (auth=\(authenticated), bond=\(bonded))"
+        }
         _ = emitBlockedStateIfNeeded(
             key: "status_gate:\(authenticated):\(bonded)",
             message:
@@ -1688,8 +1885,11 @@ private extension G7DirectBLEManager {
 
     func emitEgvRequestBlockedIfNeeded(reason: String) {
         lastEgvRequestBlockedReason = reason
-        if !(reason == "status_gate_not_satisfied"
+        if !((reason == "status_gate_not_satisfied"
             && (lastBlockedReason?.hasPrefix("status_gate_not_satisfied") ?? false))
+            || (reason == "authenticated_false" && lastBlockedReason == "authenticated_false")
+            || (reason == "bonded_false" && lastBlockedReason == "bonded_false")
+            || (reason == "control_notify_not_enabled" && lastBlockedReason == "control_notify_not_enabled"))
         {
             lastBlockedReason = reason
         }

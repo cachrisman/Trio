@@ -152,15 +152,6 @@ struct ComplicationDebugView: View {
                 "Current UI source:",
                 value: watchState.isUsingPhoneRelayForCurrentWatchData ? "Phone relay" : "Direct BLE"
             )
-
-            let nextUpdateSeconds: Int
-            if let readingDate = snapshot?.readingDate {
-                let targetDate = readingDate.addingTimeInterval(5 * 60)
-                nextUpdateSeconds = max(0, Int(ceil(targetDate.timeIntervalSinceNow)))
-            } else {
-                nextUpdateSeconds = 0
-            }
-
             debugRow("Next update:", value: "\(nextUpdateSeconds)s")
             debugRow(
                 "Current stage:",
@@ -190,6 +181,12 @@ struct ComplicationDebugView: View {
             )
         }
         .font(.caption)
+    }
+
+    private var nextUpdateSeconds: Int {
+        guard let readingDate = snapshot?.readingDate else { return 0 }
+        let targetDate = readingDate.addingTimeInterval(5 * 60)
+        return max(0, Int(ceil(targetDate.timeIntervalSinceNow)))
     }
 
     private var bleChecklistSection: some View {
