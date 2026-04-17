@@ -1,6 +1,5 @@
 import Combine
 import SwiftUI
-import WatchKit
 
 struct ComplicationDebugView: View {
     private struct BleChecklistGate: Identifiable {
@@ -8,6 +7,13 @@ struct ComplicationDebugView: View {
         let isSatisfied: Bool
 
         var id: String { label }
+    }
+
+    private struct VisibleBleChecklistGate: Identifiable {
+        let gate: BleChecklistGate
+        let status: BleChecklistStatus
+
+        var id: String { gate.id }
     }
 
     private enum BleChecklistStatus {
@@ -20,18 +26,21 @@ struct ComplicationDebugView: View {
     @State private var watchState = WatchState.shared
     @State private var showConfirmation = false
     @State private var confirmationMessage = ""
-    @State private var refreshTrigger = UUID()
+    @State private var confirmationToken = UUID()
     @State private var autoRefreshTick = Date()
+    @State private var isBleChecklistExpanded = false
 
-    @State private var watchLogCount: Int = 0
+    @State private var watchLogCount = 0
     @State private var watchLogBytes: UInt64 = 0
-    @State private var drainCount: Int = 0
+    @State private var drainCount = 0
     @State private var drainBytes: UInt64 = 0
-    @State private var pendingCount: Int = 0
-    @State private var isLoadingLogFiles: Bool = false
+    @State private var pendingCount = 0
+    @State private var isLoadingLogFiles = false
+    @State private var pendingLogStatsReload = false
 
     private let dataStore = TrioComplicationDataStore.shared
-    private let autoRefreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+    private let snapshotRefreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+    private let logStatsRefreshTimer = Timer.publish(every: 10.0, on: .main, in: .common).autoconnect()
 
     private var g7Manager: G7DirectBLEManager {
         watchState.g7DebugManager
@@ -40,31 +49,26 @@ struct ComplicationDebugView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                // SECTION 1: Data Store State
                 sectionHeader("DATA STORE")
                 dataStoreStateView
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 2: Direct BLE / G7 Observer
-                sectionHeader("DIRECT BLE / G7 OBSERVER")
+                sectionHeader("DIRECT G7 BLE")
                 directBleObserverView
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 3: Log Files
                 sectionHeader("LOG FILES")
                 logFilesView
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 4: Reload Status
                 sectionHeader("RELOAD STATUS")
                 reloadStatusView
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 5: Actions
                 sectionHeader("ACTIONS")
                 actionsView
             }
@@ -73,17 +77,17 @@ struct ComplicationDebugView: View {
         .navigationTitle("Debug")
         .onAppear {
             loadSnapshot()
-            loadLogFileStats()
+            loadLogFileStats(force: true)
         }
-        .onReceive(autoRefreshTimer) { date in
+        .onReceive(snapshotRefreshTimer) { date in
             autoRefreshTick = date
             loadSnapshot()
         }
+        .onReceive(logStatsRefreshTimer) { _ in
+            loadLogFileStats()
+        }
         .overlay(confirmationOverlay)
-        .id(refreshTrigger)
     }
-
-    // MARK: - Data Store State Section
 
     private var dataStoreStateView: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -138,101 +142,164 @@ struct ComplicationDebugView: View {
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
-
-            HStack {
-                Text("Path:")
-                Spacer()
-                Text(truncatePath(dataStore.appGroupContainerPath))
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-
-            Divider().padding(.vertical, 2)
-
-            // App Group ID Debug Section
-            sectionHeader("APP GROUP")
-
-            HStack {
-                Text("AppGroupID:")
-                Spacer()
-                if let appGroupID = dataStore.appGroupID {
-                    Text(appGroupID)
-                        .font(.system(size: 9))
-                        .foregroundColor(.green)
-                        .lineLimit(1)
-                } else {
-                    Text("Not Found")
-                        .font(.system(size: 9))
-                        .foregroundColor(.red)
-                }
-            }
-
-            HStack {
-                Text("Container:")
-                Spacer()
-                if dataStore.appGroupContainerURL != nil {
-                    Text(dataStore.appGroupContainerAccessible ? "✓ Accessible" : "✗ Not Accessible")
-                        .font(.system(size: 9))
-                        .foregroundColor(dataStore.appGroupContainerAccessible ? .green : .red)
-                } else {
-                    Text("✗ No URL")
-                        .font(.system(size: 9))
-                        .foregroundColor(.red)
-                }
-            }
-
-            if let containerURL = dataStore.appGroupContainerURL {
-                HStack {
-                    Text("Container Path:")
-                    Spacer()
-                    Text(truncatePath(containerURL.path))
-                        .font(.system(size: 8))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-
-                HStack {
-                    Text("Snapshot File:")
-                    Spacer()
-                    if dataStore.snapshotFileExists {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("✓ Exists")
-                                .font(.system(size: 9))
-                                .foregroundColor(.green)
-                            if let size = dataStore.snapshotFileSize {
-                                Text("\(size) bytes")
-                                    .font(.system(size: 7))
-                                    .foregroundColor(.secondary)
-                            }
-                            if let age = dataStore.snapshotFileAge {
-                                Text("\(Int(age))s old")
-                                    .font(.system(size: 7))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    } else {
-                        Text("✗ Missing")
-                            .font(.system(size: 9))
-                            .foregroundColor(.red)
-                    }
-                }
-
-                if let files = try? FileManager.default.contentsOfDirectory(atPath: containerURL.path), !files.isEmpty {
-                    HStack {
-                        Text("Container Files:")
-                        Spacer()
-                        Text("\(files.count)")
-                            .font(.system(size: 8))
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
         }
         .font(.caption)
     }
 
-    // MARK: - Reload Status Section
+    private var directBleObserverView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            debugRow(
+                "Current UI source:",
+                value: watchState.isUsingPhoneRelayForCurrentWatchData ? "Phone relay" : "Direct BLE"
+            )
+
+            let nextUpdateSeconds: Int
+            if let readingDate = snapshot?.readingDate {
+                let targetDate = readingDate.addingTimeInterval(5 * 60)
+                nextUpdateSeconds = max(0, Int(ceil(targetDate.timeIntervalSinceNow)))
+            } else {
+                nextUpdateSeconds = 0
+            }
+
+            debugRow("Next update:", value: "\(nextUpdateSeconds)s")
+            debugRow(
+                "Current stage:",
+                value: g7Manager.debugCurrentProtocolStageLabel,
+                valueColor: stageColor(g7Manager.debugCurrentProtocolStageLabel)
+            )
+
+            Divider().padding(.vertical, 2)
+
+            bleChecklistSection
+
+            Divider().padding(.vertical, 2)
+
+            sectionHeader("CURRENT BLOCKER")
+            debugMultilineRow(
+                "Last blocked reason:",
+                value: humanizeDebugValue(g7Manager.lastBlockedReason),
+                valueColor: blockerColor(g7Manager.lastBlockedReason)
+            )
+            debugRow(
+                "Last timeout stage:",
+                value: humanizeDebugValue(g7Manager.debugTimeoutStage)
+            )
+            debugMultilineRow(
+                "Last disconnect reason:",
+                value: humanizeDebugValue(g7Manager.lastDisconnectReason)
+            )
+        }
+        .font(.caption)
+    }
+
+    private var bleChecklistSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isBleChecklistExpanded.toggle()
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("LATEST SESSION FUNNEL")
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Image(systemName: isBleChecklistExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    Text(bleChecklistCaption)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            ZStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(visibleBleChecklistGates) { item in
+                        bleChecklistRow(label: item.gate.label, status: item.status)
+                    }
+                }
+                .padding(.vertical, 6)
+
+                bleChecklistOverflowOverlay
+            }
+        }
+    }
+
+    private var bleChecklistOverflowOverlay: some View {
+        VStack(spacing: 0) {
+            if bleChecklistHasHiddenAbove {
+                ZStack(alignment: .top) {
+                    LinearGradient(
+                        colors: [Color.black.opacity(0.28), Color.clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 12)
+
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.75))
+                        .padding(.top, 1)
+                }
+            } else {
+                Color.clear.frame(height: 12)
+            }
+
+            Spacer()
+
+            if bleChecklistHasHiddenBelow {
+                ZStack(alignment: .bottom) {
+                    LinearGradient(
+                        colors: [Color.clear, Color.black.opacity(0.28)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 12)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.75))
+                        .padding(.bottom, 1)
+                }
+            } else {
+                Color.clear.frame(height: 12)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var logFilesView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Drain Files:")
+                Spacer()
+                Text("\(drainCount) files, \(formatBytes(drainBytes))")
+                    .foregroundColor(.secondary)
+            }
+
+            HStack {
+                Text("Watch Logs:")
+                Spacer()
+                Text("\(watchLogCount) files, \(formatBytes(watchLogBytes))")
+                    .foregroundColor(.secondary)
+            }
+
+            HStack {
+                Text("Pending:")
+                Spacer()
+                Text("\(pendingCount)")
+                    .foregroundColor(pendingCount > 0 ? .yellow : .secondary)
+            }
+        }
+        .font(.caption)
+    }
 
     private var reloadStatusView: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -273,168 +340,17 @@ struct ComplicationDebugView: View {
         .font(.caption)
     }
 
-    // MARK: - Direct BLE Observer Section
-
-    private var directBleObserverView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            debugRow("Mode:", value: "Direct BLE Observer")
-            debugRow("Session owner:", value: "Dexcom G7 app")
-            debugRow("Using phone relay:", value: yesNo(watchState.isUsingPhoneRelayForCurrentWatchData))
-
-            Divider().padding(.vertical, 2)
-
-            sectionHeader("LATEST SESSION FUNNEL")
-            Text("First yellow row = first unsatisfied gate")
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
-
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(Array(bleChecklistGates.enumerated()), id: \.element.id) { index, gate in
-                    bleChecklistRow(label: gate.label, status: bleChecklistStatus(for: gate, index: index))
-                }
-            }
-            .padding(.top, 2)
-
-            Divider().padding(.vertical, 2)
-
-            sectionHeader("CURRENT BLOCKER")
-            debugRow(
-                "Current stage:",
-                value: g7Manager.debugCurrentProtocolStageLabel,
-                valueColor: stageColor(g7Manager.debugCurrentProtocolStageLabel)
-            )
-            debugMultilineRow(
-                "Last blocked reason:",
-                value: humanizeDebugValue(g7Manager.lastBlockedReason),
-                valueColor: blockerColor(g7Manager.lastBlockedReason)
-            )
-            debugRow(
-                "Last timeout stage:",
-                value: humanizeDebugValue(g7Manager.debugTimeoutStage)
-            )
-            debugMultilineRow(
-                "Last disconnect reason:",
-                value: humanizeDebugValue(g7Manager.lastDisconnectReason)
-            )
-            debugMultilineRow(
-                "Current session id:",
-                value: g7Manager.currentG7SessionId ?? "--",
-                monospaced: true
-            )
-        }
-        .font(.caption)
-    }
-
-    // MARK: - Log Files Section
-
-    private var logFilesView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Watch Logs:")
-                Spacer()
-                Text("\(watchLogCount) files, \(formatBytes(watchLogBytes))")
-                    .foregroundColor(.secondary)
-            }
-            HStack {
-                Text("Drain Files:")
-                Spacer()
-                Text("\(drainCount) files, \(formatBytes(drainBytes))")
-                    .foregroundColor(.secondary)
-            }
-            HStack {
-                Text("Pending:")
-                Spacer()
-                Text("\(pendingCount)")
-                    .foregroundColor(pendingCount > 0 ? .yellow : .secondary)
-            }
-        }
-        .font(.caption)
-    }
-
-    private func loadLogFileStats() {
-        guard !isLoadingLogFiles else { return }
-        isLoadingLogFiles = true
-        Task {
-            let fileManager = FileManager.default
-            var wlCount = 0
-            var wlBytes: UInt64 = 0
-            var dcCount = 0
-            var dcBytes: UInt64 = 0
-
-            let logDir = fileManager.urls(
-                for: .documentDirectory, in: .userDomainMask
-            ).first?.appendingPathComponent("logs", isDirectory: true)
-
-            if let logDir, let files = try? fileManager.contentsOfDirectory(
-                at: logDir, includingPropertiesForKeys: [.fileSizeKey]
-            ) {
-                for file in files
-                    where file.lastPathComponent.hasPrefix("watch_log_")
-                    && file.lastPathComponent.hasSuffix(".txt")
-                    && file.lastPathComponent != "watch_log_daily.txt" {
-                    wlCount += 1
-                    if let attrs = try? fileManager.attributesOfItem(
-                        atPath: file.path
-                    ), let size = attrs[.size] as? UInt64 {
-                        wlBytes += size
-                    }
-                }
-            }
-
-            if let containerURL = ComplicationLogBuffer
-                .sharedContainerURL() {
-                let drainsDir = containerURL.appendingPathComponent(
-                    "logs", isDirectory: true
-                )
-                if let files = try? fileManager.contentsOfDirectory(
-                    at: drainsDir, includingPropertiesForKeys: [.fileSizeKey]
-                ) {
-                    for file in files
-                        where file.lastPathComponent
-                        .hasPrefix("complication_log.drain.")
-                        && file.lastPathComponent.hasSuffix(".txt") {
-                        dcCount += 1
-                        if let attrs = try? fileManager.attributesOfItem(
-                            atPath: file.path
-                        ), let size = attrs[.size] as? UInt64 {
-                            dcBytes += size
-                        }
-                    }
-                }
-            }
-
-            let pCount = await WatchLogger.shared
-                .getPendingPayloads().count
-
-            await MainActor.run {
-                watchLogCount = wlCount
-                watchLogBytes = wlBytes
-                drainCount = dcCount
-                drainBytes = dcBytes
-                pendingCount = pCount
-                isLoadingLogFiles = false
-            }
-        }
-    }
-
-    private func formatBytes(_ bytes: UInt64) -> String {
-        if bytes < 1024 { return "\(bytes) B" }
-        return "\(bytes / 1024) KB"
-    }
-
-    // MARK: - Actions Section
-
     private var actionsView: some View {
         VStack(spacing: 8) {
             Button {
                 Task {
                     await WatchLogger.shared.log("🔧 Debug: Force Reload tapped")
                 }
-                // scheduleRetry: false — debug view one-shot; no retry needed (Phase 1.3).
                 dataStore.forceReload(scheduleRetry: false)
-                showConfirmation(message: "✅ Reload triggered!")
+                presentConfirmation(message: "Reload triggered")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     loadSnapshot()
+                    loadLogFileStats(force: true)
                 }
             } label: {
                 HStack {
@@ -451,7 +367,7 @@ struct ComplicationDebugView: View {
                     await WatchLogger.shared.log("🔧 Debug: Request Fresh Data tapped")
                 }
                 WatchState.shared.requestWatchStateUpdate()
-                showConfirmation(message: "📡 Requesting...")
+                presentConfirmation(message: "Requesting fresh data")
             } label: {
                 HStack {
                     Image(systemName: "iphone.radiowaves.left.and.right")
@@ -461,22 +377,6 @@ struct ComplicationDebugView: View {
             }
             .buttonStyle(.bordered)
             .tint(.orange)
-
-            Button {
-                loadSnapshot()
-                loadLogFileStats()
-                refreshTrigger = UUID()
-                showConfirmation(message: "🔄 Refreshed")
-            } label: {
-                HStack {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                    Text("Refresh View")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .tint(.gray)
-            .disabled(isLoadingLogFiles)
 
             Button {
                 flushWatchLogs()
@@ -489,21 +389,96 @@ struct ComplicationDebugView: View {
             }
             .buttonStyle(.bordered)
             .tint(.purple)
+            .disabled(isLoadingLogFiles)
+        }
+    }
+
+    private func loadLogFileStats(force: Bool = false) {
+        if isLoadingLogFiles {
+            if force {
+                pendingLogStatsReload = true
+            }
+            return
+        }
+
+        isLoadingLogFiles = true
+        pendingLogStatsReload = false
+
+        Task {
+            let fileManager = FileManager.default
+            var wlCount = 0
+            var wlBytes: UInt64 = 0
+            var dcCount = 0
+            var dcBytes: UInt64 = 0
+
+            let logDir = fileManager.urls(
+                for: .documentDirectory, in: .userDomainMask
+            ).first?.appendingPathComponent("logs", isDirectory: true)
+
+            if let logDir,
+               let files = try? fileManager.contentsOfDirectory(
+                at: logDir,
+                includingPropertiesForKeys: [.fileSizeKey]
+               ) {
+                for file in files
+                where file.lastPathComponent.hasPrefix("watch_log_")
+                    && file.lastPathComponent.hasSuffix(".txt")
+                    && file.lastPathComponent != "watch_log_daily.txt" {
+                    wlCount += 1
+                    if let attrs = try? fileManager.attributesOfItem(atPath: file.path),
+                       let size = attrs[.size] as? UInt64 {
+                        wlBytes += size
+                    }
+                }
+            }
+
+            if let containerURL = ComplicationLogBuffer.sharedContainerURL() {
+                let drainsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
+                if let files = try? fileManager.contentsOfDirectory(
+                    at: drainsDir,
+                    includingPropertiesForKeys: [.fileSizeKey]
+                ) {
+                    for file in files
+                    where file.lastPathComponent.hasPrefix("complication_log.drain.")
+                        && file.lastPathComponent.hasSuffix(".txt") {
+                        dcCount += 1
+                        if let attrs = try? fileManager.attributesOfItem(atPath: file.path),
+                           let size = attrs[.size] as? UInt64 {
+                            dcBytes += size
+                        }
+                    }
+                }
+            }
+
+            let pCount = await WatchLogger.shared.getPendingPayloads().count
+
+            await MainActor.run {
+                watchLogCount = wlCount
+                watchLogBytes = wlBytes
+                drainCount = dcCount
+                drainBytes = dcBytes
+                pendingCount = pCount
+                isLoadingLogFiles = false
+                if pendingLogStatsReload {
+                    loadLogFileStats(force: true)
+                }
+            }
         }
     }
 
     private func flushWatchLogs() {
+        presentConfirmation(message: "Log flush requested")
+
         Task {
             await WatchLogger.shared.log("⌚️ DEBUG manual flush requested", force: true)
             await WatchLogger.shared.flushIfNeeded(force: true)
             await WatchLogger.shared.flushPersistedLogs()
             await MainActor.run {
-                showConfirmation(message: "📤 Logs flushed")
+                loadLogFileStats(force: true)
+                presentConfirmation(message: "Log flush routine completed")
             }
         }
     }
-
-    // MARK: - Confirmation Overlay
 
     private var confirmationOverlay: some View {
         Group {
@@ -523,8 +498,6 @@ struct ComplicationDebugView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: showConfirmation)
     }
-
-    // MARK: - Helpers
 
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
@@ -567,10 +540,14 @@ struct ComplicationDebugView: View {
         snapshot = dataStore.latestSnapshot()
     }
 
-    private func showConfirmation(message: String) {
+    private func presentConfirmation(message: String) {
         confirmationMessage = message
         showConfirmation = true
+        let token = UUID()
+        confirmationToken = token
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            guard confirmationToken == token else { return }
             showConfirmation = false
         }
     }
@@ -606,17 +583,9 @@ struct ComplicationDebugView: View {
         return .green
     }
 
-    private func truncatePath(_ path: String?) -> String {
-        guard let path = path else { return "Unknown" }
-        let components = path.components(separatedBy: "/")
-        if components.count > 3 {
-            return ".../" + components.suffix(2).joined(separator: "/")
-        }
-        return path
-    }
-
-    private func yesNo(_ value: Bool) -> String {
-        value ? "yes" : "no"
+    private func formatBytes(_ bytes: UInt64) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        return "\(bytes / 1024) KB"
     }
 
     private func stageColor(_ stage: String) -> Color {
@@ -666,6 +635,58 @@ struct ComplicationDebugView: View {
 
     private var firstUnsatisfiedChecklistIndex: Int? {
         bleChecklistGates.firstIndex(where: { !$0.isSatisfied })
+    }
+
+    private var visibleBleChecklistIndices: [Int] {
+        let total = bleChecklistGates.count
+        guard !isBleChecklistExpanded, total > 5 else {
+            return Array(bleChecklistGates.indices)
+        }
+
+        if let blockerIndex = firstUnsatisfiedChecklistIndex {
+            var indices = Array(max(0, blockerIndex - 3)...min(total - 1, blockerIndex + 1))
+
+            while indices.count < 5 {
+                if let first = indices.first, first > 0 {
+                    indices.insert(first - 1, at: 0)
+                } else if let last = indices.last, last < total - 1 {
+                    indices.append(last + 1)
+                } else {
+                    break
+                }
+            }
+
+            return indices
+        }
+
+        return Array(max(0, total - 5) ..< total)
+    }
+
+    private var visibleBleChecklistGates: [VisibleBleChecklistGate] {
+        visibleBleChecklistIndices.map { index in
+            let gate = bleChecklistGates[index]
+            return VisibleBleChecklistGate(
+                gate: gate,
+                status: bleChecklistStatus(for: gate, index: index)
+            )
+        }
+    }
+
+    private var bleChecklistHasHiddenAbove: Bool {
+        guard !isBleChecklistExpanded, let first = visibleBleChecklistIndices.first else { return false }
+        return first > 0
+    }
+
+    private var bleChecklistHasHiddenBelow: Bool {
+        guard !isBleChecklistExpanded, let last = visibleBleChecklistIndices.last else { return false }
+        return last < bleChecklistGates.count - 1
+    }
+
+    private var bleChecklistCaption: String {
+        if isBleChecklistExpanded {
+            return "Showing all \(bleChecklistGates.count) steps"
+        }
+        return "\(visibleBleChecklistIndices.count) of \(bleChecklistGates.count) shown"
     }
 
     private func bleChecklistStatus(for gate: BleChecklistGate, index: Int) -> BleChecklistStatus {
@@ -734,8 +755,7 @@ struct ComplicationDebugView: View {
         case "characteristic_discovery_failed":
             return "Characteristic discovery failed"
         case let value where value.hasPrefix("no_required_characteristic"):
-            return value
-                .replacingOccurrences(of: "no_required_characteristic", with: "No required characteristic")
+            return value.replacingOccurrences(of: "no_required_characteristic", with: "No required characteristic")
         case let value where value.hasPrefix("notify_failed"):
             return value
                 .replacingOccurrences(of: "notify_failed", with: "Notify failed")
@@ -743,6 +763,7 @@ struct ComplicationDebugView: View {
         default:
             break
         }
+
         let humanized = rawValue.replacingOccurrences(of: "_", with: " ")
         guard let first = humanized.first else { return "--" }
         return first.uppercased() + humanized.dropFirst()
