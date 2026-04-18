@@ -688,8 +688,10 @@ struct ComplicationDebugView: View {
             BleChecklistGate(label: "0x03 seen", isSatisfied: g7Manager.latestSessionSawAuthChallenge03),
             BleChecklistGate(label: "0x05 authenticated", isSatisfied: g7Manager.latestSessionAuthenticated),
             BleChecklistGate(label: "0x05 bonded", isSatisfied: g7Manager.latestSessionBonded),
+            BleChecklistGate(label: "Communication notify enabled", isSatisfied: g7Manager.latestSessionCommunicationNotifyEnabled),
             BleChecklistGate(label: "Control notify enabled", isSatisfied: g7Manager.latestSessionControlNotifyEnabled),
-            BleChecklistGate(label: "0x4E sent", isSatisfied: g7Manager.latestSessionEgvRequestSent),
+            BleChecklistGate(label: "Passive observation armed", isSatisfied: g7Manager.latestSessionPassiveObservationArmed),
+            BleChecklistGate(label: "Fallback 0x4E sent", isSatisfied: g7Manager.latestSessionFallbackEgvRequestSent),
             BleChecklistGate(label: "0x4E received", isSatisfied: g7Manager.latestSessionEgvResponseReceived),
             BleChecklistGate(label: "Snapshot saved", isSatisfied: g7Manager.latestSessionSnapshotSaved)
         ]

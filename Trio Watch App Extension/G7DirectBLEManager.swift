@@ -12,6 +12,7 @@ private enum G7BLEUUID {
     /// F5 also queries `advertisement` / FEBC in parallel as a diagnostic experiment only, not because FEBC
     /// is already established as a valid connected-service retrieval key on watchOS.
     static let dataService = CBUUID(string: "F8083532-849E-531C-C594-30F1F86A4EA5")
+    static let communication = CBUUID(string: "F8083533-849E-531C-C594-30F1F86A4EA5")
     static let authentication = CBUUID(string: "F8083535-849E-531C-C594-30F1F86A4EA5")
     static let control = CBUUID(string: "F8083534-849E-531C-C594-30F1F86A4EA5")
     static let backfill = CBUUID(string: "F8083536-849E-531C-C594-30F1F86A4EA5")
@@ -42,6 +43,7 @@ final class G7DirectBLEManager: NSObject {
     private var pendingDisconnectReason: String?
     private weak var peripheral: CBPeripheral?
     private var dataService: CBService?
+    private var communicationCharacteristic: CBCharacteristic?
     private var authenticationCharacteristic: CBCharacteristic?
     private var controlCharacteristic: CBCharacteristic?
     private var backfillCharacteristic: CBCharacteristic?
@@ -49,13 +51,16 @@ final class G7DirectBLEManager: NSObject {
 
     /// Wall-clock sensor activation inferred from the first successful EGV (`now - txTime`).
     private var storedActivationWallClock: Date?
-    private var egvRequestSent = false
+    private var passiveObservationArmed = false
+    private var fallbackEgvRequestSent = false
+    private var pendingControlWriteLogKind: String?
     private(set) var authNotificationsReady = false
+    private(set) var communicationNotificationsReady = false
     private(set) var controlNotificationsReady = false
     private(set) var jpakeSkippedInObserver = false
     private(set) var observerAuthenticated = false
     private(set) var observerBonded = false
-    private(set) var statusGateSatisfied = false
+    private(set) var passiveObservationGateSatisfied = false
     private(set) var lastAuthOpcodeSeen: UInt8?
     private(set) var awaitingFirstEgv = false
     private var scanningStarted = false
@@ -89,10 +94,11 @@ final class G7DirectBLEManager: NSObject {
     private var connectTimeoutWorkItem: DispatchWorkItem?
     private var gattSetupTimeoutWorkItem: DispatchWorkItem?
     private var firstEgvTimeoutWorkItem: DispatchWorkItem?
+    private var passiveObservationFallbackWorkItem: DispatchWorkItem?
     /// Dedupe: at most one `g7_ble_timeout` per stage string per session.
     private var timeoutEmittedKeys: Set<String> = []
     private var lastNonEgControlLogAt: Date?
-    /// Dedupe for blocked-state classifiers (`attach_blocked`, `status_gate_blocked`, `egv_request_blocked`).
+    /// Dedupe for blocked-state classifiers (`attach_blocked`, `passive_gate_blocked`, `passive_observation_blocked`).
     private var blockedStateEmittedKeys: Set<String> = []
     private(set) var activeTimeoutStage: String?
     private(set) var lastTimedOutStage: String?
@@ -109,7 +115,7 @@ final class G7DirectBLEManager: NSObject {
     private(set) var lastSnapshotSaveResult: String?
     private(set) var lastSnapshotSaveAt: Date?
     private(set) var lastDisconnectReason: String?
-    private(set) var lastEgvRequestBlockedReason: String?
+    private(set) var lastPassiveObservationBlockedReason: String?
     private(set) var lastBlockedReason: String?
     private(set) var lastAttachSource: String?
     private(set) var lastTerminalOutcome: String?
@@ -145,8 +151,10 @@ final class G7DirectBLEManager: NSObject {
     private(set) var latestSessionSawAuthChallenge03 = false
     private(set) var latestSessionAuthenticated = false
     private(set) var latestSessionBonded = false
+    private(set) var latestSessionCommunicationNotifyEnabled = false
     private(set) var latestSessionControlNotifyEnabled = false
-    private(set) var latestSessionEgvRequestSent = false
+    private(set) var latestSessionPassiveObservationArmed = false
+    private(set) var latestSessionFallbackEgvRequestSent = false
     private(set) var latestSessionEgvResponseReceived = false
     private(set) var latestSessionSnapshotSaved = false
 
@@ -154,6 +162,8 @@ final class G7DirectBLEManager: NSObject {
         static let connectTimeoutSeconds: TimeInterval = 30
         static let gattSetupTimeoutSeconds: TimeInterval = 60
         static let firstEgvTimeoutSeconds: TimeInterval = 90
+        // Leave most of the first-EGV window to the passive path; fallback should be rescue behavior, not default.
+        static let passiveObservationFallbackSeconds: TimeInterval = 60
         static let nonEgControlLogMinInterval: TimeInterval = 1.0
     }
 
@@ -187,7 +197,7 @@ final class G7DirectBLEManager: NSObject {
         case .connecting:
             return "Connecting"
         case .authenticating:
-            if statusGateSatisfied && !controlNotificationsReady {
+            if passiveObservationGateSatisfied && !controlNotificationsReady {
                 return "Awaiting control"
             }
             return "Awaiting auth"
@@ -491,23 +501,27 @@ final class G7DirectBLEManager: NSObject {
     private func resetSessionState() {
         discoverWallClock = nil
         dataService = nil
+        communicationCharacteristic = nil
         authenticationCharacteristic = nil
         controlCharacteristic = nil
         backfillCharacteristic = nil
         jPakeCharacteristic = nil
         storedActivationWallClock = nil
-        egvRequestSent = false
+        passiveObservationArmed = false
+        fallbackEgvRequestSent = false
+        pendingControlWriteLogKind = nil
         authNotificationsReady = false
+        communicationNotificationsReady = false
         controlNotificationsReady = false
         jpakeSkippedInObserver = false
         observerAuthenticated = false
         observerBonded = false
-        statusGateSatisfied = false
+        passiveObservationGateSatisfied = false
         lastAuthOpcodeSeen = nil
         awaitingFirstEgv = false
         activeTimeoutStage = nil
         egvReceivedThisSession = false
-        lastEgvRequestBlockedReason = nil
+        lastPassiveObservationBlockedReason = nil
     }
 
     private func resetDebugSessionContext() {
@@ -532,14 +546,14 @@ final class G7DirectBLEManager: NSObject {
     private func clearBlockedReasonIfResolved(_ resolvedReason: String) {
         guard let lastBlockedReason else { return }
         switch resolvedReason {
-        case "status_gate_not_satisfied":
-            guard lastBlockedReason.hasPrefix("status_gate_not_satisfied") else { return }
+        case "passive_gate_not_satisfied":
+            guard lastBlockedReason.hasPrefix("passive_gate_not_satisfied") else { return }
         case "authenticated_false":
             guard lastBlockedReason == "authenticated_false" else { return }
-        case "bonded_false":
-            guard lastBlockedReason == "bonded_false" else { return }
         case "notify_failed_auth":
             guard lastBlockedReason.hasPrefix("notify_failed (char=auth") else { return }
+        case "notify_failed_communication":
+            guard lastBlockedReason.hasPrefix("notify_failed (char=communication") else { return }
         case "notify_failed_control":
             guard lastBlockedReason.hasPrefix("notify_failed (char=control") else { return }
         case "control_notify_not_enabled":
@@ -551,18 +565,18 @@ final class G7DirectBLEManager: NSObject {
         clearBlockerDebugState()
     }
 
-    private func clearEgvRequestBlockedReason(resolvedReason: String? = nil) {
-        clearEgvRequestBlockedReason(resolvedReasons: resolvedReason.map { [$0] } ?? [])
+    private func clearPassiveObservationBlockedReason(resolvedReason: String? = nil) {
+        clearPassiveObservationBlockedReason(resolvedReasons: resolvedReason.map { [$0] } ?? [])
     }
 
-    private func clearEgvRequestBlockedReason(resolvedReasons: [String]) {
+    private func clearPassiveObservationBlockedReason(resolvedReasons: [String]) {
         guard !resolvedReasons.isEmpty else {
-            lastEgvRequestBlockedReason = nil
+            lastPassiveObservationBlockedReason = nil
             return
         }
         for resolvedReason in resolvedReasons {
-            if lastEgvRequestBlockedReason == resolvedReason {
-                lastEgvRequestBlockedReason = nil
+            if lastPassiveObservationBlockedReason == resolvedReason {
+                lastPassiveObservationBlockedReason = nil
             }
             clearBlockedReasonIfResolved(resolvedReason)
         }
@@ -582,8 +596,10 @@ final class G7DirectBLEManager: NSObject {
         latestSessionSawAuthChallenge03 = false
         latestSessionAuthenticated = false
         latestSessionBonded = false
+        latestSessionCommunicationNotifyEnabled = false
         latestSessionControlNotifyEnabled = false
-        latestSessionEgvRequestSent = false
+        latestSessionPassiveObservationArmed = false
+        latestSessionFallbackEgvRequestSent = false
         latestSessionEgvResponseReceived = false
         latestSessionSnapshotSaved = false
         lastBlockedReason = nil
@@ -631,6 +647,17 @@ final class G7DirectBLEManager: NSObject {
         if egvReceived, !isFailure { return "success" }
         if isFailure { return "failure" }
         return "incomplete"
+    }
+
+    private func shouldReconnectAfterTeardown(reason: String) -> Bool {
+        switch reason {
+        // Only explicit control-flow teardown reasons suppress retry. Transport/protocol failures, disconnects, and
+        // OS error invalidations should continue through the normal reconnect path.
+        case "stop_requested", "startScanning_rescan", "foreground_reentry_renewal":
+            return false
+        default:
+            return true
+        }
     }
 
     /// - Parameter isFailure: When `true`, sets `connectionState` to `.error` (protocol / BLE failure). When `false`, uses `.disconnected` (clean stop or non-error teardown).
@@ -687,10 +714,10 @@ final class G7DirectBLEManager: NSObject {
                 "event=g7_ble_session_outcome outcome=\(outcome) final_stage=\(stageField) duration_ms=\(durationMs) g7_session=\(outcomeSid ?? "none")"
             )
         }
-        // Reconnect only after non-failure teardowns (e.g. clean peripheral disconnect). Protocol / discovery failures (`isFailure == true`) skip the 7s rescan to avoid a deterministic connect → fail → loop when auth or GATT setup is broken.
-        if scanningStarted, !isFailure {
+        // Keep retrying after disconnects and failed connects unless teardown was an explicit stop.
+        if scanningStarted, shouldReconnectAfterTeardown(reason: reason) {
             Task {
-                await logG7Ble("event=g7_ble_reconnect_scheduled delay_s=7")
+                await logG7Ble("event=g7_ble_reconnect_scheduled delay_s=7 teardown_reason=\(reason)")
             }
             reconnectScheduled = true
             let work = DispatchWorkItem { [weak self] in
@@ -737,6 +764,8 @@ final class G7DirectBLEManager: NSObject {
         gattSetupTimeoutWorkItem = nil
         firstEgvTimeoutWorkItem?.cancel()
         firstEgvTimeoutWorkItem = nil
+        passiveObservationFallbackWorkItem?.cancel()
+        passiveObservationFallbackWorkItem = nil
         activeTimeoutStage = nil
     }
 
@@ -835,6 +864,31 @@ final class G7DirectBLEManager: NSObject {
             deadline: .now() + G7BLEInstrumentation.firstEgvTimeoutSeconds,
             execute: work
         )
+        Task {
+            await logG7Ble(
+                "event=g7_ble_first_egv_timeout_armed timeout_s=\(Int(G7BLEInstrumentation.firstEgvTimeoutSeconds))"
+            )
+        }
+    }
+
+    private func schedulePassiveObservationFallback() {
+        passiveObservationFallbackWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                self.triggerFallbackEgvRequestIfNeeded(trigger: "passive_timeout")
+            }
+        }
+        passiveObservationFallbackWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + G7BLEInstrumentation.passiveObservationFallbackSeconds,
+            execute: work
+        )
+        Task {
+            await logG7Ble(
+                "event=g7_ble_passive_fallback_armed delay_s=\(Int(G7BLEInstrumentation.passiveObservationFallbackSeconds)) first_egv_timeout_s=\(Int(G7BLEInstrumentation.firstEgvTimeoutSeconds))"
+            )
+        }
     }
 
     @MainActor
@@ -887,6 +941,8 @@ final class G7DirectBLEManager: NSObject {
         latestSessionEgvResponseReceived = true
         firstEgvTimeoutWorkItem?.cancel()
         firstEgvTimeoutWorkItem = nil
+        passiveObservationFallbackWorkItem?.cancel()
+        passiveObservationFallbackWorkItem = nil
         awaitingFirstEgv = false
         if activeTimeoutStage == "awaiting_first_egv" {
             activeTimeoutStage = nil
@@ -948,12 +1004,14 @@ final class G7DirectBLEManager: NSObject {
 
         let glucoseField = glucose.map { String($0) } ?? "nil"
         let trendField = trendRate.map { String($0) } ?? "nil"
+        let receivePath = fallbackEgvRequestSent ? "after_fallback_request" : "passive_before_fallback"
         Task {
             await logG7Ble(
                 "event=g7_ble_egv_received glucose=\(glucoseField)"
                     + " trend=\(trendField)"
                     + " reading_epoch=\(readingEpoch)"
                     + " data_age_seconds=\(dataAgeSeconds)"
+                    + " path=\(receivePath)"
             )
         }
 
@@ -1046,6 +1104,8 @@ final class G7DirectBLEManager: NSObject {
 
     private func characteristicLogName(for uuid: CBUUID) -> String {
         switch uuid {
+        case G7BLEUUID.communication:
+            return "communication"
         case G7BLEUUID.authentication:
             return "auth"
         case G7BLEUUID.control:
@@ -1367,7 +1427,7 @@ final class G7DirectBLEManager: NSObject {
         setBlockerDebugState(category: "gatt", source: lastAttachSource, reason: lastBlockedReason ?? reason)
     }
 
-    // MARK: - Auth / subscribe / EGV request
+    // MARK: - Auth / subscribe / passive observation
 
     private func handleAuthenticationNotification(_ data: Data) {
         guard !data.isEmpty else { return }
@@ -1397,28 +1457,30 @@ final class G7DirectBLEManager: NSObject {
                     "event=g7_ble_status_reply authenticated=\(authenticated) bonded=\(bonded)"
                 )
             }
-            guard authenticated, bonded else {
-                emitStatusGateBlocked(authenticated: authenticated, bonded: bonded)
-                if !authenticated {
-                    emitEgvRequestBlockedIfNeeded(reason: "authenticated_false")
-                } else {
-                    emitEgvRequestBlockedIfNeeded(reason: "bonded_false")
-                }
+            guard authenticated else {
+                emitPassiveGateBlocked(authenticated: authenticated, bonded: bonded)
+                emitPassiveObservationBlockedIfNeeded(reason: "authenticated_false")
                 return
             }
-            clearEgvRequestBlockedReason(
-                resolvedReasons: ["status_gate_not_satisfied", "authenticated_false", "bonded_false"]
+            clearPassiveObservationBlockedReason(
+                resolvedReasons: ["passive_gate_not_satisfied", "authenticated_false", "control_notify_not_enabled"]
             )
             guard let activePeripheral = self.peripheral else { return }
-            statusGateSatisfied = true
+            passiveObservationGateSatisfied = true
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_passive_gate_satisfied gate=authenticated_only bonded=\(bonded)"
+                )
+            }
+            requestCommunicationObservationIfNeeded(peripheral: activePeripheral)
             guard !controlNotificationsReady else {
                 cancelGattSetupTimeoutWhenObserverReady()
-                trySendEGVRequestIfReady()
+                armPassiveObservationIfReady()
                 return
             }
             if let control = controlCharacteristic {
                 activePeripheral.setNotifyValue(true, for: control)
-                emitEgvRequestBlockedIfNeeded(reason: "control_notify_not_enabled")
+                emitPassiveObservationBlockedIfNeeded(reason: "control_notify_not_enabled")
             }
             cancelGattSetupTimeoutWhenObserverReady()
         default:
@@ -1426,39 +1488,65 @@ final class G7DirectBLEManager: NSObject {
         }
     }
 
-    private func trySendEGVRequestIfReady() {
-        guard let cbPeripheral = peripheral, let control = controlCharacteristic else { return }
-        guard statusGateSatisfied else {
+    private func requestCommunicationObservationIfNeeded(peripheral: CBPeripheral) {
+        guard let communication = communicationCharacteristic else { return }
+        if !communicationNotificationsReady && !communication.isNotifying {
+            peripheral.setNotifyValue(true, for: communication)
+        }
+        Task {
+            await logG7Ble(
+                "event=g7_ble_communication_observation_requested action=notify_only blocking=false"
+            )
+        }
+    }
+
+    private func armPassiveObservationIfReady() {
+        guard passiveObservationGateSatisfied else {
             if !observerAuthenticated {
-                emitEgvRequestBlockedIfNeeded(reason: "authenticated_false")
-            } else if !observerBonded {
-                emitEgvRequestBlockedIfNeeded(reason: "bonded_false")
+                emitPassiveObservationBlockedIfNeeded(reason: "authenticated_false")
             } else {
-                emitEgvRequestBlockedIfNeeded(reason: "status_gate_not_satisfied")
+                emitPassiveObservationBlockedIfNeeded(reason: "passive_gate_not_satisfied")
             }
             return
         }
-        // EGV is requested on control once control notifications are ready (DiaBLE sequence); backfill is separate.
         guard controlNotificationsReady else {
-            emitEgvRequestBlockedIfNeeded(reason: "control_notify_not_enabled")
+            emitPassiveObservationBlockedIfNeeded(reason: "control_notify_not_enabled")
             return
         }
-        guard !egvRequestSent else { return }
-        clearEgvRequestBlockedReason(
+        guard !passiveObservationArmed else { return }
+        clearPassiveObservationBlockedReason(
             resolvedReasons: [
-                "status_gate_not_satisfied",
+                "passive_gate_not_satisfied",
                 "authenticated_false",
-                "bonded_false",
                 "control_notify_not_enabled"
             ]
         )
-        egvRequestSent = true
-        latestSessionEgvRequestSent = true
+        passiveObservationArmed = true
+        latestSessionPassiveObservationArmed = true
         awaitingFirstEgv = true
         emitStageIfChanged("awaiting_egv")
+        // `firstEgvTimeout` is the total wait budget; the fallback timer only uses the tail end of that window.
         scheduleFirstEgvTimeout()
+        schedulePassiveObservationFallback()
         Task {
-            await logG7Ble("event=g7_ble_egv_request_sent opcode=0x4E")
+            await logG7Ble(
+                "event=g7_ble_passive_observation_armed gate=authenticated_only fallback_delay_s=\(Int(G7BLEInstrumentation.passiveObservationFallbackSeconds)) first_egv_timeout_s=\(Int(G7BLEInstrumentation.firstEgvTimeoutSeconds))"
+            )
+        }
+    }
+
+    @MainActor
+    private func triggerFallbackEgvRequestIfNeeded(trigger: String) {
+        guard let cbPeripheral = peripheral, let control = controlCharacteristic else { return }
+        guard passiveObservationArmed, awaitingFirstEgv, controlNotificationsReady else { return }
+        guard !fallbackEgvRequestSent else { return }
+        fallbackEgvRequestSent = true
+        latestSessionFallbackEgvRequestSent = true
+        pendingControlWriteLogKind = "egv_fallback_request"
+        Task {
+            await logG7Ble(
+                "event=g7_ble_egv_fallback_sent opcode=0x4E trigger=\(trigger) timeout_s=\(Int(G7BLEInstrumentation.passiveObservationFallbackSeconds))"
+            )
         }
         cbPeripheral.writeValue(Data([0x4E]), for: control, type: .withResponse)
     }
@@ -1836,7 +1924,13 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         }
         emitStageIfChanged("discovering_characteristics")
         peripheral.discoverCharacteristics(
-            [G7BLEUUID.authentication, G7BLEUUID.control, G7BLEUUID.backfill, G7BLEUUID.jPake],
+            [
+                G7BLEUUID.communication,
+                G7BLEUUID.authentication,
+                G7BLEUUID.control,
+                G7BLEUUID.backfill,
+                G7BLEUUID.jPake
+            ],
             for: svc
         )
     }
@@ -1844,6 +1938,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         let characteristics = service.characteristics ?? []
         let characteristicCount = characteristics.count
+        let communicationPresent = characteristics.contains(where: { $0.uuid == G7BLEUUID.communication })
         let authPresent = characteristics.contains(where: { $0.uuid == G7BLEUUID.authentication })
         let controlPresent = characteristics.contains(where: { $0.uuid == G7BLEUUID.control })
         let backfillPresent = characteristics.contains(where: { $0.uuid == G7BLEUUID.backfill })
@@ -1858,7 +1953,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         }
         Task {
             await logG7Ble(
-                "event=g7_ble_did_discover_characteristics_entered service_uuid=\(service.uuid.uuidString) characteristic_count=\(characteristicCount) auth_present=\(authPresent) control_present=\(controlPresent) backfill_present=\(backfillPresent) jpake_present=\(jpakePresent) missing=\(missingRequired) \(errorFields)"
+                "event=g7_ble_did_discover_characteristics_entered service_uuid=\(service.uuid.uuidString) characteristic_count=\(characteristicCount) communication_present=\(communicationPresent) auth_present=\(authPresent) control_present=\(controlPresent) backfill_present=\(backfillPresent) jpake_present=\(jpakePresent) missing=\(missingRequired) \(errorFields)"
             )
         }
         if let error {
@@ -1866,7 +1961,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
             setBlockerDebugState(category: "gatt", source: lastAttachSource, reason: "characteristic_discovery_failed")
             Task {
                 await logG7Ble(
-                    "event=g7_ble_characteristics_discovery_failed service_uuid=\(service.uuid.uuidString) characteristic_count=\(characteristicCount) auth_present=\(authPresent) control_present=\(controlPresent) backfill_present=\(backfillPresent) jpake_present=\(jpakePresent) missing=\(missingRequired) \(errorFields)"
+                    "event=g7_ble_characteristics_discovery_failed service_uuid=\(service.uuid.uuidString) characteristic_count=\(characteristicCount) communication_present=\(communicationPresent) auth_present=\(authPresent) control_present=\(controlPresent) backfill_present=\(backfillPresent) jpake_present=\(jpakePresent) missing=\(missingRequired) \(errorFields)"
                 )
                 await logG7Ble("event=g7_ble_error error=\(error.localizedDescription)")
             }
@@ -1875,6 +1970,8 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         }
         for characteristic in characteristics {
             switch characteristic.uuid {
+            case G7BLEUUID.communication:
+                communicationCharacteristic = characteristic
             case G7BLEUUID.authentication:
                 authenticationCharacteristic = characteristic
             case G7BLEUUID.control:
@@ -1899,7 +1996,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
             )
             Task {
                 await logG7Ble(
-                    "event=g7_ble_characteristics_incomplete service_uuid=\(service.uuid.uuidString) characteristic_count=\(characteristicCount) auth_present=\(authPresent) control_present=\(controlPresent) backfill_present=\(backfillPresent) jpake_present=\(jpakePresent) missing=\(missingRequired)"
+                    "event=g7_ble_characteristics_incomplete service_uuid=\(service.uuid.uuidString) characteristic_count=\(characteristicCount) communication_present=\(communicationPresent) auth_present=\(authPresent) control_present=\(controlPresent) backfill_present=\(backfillPresent) jpake_present=\(jpakePresent) missing=\(missingRequired)"
                 )
                 await logG7Ble("event=g7_ble_error error=characteristics_incomplete")
             }
@@ -1910,7 +2007,7 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         latestSessionRequiredCharacteristicsPresent = true
         Task {
             await logG7Ble(
-                "event=g7_ble_characteristics_discovered service_uuid=\(service.uuid.uuidString) characteristic_count=\(characteristicCount) auth_present=\(authPresent) control_present=\(controlPresent) backfill_present=\(backfillPresent) jpake_present=\(jpakePresent) missing=none"
+                "event=g7_ble_characteristics_discovered service_uuid=\(service.uuid.uuidString) characteristic_count=\(characteristicCount) communication_present=\(communicationPresent) auth_present=\(authPresent) control_present=\(controlPresent) backfill_present=\(backfillPresent) jpake_present=\(jpakePresent) missing=none"
             )
         }
         jpakeSkippedInObserver = true
@@ -1935,6 +2032,15 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
             )
         }
         if let error {
+            if characteristic.uuid == G7BLEUUID.communication {
+                // Communication is optional observer context, not part of the passive-ready gate.
+                Task {
+                    await logG7Ble(
+                        "event=g7_ble_communication_notify_state notifying=\(characteristic.isNotifying) success=false blocking=false \(errorFields)"
+                    )
+                }
+                return
+            }
             setNotifyBlockedReasonIfNeeded(charName: charName, reason: "error", criticalOnly: false)
             Task {
                 await logG7Ble(
@@ -1947,16 +2053,32 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         }
 
         Task {
-            await logG7Ble(
-                "event=g7_ble_notify_state char=\(charName) notifying=\(characteristic.isNotifying) success=\(characteristic.isNotifying) \(errorFields)"
-            )
+            if characteristic.uuid == G7BLEUUID.communication {
+                await logG7Ble(
+                    "event=g7_ble_communication_notify_state notifying=\(characteristic.isNotifying) success=\(characteristic.isNotifying) blocking=false \(errorFields)"
+                )
+            } else {
+                await logG7Ble(
+                    "event=g7_ble_notify_state char=\(charName) notifying=\(characteristic.isNotifying) success=\(characteristic.isNotifying) \(errorFields)"
+                )
+            }
         }
         guard characteristic.isNotifying else {
+            if characteristic.uuid == G7BLEUUID.communication {
+                return
+            }
             setNotifyBlockedReasonIfNeeded(charName: charName, reason: "notifying_false")
             return
         }
 
         switch characteristic.uuid {
+        case G7BLEUUID.communication:
+            clearBlockedReasonIfResolved("notify_failed_communication")
+            communicationNotificationsReady = true
+            latestSessionCommunicationNotifyEnabled = true
+            Task {
+                await logG7Ble("event=g7_ble_communication_notify_enabled blocking=false")
+            }
         case G7BLEUUID.authentication:
             clearBlockedReasonIfResolved("notify_failed_auth")
             authNotificationsReady = true
@@ -1970,13 +2092,13 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
             clearBlockedReasonIfResolved("notify_failed_control")
             controlNotificationsReady = true
             latestSessionControlNotifyEnabled = true
-            clearEgvRequestBlockedReason(resolvedReason: "control_notify_not_enabled")
+            clearPassiveObservationBlockedReason(resolvedReason: "control_notify_not_enabled")
             connectionState = .connected
             Task {
                 await logG7Ble("event=g7_ble_control_notify_enabled")
             }
             cancelGattSetupTimeoutWhenObserverReady()
-            trySendEGVRequestIfReady()
+            armPassiveObservationIfReady()
         case G7BLEUUID.backfill:
             break
         case G7BLEUUID.jPake:
@@ -1988,10 +2110,10 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         cancelGattSetupTimeoutWhenObserverReady()
     }
 
-    /// Clears `awaiting_gatt_setup` timeout once the observer path has completed its startup-ready gate:
-    /// auth notifications enabled, `0x05 authenticated=true bonded=true`, and control notifications enabled.
+    /// Clears `awaiting_gatt_setup` once the passive observer path is startup-ready:
+    /// auth notifications enabled, `0x05 authenticated=true`, and control notifications enabled.
     private func cancelGattSetupTimeoutWhenObserverReady() {
-        guard authNotificationsReady, statusGateSatisfied, controlNotificationsReady else { return }
+        guard authNotificationsReady, passiveObservationGateSatisfied, controlNotificationsReady else { return }
         _ = cancelGattSetupTimeoutIfNeeded(reason: "observer_ready")
     }
 
@@ -2007,6 +2129,12 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
         switch characteristic.uuid {
         case G7BLEUUID.authentication:
             handleAuthenticationNotification(data)
+        case G7BLEUUID.communication:
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_communication_value_received len=\(data.count)"
+                )
+            }
         case G7BLEUUID.control:
             handleEGVPayload(data)
         case G7BLEUUID.backfill:
@@ -2019,17 +2147,23 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
 
     func peripheral(_: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error {
+            let writeKind = pendingControlWriteLogKind ?? "control_write"
+            if characteristic.uuid == G7BLEUUID.control {
+                pendingControlWriteLogKind = nil
+            }
             Task {
                 await logG7Ble(
-                    "event=g7_ble_write_error_nonfatal characteristic=\(characteristic.uuid.uuidString) error=\(error.localizedDescription)"
+                    "event=g7_ble_write_error_nonfatal char=\(characteristicLogName(for: characteristic.uuid)) write=\(writeKind) error=\(error.localizedDescription)"
                 )
             }
             return
         }
         switch characteristic.uuid {
         case G7BLEUUID.control:
+            let writeKind = pendingControlWriteLogKind ?? "control_write"
+            pendingControlWriteLogKind = nil
             Task {
-                await logG7Ble("event=g7_ble_write_ok write=egv_request")
+                await logG7Ble("event=g7_ble_write_ok char=control write=\(writeKind)")
             }
         default:
             break
@@ -2049,8 +2183,7 @@ extension G7DirectBLEManager: WKExtendedRuntimeSessionDelegate {
     func extendedRuntimeSessionWillExpire(_ session: WKExtendedRuntimeSession) {
         Task { @MainActor in
             guard let ext = extendedSession, ext === session else { return }
-            await logG7Ble("event=g7_ble_ext_session_expiring")
-            teardownSession(reason: "ext_session_expired", isFailure: false)
+            await logG7Ble("event=g7_ble_ext_session_expiring action=await_invalidation")
         }
     }
 
@@ -2141,36 +2274,37 @@ private extension G7DirectBLEManager {
         )
     }
 
-    func emitStatusGateBlocked(authenticated: Bool, bonded: Bool) {
+    func emitPassiveGateBlocked(authenticated: Bool, bonded: Bool) {
         if !authenticated {
             lastBlockedReason = "authenticated_false"
-        } else if !bonded {
-            lastBlockedReason = "bonded_false"
         } else {
-            lastBlockedReason = "status_gate_not_satisfied (auth=\(authenticated), bond=\(bonded))"
+            lastBlockedReason = "passive_gate_not_satisfied (auth=\(authenticated), bond=\(bonded))"
         }
-        setBlockerDebugState(category: "auth", source: lastAttachSource, reason: lastBlockedReason ?? "status_gate_not_satisfied")
+        setBlockerDebugState(
+            category: "auth",
+            source: lastAttachSource,
+            reason: lastBlockedReason ?? "passive_gate_not_satisfied"
+        )
         _ = emitBlockedStateIfNeeded(
-            key: "status_gate:\(authenticated):\(bonded)",
+            key: "passive_gate:\(authenticated):\(bonded)",
             message:
-            "event=g7_ble_status_gate_blocked authenticated=\(authenticated) bonded=\(bonded)"
+            "event=g7_ble_passive_gate_blocked authenticated=\(authenticated) bonded=\(bonded) gate=authenticated_only"
         )
     }
 
-    func emitEgvRequestBlockedIfNeeded(reason: String) {
-        lastEgvRequestBlockedReason = reason
-        if !((reason == "status_gate_not_satisfied"
-            && (lastBlockedReason?.hasPrefix("status_gate_not_satisfied") ?? false))
+    func emitPassiveObservationBlockedIfNeeded(reason: String) {
+        lastPassiveObservationBlockedReason = reason
+        if !((reason == "passive_gate_not_satisfied"
+            && (lastBlockedReason?.hasPrefix("passive_gate_not_satisfied") ?? false))
             || (reason == "authenticated_false" && lastBlockedReason == "authenticated_false")
-            || (reason == "bonded_false" && lastBlockedReason == "bonded_false")
             || (reason == "control_notify_not_enabled" && lastBlockedReason == "control_notify_not_enabled"))
         {
             lastBlockedReason = reason
         }
-        setBlockerDebugState(category: "egv", source: lastAttachSource, reason: reason)
+        setBlockerDebugState(category: "observation", source: lastAttachSource, reason: reason)
         _ = emitBlockedStateIfNeeded(
-            key: "egv_request:\(reason)",
-            message: "event=g7_ble_egv_request_blocked reason=\(reason)"
+            key: "passive_observation:\(reason)",
+            message: "event=g7_ble_passive_observation_blocked reason=\(reason)"
         )
     }
 
