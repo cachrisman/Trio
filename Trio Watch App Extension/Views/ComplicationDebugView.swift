@@ -129,6 +129,13 @@ struct ComplicationDebugView: View {
                     Text(formatTime(s.date))
                 }
 
+                HStack {
+                    Text("Next expected reading:")
+                    Spacer()
+                    Text("\(nextUpdateSeconds)s")
+                        .foregroundColor(.secondary)
+                }
+
                 if let state = s.state, !state.isEmpty {
                     HStack {
                         Text("State:")
@@ -148,37 +155,80 @@ struct ComplicationDebugView: View {
 
     private var directBleObserverView: some View {
         VStack(alignment: .leading, spacing: 6) {
+            sectionHeader("LIFECYCLE")
             debugRow(
-                "Current UI source:",
-                value: watchState.isUsingPhoneRelayForCurrentWatchData ? "Phone relay" : "Direct BLE"
-            )
-            debugRow("Next update:", value: "\(nextUpdateSeconds)s")
-            debugRow(
-                "Current stage:",
+                "Current lifecycle:",
                 value: g7Manager.debugCurrentProtocolStageLabel,
                 valueColor: stageColor(g7Manager.debugCurrentProtocolStageLabel)
+            )
+            debugRow("Terminal outcome:", value: humanizeDebugValue(g7Manager.lastTerminalOutcome))
+            debugMultilineRow("Terminal reason:", value: humanizeDebugValue(g7Manager.lastTerminalReason))
+            debugRow("Terminal stage:", value: humanizeDebugValue(g7Manager.lastTerminalStage))
+            debugRow("Timeout stage:", value: humanizeDebugValue(g7Manager.debugTimeoutStage))
+            debugMultilineRow("Disconnect reason:", value: humanizeDebugValue(g7Manager.lastDisconnectReason))
+            debugRow("Last stage change:", value: formatOptionalTime(g7Manager.lastStageTransitionAt))
+            debugRow("Last terminal at:", value: formatOptionalTime(g7Manager.lastTerminalAt))
+
+            Divider().padding(.vertical, 2)
+
+            sectionHeader("ATTACH CONTEXT")
+            debugRow(
+                "Rendered data source:",
+                value: watchState.isUsingPhoneRelayForCurrentWatchData ? "Phone relay" : "Direct BLE"
+            )
+            debugRow("Attach source:", value: humanizeDebugValue(g7Manager.lastAttachSource))
+            debugRow("Active filter:", value: humanizeDebugValue(g7Manager.activePeripheralName))
+            debugRow("Filter armed:", value: boolLabel(g7Manager.hasActivePeripheralNameFilter))
+            debugRow("Last seen peripheral:", value: humanizeDebugValue(g7Manager.lastSeenPeripheralName))
+            debugRow("RSSI:", value: intLabel(g7Manager.lastSeenPeripheralRSSI))
+            debugRow("Seen at:", value: formatOptionalTime(g7Manager.lastSeenPeripheralAt))
+            debugRow("Persisted ID:", value: humanizeDebugValue(g7Manager.lastPersistedPeripheralIdentifierShort))
+            debugRow("Peripheral state:", value: peripheralStateLabel(g7Manager.lastPreConnectPeripheralState))
+            debugRow("Central state:", value: centralStateLabel(g7Manager.lastPreConnectCentralState))
+            debugRow("Connectable:", value: connectableLabel(g7Manager.lastPreConnectIsConnectable))
+            debugRow("Preserved session:", value: boolLabel(g7Manager.lastPreConnectPreservedSession))
+            debugRow(
+                "Allocated in startScanning:",
+                value: boolLabel(g7Manager.lastPreConnectAllocatedCentralInStartScanning)
             )
 
             Divider().padding(.vertical, 2)
 
+            sectionHeader("RETRIEVAL")
+            debugRow("Identifier count:", value: intLabel(g7Manager.lastRetrievedIdentifierCount))
+            debugRow("Data-service count:", value: intLabel(g7Manager.lastRetrievedDataServiceCount))
+            debugRow("FEBC count:", value: intLabel(g7Manager.lastRetrievedFebcCount))
+            debugMultilineRow(
+                "Identifier skip reason:",
+                value: humanizeDebugValue(g7Manager.lastIdentifierRetrievalSkipReason)
+            )
+            debugRow(
+                "Identifier skip peripheral:",
+                value: humanizeDebugValue(g7Manager.lastIdentifierRetrievalPeripheralName)
+            )
+
+            Divider().padding(.vertical, 2)
+
+            sectionHeader("SESSION FUNNEL")
             bleChecklistSection
 
             Divider().padding(.vertical, 2)
 
             sectionHeader("CURRENT BLOCKER")
+            debugRow("Category:", value: humanizeDebugValue(g7Manager.lastBlockerCategory))
+            debugRow("Source:", value: humanizeDebugValue(g7Manager.lastBlockerSource))
             debugMultilineRow(
-                "Last blocked reason:",
-                value: humanizeDebugValue(g7Manager.lastBlockedReason),
-                valueColor: blockerColor(g7Manager.lastBlockedReason)
-            )
-            debugRow(
-                "Last timeout stage:",
-                value: humanizeDebugValue(g7Manager.debugTimeoutStage)
+                "Reason:",
+                value: humanizeDebugValue(g7Manager.lastBlockerReasonRaw),
+                valueColor: blockerColor(g7Manager.lastBlockerReasonRaw)
             )
             debugMultilineRow(
-                "Last disconnect reason:",
-                value: humanizeDebugValue(g7Manager.lastDisconnectReason)
+                "Raw reason:",
+                value: g7Manager.lastBlockerReasonRaw ?? "--",
+                valueColor: blockerColor(g7Manager.lastBlockerReasonRaw),
+                monospaced: true
             )
+            debugRow("Last blocker at:", value: formatOptionalTime(g7Manager.lastBlockerAt))
         }
         .font(.caption)
     }
@@ -557,6 +607,11 @@ struct ComplicationDebugView: View {
         return formatter.string(from: date)
     }
 
+    private func formatOptionalTime(_ date: Date?) -> String {
+        guard let date else { return "--" }
+        return formatTime(date)
+    }
+
     private func formatAge(_ date: Date) -> String {
         if date == .distantPast { return "--" }
         let seconds = Int(Date().timeIntervalSince(date))
@@ -586,6 +641,16 @@ struct ComplicationDebugView: View {
     }
 
     private func stageColor(_ stage: String) -> Color {
+        let lowered = stage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lowered.hasPrefix("timed out") || lowered.hasPrefix("failed") {
+            return .red
+        }
+        if lowered.hasPrefix("disconnected") {
+            return .orange
+        }
+        if lowered == "waiting for next reading" || lowered.hasPrefix("completed") {
+            return .green
+        }
         switch normalizedStageKey(stage) {
         case "connected":
             return .green
@@ -612,7 +677,7 @@ struct ComplicationDebugView: View {
         [
             BleChecklistGate(label: "Filter armed", isSatisfied: g7Manager.latestSessionFilterArmed),
             BleChecklistGate(label: "Target matched", isSatisfied: g7Manager.latestSessionTargetMatched),
-            BleChecklistGate(label: "Pre-connect sane", isSatisfied: g7Manager.latestSessionPreConnectSane),
+            BleChecklistGate(label: "Pre-connect context", isSatisfied: g7Manager.latestSessionPreConnectSane),
             BleChecklistGate(label: "Connect attempt", isSatisfied: g7Manager.latestSessionConnectAttempted),
             BleChecklistGate(label: "Did connect", isSatisfied: g7Manager.latestSessionDidConnect),
             BleChecklistGate(label: "Services discovered", isSatisfied: g7Manager.latestSessionServicesDiscovered),
@@ -631,7 +696,16 @@ struct ComplicationDebugView: View {
     }
 
     private var firstUnsatisfiedChecklistIndex: Int? {
-        bleChecklistGates.firstIndex(where: { !$0.isSatisfied })
+        bleChecklistGates.indices.first { index in
+            let gate = bleChecklistGates[index]
+            if gate.isSatisfied {
+                return false
+            }
+            if gate.label == "Pre-connect context", g7Manager.lastAttachSource != "scan" {
+                return false
+            }
+            return true
+        }
     }
 
     private var visibleBleChecklistIndices: [Int] {
@@ -690,6 +764,9 @@ struct ComplicationDebugView: View {
         if gate.isSatisfied {
             return .satisfied
         }
+        if gate.label == "Pre-connect context", g7Manager.lastAttachSource != "scan" {
+            return .pending
+        }
         if firstUnsatisfiedChecklistIndex == index {
             return .blocker
         }
@@ -733,6 +810,67 @@ struct ComplicationDebugView: View {
     private func blockerColor(_ rawValue: String?) -> Color {
         guard let rawValue, !rawValue.isEmpty else { return .secondary }
         return .yellow
+    }
+
+    private func boolLabel(_ value: Bool?) -> String {
+        guard let value else { return "--" }
+        return value ? "Yes" : "No"
+    }
+
+    private func connectableLabel(_ value: String?) -> String {
+        switch value {
+        case "true":
+            return "Yes"
+        case "false":
+            return "No"
+        case let value?:
+            return humanizeDebugValue(value)
+        case nil:
+            return "--"
+        }
+    }
+
+    private func intLabel(_ value: Int?) -> String {
+        guard let value else { return "--" }
+        return String(value)
+    }
+
+    private func peripheralStateLabel(_ rawValue: Int?) -> String {
+        switch rawValue {
+        case 0:
+            return "Disconnected"
+        case 1:
+            return "Connecting"
+        case 2:
+            return "Connected"
+        case 3:
+            return "Disconnecting"
+        case let value?:
+            return String(value)
+        case nil:
+            return "--"
+        }
+    }
+
+    private func centralStateLabel(_ rawValue: Int?) -> String {
+        switch rawValue {
+        case 0:
+            return "Unknown"
+        case 1:
+            return "Resetting"
+        case 2:
+            return "Unsupported"
+        case 3:
+            return "Unauthorized"
+        case 4:
+            return "Powered off"
+        case 5:
+            return "Powered on"
+        case let value?:
+            return String(value)
+        case nil:
+            return "--"
+        }
     }
 
     private func normalizedStageKey(_ stage: String) -> String {
