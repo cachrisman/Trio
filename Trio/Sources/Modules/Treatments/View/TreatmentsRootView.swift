@@ -365,8 +365,6 @@ extension Treatments {
                                 Toggle("", isOn: $state.externalInsulin).toggleStyle(CheckboxToggleStyle())
                             }
                         }.listRowBackground(Color.chart)
-
-                        treatmentButton
                     }
                     .listSectionSpacing(sectionSpacing)
                 }
@@ -379,6 +377,10 @@ extension Treatments {
             .padding(.top)
             .ignoresSafeArea(edges: .top)
             .scrollContentBackground(.hidden).background(appState.trioBackgroundColor(for: colorScheme))
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                treatmentActionBar
+                    .blur(radius: state.isAwaitingDeterminationResult ? 5 : 0)
+            }
             .blur(radius: state.showInfo ? 3 : 0)
             .navigationTitle("Treatments")
             .navigationBarTitleDisplayMode(.inline)
@@ -474,60 +476,65 @@ extension Treatments {
             return (shouldConfirm, warningMessage, warningColor)
         }
 
-        var treatmentButton: some View {
-            var treatmentButtonBackground = Color(.systemBlue)
-            if limitExceeded {
-                treatmentButtonBackground = Color(.systemRed)
-            } else if disableTaskButton {
-                treatmentButtonBackground = Color(.systemGray)
-            }
-
-            return Section {
-                Button {
-                    if bolusWarning.shouldConfirm {
-                        showConfirmDialogForBolusing = true
-                    } else {
-                        state.invokeTreatmentsTask()
-                    }
-                } label: {
-                    HStack {
-                        if state.isBolusInProgress && state.amount > 0 &&
-                            !state.externalInsulin && (state.carbs == 0 || state.fat == 0 || state.protein == 0)
-                        {
-                            ProgressView()
-                        }
-                        taskButtonLabel
-                    }
-                    .font(.headline)
-                    .foregroundStyle(Color.white)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .frame(height: 35)
-                }
-                .disabled(disableTaskButton)
-                .listRowBackground(treatmentButtonBackground)
-                .shadow(radius: 3)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .confirmationDialog(
-                    bolusWarning.warningMessage + " Bolus \(state.amount.description) U?",
-                    isPresented: $showConfirmDialogForBolusing,
-                    titleVisibility: .visible
-                ) {
-                    Button("Cancel", role: .cancel) {}
-                    Button(
-                        bolusWarning.warningMessage.isEmpty ? "Enact Bolus" : "Ignore Warning and Enact Bolus",
-                        role: bolusWarning.warningMessage.isEmpty ? nil : .destructive
-                    ) {
-                        state.invokeTreatmentsTask()
-                    }
-                }
-            } header: {
+        var treatmentActionBar: some View {
+            VStack(spacing: 10) {
                 if !bolusWarning.warningMessage.isEmpty {
                     Text(bolusWarning.warningMessage)
-                        .textCase(nil)
                         .font(.subheadline)
                         .foregroundColor(bolusWarning.color)
                         .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.top, -22)
+                }
+
+                treatmentButton
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, bolusWarning.warningMessage.isEmpty ? 10 : 14)
+            .padding(.bottom, 10)
+            .background {
+                VStack(spacing: 0) {
+                    Divider()
+                    appState.trioBackgroundColor(for: colorScheme)
+                }
+                .ignoresSafeArea(edges: .bottom)
+            }
+        }
+
+        private var treatmentButton: some View {
+            Button {
+                if bolusWarning.shouldConfirm {
+                    showConfirmDialogForBolusing = true
+                } else {
+                    state.invokeTreatmentsTask()
+                }
+            } label: {
+                HStack {
+                    if state.isBolusInProgress && state.amount > 0 &&
+                        !state.externalInsulin && (state.carbs == 0 || state.fat == 0 || state.protein == 0)
+                    {
+                        ProgressView()
+                    }
+                    taskButtonLabel
+                }
+                .font(.headline)
+                .foregroundStyle(Color.white)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .frame(height: 35)
+            }
+            .disabled(disableTaskButton)
+            .background(treatmentButtonBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .shadow(radius: 3)
+            .confirmationDialog(
+                bolusWarning.warningMessage + " Bolus \(state.amount.description) U?",
+                isPresented: $showConfirmDialogForBolusing,
+                titleVisibility: .visible
+            ) {
+                Button("Cancel", role: .cancel) {}
+                Button(
+                    bolusWarning.warningMessage.isEmpty ? "Enact Bolus" : "Ignore Warning and Enact Bolus",
+                    role: bolusWarning.warningMessage.isEmpty ? nil : .destructive
+                ) {
+                    state.invokeTreatmentsTask()
                 }
             }
         }
@@ -596,6 +603,16 @@ extension Treatments {
 
         private var limitExceeded: Bool {
             pumpBolusLimitExceeded || externalBolusLimitExceeded || carbLimitExceeded || fatLimitExceeded || proteinLimitExceeded
+        }
+
+        private var treatmentButtonBackground: Color {
+            if limitExceeded {
+                return Color(.systemRed)
+            } else if disableTaskButton {
+                return Color(.systemGray)
+            } else {
+                return Color(.systemBlue)
+            }
         }
 
         private var disableTaskButton: Bool {
