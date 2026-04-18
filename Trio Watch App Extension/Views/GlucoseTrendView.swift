@@ -4,6 +4,7 @@ struct GlucoseTrendView: View {
     let state: WatchState
     let rotationDegrees: Double
     let isWatchStateDated: Bool
+    @State private var crownIdleValue = 0.0
 
     /// Determines the status color based on the time elapsed since the last loop
     /// - Parameter timeString: The time string representing minutes since last loop (format: "X min")
@@ -159,6 +160,9 @@ struct GlucoseTrendView: View {
 
             Spacer()
 
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .focusable(true)
+        .digitalCrownRotation($crownIdleValue, from: 0, through: 1, by: 1, sensitivity: .low)
     }
 }
