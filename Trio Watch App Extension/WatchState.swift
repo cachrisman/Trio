@@ -50,6 +50,8 @@ enum WatchCurrentDataSource {
     var lastWatchStateUpdate: Date?
     /// Latest CGM **reading** time applied from direct BLE or merged from phone relay — guards against replay/stale EGV without using `lastWatchStateUpdate` for ordering.
     private(set) var lastDirectBleAppliedReadingDate: Date?
+    /// Latest trustworthy phone-relay CGM reading timestamp applied on watch. Phase G forwards this into the direct-BLE cadence seed.
+    private(set) var lastPhoneRelayAppliedReadingDate: Date?
     /// Wall time when direct BLE or complication-cache hydration last advanced **main watch UI** freshness — **not** used for WC merge ordering.
     private(set) var lastDirectBleUiFreshnessAt: Date?
     /// For **`TrioMainWatchView.isWatchStateDated`** / chart background refresh only — `max` of phone state time and BLE/cache UI freshness.
@@ -292,7 +294,14 @@ enum WatchCurrentDataSource {
             await WatchErrorReporter.shared.startup()
         }
 
-        g7DirectBLEManager.applyForegroundActiveEntry(activePeripheralName: phoneActiveG7PeripheralName)
+        let cycleSeedContext = G7BLECycleSeedContext(
+            complicationSnapshotReadingDate: TrioComplicationDataStore.shared.latestSnapshot()?.readingDate,
+            phoneRelayReadingDate: lastPhoneRelayAppliedReadingDate
+        )
+        g7DirectBLEManager.applyForegroundActiveEntry(
+            activePeripheralName: phoneActiveG7PeripheralName,
+            cycleSeedContext: cycleSeedContext
+        )
         if let g7Sid = g7DirectBLEManager.currentG7SessionId {
             Task {
                 await WatchLogger.shared.log(
@@ -307,7 +316,8 @@ enum WatchCurrentDataSource {
         assert(Thread.isMainThread, "handleForegroundInactiveOrBackground must be called on main thread")
 
         if newPhase == .background {
-            // Rare: `.background` without a prior `.inactive` in the same transition — still anchor renewal. Normal path:
+            // Rare: `.background` without a prior `.inactive` in the same transition — still tell the Phase G
+            // scheduler that the app left active. Normal path:
             // `.inactive` already called `noteSceneLeftActiveUi` and set `startupIsForegroundActive = false`, so this is skipped.
             if startupIsForegroundActive {
                 g7DirectBLEManager.noteSceneLeftActiveUi(at: Date())
@@ -1813,6 +1823,12 @@ enum WatchCurrentDataSource {
             } else {
                 lastDirectBleAppliedReadingDate = readingDate
             }
+            if let existingPhoneRelayReadingDate = lastPhoneRelayAppliedReadingDate {
+                lastPhoneRelayAppliedReadingDate = max(existingPhoneRelayReadingDate, readingDate)
+            } else {
+                lastPhoneRelayAppliedReadingDate = readingDate
+            }
+            g7DirectBLEManager.notePhoneRelayReadingDate(readingDate)
         }
 
         syncTimeoutWorkItem?.cancel()

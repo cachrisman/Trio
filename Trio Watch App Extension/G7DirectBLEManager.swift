@@ -31,10 +31,37 @@ enum G7BLEConnectionState: Equatable {
     case error(String)
 }
 
+struct G7BLECycleSeedContext {
+    let complicationSnapshotReadingDate: Date?
+    let phoneRelayReadingDate: Date?
+}
+
+private enum G7BLEExtendedRuntimeState: String {
+    case idle
+    case starting
+    case active
+    case expiring
+    case invalidated
+}
+
+private enum G7BLERuntimeGateResult {
+    case active
+    case starting
+    case unavailable
+}
+
 /// Foreground-only direct BLE eavesdrop path to Dexcom G7 (no J-PAKE response).
 @Observable
 final class G7DirectBLEManager: NSObject {
     private static let activePeripheralIdentifierAppGroupKey = "g7_active_peripheral_identifier"
+    private static let cycleLeadWindowSeconds: TimeInterval = 20
+    private static let cycleWarmupLeadSeconds: TimeInterval = 30
+    private static let cycleCadenceSeconds: TimeInterval = 5 * 60
+    private static let cycleFallbackDelayAfterExpectedSeconds: TimeInterval = 5
+    private static let cycleHardStopAfterExpectedSeconds: TimeInterval = 25
+    private static let cycleGraceAfterExpectedSeconds: TimeInterval = 35
+    private static let sameCycleRetryDelaySeconds: TimeInterval = 3
+    private static let minimumRetryRemainingSeconds: TimeInterval = 3
 
     private(set) var connectionState: G7BLEConnectionState = .idle
 
@@ -64,6 +91,7 @@ final class G7DirectBLEManager: NSObject {
     private(set) var lastAuthOpcodeSeen: UInt8?
     private(set) var awaitingFirstEgv = false
     private var scanningStarted = false
+    private var isForegroundActive = false
     /// Prevents duplicate `g7_ble_scan_started` when both `startScanning` and `centralManagerDidUpdateState` run.
     private var loggedScanStartThisRequest = false
     /// Phase E: `first_attempt` on `g7_ble_pre_connect` — reset in `startScanning()`.
@@ -79,9 +107,32 @@ final class G7DirectBLEManager: NSObject {
     /// when a new scan cycle begins. This is an intentional diagnostic tradeoff for F5: a later re-sighting of the
     /// same peripheral in the same attach cycle will be suppressed rather than retried automatically.
     private var attemptedConnectPeripheralIdentifiers: Set<UUID> = []
-    /// Scheduled reconnect after unexpected teardown while foreground scanning is still desired.
-    private var reconnectWorkItem: DispatchWorkItem?
-    private(set) var reconnectScheduled = false
+    /// Scheduled same-cycle retry after a classified cycle miss.
+    private var cycleRetryWorkItem: DispatchWorkItem?
+    private(set) var cycleRetryScheduled = false
+
+    // MARK: - Phase G cadence scheduler
+
+    private var latestComplicationSnapshotReadingDate: Date?
+    private var latestPhoneRelayReadingDate: Date?
+    private var lastSuccessfulDirectBleReadingDate: Date?
+    private var currentCycleID: String?
+    private var currentCycleGeneration = 0
+    private var currentCycleAnchorSource: String?
+    private var currentCycleAnchorDate: Date?
+    private var currentCycleExpectedReadingDate: Date?
+    private var currentCycleWarmupDate: Date?
+    private var currentCycleLeadWindowDate: Date?
+    private var currentCycleFallbackDate: Date?
+    private var currentCycleHardStopDate: Date?
+    private var currentCycleGraceCloseDate: Date?
+    private var currentCycleStartedAt: Date?
+    private var currentCycleBootstrap = false
+    private var currentCycleNoConnectRetryCount = 0
+    private var currentCyclePostConnectRetryCount = 0
+    private var cycleWarmupWorkItem: DispatchWorkItem?
+    private var cycleStartWorkItem: DispatchWorkItem?
+    private var cycleRuntimeActivationWorkItem: DispatchWorkItem?
 
     // MARK: - Instrumentation (report 03 Tier 1)
 
@@ -179,9 +230,7 @@ final class G7DirectBLEManager: NSObject {
         return !activePeripheralName.isEmpty
     }
 
-    var isExtendedRuntimeSessionActive: Bool {
-        extendedSession != nil
-    }
+    var isExtendedRuntimeSessionActive: Bool { runtimeState == .active || runtimeState == .expiring }
 
     var lastAuthOpcodeHex: String? {
         guard let lastAuthOpcodeSeen else { return nil }
@@ -210,6 +259,66 @@ final class G7DirectBLEManager: NSObject {
 
     var debugTimeoutStage: String? {
         activeTimeoutStage ?? lastTimedOutStage
+    }
+
+    var debugRuntimeStateLabel: String {
+        Self.debugDisplayLabel(for: runtimeState.rawValue)
+    }
+
+    var debugCycleStatusLabel: String {
+        guard currentCycleExpectedReadingDate != nil else { return "No scheduled cycle" }
+
+        if cycleRetryScheduled {
+            return "Same-cycle retry scheduled"
+        }
+
+        switch runtimeState {
+        case .starting:
+            return "Awaiting runtime activation"
+        case .invalidated:
+            return "Runtime invalidated"
+        default:
+            break
+        }
+
+        let now = Date()
+        if let leadWindowDate = currentCycleLeadWindowDate, now < leadWindowDate {
+            return "Waiting for lead window"
+        }
+        if scanningStarted || connectionState == .connecting || connectionState == .authenticating {
+            return "Executing attach window"
+        }
+        if connectionState == .connected {
+            return awaitingFirstEgv ? "Awaiting EGV" : "Connected in cycle"
+        }
+        if let graceCloseDate = currentCycleGraceCloseDate, now >= graceCloseDate {
+            return "Cycle overdue"
+        }
+        return "Cycle armed"
+    }
+
+    var debugCurrentCycleID: String? {
+        currentCycleID
+    }
+
+    var debugCurrentCycleAnchorSource: String? {
+        currentCycleAnchorSource
+    }
+
+    var debugCurrentCycleExpectedReadingDate: Date? {
+        currentCycleExpectedReadingDate
+    }
+
+    var debugCurrentCycleLeadWindowDate: Date? {
+        currentCycleLeadWindowDate
+    }
+
+    var debugCurrentCycleGraceCloseDate: Date? {
+        currentCycleGraceCloseDate
+    }
+
+    var debugCurrentCycleBootstrap: Bool? {
+        currentCycleExpectedReadingDate == nil ? nil : currentCycleBootstrap
     }
 
     var debugCurrentProtocolStageLabel: String {
@@ -257,15 +366,9 @@ final class G7DirectBLEManager: NSObject {
     }
 
     private var extendedSession: WKExtendedRuntimeSession?
+    private var runtimeState: G7BLEExtendedRuntimeState = .idle
     private var sessionStartedAt: Date?
     private var egvReceivedThisSession = false
-    /// Set when **`WatchState`** leaves **`ScenePhase.active`** so **`applyForegroundActiveEntry`** can renew **`WKExtendedRuntimeSession`** after a watch-face detour.
-    private var lastSceneLeftActiveUiAt: Date?
-
-    private enum G7BLEExtendedRuntime {
-        /// Product: anchor ~1h extended-runtime budget from **last time the app UI was active** (renew on re-entry after inactive/background when still within this window).
-        static let foregroundReentryRenewalMaxAwaySeconds: TimeInterval = 3600
-    }
 
     // MARK: - Public API
 
@@ -277,48 +380,34 @@ final class G7DirectBLEManager: NSObject {
         }
     }
 
-    /// Record that the app UI left **`ScenePhase.active`** (Digital Crown / inactive). Enables extended-runtime renewal on the next **`applyForegroundActiveEntry`**.
-    func noteSceneLeftActiveUi(at date: Date) {
-        lastSceneLeftActiveUiAt = date
+    /// Record that the app UI left **`ScenePhase.active`**. Phase G keeps existing BLE work alive when possible, but
+    /// new runtime acquisition is scheduler-owned and should not assume the app is still active after this point.
+    func noteSceneLeftActiveUi(at _: Date) {
+        isForegroundActive = false
     }
 
-    /// Called when `ScenePhase` becomes **`.active`**. Applies the phone-supplied **`activePeripheralName`** filter,
-    /// **renews `WKExtendedRuntimeSession`** when returning from inactive/background within **`foregroundReentryRenewalMaxAwaySeconds`**
-    /// so the ~1h budget can anchor to **last active UI**, then starts BLE only when there is no in-flight scan/connect/stream (**`scanning`…`connected`**).
-    func applyForegroundActiveEntry(activePeripheralName: String?) {
-        _ = setActivePeripheralName(activePeripheralName, logIfChanged: true)
-
-        if let leftAt = lastSceneLeftActiveUiAt {
-            lastSceneLeftActiveUiAt = nil
-            let away = Date().timeIntervalSince(leftAt)
-            let awaySec = max(0, Int(away.rounded(.down)))
-            if awaySec > 0, away < G7BLEExtendedRuntime.foregroundReentryRenewalMaxAwaySeconds {
-                renewExtendedRuntimeSessionAfterForegroundReentry(awaySeconds: awaySec)
-            } else if awaySec > 0 {
-                Task {
-                    await logG7Ble(
-                        "event=g7_ble_ext_session_renewal_skipped reason=away_not_under_1h away_s=\(awaySec)"
-                    )
-                }
-            }
-        }
-
-        if shouldSkipFullStartScanningAfterForegroundReentry() {
+    /// Called when `ScenePhase` becomes **`.active`**. Phase G uses this as a thin scheduler-entry wrapper:
+    /// apply the phone-supplied sensor filter, refresh cadence anchors, and let the cadence scheduler decide whether
+    /// to bootstrap immediately, continue an in-flight cycle, or wait for the next predicted window.
+    func applyForegroundActiveEntry(
+        activePeripheralName: String?,
+        cycleSeedContext: G7BLECycleSeedContext
+    ) {
+        isForegroundActive = true
+        if scanningStarted || connectionState == .connecting || connectionState == .authenticating || connectionState == .connected {
             sessionPreservedAcrossForegroundReentry = true
-            Task {
-                await logG7Ble("event=g7_ble_foreground_reentry_skipped reason=ble_session_in_progress")
-            }
-            return
         }
-        startScanning()
+        _ = setActivePeripheralName(activePeripheralName, logIfChanged: true)
+        updateCycleSeedContext(cycleSeedContext)
+        refreshCadenceScheduler(trigger: "foreground_entry")
     }
 
     /// Updates the phone-supplied active peripheral name while the watch is already running so a late WatchConnectivity
-    /// payload can arm the filter and trigger a fresh scan pass without waiting for another foreground transition.
+    /// payload can arm the filter and refresh cadence planning without waiting for another foreground transition.
     func updatePhoneActivePeripheralName(_ activePeripheralName: String?) {
         let hadFilter = hasActivePeripheralNameFilter
         let changed = setActivePeripheralName(activePeripheralName, logIfChanged: true)
-        guard changed, scanningStarted else { return }
+        guard changed else { return }
         if let currentPeripheral = peripheral,
            let activePeripheralName = self.activePeripheralName
         {
@@ -329,11 +418,18 @@ final class G7DirectBLEManager: NSObject {
                     "event=g7_ble_peripheral_skipped peripheral=\(currentName) reason=not_active_sensor source=phone_filter_update"
                 )
             }
-            startScanning()
+            if scanningStarted {
+                startScanning()
+            } else {
+                refreshCadenceScheduler(trigger: "phone_filter_update")
+            }
             return
         }
         guard hasActivePeripheralNameFilter, (!hadFilter || peripheral == nil) else { return }
-        startScanning()
+        if scanningStarted {
+            return
+        }
+        refreshCadenceScheduler(trigger: "phone_filter_update")
     }
 
     /// Begins (or restarts) scanning for G7 advertisements. Prefer **`applyForegroundActiveEntry`** from **`WatchState`**
@@ -343,8 +439,8 @@ final class G7DirectBLEManager: NSObject {
         guard let central else { return }
         centralManagerAllocatedInLastStartScanning = allocatedNewCentral
 
-        reconnectWorkItem?.cancel()
-        reconnectWorkItem = nil
+        cycleRetryWorkItem?.cancel()
+        cycleRetryWorkItem = nil
 
         let priorSessionID = g7SessionID
         let canceledConnectTimeoutForRescan = peripheral != nil && cancelConnectTimeoutIfNeeded()
@@ -375,7 +471,7 @@ final class G7DirectBLEManager: NSObject {
         discoverWallClock = nil
         cancelInstrumentationTimeouts()
         loggedScanStartThisRequest = false
-        reconnectScheduled = false
+        cycleRetryScheduled = false
         resetLatestSessionGateProgress(filterArmed: hasActivePeripheralNameFilter)
         resetDebugSessionContext()
         connectionState = .scanning
@@ -427,8 +523,11 @@ final class G7DirectBLEManager: NSObject {
     /// product controls (e.g. settings), tests, or emergency shutdown paths.
     func stop() {
         invalidateExtendedSession(reason: "stop_requested")
-        reconnectWorkItem?.cancel()
-        reconnectWorkItem = nil
+        cycleRetryWorkItem?.cancel()
+        cycleRetryWorkItem = nil
+        cancelCycleScheduling()
+        clearCurrentCycleState()
+        isForegroundActive = false
         scanningStarted = false
         central?.stopScan()
         pendingDisconnectReason = "stop_requested"
@@ -437,18 +536,6 @@ final class G7DirectBLEManager: NSObject {
         } else {
             pendingDisconnectReason = nil
             teardownSession(reason: "stop_requested", isFailure: false)
-        }
-    }
-
-    /// When **`scanningStarted`** and the connection pipeline is still live, a full **`startScanning()`** would cancel the
-    /// peripheral and reset **`g7_session`** — avoid that on foreground re-entry after the user viewed the watch face.
-    private func shouldSkipFullStartScanningAfterForegroundReentry() -> Bool {
-        guard scanningStarted else { return false }
-        switch connectionState {
-        case .scanning, .connecting, .authenticating, .connected:
-            return true
-        case .idle, .disconnected, .error:
-            return false
         }
     }
 
@@ -466,11 +553,437 @@ final class G7DirectBLEManager: NSObject {
         return true
     }
 
-    /// Invalidates any existing extended session, then starts a **new** `WKExtendedRuntimeSession` while BLE is still live so
-    /// watchOS can grant a fresh budget (~1h from **this** foreground re-entry when within the renewal window).
-    private func renewExtendedRuntimeSessionAfterForegroundReentry(awaySeconds: Int) {
-        invalidateExtendedSession(reason: "foreground_reentry_renewal")
-        startNewExtendedRuntimeSessionIfConnected(reason: "foreground_reentry", awaySeconds: awaySeconds)
+    func notePhoneRelayReadingDate(_ readingDate: Date?) {
+        guard let readingDate else { return }
+        let advanced: Bool
+        if let existing = latestPhoneRelayReadingDate {
+            latestPhoneRelayReadingDate = max(existing, readingDate)
+            advanced = readingDate > existing
+        } else {
+            latestPhoneRelayReadingDate = readingDate
+            advanced = true
+        }
+        guard advanced else { return }
+        refreshCadenceScheduler(trigger: "phone_relay_update")
+    }
+
+    private func updateCycleSeedContext(_ cycleSeedContext: G7BLECycleSeedContext) {
+        if let complicationSnapshotReadingDate = cycleSeedContext.complicationSnapshotReadingDate {
+            if let existing = latestComplicationSnapshotReadingDate {
+                latestComplicationSnapshotReadingDate = max(existing, complicationSnapshotReadingDate)
+            } else {
+                latestComplicationSnapshotReadingDate = complicationSnapshotReadingDate
+            }
+        }
+
+        if let phoneRelayReadingDate = cycleSeedContext.phoneRelayReadingDate {
+            if let existing = latestPhoneRelayReadingDate {
+                latestPhoneRelayReadingDate = max(existing, phoneRelayReadingDate)
+            } else {
+                latestPhoneRelayReadingDate = phoneRelayReadingDate
+            }
+        }
+    }
+
+    private func selectedCycleAnchor(now: Date) -> (source: String, anchorDate: Date, nextExpectedDate: Date, bootstrap: Bool) {
+        if let directBle = lastSuccessfulDirectBleReadingDate {
+            let nextExpectedDate = rolledForwardExpectedDate(after: directBle, now: now)
+            return ("direct_ble", directBle, nextExpectedDate, false)
+        }
+        if let complicationSnapshot = latestComplicationSnapshotReadingDate {
+            let nextExpectedDate = rolledForwardExpectedDate(after: complicationSnapshot, now: now)
+            return ("snapshot", complicationSnapshot, nextExpectedDate, false)
+        }
+        if let phoneRelay = latestPhoneRelayReadingDate {
+            let nextExpectedDate = rolledForwardExpectedDate(after: phoneRelay, now: now)
+            return ("phone_relay", phoneRelay, nextExpectedDate, false)
+        }
+        return ("bootstrap", now, now, true)
+    }
+
+    private func rolledForwardExpectedDate(after anchorDate: Date, now: Date) -> Date {
+        var nextExpectedDate = anchorDate.addingTimeInterval(Self.cycleCadenceSeconds)
+        while nextExpectedDate <= now {
+            nextExpectedDate.addTimeInterval(Self.cycleCadenceSeconds)
+        }
+        return nextExpectedDate
+    }
+
+    private func cancelCycleScheduling() {
+        cycleRetryWorkItem?.cancel()
+        cycleRetryWorkItem = nil
+        cycleWarmupWorkItem?.cancel()
+        cycleWarmupWorkItem = nil
+        cycleStartWorkItem?.cancel()
+        cycleStartWorkItem = nil
+        cycleRuntimeActivationWorkItem?.cancel()
+        cycleRuntimeActivationWorkItem = nil
+        cycleRetryScheduled = false
+    }
+
+    private func clearCurrentCycleState() {
+        currentCycleID = nil
+        currentCycleAnchorSource = nil
+        currentCycleAnchorDate = nil
+        currentCycleExpectedReadingDate = nil
+        currentCycleWarmupDate = nil
+        currentCycleLeadWindowDate = nil
+        currentCycleFallbackDate = nil
+        currentCycleHardStopDate = nil
+        currentCycleGraceCloseDate = nil
+        currentCycleStartedAt = nil
+        currentCycleBootstrap = false
+        currentCycleNoConnectRetryCount = 0
+        currentCyclePostConnectRetryCount = 0
+    }
+
+    private func refreshCadenceScheduler(trigger: String, forceReschedule: Bool = false) {
+        let now = Date()
+
+        if !forceReschedule,
+           let cycleGraceCloseDate = currentCycleGraceCloseDate,
+           now < cycleGraceCloseDate,
+           (scanningStarted || connectionState == .connecting || connectionState == .authenticating || connectionState == .connected)
+        {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_cycle_scheduled trigger=\(trigger) action=keep_inflight expected_epoch=\(Int((currentCycleExpectedReadingDate ?? now).timeIntervalSince1970))"
+                )
+            }
+            return
+        }
+
+        let anchor = selectedCycleAnchor(now: now)
+        scheduleCycle(
+            expectedReadingDate: anchor.nextExpectedDate,
+            anchorSource: anchor.source,
+            anchorDate: anchor.anchorDate,
+            bootstrap: anchor.bootstrap,
+            trigger: trigger
+        )
+    }
+
+    private func scheduleCycle(
+        expectedReadingDate: Date,
+        anchorSource: String,
+        anchorDate: Date,
+        bootstrap: Bool,
+        trigger: String
+    ) {
+        cancelCycleScheduling()
+
+        let now = Date()
+        currentCycleGeneration += 1
+        let generation = currentCycleGeneration
+        let cycleID = UUID().uuidString
+        let warmupDate = bootstrap ? now : expectedReadingDate.addingTimeInterval(-Self.cycleWarmupLeadSeconds)
+        let leadWindowDate = bootstrap ? now : expectedReadingDate.addingTimeInterval(-Self.cycleLeadWindowSeconds)
+        let fallbackDate = expectedReadingDate.addingTimeInterval(Self.cycleFallbackDelayAfterExpectedSeconds)
+        let hardStopDate = expectedReadingDate.addingTimeInterval(Self.cycleHardStopAfterExpectedSeconds)
+        let graceCloseDate = expectedReadingDate.addingTimeInterval(Self.cycleGraceAfterExpectedSeconds)
+
+        clearCurrentCycleState()
+        currentCycleID = cycleID
+        currentCycleAnchorSource = anchorSource
+        currentCycleAnchorDate = anchorDate
+        currentCycleExpectedReadingDate = expectedReadingDate
+        currentCycleWarmupDate = warmupDate
+        currentCycleLeadWindowDate = leadWindowDate
+        currentCycleFallbackDate = fallbackDate
+        currentCycleHardStopDate = hardStopDate
+        currentCycleGraceCloseDate = graceCloseDate
+        currentCycleBootstrap = bootstrap
+
+        Task {
+            await logG7Ble(
+                "event=g7_ble_cycle_anchor source=\(anchorSource) anchor_epoch=\(Int(anchorDate.timeIntervalSince1970)) next_expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+            )
+            await logG7Ble(
+                "event=g7_ble_cycle_scheduled trigger=\(trigger) bootstrap=\(bootstrap) warmup_epoch=\(Int(warmupDate.timeIntervalSince1970)) lead_window_epoch=\(Int(leadWindowDate.timeIntervalSince1970)) hard_stop_epoch=\(Int(hardStopDate.timeIntervalSince1970)) grace_close_epoch=\(Int(graceCloseDate.timeIntervalSince1970))",
+                sessionID: nil
+            )
+        }
+
+        let warmupDelay = warmupDate.timeIntervalSince(now)
+        if warmupDelay <= 0 {
+            beginCycleWarmupIfNeeded(generation: generation, trigger: trigger)
+        } else {
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.beginCycleWarmupIfNeeded(generation: generation, trigger: "scheduled_warmup")
+            }
+            cycleWarmupWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + warmupDelay, execute: workItem)
+        }
+
+        let startDelay = leadWindowDate.timeIntervalSince(now)
+        if startDelay <= 0 {
+            startScheduledCycleIfNeeded(generation: generation, trigger: trigger)
+        } else {
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.startScheduledCycleIfNeeded(generation: generation, trigger: "lead_window_open")
+            }
+            cycleStartWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + startDelay, execute: workItem)
+        }
+    }
+
+    private func beginCycleWarmupIfNeeded(generation: Int, trigger: String) {
+        guard generation == currentCycleGeneration else { return }
+        guard let expectedReadingDate = currentCycleExpectedReadingDate else { return }
+        _ = ensureRuntimeForCurrentCycle(trigger: trigger, expectedReadingDate: expectedReadingDate)
+    }
+
+    private func startScheduledCycleIfNeeded(generation: Int, trigger: String) {
+        guard generation == currentCycleGeneration else { return }
+        guard let expectedReadingDate = currentCycleExpectedReadingDate else { return }
+
+        currentCycleStartedAt = Date()
+        Task {
+            await logG7Ble(
+                "event=g7_ble_cycle_started trigger=\(trigger) bootstrap=\(currentCycleBootstrap) expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+            )
+        }
+
+        switch ensureRuntimeForCurrentCycle(trigger: "cycle_start", expectedReadingDate: expectedReadingDate) {
+        case .active:
+            continueCurrentCycleExecution(trigger: trigger)
+        case .starting:
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_cycle_started trigger=\(trigger) action=await_runtime_activation expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                )
+            }
+        case .unavailable:
+            let category = "runtime"
+            Task {
+                await logG7Ble("event=g7_ble_cycle_missed category=\(category) reason=runtime_unavailable")
+            }
+            scheduleNextCycleAfterMiss(reason: "runtime_unavailable", category: category)
+        }
+    }
+
+    private func continueCurrentCycleExecution(trigger: String) {
+        if connectionState == .connected,
+           passiveObservationGateSatisfied,
+           controlNotificationsReady
+        {
+            armPassiveObservationIfReady(forceCycleRearm: true)
+            return
+        }
+
+        if scanningStarted || connectionState == .connecting || connectionState == .authenticating {
+            Task {
+                await logG7Ble("event=g7_ble_cycle_started trigger=\(trigger) action=continue_existing_attempt")
+            }
+            return
+        }
+
+        startScanning()
+    }
+
+    private func resumeCurrentCycleAfterRuntimeActivation(trigger: String) {
+        guard let expectedReadingDate = currentCycleExpectedReadingDate else { return }
+        let now = Date()
+
+        guard let graceCloseDate = currentCycleGraceCloseDate, now < graceCloseDate else {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_runtime_gate trigger=\(trigger) state=active_after_cycle_closed expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                )
+            }
+            scheduleNextCycleAfterMiss(reason: "runtime_unavailable", category: "runtime")
+            return
+        }
+
+        if let leadWindowDate = currentCycleLeadWindowDate, now < leadWindowDate {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_runtime_gate trigger=\(trigger) state=active_waiting_for_lead_window expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                )
+            }
+            return
+        }
+
+        Task {
+            await logG7Ble(
+                "event=g7_ble_runtime_gate trigger=\(trigger) state=active expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+            )
+        }
+        continueCurrentCycleExecution(trigger: "runtime_active")
+    }
+
+    private func armRuntimeActivationDeadlineIfNeeded(generation: Int, expectedReadingDate: Date) {
+        cycleRuntimeActivationWorkItem?.cancel()
+        cycleRuntimeActivationWorkItem = nil
+
+        guard runtimeState != .active else { return }
+        guard let hardStopDate = currentCycleHardStopDate else { return }
+
+        let delay = hardStopDate.timeIntervalSinceNow
+        if delay <= 0 {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_runtime_gate trigger=runtime_activation_deadline state=activation_timeout expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                )
+            }
+            scheduleNextCycleAfterMiss(reason: "runtime_unavailable", category: "runtime")
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard generation == self.currentCycleGeneration else { return }
+            guard self.runtimeState != .active else { return }
+            Task {
+                await self.logG7Ble(
+                    "event=g7_ble_runtime_gate trigger=runtime_activation_deadline state=activation_timeout expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                )
+            }
+            self.scheduleNextCycleAfterMiss(reason: "runtime_unavailable", category: "runtime")
+        }
+        cycleRuntimeActivationWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func ensureRuntimeForCurrentCycle(trigger: String, expectedReadingDate: Date) -> G7BLERuntimeGateResult {
+        if extendedSession != nil {
+            let state = runtimeState
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_runtime_gate trigger=\(trigger) state=\(state.rawValue) expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                )
+            }
+            if state == .active || state == .expiring {
+                cycleRuntimeActivationWorkItem?.cancel()
+                cycleRuntimeActivationWorkItem = nil
+                return .active
+            }
+            armRuntimeActivationDeadlineIfNeeded(
+                generation: currentCycleGeneration,
+                expectedReadingDate: expectedReadingDate
+            )
+            return .starting
+        }
+
+        guard isForegroundActive else {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_runtime_gate trigger=\(trigger) state=blocked_app_inactive expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                )
+            }
+            return .unavailable
+        }
+
+        Task {
+            await logG7Ble(
+                "event=g7_ble_runtime_gate trigger=\(trigger) state=starting expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+            )
+        }
+        beginExtendedRuntimeSession()
+        armRuntimeActivationDeadlineIfNeeded(
+            generation: currentCycleGeneration,
+            expectedReadingDate: expectedReadingDate
+        )
+        return .starting
+    }
+
+    private func scheduleRetryWithinCurrentCycle(reason: String, category: String, postConnect: Bool) {
+        guard let graceCloseDate = currentCycleGraceCloseDate else { return }
+        let remaining = graceCloseDate.timeIntervalSinceNow
+        guard remaining >= Self.minimumRetryRemainingSeconds else {
+            scheduleNextCycleAfterMiss(reason: reason, category: category)
+            return
+        }
+
+        if postConnect {
+            guard currentCyclePostConnectRetryCount == 0 else {
+                scheduleNextCycleAfterMiss(reason: reason, category: category)
+                return
+            }
+            currentCyclePostConnectRetryCount += 1
+        } else {
+            guard currentCycleNoConnectRetryCount == 0 else {
+                scheduleNextCycleAfterMiss(reason: reason, category: category)
+                return
+            }
+            currentCycleNoConnectRetryCount += 1
+        }
+
+        cycleRetryWorkItem?.cancel()
+        let retryCycleID = currentCycleID
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard retryCycleID == self.currentCycleID else { return }
+            if let graceCloseDate = self.currentCycleGraceCloseDate,
+               graceCloseDate.timeIntervalSinceNow < Self.minimumRetryRemainingSeconds
+            {
+                self.scheduleNextCycleAfterMiss(reason: reason, category: category)
+                return
+            }
+            guard let expectedReadingDate = self.currentCycleExpectedReadingDate else { return }
+            switch self.ensureRuntimeForCurrentCycle(trigger: "same_cycle_retry", expectedReadingDate: expectedReadingDate) {
+            case .active:
+                break
+            case .starting:
+                self.cycleRetryScheduled = false
+                Task {
+                    await self.logG7Ble(
+                        "event=g7_ble_cycle_started trigger=same_cycle_retry action=await_runtime_activation expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                    )
+                }
+                return
+            case .unavailable:
+                self.scheduleNextCycleAfterMiss(reason: "runtime_unavailable", category: "runtime")
+                return
+            }
+            self.cycleRetryScheduled = false
+            self.startScanning()
+        }
+        cycleRetryWorkItem = workItem
+        cycleRetryScheduled = true
+        Task {
+            await logG7Ble(
+                "event=g7_ble_cycle_missed category=\(category) reason=\(reason) action=retry_same_cycle retry_delay_s=\(Int(Self.sameCycleRetryDelaySeconds))"
+            )
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.sameCycleRetryDelaySeconds, execute: workItem)
+    }
+
+    private func scheduleNextCycleAfterMiss(reason: String, category: String) {
+        cancelCycleScheduling()
+
+        if currentCycleBootstrap,
+           lastSuccessfulDirectBleReadingDate == nil,
+           latestComplicationSnapshotReadingDate == nil,
+           latestPhoneRelayReadingDate == nil
+        {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_cycle_missed category=\(category) reason=\(reason) action=hold_after_bootstrap_no_anchor"
+                )
+            }
+            scanningStarted = false
+            clearCurrentCycleState()
+            return
+        }
+
+        scanningStarted = false
+        clearCurrentCycleState()
+        refreshCadenceScheduler(trigger: "cycle_miss_\(reason)", forceReschedule: true)
+    }
+
+    private func resetObservationStateForCycleRearm() {
+        passiveObservationArmed = false
+        fallbackEgvRequestSent = false
+        pendingControlWriteLogKind = nil
+        awaitingFirstEgv = false
+        clearPassiveObservationBlockedReason(
+            resolvedReasons: [
+                "passive_gate_not_satisfied",
+                "authenticated_false",
+                "control_notify_not_enabled"
+            ]
+        )
     }
 
     /// After `didDiscover` or foreground re-entry while connected — `delegate` logs `g7_ble_ext_session_started`.
@@ -478,22 +991,8 @@ final class G7DirectBLEManager: NSObject {
         let ext = WKExtendedRuntimeSession()
         ext.delegate = self
         extendedSession = ext
+        runtimeState = .starting
         ext.start()
-    }
-
-    /// When already past discovery (connecting…connected), attach a new extended session (used after invalidating the prior session).
-    private func startNewExtendedRuntimeSessionIfConnected(reason: String, awaySeconds: Int) {
-        guard peripheral != nil else { return }
-        switch connectionState {
-        case .connecting, .authenticating, .connected:
-            break
-        default:
-            return
-        }
-        Task {
-            await logG7Ble("event=g7_ble_ext_session_renewal reason=\(reason) away_s=\(awaySeconds)")
-        }
-        beginExtendedRuntimeSession()
     }
 
     // MARK: - Session reset
@@ -636,6 +1135,9 @@ final class G7DirectBLEManager: NSObject {
         guard extendedSession != nil else { return }
         extendedSession?.invalidate()
         extendedSession = nil
+        runtimeState = .idle
+        cycleRuntimeActivationWorkItem?.cancel()
+        cycleRuntimeActivationWorkItem = nil
         Task {
             await logG7Ble("event=g7_ble_ext_session_ended reason=\(reason)")
         }
@@ -649,22 +1151,32 @@ final class G7DirectBLEManager: NSObject {
         return "incomplete"
     }
 
-    private func shouldReconnectAfterTeardown(reason: String) -> Bool {
+    private func cycleMissCategory(reason: String, finalStage: String?) -> String {
         switch reason {
-        // Only explicit control-flow teardown reasons suppress retry. Transport/protocol failures, disconnects, and
-        // OS error invalidations should continue through the normal reconnect path.
-        case "stop_requested", "startScanning_rescan", "foreground_reentry_renewal":
-            return false
+        case "timeout_awaiting_connect", "connect_failed":
+            return "timing"
+        case "ext_session_invalidated":
+            return "runtime"
+        case "timeout_awaiting_gatt_setup", "discover_services", "no_data_service", "discover_characteristics", "characteristics_incomplete", "notification_state":
+            return "gatt"
+        case "timeout_awaiting_first_egv":
+            return "observation"
         default:
-            return true
+            if finalStage == "awaiting_egv" {
+                return "observation"
+            }
+            if finalStage == "discovering_services" || finalStage == "discovering_characteristics" || finalStage == "authenticating" {
+                return "gatt"
+            }
+            return latestSessionDidConnect ? "gatt" : "timing"
         }
     }
 
     /// - Parameter isFailure: When `true`, sets `connectionState` to `.error` (protocol / BLE failure). When `false`, uses `.disconnected` (clean stop or non-error teardown).
     private func teardownSession(reason: String, isFailure: Bool = true) {
         assert(Thread.isMainThread, "teardownSession must run on the main queue (CBCentralManager delegate queue)")
-        reconnectWorkItem?.cancel()
-        reconnectWorkItem = nil
+        cycleRetryWorkItem?.cancel()
+        cycleRetryWorkItem = nil
         let connectTimeoutCancelReason = reason == "stop_requested" ? "stop_requested" : "teardown"
         let canceledConnectTimeout = cancelConnectTimeoutIfNeeded()
         let outcomeSid = g7SessionID
@@ -682,6 +1194,9 @@ final class G7DirectBLEManager: NSObject {
         }
         let outcome = mapSessionOutcome(reason: reason, isFailure: isFailure, egvReceived: egvDone)
         let stageField = finalStage ?? "none"
+        let missCategory = cycleMissCategory(reason: reason, finalStage: finalStage)
+        let shouldAttemptSameCycleRetry = reason != "stop_requested" && reason != "startScanning_rescan"
+        let isPostConnectFailure = latestSessionDidConnect || finalStage == "discovering_services" || finalStage == "discovering_characteristics" || finalStage == "authenticating" || finalStage == "awaiting_egv"
         switch outcome {
         case "timeout":
             break
@@ -701,7 +1216,8 @@ final class G7DirectBLEManager: NSObject {
         sessionStartedAt = nil
         peripheral = nil
         lastDisconnectReason = reason
-        reconnectScheduled = false
+        scanningStarted = false
+        cycleRetryScheduled = false
         connectionState = isFailure ? .error(reason) : .disconnected(reason: reason)
         Task {
             if canceledConnectTimeout {
@@ -714,19 +1230,29 @@ final class G7DirectBLEManager: NSObject {
                 "event=g7_ble_session_outcome outcome=\(outcome) final_stage=\(stageField) duration_ms=\(durationMs) g7_session=\(outcomeSid ?? "none")"
             )
         }
-        // Keep retrying after disconnects and failed connects unless teardown was an explicit stop.
-        if scanningStarted, shouldReconnectAfterTeardown(reason: reason) {
-            Task {
-                await logG7Ble("event=g7_ble_reconnect_scheduled delay_s=7 teardown_reason=\(reason)")
+
+        if outcome == "success" {
+            refreshCadenceScheduler(trigger: "cycle_success")
+            return
+        }
+
+        guard shouldAttemptSameCycleRetry else {
+            if reason != "stop_requested" && reason != "startScanning_rescan" {
+                scheduleNextCycleAfterMiss(reason: reason, category: missCategory)
+            } else {
+                clearCurrentCycleState()
             }
-            reconnectScheduled = true
-            let work = DispatchWorkItem { [weak self] in
-                guard let self, self.scanningStarted else { return }
-                self.reconnectScheduled = false
-                self.startScanning()
-            }
-            reconnectWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 7.0, execute: work)
+            return
+        }
+
+        if isFailure {
+            scheduleRetryWithinCurrentCycle(
+                reason: reason,
+                category: missCategory,
+                postConnect: isPostConnectFailure
+            )
+        } else {
+            scheduleNextCycleAfterMiss(reason: reason, category: missCategory)
         }
     }
 
@@ -744,6 +1270,9 @@ final class G7DirectBLEManager: NSObject {
         var out = message
         if let sid = sessionID ?? g7SessionID, !out.contains("g7_session=") {
             out += " g7_session=\(sid)"
+        }
+        if let cycleID = currentCycleID, !out.contains("g7_cycle=") {
+            out += " g7_cycle=\(cycleID)"
         }
         await WatchLogger.shared.log(out, function: function, file: file, line: line)
     }
@@ -767,6 +1296,15 @@ final class G7DirectBLEManager: NSObject {
         passiveObservationFallbackWorkItem?.cancel()
         passiveObservationFallbackWorkItem = nil
         activeTimeoutStage = nil
+    }
+
+    private func cycleRelativeDelay(until targetDate: Date?, fallback: TimeInterval) -> TimeInterval {
+        guard let targetDate else { return fallback }
+        return max(0.1, targetDate.timeIntervalSinceNow)
+    }
+
+    private func loggedSeconds(_ interval: TimeInterval) -> Int {
+        max(1, Int(interval.rounded(.up)))
     }
 
     private func cancelConnectTimeoutIfNeeded() -> Bool {
@@ -811,20 +1349,25 @@ final class G7DirectBLEManager: NSObject {
     private func scheduleConnectTimeout() {
         connectTimeoutWorkItem?.cancel()
         activeTimeoutStage = "awaiting_connect"
+        let generation = currentCycleGeneration
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard generation == self.currentCycleGeneration else { return }
             Task { @MainActor in
                 await self.handleTimeout(stage: "awaiting_connect")
             }
         }
         connectTimeoutWorkItem = work
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + G7BLEInstrumentation.connectTimeoutSeconds,
+            deadline: .now() + cycleRelativeDelay(
+                until: currentCycleHardStopDate,
+                fallback: G7BLEInstrumentation.connectTimeoutSeconds
+            ),
             execute: work
         )
         Task {
             await logG7Ble(
-                "event=g7_ble_connect_timeout_armed timeout_s=\(Int(G7BLEInstrumentation.connectTimeoutSeconds))"
+                "event=g7_ble_connect_timeout_armed timeout_s=\(loggedSeconds(cycleRelativeDelay(until: currentCycleHardStopDate, fallback: G7BLEInstrumentation.connectTimeoutSeconds)))"
             )
         }
     }
@@ -832,20 +1375,25 @@ final class G7DirectBLEManager: NSObject {
     private func scheduleGattSetupTimeout() {
         gattSetupTimeoutWorkItem?.cancel()
         activeTimeoutStage = "awaiting_gatt_setup"
+        let generation = currentCycleGeneration
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard generation == self.currentCycleGeneration else { return }
             Task { @MainActor in
                 await self.handleTimeout(stage: "awaiting_gatt_setup")
             }
         }
         gattSetupTimeoutWorkItem = work
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + G7BLEInstrumentation.gattSetupTimeoutSeconds,
+            deadline: .now() + cycleRelativeDelay(
+                until: currentCycleHardStopDate,
+                fallback: G7BLEInstrumentation.gattSetupTimeoutSeconds
+            ),
             execute: work
         )
         Task {
             await logG7Ble(
-                "event=g7_ble_gatt_setup_timeout_armed timeout_s=\(Int(G7BLEInstrumentation.gattSetupTimeoutSeconds))"
+                "event=g7_ble_gatt_setup_timeout_armed timeout_s=\(loggedSeconds(cycleRelativeDelay(until: currentCycleHardStopDate, fallback: G7BLEInstrumentation.gattSetupTimeoutSeconds)))"
             )
         }
     }
@@ -853,40 +1401,50 @@ final class G7DirectBLEManager: NSObject {
     private func scheduleFirstEgvTimeout() {
         firstEgvTimeoutWorkItem?.cancel()
         activeTimeoutStage = "awaiting_first_egv"
+        let generation = currentCycleGeneration
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard generation == self.currentCycleGeneration else { return }
             Task { @MainActor in
                 await self.handleTimeout(stage: "awaiting_first_egv")
             }
         }
         firstEgvTimeoutWorkItem = work
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + G7BLEInstrumentation.firstEgvTimeoutSeconds,
+            deadline: .now() + cycleRelativeDelay(
+                until: currentCycleGraceCloseDate,
+                fallback: G7BLEInstrumentation.firstEgvTimeoutSeconds
+            ),
             execute: work
         )
         Task {
             await logG7Ble(
-                "event=g7_ble_first_egv_timeout_armed timeout_s=\(Int(G7BLEInstrumentation.firstEgvTimeoutSeconds))"
+                "event=g7_ble_first_egv_timeout_armed timeout_s=\(loggedSeconds(cycleRelativeDelay(until: currentCycleGraceCloseDate, fallback: G7BLEInstrumentation.firstEgvTimeoutSeconds)))"
             )
         }
     }
 
     private func schedulePassiveObservationFallback() {
         passiveObservationFallbackWorkItem?.cancel()
+        let generation = currentCycleGeneration
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            guard generation == self.currentCycleGeneration else { return }
             Task { @MainActor in
                 self.triggerFallbackEgvRequestIfNeeded(trigger: "passive_timeout")
             }
         }
         passiveObservationFallbackWorkItem = work
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + G7BLEInstrumentation.passiveObservationFallbackSeconds,
+            deadline: .now() + cycleRelativeDelay(
+                until: currentCycleFallbackDate,
+                fallback: G7BLEInstrumentation.passiveObservationFallbackSeconds
+            ),
             execute: work
         )
         Task {
             await logG7Ble(
-                "event=g7_ble_passive_fallback_armed delay_s=\(Int(G7BLEInstrumentation.passiveObservationFallbackSeconds)) first_egv_timeout_s=\(Int(G7BLEInstrumentation.firstEgvTimeoutSeconds))"
+                "event=g7_ble_passive_fallback_armed delay_s=\(loggedSeconds(cycleRelativeDelay(until: currentCycleFallbackDate, fallback: G7BLEInstrumentation.passiveObservationFallbackSeconds))) first_egv_timeout_s=\(loggedSeconds(cycleRelativeDelay(until: currentCycleGraceCloseDate, fallback: G7BLEInstrumentation.firstEgvTimeoutSeconds)))"
             )
         }
     }
@@ -998,6 +1556,12 @@ final class G7DirectBLEManager: NSObject {
         let readingEpoch = Int(readingDate.timeIntervalSince1970)
         let dataAgeSeconds = max(0, Int(Date().timeIntervalSince(readingDate)))
         lastReadingDate = readingDate
+        lastSuccessfulDirectBleReadingDate = readingDate
+        if let existingSnapshotDate = latestComplicationSnapshotReadingDate {
+            latestComplicationSnapshotReadingDate = max(existingSnapshotDate, readingDate)
+        } else {
+            latestComplicationSnapshotReadingDate = readingDate
+        }
         lastSequenceNumber = Int(sequenceNumber)
         lastEgvReceivedAt = Date()
         lastGlucoseValue = glucose
@@ -1044,6 +1608,14 @@ final class G7DirectBLEManager: NSObject {
         latestSessionSnapshotSaved = true
         lastSnapshotSaveResult = "saved"
         lastSnapshotSaveAt = Date()
+
+        let nextExpectedDate = rolledForwardExpectedDate(after: readingDate, now: Date())
+        Task {
+            await logG7Ble(
+                "event=g7_ble_cycle_completed reading_epoch=\(readingEpoch) next_expected_epoch=\(Int(nextExpectedDate.timeIntervalSince1970))"
+            )
+        }
+        refreshCadenceScheduler(trigger: "direct_ble_reading_saved", forceReschedule: true)
     }
 
     /// Converts G7 trend rate (mg/dL/min) to a ~5-minute delta and applies **R6.1** thresholds (parity with `WatchState.hkTrendString(fromDeltaMgDl:)`).
@@ -1500,7 +2072,7 @@ final class G7DirectBLEManager: NSObject {
         }
     }
 
-    private func armPassiveObservationIfReady() {
+    private func armPassiveObservationIfReady(forceCycleRearm: Bool = false) {
         guard passiveObservationGateSatisfied else {
             if !observerAuthenticated {
                 emitPassiveObservationBlockedIfNeeded(reason: "authenticated_false")
@@ -1513,7 +2085,12 @@ final class G7DirectBLEManager: NSObject {
             emitPassiveObservationBlockedIfNeeded(reason: "control_notify_not_enabled")
             return
         }
-        guard !passiveObservationArmed else { return }
+        if passiveObservationArmed, !forceCycleRearm {
+            return
+        }
+        if forceCycleRearm {
+            resetObservationStateForCycleRearm()
+        }
         clearPassiveObservationBlockedReason(
             resolvedReasons: [
                 "passive_gate_not_satisfied",
@@ -1530,7 +2107,7 @@ final class G7DirectBLEManager: NSObject {
         schedulePassiveObservationFallback()
         Task {
             await logG7Ble(
-                "event=g7_ble_passive_observation_armed gate=authenticated_only fallback_delay_s=\(Int(G7BLEInstrumentation.passiveObservationFallbackSeconds)) first_egv_timeout_s=\(Int(G7BLEInstrumentation.firstEgvTimeoutSeconds))"
+                "event=g7_ble_passive_observation_armed gate=authenticated_only cycle_rearm=\(forceCycleRearm) fallback_delay_s=\(loggedSeconds(cycleRelativeDelay(until: currentCycleFallbackDate, fallback: G7BLEInstrumentation.passiveObservationFallbackSeconds))) first_egv_timeout_s=\(loggedSeconds(cycleRelativeDelay(until: currentCycleGraceCloseDate, fallback: G7BLEInstrumentation.firstEgvTimeoutSeconds)))"
             )
         }
     }
@@ -1545,7 +2122,7 @@ final class G7DirectBLEManager: NSObject {
         pendingControlWriteLogKind = "egv_fallback_request"
         Task {
             await logG7Ble(
-                "event=g7_ble_egv_fallback_sent opcode=0x4E trigger=\(trigger) timeout_s=\(Int(G7BLEInstrumentation.passiveObservationFallbackSeconds))"
+                "event=g7_ble_egv_fallback_sent opcode=0x4E trigger=\(trigger) timeout_s=\(loggedSeconds(cycleRelativeDelay(until: currentCycleFallbackDate, fallback: G7BLEInstrumentation.passiveObservationFallbackSeconds)))"
             )
         }
         cbPeripheral.writeValue(Data([0x4E]), for: control, type: .withResponse)
@@ -1648,7 +2225,6 @@ final class G7DirectBLEManager: NSObject {
         lastSeenPeripheralAt = now
         lastAttachSource = source ?? "scan"
         emitStageIfChanged("connecting")
-        beginExtendedRuntimeSession()
         Task {
             if let source {
                 await logG7Ble(
@@ -2174,15 +2750,22 @@ extension G7DirectBLEManager: CBPeripheralDelegate {
 // MARK: - WKExtendedRuntimeSessionDelegate
 
 extension G7DirectBLEManager: WKExtendedRuntimeSessionDelegate {
-    func extendedRuntimeSessionDidStart(_: WKExtendedRuntimeSession) {
-        Task {
-            await logG7Ble("event=g7_ble_ext_session_started")
+    func extendedRuntimeSessionDidStart(_ session: WKExtendedRuntimeSession) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let ext = self.extendedSession, ext === session else { return }
+            self.runtimeState = .active
+            self.cycleRuntimeActivationWorkItem?.cancel()
+            self.cycleRuntimeActivationWorkItem = nil
+            await self.logG7Ble("event=g7_ble_ext_session_started")
+            self.resumeCurrentCycleAfterRuntimeActivation(trigger: "ext_session_started")
         }
     }
 
     func extendedRuntimeSessionWillExpire(_ session: WKExtendedRuntimeSession) {
         Task { @MainActor in
             guard let ext = extendedSession, ext === session else { return }
+            runtimeState = .expiring
             await logG7Ble("event=g7_ble_ext_session_expiring action=await_invalidation")
         }
     }
@@ -2202,15 +2785,44 @@ extension G7DirectBLEManager: WKExtendedRuntimeSessionDelegate {
             }()
             if isCurrentSession {
                 self.extendedSession = nil
+                self.runtimeState = .invalidated
             }
+            self.cycleRuntimeActivationWorkItem?.cancel()
+            self.cycleRuntimeActivationWorkItem = nil
             let errDesc = error.map { $0.localizedDescription } ?? "none"
             await self.logG7Ble(
                 "event=g7_ble_ext_session_invalidated reason=\(String(describing: reason)) error=\(errDesc)"
             )
-            // Only tear down BLE on **error** invalidation for the **current** session — normal / renewal paths use other
-            // `reason` values and must not disconnect here; stale delegates after renewal must not tear down either.
-            guard reason == .error, isCurrentSession, self.scanningStarted, self.peripheral != nil else { return }
-            self.teardownSession(reason: "ext_session_invalidated", isFailure: true)
+            guard reason == .error, isCurrentSession else { return }
+            guard let leadWindowDate = self.currentCycleLeadWindowDate,
+                  let expectedReadingDate = self.currentCycleExpectedReadingDate
+            else {
+                if self.scanningStarted, self.peripheral != nil {
+                    self.teardownSession(reason: "ext_session_invalidated", isFailure: true)
+                }
+                return
+            }
+
+            if Date() < leadWindowDate,
+               self.currentCycleGraceCloseDate?.timeIntervalSinceNow ?? 0 > Self.minimumRetryRemainingSeconds
+            {
+                // Phase G same-cycle runtime reacquire is intentionally foreground-only.
+                // `ensureRuntimeForCurrentCycle` will refuse to start a new runtime
+                // session once the app has already left active UI.
+                await self.logG7Ble(
+                    "event=g7_ble_runtime_gate trigger=runtime_invalidated state=reacquire_same_cycle expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                )
+                switch self.ensureRuntimeForCurrentCycle(trigger: "runtime_invalidated", expectedReadingDate: expectedReadingDate) {
+                case .active, .starting:
+                    return
+                case .unavailable:
+                    break
+                }
+            }
+
+            if self.scanningStarted || self.peripheral != nil {
+                self.teardownSession(reason: "ext_session_invalidated", isFailure: true)
+            }
         }
     }
 }

@@ -171,6 +171,41 @@ struct ComplicationDebugView: View {
 
             Divider().padding(.vertical, 2)
 
+            sectionHeader("RUNTIME + CYCLE")
+            debugRow(
+                "Runtime state:",
+                value: g7Manager.debugRuntimeStateLabel,
+                valueColor: runtimeStateColor(g7Manager.debugRuntimeStateLabel)
+            )
+            debugRow("Runtime active:", value: boolLabel(g7Manager.isExtendedRuntimeSessionActive))
+            debugRow(
+                "Cycle state:",
+                value: g7Manager.debugCycleStatusLabel,
+                valueColor: cycleStateColor(g7Manager.debugCycleStatusLabel)
+            )
+            debugMultilineRow("Session ID:", value: humanizeDebugValue(g7Manager.currentG7SessionId))
+            debugMultilineRow("Cycle ID:", value: humanizeDebugValue(g7Manager.debugCurrentCycleID))
+            debugRow(
+                "Cycle anchor:",
+                value: humanizeDebugValue(g7Manager.debugCurrentCycleAnchorSource)
+            )
+            debugRow("Bootstrap cycle:", value: boolLabel(g7Manager.debugCurrentCycleBootstrap))
+            debugRow(
+                "Expected reading:",
+                value: formatOptionalTime(g7Manager.debugCurrentCycleExpectedReadingDate)
+            )
+            debugRow(
+                "Lead window:",
+                value: formatOptionalTime(g7Manager.debugCurrentCycleLeadWindowDate)
+            )
+            debugRow(
+                "Grace close:",
+                value: formatOptionalTime(g7Manager.debugCurrentCycleGraceCloseDate)
+            )
+            debugRow("Same-cycle retry:", value: boolLabel(g7Manager.cycleRetryScheduled))
+
+            Divider().padding(.vertical, 2)
+
             sectionHeader("ATTACH CONTEXT")
             debugRow(
                 "Rendered data source:",
@@ -663,11 +698,43 @@ struct ComplicationDebugView: View {
             "awaiting_egv",
             "awaiting_first_egv",
             "awaiting_gatt_setup",
+            "awaiting_runtime_activation",
             "connecting",
             "discovering_characteristics",
             "discovering_services",
+            "executing_attach_window",
             "scanning":
             return .yellow
+        default:
+            return .secondary
+        }
+    }
+
+    private func runtimeStateColor(_ state: String) -> Color {
+        switch normalizedStageKey(state) {
+        case "active":
+            return .green
+        case "expiring", "starting":
+            return .yellow
+        case "invalidated":
+            return .orange
+        default:
+            return .secondary
+        }
+    }
+
+    private func cycleStateColor(_ state: String) -> Color {
+        switch normalizedStageKey(state) {
+        case "connected_in_cycle":
+            return .green
+        case "awaiting_egv",
+            "awaiting_runtime_activation",
+            "executing_attach_window",
+            "same-cycle_retry_scheduled",
+            "waiting_for_lead_window":
+            return .yellow
+        case "cycle_overdue", "runtime_invalidated":
+            return .orange
         default:
             return .secondary
         }
