@@ -1225,6 +1225,9 @@ final class G7DirectBLEManager: NSObject {
 
         resetSessionState()
         sessionStartedAt = nil
+        if let p = peripheral {
+            central?.cancelPeripheralConnection(p)
+        }
         peripheral = nil
         lastDisconnectReason = reason
         scanningStarted = false
@@ -2179,7 +2182,7 @@ final class G7DirectBLEManager: NSObject {
         }
         attemptedConnectPeripheralIdentifiers.insert(peripheral.identifier)
         let idShort = peripheralIdShort(peripheral)
-        central?.stopScan()
+        // central?.stopScan()
         self.peripheral = peripheral
         peripheral.delegate = self
         connectionState = .connecting
