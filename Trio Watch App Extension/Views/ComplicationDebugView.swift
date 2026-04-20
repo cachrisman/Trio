@@ -231,8 +231,7 @@ struct ComplicationDebugView: View {
 
             sectionHeader("RETRIEVAL")
             debugRow("Identifier count:", value: intLabel(g7Manager.lastRetrievedIdentifierCount))
-            debugRow("Data-service count:", value: intLabel(g7Manager.lastRetrievedDataServiceCount))
-            debugRow("FEBC count:", value: intLabel(g7Manager.lastRetrievedFebcCount))
+            debugRow("Connected count:", value: intLabel(g7Manager.lastRetrievedConnectedCount))
             debugMultilineRow(
                 "Identifier skip reason:",
                 value: humanizeDebugValue(g7Manager.lastIdentifierRetrievalSkipReason)

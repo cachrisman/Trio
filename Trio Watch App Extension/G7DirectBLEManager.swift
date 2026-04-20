@@ -8,9 +8,8 @@ import WatchKit
 private enum G7BLEUUID {
     /// Advertisement service for scanning (`scanForPeripherals` filter — Dexcom G7 advertises this UUID).
     static let advertisement = CBUUID(string: "FEBC")
-    /// Primary GATT service on an established G7 connection. This remains the primary retrieval UUID.
-    /// F5 also queries `advertisement` / FEBC in parallel as a diagnostic experiment only, not because FEBC
-    /// is already established as a valid connected-service retrieval key on watchOS.
+    /// Primary GATT service on an established G7 connection. Phase H uses this together with `advertisement`
+    /// for connection-event matching and connected-peripheral retrieval, mirroring G7SensorKit's attach path.
     static let dataService = CBUUID(string: "F8083532-849E-531C-C594-30F1F86A4EA5")
     static let communication = CBUUID(string: "F8083533-849E-531C-C594-30F1F86A4EA5")
     static let authentication = CBUUID(string: "F8083535-849E-531C-C594-30F1F86A4EA5")
@@ -54,6 +53,7 @@ private enum G7BLERuntimeGateResult {
 @Observable
 final class G7DirectBLEManager: NSObject {
     private static let activePeripheralIdentifierAppGroupKey = "g7_active_peripheral_identifier"
+    private static let connectedAttachServiceUUIDs = [G7BLEUUID.dataService, G7BLEUUID.advertisement]
     private static let cycleLeadWindowSeconds: TimeInterval = 20
     private static let cycleWarmupLeadSeconds: TimeInterval = 30
     private static let cycleCadenceSeconds: TimeInterval = 5 * 60
@@ -175,8 +175,7 @@ final class G7DirectBLEManager: NSObject {
     private(set) var lastTerminalAt: Date?
     private(set) var lastStageTransitionAt: Date?
     private(set) var lastRetrievedIdentifierCount: Int?
-    private(set) var lastRetrievedDataServiceCount: Int?
-    private(set) var lastRetrievedFebcCount: Int?
+    private(set) var lastRetrievedConnectedCount: Int?
     private(set) var lastPersistedPeripheralIdentifierShort: String?
     private(set) var lastIdentifierRetrievalSkipReason: String?
     private(set) var lastIdentifierRetrievalPeripheralName: String?
@@ -496,6 +495,7 @@ final class G7DirectBLEManager: NSObject {
 
         switch central.state {
         case .poweredOn:
+            registerForConnectionEventsIfNeeded(on: central)
             central.scanForPeripherals(
                 withServices: [G7BLEUUID.advertisement],
                 options: nil
@@ -551,6 +551,13 @@ final class G7DirectBLEManager: NSObject {
             ]
         )
         return true
+    }
+
+    private func registerForConnectionEventsIfNeeded(on central: CBCentralManager) {
+        guard central.state == .poweredOn else { return }
+        central.registerForConnectionEvents(options: [
+            CBConnectionEventMatchingOption.serviceUUIDs: Self.connectedAttachServiceUUIDs
+        ])
     }
 
     func notePhoneRelayReadingDate(_ readingDate: Date?) {
@@ -1030,8 +1037,7 @@ final class G7DirectBLEManager: NSObject {
         lastTerminalStage = nil
         lastTerminalAt = nil
         lastRetrievedIdentifierCount = nil
-        lastRetrievedDataServiceCount = nil
-        lastRetrievedFebcCount = nil
+        lastRetrievedConnectedCount = nil
         lastIdentifierRetrievalSkipReason = nil
         lastIdentifierRetrievalPeripheralName = nil
         lastPreConnectPeripheralState = nil
@@ -1727,8 +1733,8 @@ final class G7DirectBLEManager: NSObject {
         return (peripheral.name ?? "unknown") == active
     }
 
-    private func firstDistinctPeripheral(in peripherals: [CBPeripheral], excluding excluded: Set<UUID>) -> CBPeripheral? {
-        peripherals.first(where: { !excluded.contains($0.identifier) })
+    private func isRetrievedAttachSource(_ source: String) -> Bool {
+        source == "connection_event" || source.hasPrefix("retrieved_")
     }
 
     private func selectIdentifierRetrievedPeripheralForAttach(
@@ -1743,26 +1749,13 @@ final class G7DirectBLEManager: NSObject {
         return nil
     }
 
-    private func selectRetrievedPeripheralForAttach(
-        dataServicePeripherals: [CBPeripheral],
-        febcPeripherals: [CBPeripheral]
+    private func selectConnectedRetrievedPeripheralForAttach(
+        _ peripherals: [CBPeripheral]
     ) -> (peripheral: CBPeripheral, name: String, source: String)? {
-        // F5 stays within the current attach policy: only select a retrieval candidate when the active-name
-        // filter is armed, and still require exact-name equality. This means the retrieval diagnostic is measuring
-        // retrieval behavior under today's attach policy, not all possible retrieval opportunities. The surrounding
-        // skip logging is summarized rather than exhaustive: it logs representative non-matching candidates, not
-        // every returned peripheral in each retrieval set.
         guard hasActivePeripheralNameFilter else { return nil }
-        if let peripheral = dataServicePeripherals.first(where: { doesPeripheralMatchActiveFilter($0) }) {
+        if let peripheral = peripherals.first(where: { doesPeripheralMatchActiveFilter($0) }) {
             let name = peripheral.name ?? "unknown"
-            return (peripheral, name, "retrieved_data_service")
-        }
-        let excluded = Set(dataServicePeripherals.map(\.identifier))
-        if let peripheral = febcPeripherals.first(where: {
-            doesPeripheralMatchActiveFilter($0) && !excluded.contains($0.identifier)
-        }) {
-            let name = peripheral.name ?? "unknown"
-            return (peripheral, name, "retrieved_febc")
+            return (peripheral, name, "retrieved_connected")
         }
         return nil
     }
@@ -1787,77 +1780,42 @@ final class G7DirectBLEManager: NSObject {
         }
     }
 
-    private func logRetrievalDiagnostics(
+    private func logConnectedRetrievalDiagnostics(
         event: String,
-        dataServicePeripherals: [CBPeripheral],
-        febcPeripherals: [CBPeripheral]
+        peripherals: [CBPeripheral]
     ) {
-        lastRetrievedDataServiceCount = dataServicePeripherals.count
-        lastRetrievedFebcCount = febcPeripherals.count
-        let dataIdentifiers = dataServicePeripherals.map(\.identifier)
-        let febcIdentifiers = febcPeripherals.map(\.identifier)
-        let overlap = Array(Set(dataIdentifiers).intersection(Set(febcIdentifiers)))
-            .sorted { $0.uuidString < $1.uuidString }
-        let overlapShorts = boundedPeripheralShortList(overlap)
-        let firstData = dataServicePeripherals.first
-        let firstFebc = febcPeripherals.first
-        let firstDataName = firstData?.name ?? "unknown"
-        let firstFebcName = firstFebc?.name ?? "unknown"
-        let firstDataState = firstData.map { Int($0.state.rawValue) } ?? -1
-        let firstFebcState = firstFebc.map { Int($0.state.rawValue) } ?? -1
-        let firstDataIdShort = firstData.map { peripheralIdShort($0) } ?? "none"
-        let firstFebcIdShort = firstFebc.map { peripheralIdShort($0) } ?? "none"
+        lastRetrievedConnectedCount = peripherals.count
+        let firstPeripheral = peripherals.first
+        let firstName = firstPeripheral?.name ?? "unknown"
+        let firstState = firstPeripheral.map { Int($0.state.rawValue) } ?? -1
+        let firstIdShort = firstPeripheral.map { peripheralIdShort($0) } ?? "none"
         Task {
             await logG7Ble(
-                "event=\(event) retrieval_uuid=data_service count=\(dataServicePeripherals.count) overlap_count=\(overlap.count) overlap_ids_short=\(overlapShorts) first_name=\(firstDataName) first_state=\(firstDataState) peripheral_id_short=\(firstDataIdShort)"
-            )
-            await logG7Ble(
-                "event=\(event) retrieval_uuid=febc count=\(febcPeripherals.count) overlap_count=\(overlap.count) overlap_ids_short=\(overlapShorts) first_name=\(firstFebcName) first_state=\(firstFebcState) peripheral_id_short=\(firstFebcIdShort)"
+                "event=\(event) retrieval_uuid=connected_services count=\(peripherals.count) matched_service_uuids=data_service,febc first_name=\(firstName) first_state=\(firstState) peripheral_id_short=\(firstIdShort)"
             )
         }
     }
 
-    private func logRetrievedPeripheralSkipsIfNeeded(
-        dataServicePeripherals: [CBPeripheral],
-        febcPeripherals: [CBPeripheral]
-    ) {
+    private func logConnectedRetrievedPeripheralSkipsIfNeeded(_ peripherals: [CBPeripheral]) {
         if !hasActivePeripheralNameFilter {
-            if let retrieved = dataServicePeripherals.first {
+            if let retrieved = peripherals.first {
                 let name = retrieved.name ?? "unknown"
                 lastIdentifierRetrievalSkipReason = nil
                 lastIdentifierRetrievalPeripheralName = nil
                 setBlockerDebugState(
                     category: "attach",
-                    source: "retrieved_data_service",
+                    source: "retrieved_connected",
                     reason: "missing_active_sensor_filter"
                 )
                 Task {
                     await logG7Ble(
-                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved_data_service"
-                    )
-                }
-            }
-            if let retrieved = firstDistinctPeripheral(
-                in: febcPeripherals,
-                excluding: Set(dataServicePeripherals.map(\.identifier))
-            ) {
-                let name = retrieved.name ?? "unknown"
-                lastIdentifierRetrievalSkipReason = nil
-                lastIdentifierRetrievalPeripheralName = nil
-                setBlockerDebugState(
-                    category: "attach",
-                    source: "retrieved_febc",
-                    reason: "missing_active_sensor_filter"
-                )
-                Task {
-                    await logG7Ble(
-                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved_febc"
+                        "event=g7_ble_peripheral_skipped peripheral=\(name) reason=missing_active_sensor_filter source=retrieved_connected"
                     )
                 }
             }
             return
         }
-        if let retrieved = dataServicePeripherals.first,
+        if let retrieved = peripherals.first,
            !doesPeripheralMatchActiveFilter(retrieved)
         {
             let name = retrieved.name ?? "unknown"
@@ -1865,34 +1823,64 @@ final class G7DirectBLEManager: NSObject {
             lastIdentifierRetrievalPeripheralName = nil
             setBlockerDebugState(
                 category: "attach",
-                source: "retrieved_data_service",
+                source: "retrieved_connected",
                 reason: "not_active_sensor"
             )
             Task {
                 await logG7Ble(
-                    "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved_data_service"
+                    "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved_connected"
                 )
             }
         }
-        if let retrieved = firstDistinctPeripheral(
-            in: febcPeripherals,
-            excluding: Set(dataServicePeripherals.map(\.identifier))
-        ), !doesPeripheralMatchActiveFilter(retrieved)
-        {
-            let name = retrieved.name ?? "unknown"
-            lastIdentifierRetrievalSkipReason = nil
-            lastIdentifierRetrievalPeripheralName = nil
-            setBlockerDebugState(
-                category: "attach",
-                source: "retrieved_febc",
-                reason: "not_active_sensor"
-            )
+    }
+
+    @discardableResult
+    private func beginRetrievedOrEventAttachIfEligible(
+        _ peripheral: CBPeripheral,
+        source: String,
+        expectedCycleGeneration: Int
+    ) -> Bool {
+        guard scanningStarted else { return false }
+        guard expectedCycleGeneration == currentCycleGeneration else {
             Task {
                 await logG7Ble(
-                    "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=retrieved_febc"
+                    "event=g7_ble_attach_suppressed reason=stale_cycle_generation source=\(source) expected_generation=\(expectedCycleGeneration) current_generation=\(currentCycleGeneration)"
+                )
+            }
+            return false
+        }
+        if emitAttachBlockedIfNeeded(source: source) {
+            return false
+        }
+        let name = peripheral.name ?? "unknown"
+        guard doesPeripheralMatchActiveFilter(peripheral) else {
+            setBlockerDebugState(category: "attach", source: source, reason: "not_active_sensor")
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=\(source)"
+                )
+            }
+            return false
+        }
+        updateLastSeenPeripheral(name: name, rssi: nil)
+        lastIdentifierRetrievalSkipReason = nil
+        lastIdentifierRetrievalPeripheralName = nil
+        if source.hasPrefix("retrieved_") {
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_retrieved_attach_selected peripheral=\(name) source=\(source)"
                 )
             }
         }
+        beginConnectToG7Peripheral(
+            peripheral,
+            name: name,
+            rssi: 0,
+            source: source,
+            isConnectableAdvertisement: "unknown",
+            discoverCountForTarget: discoverCountForActiveTarget
+        )
+        return true
     }
 
     @discardableResult
@@ -1901,39 +1889,39 @@ final class G7DirectBLEManager: NSObject {
         retrievalEvent: String,
         blockedSource: String
     ) -> Bool {
+        let expectedCycleGeneration = currentCycleGeneration
+        let connectedPeripherals = central.retrieveConnectedPeripherals(withServices: Self.connectedAttachServiceUUIDs)
+        logConnectedRetrievalDiagnostics(
+            event: retrievalEvent,
+            peripherals: connectedPeripherals
+        )
+
+        _ = emitAttachBlockedIfNeeded(source: blockedSource)
+        if let selected = selectConnectedRetrievedPeripheralForAttach(connectedPeripherals),
+           beginRetrievedOrEventAttachIfEligible(
+               selected.peripheral,
+               source: selected.source,
+               expectedCycleGeneration: expectedCycleGeneration
+           )
+        {
+            return true
+        }
+
+        logConnectedRetrievedPeripheralSkipsIfNeeded(connectedPeripherals)
+
         let storedIdentifier = loadPersistedPeripheralIdentifier()
         let retrievedIdentifierPeripherals = retrievePeripheralsByIdentifierIfAvailable(central)
         logIdentifierRetrievalDiagnostics(
             storedIdentifier: storedIdentifier,
             peripherals: retrievedIdentifierPeripherals
         )
-
-        let retrievedDataServicePeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.dataService])
-        let retrievedFebcPeripherals = central.retrieveConnectedPeripherals(withServices: [G7BLEUUID.advertisement])
-        logRetrievalDiagnostics(
-            event: retrievalEvent,
-            dataServicePeripherals: retrievedDataServicePeripherals,
-            febcPeripherals: retrievedFebcPeripherals
-        )
-
-        _ = emitAttachBlockedIfNeeded(source: blockedSource)
-        if let selected = selectIdentifierRetrievedPeripheralForAttach(retrievedIdentifierPeripherals) {
-            updateLastSeenPeripheral(name: selected.name, rssi: nil)
-            lastIdentifierRetrievalSkipReason = nil
-            lastIdentifierRetrievalPeripheralName = nil
-            Task {
-                await logG7Ble(
-                    "event=g7_ble_retrieved_attach_selected peripheral=\(selected.name) source=\(selected.source)"
-                )
-            }
-            beginConnectToG7Peripheral(
+        if let selected = selectIdentifierRetrievedPeripheralForAttach(retrievedIdentifierPeripherals),
+           beginRetrievedOrEventAttachIfEligible(
                 selected.peripheral,
-                name: selected.name,
-                rssi: 0,
                 source: selected.source,
-                isConnectableAdvertisement: "unknown",
-                discoverCountForTarget: discoverCountForActiveTarget
-            )
+                expectedCycleGeneration: expectedCycleGeneration
+           )
+        {
             return true
         }
 
@@ -1957,33 +1945,6 @@ final class G7DirectBLEManager: NSObject {
             }
         }
 
-        if let selected = selectRetrievedPeripheralForAttach(
-            dataServicePeripherals: retrievedDataServicePeripherals,
-            febcPeripherals: retrievedFebcPeripherals
-        ) {
-            updateLastSeenPeripheral(name: selected.name, rssi: nil)
-            lastIdentifierRetrievalSkipReason = nil
-            lastIdentifierRetrievalPeripheralName = nil
-            Task {
-                await logG7Ble(
-                    "event=g7_ble_retrieved_attach_selected peripheral=\(selected.name) source=\(selected.source)"
-                )
-            }
-            beginConnectToG7Peripheral(
-                selected.peripheral,
-                name: selected.name,
-                rssi: 0,
-                source: selected.source,
-                isConnectableAdvertisement: "unknown",
-                discoverCountForTarget: discoverCountForActiveTarget
-            )
-            return true
-        }
-
-        logRetrievedPeripheralSkipsIfNeeded(
-            dataServicePeripherals: retrievedDataServicePeripherals,
-            febcPeripherals: retrievedFebcPeripherals
-        )
         return false
     }
 
@@ -2193,7 +2154,7 @@ final class G7DirectBLEManager: NSObject {
         return n.boolValue ? "true" : "false"
     }
 
-    /// Shared path for advertisement discovery and `retrieveConnectedPeripherals` attach (DiaBLE-style).
+    /// Shared path for advertisement discovery, connected-peripheral retrieval, and connection-event attach.
     private func beginConnectToG7Peripheral(
         _ peripheral: CBPeripheral,
         name: String,
@@ -2212,7 +2173,6 @@ final class G7DirectBLEManager: NSObject {
             return
         }
         attemptedConnectPeripheralIdentifiers.insert(peripheral.identifier)
-        persistPeripheralIdentifier(peripheral.identifier, reason: "connect_attempt")
         let idShort = peripheralIdShort(peripheral)
         central?.stopScan()
         self.peripheral = peripheral
@@ -2247,7 +2207,11 @@ final class G7DirectBLEManager: NSObject {
         let centralState = central?.state.rawValue ?? -1
         let preserved = sessionPreservedAcrossForegroundReentry
         let cbCentralAllocatedInStartScanning = centralManagerAllocatedInLastStartScanning
-        let preConnectSane = peripheralState == CBPeripheralState.disconnected.rawValue
+        let preConnectSane = (
+            peripheralState == CBPeripheralState.disconnected.rawValue
+                || (isRetrievedAttachSource(preConnectSource)
+                    && peripheralState == CBPeripheralState.connected.rawValue)
+        )
             && centralState == CBManagerState.poweredOn.rawValue
             && isConnectableAdvertisement != "false"
         lastPreConnectPeripheralState = peripheralState
@@ -2277,7 +2241,7 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         guard connectionState == .scanning else { return }
         central.stopScan()
 
-        // Phase E/F5/F10: retrieve before scan (closer DiaBLE parity) and compare identifier/data-service/FEBC retrieval without duplicate connects.
+        // Phase H: prefer a live system-connected peripheral before falling back to identifier retrieval or scan.
         if attemptRetrievedAttachIfAvailable(
             central: central,
             retrievalEvent: "g7_ble_retrieve_on_powered_on",
@@ -2286,6 +2250,7 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
             return
         }
 
+        registerForConnectionEventsIfNeeded(on: central)
         central.scanForPeripherals(
             withServices: [G7BLEUUID.advertisement],
             options: nil
@@ -2302,6 +2267,24 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         Task {
             await logG7Ble("event=g7_ble_will_restore_state keys=\(keys)")
         }
+    }
+
+    func centralManager(_ central: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent, for peripheral: CBPeripheral) {
+        guard scanningStarted, central.state == .poweredOn else { return }
+        guard event == .peerConnected else { return }
+        let expectedCycleGeneration = currentCycleGeneration
+        let name = peripheral.name ?? "unknown"
+        let idShort = peripheralIdShort(peripheral)
+        Task {
+            await logG7Ble(
+                "event=g7_ble_connection_event_fired peripheral=\(name) peripheral_id_short=\(idShort) source=connection_event"
+            )
+        }
+        _ = beginRetrievedOrEventAttachIfEligible(
+            peripheral,
+            source: "connection_event",
+            expectedCycleGeneration: expectedCycleGeneration
+        )
     }
 
     func centralManager(
