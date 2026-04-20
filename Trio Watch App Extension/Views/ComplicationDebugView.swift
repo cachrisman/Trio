@@ -232,6 +232,11 @@ struct ComplicationDebugView: View {
             sectionHeader("RETRIEVAL")
             debugRow("Identifier count:", value: intLabel(g7Manager.lastRetrievedIdentifierCount))
             debugRow("Connected count:", value: intLabel(g7Manager.lastRetrievedConnectedCount))
+            Button("Clear stored identifier") {
+                g7Manager.clearStoredPeripheralIdentifier()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
             debugMultilineRow(
                 "Identifier skip reason:",
                 value: humanizeDebugValue(g7Manager.lastIdentifierRetrievalSkipReason)

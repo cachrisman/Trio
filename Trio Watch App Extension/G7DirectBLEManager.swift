@@ -485,13 +485,11 @@ final class G7DirectBLEManager: NSObject {
         central.stopScan()
 
         // Attach to a G7 already connected at the watchOS level (e.g. Dexcom Watch app) without waiting for an advertisement.
-        if attemptRetrievedAttachIfAvailable(
+        _ = attemptRetrievedAttachIfAvailable(
             central: central,
             retrievalEvent: "g7_ble_retrieve_result",
             blockedSource: "scan_start"
-        ) {
-            return
-        }
+        )
 
         switch central.state {
         case .poweredOn:
@@ -536,6 +534,13 @@ final class G7DirectBLEManager: NSObject {
         } else {
             pendingDisconnectReason = nil
             teardownSession(reason: "stop_requested", isFailure: false)
+        }
+    }
+
+    func clearStoredPeripheralIdentifier() {
+        clearPersistedPeripheralIdentifier(reason: "manual_clear")
+        if scanningStarted {
+            startScanning()
         }
     }
 
@@ -2241,14 +2246,13 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         guard connectionState == .scanning else { return }
         central.stopScan()
 
-        // Phase H: prefer a live system-connected peripheral before falling back to identifier retrieval or scan.
-        if attemptRetrievedAttachIfAvailable(
+        // Phase H: prefer a live system-connected peripheral before falling back to identifier retrieval or scan,
+        // but keep connection events and FEBC scan running in parallel for the same cycle.
+        _ = attemptRetrievedAttachIfAvailable(
             central: central,
             retrievalEvent: "g7_ble_retrieve_on_powered_on",
             blockedSource: "powered_on_retrieve"
-        ) {
-            return
-        }
+        )
 
         registerForConnectionEventsIfNeeded(on: central)
         central.scanForPeripherals(
@@ -2275,9 +2279,10 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         let expectedCycleGeneration = currentCycleGeneration
         let name = peripheral.name ?? "unknown"
         let idShort = peripheralIdShort(peripheral)
+        let alreadyAttempted = attemptedConnectPeripheralIdentifiers.contains(peripheral.identifier)
         Task {
             await logG7Ble(
-                "event=g7_ble_connection_event_fired peripheral=\(name) peripheral_id_short=\(idShort) source=connection_event"
+                "event=g7_ble_connection_event_fired peripheral=\(name) peripheral_id_short=\(idShort) source=connection_event already_attempted=\(alreadyAttempted)"
             )
         }
         _ = beginRetrievedOrEventAttachIfEligible(
