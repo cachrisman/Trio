@@ -499,7 +499,7 @@ final class G7DirectBLEManager: NSObject {
 
         switch central.state {
         case .poweredOn:
-            registerForConnectionEventsIfNeeded(on: central)
+            // registerForConnectionEventsIfNeeded(on: central)
             central.scanForPeripherals(
                 withServices: [G7BLEUUID.advertisement],
                 options: nil
@@ -564,12 +564,12 @@ final class G7DirectBLEManager: NSObject {
         return true
     }
 
-    private func registerForConnectionEventsIfNeeded(on central: CBCentralManager) {
-        guard central.state == .poweredOn else { return }
-        central.registerForConnectionEvents(options: [
-            CBConnectionEventMatchingOption.serviceUUIDs: Self.connectedAttachServiceUUIDs
-        ])
-    }
+    // private func registerForConnectionEventsIfNeeded(on central: CBCentralManager) {
+    //     guard central.state == .poweredOn else { return }
+    //     central.registerForConnectionEvents(options: [
+    //         CBConnectionEventMatchingOption.serviceUUIDs: Self.connectedAttachServiceUUIDs
+    //     ])
+    // }
 
     func notePhoneRelayReadingDate(_ readingDate: Date?) {
         guard let readingDate else { return }
@@ -2266,7 +2266,7 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
             blockedSource: "powered_on_retrieve"
         )
 
-        registerForConnectionEventsIfNeeded(on: central)
+        // registerForConnectionEventsIfNeeded(on: central)
         central.scanForPeripherals(
             withServices: [G7BLEUUID.advertisement],
             options: nil
@@ -2285,24 +2285,28 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         }
     }
 
-    func centralManager(_ central: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent, for peripheral: CBPeripheral) {
-        guard scanningStarted, central.state == .poweredOn else { return }
-        guard event == .peerConnected else { return }
-        let expectedCycleGeneration = currentCycleGeneration
-        let name = peripheral.name ?? "unknown"
-        let idShort = peripheralIdShort(peripheral)
-        let alreadyAttempted = attemptedConnectPeripheralIdentifiers.contains(peripheral.identifier)
-        Task {
-            await logG7Ble(
-                "event=g7_ble_connection_event_fired peripheral=\(name) peripheral_id_short=\(idShort) source=connection_event already_attempted=\(alreadyAttempted)"
-            )
-        }
-        _ = beginRetrievedOrEventAttachIfEligible(
-            peripheral,
-            source: "connection_event",
-            expectedCycleGeneration: expectedCycleGeneration
-        )
-    }
+    // func centralManager(
+    //     _ central: CBCentralManager,
+    //     connectionEventDidOccur event: CBConnectionEvent,
+    //     for peripheral: CBPeripheral
+    // ) {
+    //     guard scanningStarted, central.state == .poweredOn else { return }
+    //     guard event == .peerConnected else { return }
+    //     let expectedCycleGeneration = currentCycleGeneration
+    //     let name = peripheral.name ?? "unknown"
+    //     let idShort = peripheralIdShort(peripheral)
+    //     let alreadyAttempted = attemptedConnectPeripheralIdentifiers.contains(peripheral.identifier)
+    //     Task {
+    //         await logG7Ble(
+    //             "event=g7_ble_connection_event_fired peripheral=\(name) peripheral_id_short=\(idShort) source=connection_event already_attempted=\(alreadyAttempted)"
+    //         )
+    //     }
+    //     _ = beginRetrievedOrEventAttachIfEligible(
+    //         peripheral,
+    //         source: "connection_event",
+    //         expectedCycleGeneration: expectedCycleGeneration
+    //     )
+    // }
 
     func centralManager(
         _: CBCentralManager,
