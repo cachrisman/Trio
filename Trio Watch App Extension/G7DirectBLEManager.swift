@@ -501,7 +501,8 @@ final class G7DirectBLEManager: NSObject {
         case .poweredOn:
             // registerForConnectionEventsIfNeeded(on: central)
             central.scanForPeripherals(
-                withServices: [G7BLEUUID.advertisement],
+                // withServices: [G7BLEUUID.advertisement],
+                withServices: nil,
                 options: nil
             )
             loggedScanStartThisRequest = true
@@ -2268,7 +2269,8 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
 
         // registerForConnectionEventsIfNeeded(on: central)
         central.scanForPeripherals(
-            withServices: [G7BLEUUID.advertisement],
+            // withServices: [G7BLEUUID.advertisement],
+            withServices: nil,
             options: nil
         )
         guard !loggedScanStartThisRequest else { return }

@@ -118,29 +118,38 @@ struct ComplicationDebugView: View {
             let fraction = min(1.0, max(0.0, elapsed / 300.0))
             let arcColor: Color = fraction < 0.7 ? .green : (fraction < 0.9 ? .yellow : .red)
 
-            let lineWidth: CGFloat = 6
-            let cornerRadius: CGFloat = 51
-            let horizontalInset: CGFloat = -18
-            let verticalInset: CGFloat = 22
+            let lineWidth: CGFloat = 3
+            let sideInset: CGFloat = 8
+            let topInset: CGFloat = 4
+            let bottomInset: CGFloat = 20
+            let cornerRadius: CGFloat = 28
 
-            let ringWidth = geo.size.width - (horizontalInset * 2)
-            let ringHeight = geo.size.height - (verticalInset * 2)
+            let ringWidth = geo.size.width - (sideInset * 2)
+            let ringHeight = geo.size.height - topInset - bottomInset
 
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .trim(from: 0, to: fraction)
-                .stroke(
-                    arcColor,
-                    style: StrokeStyle(
-                        lineWidth: lineWidth,
-                        lineCap: .round,
-                        lineJoin: .round
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(.white.opacity(0.12), lineWidth: lineWidth)
+
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .trim(from: 0, to: fraction)
+                    .stroke(
+                        arcColor,
+                        style: StrokeStyle(
+                            lineWidth: lineWidth,
+                            lineCap: .round,
+                            lineJoin: .round
+                        )
                     )
-                )
-                .frame(width: ringWidth, height: ringHeight)
-                .position(x: geo.size.width / 2, y: geo.size.height / 2)
-                .rotationEffect(.degrees(-90))
-                .allowsHitTesting(false)
-                .animation(.linear(duration: 0.95), value: autoRefreshTick)
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: ringWidth, height: ringHeight)
+            .position(
+                x: geo.size.width / 2,
+                y: topInset + ringHeight / 2
+            )
+            .allowsHitTesting(false)
+            .animation(.linear(duration: 0.95), value: autoRefreshTick)
         }
         .allowsHitTesting(false)
     }
