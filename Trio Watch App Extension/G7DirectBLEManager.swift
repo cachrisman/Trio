@@ -501,8 +501,7 @@ final class G7DirectBLEManager: NSObject {
         case .poweredOn:
             // registerForConnectionEventsIfNeeded(on: central)
             central.scanForPeripherals(
-                // withServices: [G7BLEUUID.advertisement],
-                withServices: nil,
+                withServices: [G7BLEUUID.advertisement],
                 options: nil
             )
             loggedScanStartThisRequest = true
@@ -2247,6 +2246,7 @@ final class G7DirectBLEManager: NSObject {
             )
         }
         central?.connect(peripheral, options: nil)
+        persistPeripheralIdentifier(peripheral.identifier, reason: "connect_attempt")
         scheduleConnectTimeout()
     }
 }
@@ -2269,8 +2269,7 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
 
         // registerForConnectionEventsIfNeeded(on: central)
         central.scanForPeripherals(
-            // withServices: [G7BLEUUID.advertisement],
-            withServices: nil,
+            withServices: [G7BLEUUID.advertisement],
             options: nil
         )
         guard !loggedScanStartThisRequest else { return }
