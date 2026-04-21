@@ -2,6 +2,38 @@ import Combine
 import SwiftUI
 
 struct ComplicationDebugView: View {
+    private enum HelpSheet: String, Identifiable {
+        case dataStore
+        case directBleOverview
+        case lifecycle
+        case runtimeCycle
+        case attachContext
+        case retrieval
+        case sessionFunnel
+        case currentBlocker
+        case logFiles
+        case reloadStatus
+        case actions
+
+        var id: String { rawValue }
+
+        var navigationTitle: String {
+            switch self {
+            case .dataStore: return "Data store"
+            case .directBleOverview: return "Direct G7 BLE"
+            case .lifecycle: return "Lifecycle"
+            case .runtimeCycle: return "Runtime + cycle"
+            case .attachContext: return "Attach context"
+            case .retrieval: return "Retrieval"
+            case .sessionFunnel: return "Session funnel"
+            case .currentBlocker: return "Current blocker"
+            case .logFiles: return "Log files"
+            case .reloadStatus: return "Reload status"
+            case .actions: return "Actions"
+            }
+        }
+    }
+
     private struct BleChecklistGate: Identifiable {
         let label: String
         let isSatisfied: Bool
@@ -37,6 +69,7 @@ struct ComplicationDebugView: View {
     @State private var pendingCount = 0
     @State private var isLoadingLogFiles = false
     @State private var pendingLogStatsReload = false
+    @State private var activeHelpSheet: HelpSheet?
 
     private let dataStore = TrioComplicationDataStore.shared
     private let snapshotRefreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
@@ -46,33 +79,90 @@ struct ComplicationDebugView: View {
         watchState.g7DebugManager
     }
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                sectionHeader("DATA STORE")
-                dataStoreStateView
+    /// True when any blocker-related debug field should be shown (non-empty category/source/reasons or a timestamp).
+    private var hasCurrentBlockerSectionContent: Bool {
+        if hasNonEmptyOptionalString(g7Manager.lastBlockerCategory) { return true }
+        if hasNonEmptyOptionalString(g7Manager.lastBlockerSource) { return true }
+        if hasNonEmptyOptionalString(g7Manager.lastBlockerReasonRaw) { return true }
+        if hasNonEmptyOptionalString(g7Manager.lastBlockedReason) { return true }
+        if g7Manager.lastBlockerAt != nil { return true }
+        return false
+    }
 
-                Divider().padding(.vertical, 4)
+    private func hasNonEmptyOptionalString(_ s: String?) -> Bool {
+        guard let s = s?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines), !s.isEmpty else { return false }
+        return true
+    }
 
-                sectionHeader("DIRECT G7 BLE")
-                directBleObserverView
-
-                Divider().padding(.vertical, 4)
-
-                sectionHeader("LOG FILES")
-                logFilesView
-
-                Divider().padding(.vertical, 4)
-
-                sectionHeader("RELOAD STATUS")
-                reloadStatusView
-
-                Divider().padding(.vertical, 4)
-
-                sectionHeader("ACTIONS")
-                actionsView
+    /// Cycle anchor label with optional ` (bootstrap)` suffix; bootstrap without anchor → `bootstrap (no anchor)`.
+    private func cycleAnchorDisplayString() -> String {
+        let raw = g7Manager.debugCurrentCycleAnchorSource?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
+        if g7Manager.debugCurrentCycleBootstrap == true {
+            if raw.isEmpty {
+                return "bootstrap (no anchor)"
             }
-            .padding(.horizontal, 8)
+            return "\(humanizeDebugValue(g7Manager.debugCurrentCycleAnchorSource)) (bootstrap)"
+        }
+        return humanizeDebugValue(g7Manager.debugCurrentCycleAnchorSource)
+    }
+
+    /// Prefer direct-BLE EGV time; fall back to the saved complication snapshot so the ring is useful before BLE succeeds.
+    private var arcReferenceReadingDate: Date? {
+        g7Manager.lastReadingDate ?? snapshot?.readingDate
+    }
+
+    private var readingCycleProgressArcOverlay: some View {
+        let _ = autoRefreshTick
+        return GeometryReader { geo in
+            let elapsed = Date().timeIntervalSince(arcReferenceReadingDate ?? .distantPast)
+            let fraction = min(1.0, max(0.0, elapsed / 300.0))
+            let arcColor: Color = fraction < 0.7 ? .green : (fraction < 0.9 ? .yellow : .red)
+            let side = min(geo.size.width, geo.size.height)
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .foregroundStyle(arcColor)
+                .rotationEffect(.degrees(-90))
+                .padding(2)
+                .frame(width: side, height: side)
+                .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                .allowsHitTesting(false)
+                .animation(.linear(duration: 0.95), value: autoRefreshTick)
+        }
+        .allowsHitTesting(false)
+    }
+
+    var body: some View {
+        ZStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionHeader("DATA STORE", help: .dataStore)
+                    dataStoreStateView
+
+                    Divider().padding(.vertical, 4)
+
+                    sectionHeader("DIRECT G7 BLE", help: .directBleOverview)
+                    directBleObserverView
+
+                    Divider().padding(.vertical, 4)
+
+                    sectionHeader("LOG FILES", help: .logFiles)
+                    logFilesView
+
+                    Divider().padding(.vertical, 4)
+
+                    sectionHeader("RELOAD STATUS", help: .reloadStatus)
+                    reloadStatusView
+
+                    Divider().padding(.vertical, 4)
+
+                    sectionHeader("ACTIONS", help: .actions)
+                    actionsView
+                }
+                .padding(.horizontal, 8)
+            }
+
+            readingCycleProgressArcOverlay
         }
         .navigationTitle("Debug")
         .onAppear {
@@ -87,10 +177,28 @@ struct ComplicationDebugView: View {
             loadLogFileStats()
         }
         .overlay(confirmationOverlay)
+        .sheet(item: $activeHelpSheet) { sheet in
+            NavigationStack {
+                ScrollView {
+                    helpContent(for: sheet)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+                .navigationTitle(sheet.navigationTitle)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { activeHelpSheet = nil }
+                    }
+                }
+            }
+        }
     }
 
     private var dataStoreStateView: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        _ = autoRefreshTick
+        return VStack(alignment: .leading, spacing: 4) {
             if let s = snapshot {
                 HStack {
                     Text("Glucose:")
@@ -129,13 +237,6 @@ struct ComplicationDebugView: View {
                     Text(formatTime(s.date))
                 }
 
-                HStack {
-                    Text("Next expected reading:")
-                    Spacer()
-                    Text("\(nextUpdateSeconds)s")
-                        .foregroundColor(.secondary)
-                }
-
                 if let state = s.state, !state.isEmpty {
                     HStack {
                         Text("State:")
@@ -154,24 +255,33 @@ struct ComplicationDebugView: View {
     }
 
     private var directBleObserverView: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionHeader("LIFECYCLE")
+        // `G7DirectBLEManager` is `@ObservationIgnored` on `WatchState`; depend on the same 1s tick as
+        // `formatTime` so these rows refresh without requiring unrelated `WatchState` mutations.
+        _ = autoRefreshTick
+        return VStack(alignment: .leading, spacing: 6) {
+            sectionHeader("LIFECYCLE", help: .lifecycle)
             debugRow(
                 "Current lifecycle:",
                 value: g7Manager.debugCurrentProtocolStageLabel,
                 valueColor: stageColor(g7Manager.debugCurrentProtocolStageLabel)
             )
             debugRow("Terminal outcome:", value: humanizeDebugValue(g7Manager.lastTerminalOutcome))
-            debugMultilineRow("Terminal reason:", value: humanizeDebugValue(g7Manager.lastTerminalReason))
-            debugRow("Terminal stage:", value: humanizeDebugValue(g7Manager.lastTerminalStage))
+            if hasNonEmptyOptionalString(g7Manager.lastTerminalReason) {
+                debugMultilineRow("Terminal reason:", value: humanizeDebugValue(g7Manager.lastTerminalReason))
+            }
+            if hasNonEmptyOptionalString(g7Manager.lastTerminalStage) {
+                debugRow("Terminal stage:", value: humanizeDebugValue(g7Manager.lastTerminalStage))
+            }
             debugRow("Timeout stage:", value: humanizeDebugValue(g7Manager.debugTimeoutStage))
-            debugMultilineRow("Disconnect reason:", value: humanizeDebugValue(g7Manager.lastDisconnectReason))
+            if hasNonEmptyOptionalString(g7Manager.lastDisconnectReason) {
+                debugMultilineRow("Disconnect reason:", value: humanizeDebugValue(g7Manager.lastDisconnectReason))
+            }
             debugRow("Last stage change:", value: formatOptionalTime(g7Manager.lastStageTransitionAt))
             debugRow("Last terminal at:", value: formatOptionalTime(g7Manager.lastTerminalAt))
 
             Divider().padding(.vertical, 2)
 
-            sectionHeader("RUNTIME + CYCLE")
+            sectionHeader("RUNTIME + CYCLE", help: .runtimeCycle)
             debugRow(
                 "Runtime state:",
                 value: g7Manager.debugRuntimeStateLabel,
@@ -183,13 +293,12 @@ struct ComplicationDebugView: View {
                 value: g7Manager.debugCycleStatusLabel,
                 valueColor: cycleStateColor(g7Manager.debugCycleStatusLabel)
             )
-            debugMultilineRow("Session ID:", value: humanizeDebugValue(g7Manager.currentG7SessionId))
-            debugMultilineRow("Cycle ID:", value: humanizeDebugValue(g7Manager.debugCurrentCycleID))
+            debugMultilineRow("Session ID:", value: truncateDebugId(g7Manager.currentG7SessionId))
+            debugMultilineRow("Cycle ID:", value: truncateDebugId(g7Manager.debugCurrentCycleID))
             debugRow(
                 "Cycle anchor:",
-                value: humanizeDebugValue(g7Manager.debugCurrentCycleAnchorSource)
+                value: cycleAnchorDisplayString()
             )
-            debugRow("Bootstrap cycle:", value: boolLabel(g7Manager.debugCurrentCycleBootstrap))
             debugRow(
                 "Expected reading:",
                 value: formatOptionalTime(g7Manager.debugCurrentCycleExpectedReadingDate)
@@ -202,11 +311,10 @@ struct ComplicationDebugView: View {
                 "Grace close:",
                 value: formatOptionalTime(g7Manager.debugCurrentCycleGraceCloseDate)
             )
-            debugRow("Same-cycle retry:", value: boolLabel(g7Manager.cycleRetryScheduled))
 
             Divider().padding(.vertical, 2)
 
-            sectionHeader("ATTACH CONTEXT")
+            sectionHeader("ATTACH CONTEXT", help: .attachContext)
             debugRow(
                 "Rendered data source:",
                 value: watchState.isUsingPhoneRelayForCurrentWatchData ? "Phone relay" : "Direct BLE"
@@ -215,9 +323,11 @@ struct ComplicationDebugView: View {
             debugRow("Active filter:", value: humanizeDebugValue(g7Manager.activePeripheralName))
             debugRow("Filter armed:", value: boolLabel(g7Manager.hasActivePeripheralNameFilter))
             debugRow("Last seen peripheral:", value: humanizeDebugValue(g7Manager.lastSeenPeripheralName))
-            debugRow("RSSI:", value: intLabel(g7Manager.lastSeenPeripheralRSSI))
+            debugRow("RSSI:", value: intLabel(g7Manager.debugDisplayRssi))
             debugRow("Seen at:", value: formatOptionalTime(g7Manager.lastSeenPeripheralAt))
-            debugRow("Persisted ID:", value: humanizeDebugValue(g7Manager.lastPersistedPeripheralIdentifierShort))
+            if hasNonEmptyOptionalString(g7Manager.lastPersistedPeripheralIdentifierShort) {
+                debugRow("Persisted ID:", value: humanizeDebugValue(g7Manager.lastPersistedPeripheralIdentifierShort))
+            }
             debugRow("Peripheral state:", value: peripheralStateLabel(g7Manager.lastPreConnectPeripheralState))
             debugRow("Central state:", value: centralStateLabel(g7Manager.lastPreConnectCentralState))
             debugRow("Connectable:", value: connectableLabel(g7Manager.lastPreConnectIsConnectable))
@@ -229,7 +339,7 @@ struct ComplicationDebugView: View {
 
             Divider().padding(.vertical, 2)
 
-            sectionHeader("RETRIEVAL")
+            sectionHeader("RETRIEVAL", help: .retrieval)
             debugRow("Identifier count:", value: intLabel(g7Manager.lastRetrievedIdentifierCount))
             debugRow("Connected count:", value: intLabel(g7Manager.lastRetrievedConnectedCount))
             Button("Clear stored identifier") {
@@ -237,45 +347,59 @@ struct ComplicationDebugView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.mini)
-            debugMultilineRow(
-                "Identifier skip reason:",
-                value: humanizeDebugValue(g7Manager.lastIdentifierRetrievalSkipReason)
-            )
-            debugRow(
-                "Identifier skip peripheral:",
-                value: humanizeDebugValue(g7Manager.lastIdentifierRetrievalPeripheralName)
-            )
+            if hasNonEmptyOptionalString(g7Manager.lastIdentifierRetrievalSkipReason) {
+                debugMultilineRow(
+                    "Identifier skip reason:",
+                    value: humanizeDebugValue(g7Manager.lastIdentifierRetrievalSkipReason)
+                )
+            }
+            if hasNonEmptyOptionalString(g7Manager.lastIdentifierRetrievalPeripheralName) {
+                debugRow(
+                    "Identifier skip peripheral:",
+                    value: humanizeDebugValue(g7Manager.lastIdentifierRetrievalPeripheralName)
+                )
+            }
 
             Divider().padding(.vertical, 2)
 
-            sectionHeader("SESSION FUNNEL")
+            sectionHeader("SESSION FUNNEL", help: .sessionFunnel)
             bleChecklistSection
 
             Divider().padding(.vertical, 2)
 
-            sectionHeader("CURRENT BLOCKER")
-            debugRow("Category:", value: humanizeDebugValue(g7Manager.lastBlockerCategory))
-            debugRow("Source:", value: humanizeDebugValue(g7Manager.lastBlockerSource))
-            debugMultilineRow(
-                "Reason:",
-                value: humanizeDebugValue(g7Manager.lastBlockerReasonRaw),
-                valueColor: blockerColor(g7Manager.lastBlockerReasonRaw)
-            )
-            debugMultilineRow(
-                "Raw reason:",
-                value: g7Manager.lastBlockerReasonRaw ?? "--",
-                valueColor: blockerColor(g7Manager.lastBlockerReasonRaw),
-                monospaced: true
-            )
-            debugRow("Last blocker at:", value: formatOptionalTime(g7Manager.lastBlockerAt))
+            sectionHeader("CURRENT BLOCKER", help: .currentBlocker)
+            if !hasCurrentBlockerSectionContent {
+                Text("No active blocker — attach / GATT / observation paths have not recorded a blocking condition for this session.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                if hasNonEmptyOptionalString(g7Manager.lastBlockerCategory) {
+                    debugRow("Category:", value: humanizeDebugValue(g7Manager.lastBlockerCategory))
+                }
+                if hasNonEmptyOptionalString(g7Manager.lastBlockerSource) {
+                    debugRow("Source:", value: humanizeDebugValue(g7Manager.lastBlockerSource))
+                }
+                if hasNonEmptyOptionalString(g7Manager.lastBlockerReasonRaw) {
+                    debugMultilineRow(
+                        "Reason:",
+                        value: humanizeDebugValue(g7Manager.lastBlockerReasonRaw),
+                        valueColor: blockerColor(g7Manager.lastBlockerReasonRaw)
+                    )
+                }
+                if hasNonEmptyOptionalString(g7Manager.lastBlockedReason) {
+                    debugMultilineRow(
+                        "Last blocked reason:",
+                        value: humanizeDebugValue(g7Manager.lastBlockedReason),
+                        valueColor: blockerColor(g7Manager.lastBlockedReason)
+                    )
+                }
+                if g7Manager.lastBlockerAt != nil {
+                    debugRow("Last blocker at:", value: formatOptionalTime(g7Manager.lastBlockerAt))
+                }
+            }
         }
         .font(.caption)
-    }
-
-    private var nextUpdateSeconds: Int {
-        guard let readingDate = snapshot?.readingDate else { return 0 }
-        let targetDate = readingDate.addingTimeInterval(5 * 60)
-        return max(0, Int(ceil(targetDate.timeIntervalSinceNow)))
     }
 
     private var bleChecklistSection: some View {
@@ -388,7 +512,8 @@ struct ComplicationDebugView: View {
     }
 
     private var reloadStatusView: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        _ = autoRefreshTick
+        return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("Last reload:")
                 Spacer()
@@ -585,13 +710,105 @@ struct ComplicationDebugView: View {
         .animation(.easeInOut(duration: 0.3), value: showConfirmation)
     }
 
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.caption2)
-            .fontWeight(.semibold)
-            .foregroundColor(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
+    private func sectionHeader(_ title: String, help: HelpSheet? = nil) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(title)
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+            if let help {
+                Button {
+                    activeHelpSheet = help
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
+    }
+
+    /// Short prefix for UUID/session strings on a small watch screen (full values remain in remote logs).
+    private func truncateDebugId(_ raw: String?, prefixLength: Int = 8) -> String {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return "--"
+        }
+        if raw.count <= prefixLength { return raw }
+        return String(raw.prefix(prefixLength)) + "…"
+    }
+
+    @ViewBuilder
+    private func helpContent(for sheet: HelpSheet) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            switch sheet {
+            case .dataStore:
+                helpLine("Glucose / trend / delta", "Latest values from the saved complication snapshot (may be phone relay or direct BLE).")
+                helpLine("Reading", "CGM reading time embedded in the payload; age is wall-clock vs now.")
+                helpLine("Saved", "When this snapshot was written to the shared data store.")
+                helpLine("State", "Optional warning string from the snapshot pipeline.")
+            case .directBleOverview:
+                helpLine("Purpose", "Foreground Dexcom G7 direct-BLE session: scan, connect, auth, passive EGV, snapshot save.")
+                helpLine("Outer ring", "Progress vs 5 minutes since the last reading time: direct-BLE `lastReadingDate` when set, otherwise the data-store snapshot’s `readingDate` (e.g. phone relay). Green → yellow → red; updates every second.")
+                helpLine("Subsections", "Use the info buttons on Lifecycle, Runtime, Attach, etc. for field-level detail.")
+                helpLine("Refresh", "Rows refresh every second; the BLE manager is not `@Observable` on `WatchState`.")
+            case .lifecycle:
+                helpLine("Current lifecycle", "High-level protocol stage label (scanning, connecting, GATT, awaiting EGV, …).")
+                helpLine("Terminal outcome / reason / stage", "Last session end classification if the session reached a terminal state.")
+                helpLine("Timeout / disconnect", "Last timeout stage and CB disconnect reason string.")
+                helpLine("Timestamps", "When the stage last changed and when a terminal outcome was recorded.")
+            case .runtimeCycle:
+                helpLine("Runtime", "WKExtendedRuntimeSession state for keeping BLE alive while foreground.")
+                helpLine("Cycle", "Cadence planner state within the current glucose cycle (attach window, lead, grace, …).")
+                helpLine("Session / cycle ID", "Truncated identifiers; full UUIDs appear in structured logs.")
+                helpLine("Cycle anchor", "Timing anchor source; `(bootstrap)` suffix when the cycle is bootstrapped, or `bootstrap (no anchor)` when bootstrapped without an anchor string.")
+                helpLine("Expected / lead / grace", "Scheduled times for reading, lead window, and cycle close.")
+            case .attachContext:
+                helpLine("Rendered data source", "Whether the watch UI last updated from phone relay or direct BLE snapshot.")
+                helpLine("Attach source", "scan, retrieved_*, connection_event — how attach started.")
+                helpLine("Filter", "Phone-supplied active sensor name filter for connect decisions.")
+                helpLine("RSSI", "Prefer RSSI captured when the last glucose EGV was processed; else last advertisement/connect RSSI.")
+                helpLine("Pre-connect fields", "Snapshot of CB peripheral/central state and advertisement connectable flag at connect attempt.")
+            case .retrieval:
+                helpLine("Identifier count", "Peripherals returned when resolving the stored CB UUID.")
+                helpLine("Connected count", "System-connected peripherals matching G7 services.")
+                helpLine("Skip reason", "Why a retrieved peripheral was not used (e.g. filter mismatch).")
+            case .sessionFunnel:
+                helpLine("Purpose", "Gate checklist for the latest attach attempt (filter → connect → GATT → auth → EGV → snapshot).")
+                helpLine("Expand", "Tap the header to show all gates; collapsed view scrolls around the first failing gate.")
+                helpLine("Pre-connect context", "May show pending (not blocking) when attach did not start from a scan advertisement.")
+            case .currentBlocker:
+                helpLine("When empty", "No attach/auth/observation blocker was recorded — normal when the session is healthy.")
+                helpLine("When set", "`setBlockerDebugState` recorded a reason (missing filter, GATT failure, passive gate, …). Cleared on `resetDebugSessionContext` (e.g. new scan).")
+                helpLine("Last blocked reason", "Separate internal `lastBlockedReason` string when present (e.g. notify/GATT path).")
+            case .logFiles:
+                helpLine("Drain files", "Complication log drains in the app group container.")
+                helpLine("Watch logs", "On-device watch_log_* chunks pending upload.")
+                helpLine("Pending", "Count of log payloads queued for transfer.")
+            case .reloadStatus:
+                helpLine("Last reload", "When the complication last triggered a timeline reload.")
+                helpLine("Elapsed / debounce", "Cooldown to avoid reload storms; red while debounced.")
+            case .actions:
+                helpLine("Force reload", "Requests complication timeline reload from the data store.")
+                helpLine("Request data", "Asks the phone for a fresh WatchConnectivity payload.")
+                helpLine("Flush logs", "Forces logger flush / upload routines for debugging.")
+            }
+        }
+    }
+
+    private func helpLine(_ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption)
+                .fontWeight(.semibold)
+            Text(detail)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func debugRow(_ title: String, value: String, valueColor: Color = .primary) -> some View {

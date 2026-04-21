@@ -159,8 +159,11 @@ final class G7DirectBLEManager: NSObject {
     private(set) var lastSeenPeripheralName: String?
     private(set) var lastSeenPeripheralRSSI: Int?
     private(set) var lastSeenPeripheralAt: Date?
+    /// RSSI snapshot taken when a glucose EGV is processed; stable for debug UI when advertisement RSSI churns.
+    private(set) var lastRssiAtLastEgv: Int?
     private(set) var lastEgvReceivedAt: Date?
     private(set) var lastGlucoseValue: Int?
+    /// Set when a direct-BLE EGV yields a parsed reading time (also used by the debug screen’s 5‑minute cycle ring).
     private(set) var lastReadingDate: Date?
     private(set) var lastSequenceNumber: Int?
     private(set) var lastSnapshotSaveResult: String?
@@ -219,6 +222,9 @@ final class G7DirectBLEManager: NSObject {
 
     /// Exposed for `WatchState` `g7_ble_lifecycle` lines after `startScanning()`.
     var currentG7SessionId: String? { g7SessionID }
+
+    /// Prefer RSSI from the last processed glucose EGV; otherwise last advertisement / connect RSSI (`lastSeenPeripheralRSSI`).
+    var debugDisplayRssi: Int? { lastRssiAtLastEgv ?? lastSeenPeripheralRSSI }
 
     /// When set, only connect to a peripheral whose `name` matches exactly (e.g. active `DXCMxx`).
     /// `nil` means scan/readiness may continue, but attach is blocked until the phone supplies the active sensor filter.
@@ -1595,6 +1601,7 @@ final class G7DirectBLEManager: NSObject {
 
         guard let glucose else { return }
 
+        lastRssiAtLastEgv = lastSeenPeripheralRSSI
         egvReceivedThisSession = true
 
         let trendString = Self.trendString(fromRateMgDlPerMin: trendRate)
@@ -1870,7 +1877,9 @@ final class G7DirectBLEManager: NSObject {
             }
             return false
         }
-        updateLastSeenPeripheral(name: name, rssi: nil)
+        // Do not call `updateLastSeenPeripheral(..., rssi: nil)` here: `beginConnectToG7Peripheral` sets
+        // last-seen name/RSSI/time when attach proceeds. If connect is suppressed as a duplicate, clearing
+        // RSSI here would leave `lastSeenPeripheralRSSI == nil` despite a recent scan advertisement value.
         lastIdentifierRetrievalSkipReason = nil
         lastIdentifierRetrievalPeripheralName = nil
         if source.hasPrefix("retrieved_") {
