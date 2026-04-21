@@ -19,7 +19,10 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func applicationDidBecomeActive() {
-        WatchState.shared.handleForegroundActiveEntry()
+        // `g7_ble_lifecycle` active + `handleForegroundActiveEntry` → `applyForegroundActiveEntry`: single driver is
+        // `TrioWatchApp` `.onChange(of: scenePhase)` when `newPhase == .active` — same pairing as
+        // `applicationWillResignActive` vs `handleForegroundInactiveOrBackground`. Calling both produced duplicate
+        // `refreshCadenceScheduler(foreground_entry)` / `startScanning()` on one user-visible foreground transition.
         Task {
             await WatchLogger.shared.log(
                 "event=watch_app_became_active source=wk_application_delegate "
@@ -32,7 +35,7 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func applicationWillResignActive() {
-        WatchState.shared.handleForegroundInactiveOrBackground()
+        // `g7_ble_lifecycle` inactive/background + startup bookkeeping: single driver is `TrioWatchApp` `.onChange(of: scenePhase)` — avoid duplicating `WatchState.handleForegroundInactiveOrBackground` here. Direct BLE is **not** stopped on resign/inactive (extended runtime continues until OS expiry).
         Task {
             await WatchLogger.shared.log(
                 "event=watch_app_resigning_active source=wk_application_delegate "
