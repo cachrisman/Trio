@@ -16,6 +16,8 @@
 	<string>Trio reads your blood glucose data to keep the watch complication current when wireless sync is unavailable.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>Trio may save blood glucose readings to Apple Health to keep your health data synchronized.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Bluetooth is used to read glucose data directly from the Dexcom G7 sensor.</string>
 	<!--
 	  `WKExtendedRuntimeSession` (watch extension): Physical therapy mode — background, up to 1h per Apple’s
 	  “Using extended runtime sessions”. Declared here because this plist is merged via `sync_project_files_config.rb`
@@ -24,6 +26,10 @@
 	<key>WKBackgroundModes</key>
 	<array>
 		<string>physical-therapy</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+			<string>bluetooth-central</string>
 	</array>
 </dict>
 </plist>

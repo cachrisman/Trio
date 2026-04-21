@@ -18,7 +18,8 @@ import WatchKit
         WindowGroup {
             TrioMainWatchView()
         }
-        .onChange(of: scenePhase) { oldPhase, newPhase in
+        // `initial: true` covers cold start when the scene is already `.active` before any phase *change* is observed.
+        .onChange(of: scenePhase, initial: true) { oldPhase, newPhase in
             let oldToken = watchScenePhaseToken(oldPhase)
             let newToken = watchScenePhaseToken(newPhase)
 

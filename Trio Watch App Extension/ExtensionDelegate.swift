@@ -19,7 +19,10 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func applicationDidBecomeActive() {
-        WatchState.shared.handleForegroundActiveEntry()
+        // `g7_ble_lifecycle` active + `handleForegroundActiveEntry` → `applyForegroundActiveEntry`: single driver is
+        // `TrioWatchApp` `.onChange(of: scenePhase)` when `newPhase == .active` — same pairing as
+        // `applicationWillResignActive` vs `handleForegroundInactiveOrBackground`. Calling both produced duplicate
+        // `refreshCadenceScheduler(foreground_entry)` / `startScanning()` on one user-visible foreground transition.
         Task {
             await WatchLogger.shared.log(
                 "event=watch_app_became_active source=wk_application_delegate "

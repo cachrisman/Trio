@@ -2182,7 +2182,7 @@ final class G7DirectBLEManager: NSObject {
         }
         attemptedConnectPeripheralIdentifiers.insert(peripheral.identifier)
         let idShort = peripheralIdShort(peripheral)
-        // central?.stopScan()
+        central?.stopScan()
         self.peripheral = peripheral
         peripheral.delegate = self
         connectionState = .connecting

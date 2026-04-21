@@ -262,6 +262,13 @@ enum WatchCurrentDataSource {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
     }
 
+    /// **Single driver:** `TrioWatchApp` `.onChange(of: scenePhase)` when `newPhase == .active` only.
+    ///
+    /// Duplication path (fixed): `WKApplicationDelegate.applicationDidBecomeActive` and SwiftUI `ScenePhase == .active`
+    /// both ran for the same foreground transition, each calling this method → duplicate
+    /// `g7DirectBLEManager.applyForegroundActiveEntry` → `refreshCadenceScheduler(foreground_entry)` near a lead window
+    /// could both reach `startScanning()` (distinct `g7_session` on one `g7_cycle`). Do not reintroduce a second
+    /// call site without removing the scene-phase path.
     func handleForegroundActiveEntry() {
         assert(Thread.isMainThread, "handleForegroundActiveEntry must be called on main thread")
         guard !startupIsForegroundActive else { return }
