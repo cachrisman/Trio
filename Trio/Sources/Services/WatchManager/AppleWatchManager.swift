@@ -2,6 +2,7 @@ import Combine
 import CoreData
 import FirebaseCrashlytics
 import Foundation
+import G7SensorKit
 import Swinject
 import UIKit
 import WatchConnectivity
@@ -29,6 +30,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     @Injected() private var bolusCalculationManager: BolusCalculationManager!
     @Injected() private var iobService: IOBService!
     @Injected() private var notificationsManager: UserNotificationsManager!
+    @Injected() private var fetchGlucoseManager: FetchGlucoseManager!
 
     private var units: GlucoseUnits = .mgdL
     private var glucoseColorScheme: GlucoseColorScheme = .staticColor
@@ -69,10 +71,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private let processedIdsMaxCount = 100
     private let processedIdsTTL: TimeInterval = 7 * 24 * 60 * 60 // 7 days
     private let pendingAcksKey = "watchPendingAcks"
-
-    // Delegate-triggered state push debounce (crash guard — absorbs rapid WCSession delegate storms)
-    private var pendingDelegateWorkItem: DispatchWorkItem?
-    private var delegateCoalesceCount = 0
 
     typealias PumpEvent = PumpEventStored.EventType
 
@@ -206,26 +204,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         )
     }
 
-    /// Cancel-and-replace debounce for delegate-triggered state pushes.
-    /// Collapses N rapid callbacks (e.g. watch reboot storm) into one push after a 0.5s quiet window.
-    private func scheduleDelegateTriggeredUpdate(source: String) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.pendingDelegateWorkItem?.cancel()
-            self.delegateCoalesceCount += 1
+    /// Attempts to reestablish the Watch connection if it becomes unreachable
+    private func retryConnection() {
+        guard let session = session else { return }
 
-            let count = self.delegateCoalesceCount
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                debug(.watchManager, "📡 delegate_coalescer_fired source=\(source) coalesced=\(count)")
-                self.delegateCoalesceCount = 0
-                Task {
-                    let state = await self.setupWatchState()
-                    await self.sendDataToWatch(state)
-                }
-            }
-            self.pendingDelegateWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+        if !session.isReachable {
+            debug(.watchManager, "📱 Attempting to reactivate session...")
+            session.activate()
         }
     }
 
@@ -400,12 +385,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
                 // Calculate delta if we have at least 2 readings
                 if glucoseObjects.count >= 2 {
-                    var deltaValue = Decimal(glucoseObjects[0].glucose - glucoseObjects[1].glucose)
-
+                    var glucoseLast = Decimal(glucoseObjects[0].glucose)
+                    var glucoseSecondLast = Decimal(glucoseObjects[1].glucose)
                     if self.units == .mmolL {
-                        deltaValue = Double(truncating: deltaValue as NSNumber).asMmolL
+                        glucoseLast = glucoseLast.asMmolL
+                        glucoseSecondLast = glucoseSecondLast.asMmolL
                     }
 
+                    let deltaValue = glucoseLast - glucoseSecondLast
                     let formattedDelta = Formatter.glucoseFormatter(for: self.units)
                         .string(from: deltaValue as NSNumber) ?? "0"
                     watchState.delta = deltaValue < 0 ? "\(formattedDelta)" : "+\(formattedDelta)"
@@ -555,6 +542,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
 
         return dict
+    }
+
+    /// Value for `WatchMessageKeys.activeG7PeripheralName`: exact active G7 Bluetooth name, or `""` when not on G7 / unknown so the watch clears BLE filtering.
+    private func activeG7PeripheralNameForWatchPayload() -> String {
+        guard let g7 = fetchGlucoseManager.cgmManager as? G7CGMManager else {
+            return ""
+        }
+        guard let raw = g7.sensorName?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return ""
+        }
+        return raw
     }
 
     // MARK: - Session Readiness & Queue Management (R1b)
@@ -772,8 +770,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         // R1a: stamp enqueue time immediately before transfer calls
         fullMessage[WatchMessageKeys.transferEnqueuedAt] = Date().timeIntervalSince1970
 
+        fullMessage[WatchMessageKeys.activeG7PeripheralName] = activeG7PeripheralNameForWatchPayload()
+
         // R3: Build complication payload from explicit allowlist.
         // Uses safe if-let inserts to avoid Optional-as-Any bridging issues.
+        // Tuple `.0` is the `fullMessage` key; `.1` is a debug label only (loops read `fullMessage[key]`).
         var complicationMessage: [String: Any] = [:]
         let complicationAllowlist: [(String, String)] = [
             (WatchMessageKeys.currentGlucose, "currentGlucose"),
@@ -783,6 +784,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             (WatchMessageKeys.readingEpoch, "readingEpoch"),
             (WatchMessageKeys.transferEnqueuedAt, "transferEnqueuedAt"),
             (WatchMessageKeys.date, "date"),
+            (WatchMessageKeys.activeG7PeripheralName, "activeG7PeripheralName"),
         ]
         for (key, name) in complicationAllowlist {
             if let value = fullMessage[key] {
@@ -815,7 +817,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
 
         let budgetSnapshot = session.remainingComplicationUserInfoTransfers
-        debug(.watchManager, "🔍 complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch)")
+        debug(.watchManager, "🔍 complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch) queue_depth=\(session.outstandingUserInfoTransfers.count)")
 
         // sendMessage (budget-free watch UI path) — always fires with fullMessage
         if session.isReachable {
@@ -896,6 +898,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         do {
             try session.updateApplicationContext(ctx)
             debug(.watchManager, "📦 context_succeeded reading_epoch=\(readingEpoch)")
+            debug(.watchManager, "📤 Transferred new WatchState snapshot via=updateApplicationContext reading_date_epoch_seconds=\(readingEpoch) userinfo_budget_exhausted=\(budgetExhausted) queue_depth=\(session.outstandingUserInfoTransfers.count)")
         } catch {
             debug(.watchManager, "📦 context_failed context_update_failed=true error=\(error)")
         }
@@ -926,11 +929,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             return
         }
 
-        guard activationState == .activated else {
-            debug(.watchManager, "📱 Ignoring activation callback — state is \(activationState.rawValue), not .activated")
-            return
-        }
-
         debug(.watchManager, "📱 Phone session activated state=\(activationState.rawValue) isReachable=\(session.isReachable) isPaired=\(session.isPaired) isWatchAppInstalled=\(session.isWatchAppInstalled) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
 
         // R2b: clear dispatch gate on activation so the first post-launch transfer always fires
@@ -942,7 +940,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             cancelStaleQueuedTransfers()
         }
 
-        scheduleDelegateTriggeredUpdate(source: "activationCompleted")
+        DispatchQueue.main.async {
+            self.pendingSendWorkItem?.cancel()
+            self.coalescerFirstScheduledAt = nil
+        }
+        Task {
+            let state = await self.setupWatchState()
+            await self.sendDataToWatch(state)
+        }
     }
 
     // MARK: - Processed IDs Management
@@ -1063,14 +1068,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     /// Implements the replyHandler version of didReceiveMessage for ACK support.
     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
-        // Validate envelope structure — check type first so queryAcks (no payloadId) isn't rejected
-        guard let type = message["type"] as? String else {
+        // Validate envelope structure
+        guard let type = message["type"] as? String,
+              let payloadId = message["payloadId"] as? String else {
+            // Not an envelope message - delegate to legacy handler
             self.session(session, didReceiveMessage: message)
             replyHandler([:])
             return
         }
 
-        // Handle ACK query (no payloadId required)
+        // Handle ACK query
         if type == "queryAcks" {
             if let pendingIds = message["pendingIds"] as? [String] {
                 let ackIds = getAcknowledgedIds(from: pendingIds)
@@ -1079,16 +1086,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     "ackIds": ackIds
                 ]
                 replyHandler(batchAck)
-            } else {
-                replyHandler([:])
+                return
             }
-            return
-        }
-
-        guard let payloadId = message["payloadId"] as? String else {
-            self.session(session, didReceiveMessage: message)
-            replyHandler([:])
-            return
         }
 
         // Deduplicate BEFORE any Crashlytics calls
@@ -1119,6 +1118,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             }
         }
 
+        // Do not send reverse transferUserInfo confirms for watchLogs here.
+        // Watch-side cleanup is covered by the immediate ACK reply plus later batchAck/queryAcks,
+        // and the extra userInfo confirm can create avoidable connectivity background wakes.
+
         // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
         let ack: [String: Any] = [
             "type": "ack",
@@ -1132,7 +1135,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             // Check if this is an envelope message
             if let type = message["type"] as? String,
                let payloadId = message["payloadId"] as? String {
-                // This is an envelope message but no replyHandler - handle it
+                if self?.isProcessed(payloadId) == true { return }
+                self?.recordProcessed(payloadId)
+
                 if type == "watchLogs" {
                     if let logData = message["data"] as? String {
                         SimpleLogReporter.appendToWatchLog(logData)
@@ -1367,11 +1372,22 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         debug(.watchManager, "📱 Phone reachability changed: isReachable=\(session.isReachable) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
 
         if session.isReachable {
-            scheduleDelegateTriggeredUpdate(source: "reachabilityChanged")
+            DispatchQueue.main.async {
+                self.pendingSendWorkItem?.cancel()
+                self.coalescerFirstScheduledAt = nil
+            }
+            Task {
+                let state = await self.setupWatchState()
+                await self.sendDataToWatch(state)
+            }
 
+            // Send pending ACKs when watch becomes reachable
             sendPendingAcksIfReachable()
         } else {
-            debug(.watchManager, "📱 Watch became unreachable — waiting for system reconnection")
+            // Try to reconnect after a short delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.retryConnection()
+            }
         }
     }
 
@@ -1407,6 +1423,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
                 carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
                 carbEntry.isUploadedToNS = false
+                carbEntry.isUploadedToHealth = false
+                carbEntry.isUploadedToTidepool = false
 
                 do {
                     guard context.hasChanges else {
@@ -1469,6 +1487,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
                     carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
                     carbEntry.isUploadedToNS = false
+                    carbEntry.isUploadedToHealth = false
+                    carbEntry.isUploadedToTidepool = false
 
                     guard context.hasChanges else {
                         // Acknowledge failure
