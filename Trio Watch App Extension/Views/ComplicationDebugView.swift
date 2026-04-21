@@ -112,20 +112,33 @@ struct ComplicationDebugView: View {
     }
 
     private var readingCycleProgressArcOverlay: some View {
-        let _ = autoRefreshTick
+        _ = autoRefreshTick
         return GeometryReader { geo in
             let elapsed = Date().timeIntervalSince(arcReferenceReadingDate ?? .distantPast)
             let fraction = min(1.0, max(0.0, elapsed / 300.0))
             let arcColor: Color = fraction < 0.7 ? .green : (fraction < 0.9 ? .yellow : .red)
-            let side = min(geo.size.width, geo.size.height)
-            Circle()
+
+            let lineWidth: CGFloat = 6
+            let cornerRadius: CGFloat = 51
+            let horizontalInset: CGFloat = -18
+            let verticalInset: CGFloat = 22
+
+            let ringWidth = geo.size.width - (horizontalInset * 2)
+            let ringHeight = geo.size.height - (verticalInset * 2)
+
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .trim(from: 0, to: fraction)
-                .stroke(style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                .foregroundStyle(arcColor)
-                .rotationEffect(.degrees(-90))
-                .padding(2)
-                .frame(width: side, height: side)
+                .stroke(
+                    arcColor,
+                    style: StrokeStyle(
+                        lineWidth: lineWidth,
+                        lineCap: .round,
+                        lineJoin: .round
+                    )
+                )
+                .frame(width: ringWidth, height: ringHeight)
                 .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                .rotationEffect(.degrees(-90))
                 .allowsHitTesting(false)
                 .animation(.linear(duration: 0.95), value: autoRefreshTick)
         }
