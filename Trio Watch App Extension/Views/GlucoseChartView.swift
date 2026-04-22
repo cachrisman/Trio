@@ -9,6 +9,7 @@ struct GlucoseChartView: View {
     let minYAxisValue: Decimal
     let maxYAxisValue: Decimal
     @State private var timeWindow: TimeWindow = .threeHours
+    @State private var crownTimeWindowIndex = 0.0
 
     enum TimeWindow: Int {
         case threeHours = 3
@@ -86,10 +87,50 @@ struct GlucoseChartView: View {
             }
         }
         .scenePadding()
+        .focusable(true)
+        .digitalCrownRotation($crownTimeWindowIndex, from: 0, through: 3, by: 1, sensitivity: .low)
+        .onAppear {
+            crownTimeWindowIndex = Double(timeWindow.crownIndex)
+        }
+        .onChange(of: crownTimeWindowIndex) { _, newValue in
+            let nextWindow = TimeWindow(crownIndex: Int(newValue.rounded()))
+            if nextWindow != timeWindow {
+                timeWindow = nextWindow
+            }
+        }
         .onTapGesture {
             withAnimation {
                 timeWindow = timeWindow.next
+                crownTimeWindowIndex = Double(timeWindow.crownIndex)
             }
+        }
+    }
+}
+
+private extension GlucoseChartView.TimeWindow {
+    var crownIndex: Int {
+        switch self {
+        case .threeHours:
+            return 0
+        case .sixHours:
+            return 1
+        case .twelveHours:
+            return 2
+        case .twentyFourHours:
+            return 3
+        }
+    }
+
+    init(crownIndex: Int) {
+        switch crownIndex {
+        case 0:
+            self = .threeHours
+        case 1:
+            self = .sixHours
+        case 2:
+            self = .twelveHours
+        default:
+            self = .twentyFourHours
         }
     }
 }
