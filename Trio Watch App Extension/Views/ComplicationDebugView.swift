@@ -116,11 +116,12 @@ struct ComplicationDebugView: View {
         return GeometryReader { _ in
             let elapsed = Date().timeIntervalSince(arcReferenceReadingDate ?? .distantPast)
             let fraction = min(1.0, max(0.0, elapsed / 300.0))
-            let arcColor: Color = fraction < 0.7 ? .green : (fraction < 0.9 ? .yellow : .red)
+            let arcColor: Color = fraction < 0.9 ? .green : (fraction < 0.95 ? .yellow : .red)
             let lineWidth: CGFloat = 4
+            let cornerRadius: CGFloat = 44
 
             ZStack {
-                ContainerRelativeShape()
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .inset(by: lineWidth / 2)
                     .trim(from: 0, to: fraction)
                     .stroke(

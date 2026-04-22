@@ -1743,9 +1743,48 @@ final class G7DirectBLEManager: NSObject {
         return shorts.joined(separator: ",") + suffix
     }
 
+    /// Classification of how a discovered / retrieved peripheral matched the
+    /// phone-provided `activePeripheralName` filter.
+    ///
+    /// Exact-or-suffix(2) to bridge the G7 name duality (`DXCMxx` advertised
+    /// vs. `Dexcomxx` OS-cached). Matches the convention used in G7SensorKit
+    /// `G7Sensor.swift` and DiaBLE `BluetoothDelegate.swift`.
+    private enum PeripheralActiveFilterMatch {
+        case none
+        case exact
+        case suffix
+
+        var logValue: String {
+            switch self {
+            case .none: return "none"
+            case .exact: return "exact"
+            case .suffix: return "suffix"
+            }
+        }
+    }
+
+    private func classifyPeripheralAgainstActiveFilter(
+        _ peripheral: CBPeripheral
+    ) -> PeripheralActiveFilterMatch {
+        // `activePeripheralName` is empty-guarded upstream by
+        // `hasActivePeripheralNameFilter`, but guard again here so any future
+        // caller that skips the filter-check does not silently suffix-match.
+        guard let active = activePeripheralName, !active.isEmpty else { return .none }
+        // A nil peripheral name has no identity to match against the active
+        // filter. Previously we fell back to the string `"unknown"`, which only
+        // avoided collisions by coincidence (`"unknown".suffix(2) == "wn"` is
+        // never equal to a Dexcom `DXCMxx` / `DexcomXX` suffix). Return `.none`
+        // explicitly so the nil-name guard is semantic, not coincidental.
+        guard let name = peripheral.name else { return .none }
+        if name == active { return .exact }
+        if name.count >= 2, active.count >= 2, name.suffix(2) == active.suffix(2) {
+            return .suffix
+        }
+        return .none
+    }
+
     private func doesPeripheralMatchActiveFilter(_ peripheral: CBPeripheral) -> Bool {
-        guard let active = activePeripheralName else { return false }
-        return (peripheral.name ?? "unknown") == active
+        classifyPeripheralAgainstActiveFilter(peripheral) != .none
     }
 
     private func isRetrievedAttachSource(_ source: String) -> Bool {
@@ -1948,7 +1987,8 @@ final class G7DirectBLEManager: NSObject {
             if !hasActivePeripheralNameFilter {
                 reason = "missing_active_sensor_filter"
             } else if retrieved.name == nil {
-                reason = "missing_name_for_exact_match"
+                // No name → neither exact nor suffix(2) match can evaluate.
+                reason = "missing_peripheral_name"
             } else {
                 reason = "not_active_sensor"
             }
@@ -2189,7 +2229,17 @@ final class G7DirectBLEManager: NSObject {
             }
             return
         }
-        attemptedConnectPeripheralIdentifiers.insert(peripheral.identifier)
+        // Build 181 change 2: skip the dedup insert for retrieval-identifier
+        // attempts so a later scan-path `connect(_:options:)` on a live
+        // advertisement reference is not suppressed as a duplicate. Field logs
+        // show retrieval-path connects often carry `rssi=0` and the scan path
+        // is the one most likely to deliver `didConnect` on current hardware;
+        // this tests whether the live-advertisement reference is what unblocks
+        // it. Other sources (scan / retrieved_connected / connection_event)
+        // keep the existing insert so same-cycle duplicates stay suppressed.
+        if source != "retrieved_identifier" {
+            attemptedConnectPeripheralIdentifiers.insert(peripheral.identifier)
+        }
         let idShort = peripheralIdShort(peripheral)
         central?.stopScan()
         self.peripheral = peripheral
@@ -2338,11 +2388,19 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
             _ = emitAttachBlockedIfNeeded(source: "did_discover")
             return
         }
-        if let active = activePeripheralName, name != active {
+        // Build 181: use the shared exact-or-suffix(2) classifier instead of
+        // an inline exact-name compare, matching the retrieval paths.
+        let matchKind = classifyPeripheralAgainstActiveFilter(peripheral)
+        guard matchKind != .none else {
             Task {
-                await logG7Ble("event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor")
+                await logG7Ble("event=g7_ble_peripheral_skipped peripheral=\(name) reason=not_active_sensor source=scan")
             }
             return
+        }
+        Task {
+            await logG7Ble(
+                "event=g7_ble_peripheral_match_classified source=scan match=\(matchKind.logValue) peripheral=\(name)"
+            )
         }
 
         discoverCountForActiveTarget += 1
@@ -2359,6 +2417,21 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        // Build 181 change 2 can leave two CBPeripheral instances for the same
+        // UUID with connects in flight. Ignore `didConnect` from an orphan
+        // instance so we don't cross-wire identifier persist, timers, or
+        // `discoverServices` onto the wrong peripheral. Instance identity,
+        // not UUID, because both instances share the UUID by design.
+        if let tracked = self.peripheral, peripheral !== tracked {
+            let idShort = peripheralIdShort(peripheral)
+            let trackedIdShort = peripheralIdShort(tracked)
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_did_connect_ignored reason=orphan_peripheral_instance peripheral_id_short=\(idShort) tracked_peripheral_id_short=\(trackedIdShort)"
+                )
+            }
+            return
+        }
         persistPeripheralIdentifier(peripheral.identifier, reason: "did_connect")
         let canceledConnectTimeout = cancelConnectTimeoutIfNeeded()
         gattSetupTimeoutWorkItem?.cancel()
@@ -2392,6 +2465,21 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        // Build 181 change 2 allows two in-flight connects on two CBPeripheral
+        // instances sharing the same UUID. Ignore a failure from the orphan
+        // instance so it can't tear down a healthy tracked session. Instance
+        // identity is the correct discriminator here since both share the UUID.
+        if let tracked = self.peripheral, peripheral !== tracked {
+            let idShort = peripheralIdShort(peripheral)
+            let trackedIdShort = peripheralIdShort(tracked)
+            let errDesc = error.map { ($0 as NSError).localizedDescription } ?? "none"
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_did_fail_to_connect_ignored reason=orphan_peripheral_instance peripheral_id_short=\(idShort) tracked_peripheral_id_short=\(trackedIdShort) error_desc=\(errDesc)"
+                )
+            }
+            return
+        }
         let canceledConnectTimeout = cancelConnectTimeoutIfNeeded()
         let name = peripheral.name ?? "unknown"
         let idShort = peripheralIdShort(peripheral)
@@ -2425,6 +2513,21 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        // Build 181 change 2: ignore a disconnect from an orphan CBPeripheral
+        // instance (same UUID as tracked, different pointer) so it can't run
+        // teardown on the live tracked session. `pendingDisconnectReason`
+        // overrides below still flow through the tracked instance unchanged.
+        if let tracked = self.peripheral, peripheral !== tracked {
+            let idShort = peripheralIdShort(peripheral)
+            let trackedIdShort = peripheralIdShort(tracked)
+            let errDesc = error.map { ($0 as NSError).localizedDescription } ?? "none"
+            Task {
+                await logG7Ble(
+                    "event=g7_ble_did_disconnect_ignored reason=orphan_peripheral_instance peripheral_id_short=\(idShort) tracked_peripheral_id_short=\(trackedIdShort) error_desc=\(errDesc)"
+                )
+            }
+            return
+        }
         let override = pendingDisconnectReason
         pendingDisconnectReason = nil
         let cancelReason = override == "stop_requested" ? "stop_requested" : "teardown"
