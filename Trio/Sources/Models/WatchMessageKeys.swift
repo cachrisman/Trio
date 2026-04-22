@@ -47,6 +47,9 @@ enum WatchMessageKeys {
     // Transfer Metadata Keys
     static let readingEpoch = "reading_epoch"
     static let transferEnqueuedAt = "transfer_enqueued_at"
+    /// Dexcom G7 Bluetooth `CBPeripheral.name` from iPhone G7SensorKit (`DXCM…` / `DX02…`).
+    /// Empty string clears watch filter; omit key on older iPhone builds (watch keeps prior cache).
+    static let activeG7PeripheralName = "active_g7_peripheral_name"
 
     // Limits and Settings Keys
     static let maxBolus = "maxBolus"
