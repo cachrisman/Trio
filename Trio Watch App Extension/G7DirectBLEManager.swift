@@ -2281,8 +2281,24 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         let keys = dict.keys.sorted().joined(separator: ",")
+
+        // Cancel any peripherals CB restored from the prior session.
+        // Without this, a subsequent connect() call is treated as a duplicate
+        // by CB and delivers no didConnect / didFailToConnect / didDisconnect.
+        if let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+            for peripheral in restored {
+                central.cancelPeripheralConnection(peripheral)
+            }
+        }
+
+        // Stop any scan CB restored — the Phase G scheduler owns scan start/stop.
+        central.stopScan()
+
         Task {
-            await logG7Ble("event=g7_ble_will_restore_state keys=\(keys)")
+            let restoredCount = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral])?.count ?? 0
+            await logG7Ble(
+                "event=g7_ble_will_restore_state keys=\(keys) restored_peripheral_count=\(restoredCount)"
+            )
         }
     }
 

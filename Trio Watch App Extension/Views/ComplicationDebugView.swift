@@ -113,25 +113,15 @@ struct ComplicationDebugView: View {
 
     private var readingCycleProgressArcOverlay: some View {
         _ = autoRefreshTick
-        return GeometryReader { geo in
+        return GeometryReader { _ in
             let elapsed = Date().timeIntervalSince(arcReferenceReadingDate ?? .distantPast)
             let fraction = min(1.0, max(0.0, elapsed / 300.0))
             let arcColor: Color = fraction < 0.7 ? .green : (fraction < 0.9 ? .yellow : .red)
-
-            let lineWidth: CGFloat = 3
-            let sideInset: CGFloat = 8
-            let topInset: CGFloat = 4
-            let bottomInset: CGFloat = 20
-            let cornerRadius: CGFloat = 28
-
-            let ringWidth = geo.size.width - (sideInset * 2)
-            let ringHeight = geo.size.height - topInset - bottomInset
+            let lineWidth: CGFloat = 4
 
             ZStack {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(.white.opacity(0.12), lineWidth: lineWidth)
-
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                ContainerRelativeShape()
+                    .inset(by: lineWidth / 2)
                     .trim(from: 0, to: fraction)
                     .stroke(
                         arcColor,
@@ -143,11 +133,6 @@ struct ComplicationDebugView: View {
                     )
                     .rotationEffect(.degrees(-90))
             }
-            .frame(width: ringWidth, height: ringHeight)
-            .position(
-                x: geo.size.width / 2,
-                y: topInset + ringHeight / 2
-            )
             .allowsHitTesting(false)
             .animation(.linear(duration: 0.95), value: autoRefreshTick)
         }
@@ -155,36 +140,32 @@ struct ComplicationDebugView: View {
     }
 
     var body: some View {
-        ZStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    sectionHeader("DATA STORE", help: .dataStore)
-                    dataStoreStateView
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionHeader("DATA STORE", help: .dataStore)
+                dataStoreStateView
 
-                    Divider().padding(.vertical, 4)
+                Divider().padding(.vertical, 4)
 
-                    sectionHeader("DIRECT G7 BLE", help: .directBleOverview)
-                    directBleObserverView
+                sectionHeader("DIRECT G7 BLE", help: .directBleOverview)
+                directBleObserverView
 
-                    Divider().padding(.vertical, 4)
+                Divider().padding(.vertical, 4)
 
-                    sectionHeader("LOG FILES", help: .logFiles)
-                    logFilesView
+                sectionHeader("LOG FILES", help: .logFiles)
+                logFilesView
 
-                    Divider().padding(.vertical, 4)
+                Divider().padding(.vertical, 4)
 
-                    sectionHeader("RELOAD STATUS", help: .reloadStatus)
-                    reloadStatusView
+                sectionHeader("RELOAD STATUS", help: .reloadStatus)
+                reloadStatusView
 
-                    Divider().padding(.vertical, 4)
+                Divider().padding(.vertical, 4)
 
-                    sectionHeader("ACTIONS", help: .actions)
-                    actionsView
-                }
-                .padding(.horizontal, 8)
+                sectionHeader("ACTIONS", help: .actions)
+                actionsView
             }
-
-            readingCycleProgressArcOverlay
+            .padding(.horizontal, 8)
         }
         .navigationTitle("Debug")
         .onAppear {
@@ -197,6 +178,11 @@ struct ComplicationDebugView: View {
         }
         .onReceive(logStatsRefreshTimer) { _ in
             loadLogFileStats()
+        }
+        .overlay {
+            readingCycleProgressArcOverlay
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
         }
         .overlay(confirmationOverlay)
         .sheet(item: $activeHelpSheet) { sheet in
