@@ -212,7 +212,8 @@ final class G7DirectBLEManager: NSObject {
     private(set) var latestSessionSnapshotSaved = false
 
     private enum G7BLEInstrumentation {
-        static let connectTimeoutSeconds: TimeInterval = 30
+        static let connectTimeoutSeconds: TimeInterval = 8
+        static let scanRetryDelaySeconds: TimeInterval = 2
         static let gattSetupTimeoutSeconds: TimeInterval = 60
         static let firstEgvTimeoutSeconds: TimeInterval = 90
         // Leave most of the first-EGV window to the passive path; fallback should be rescue behavior, not default.
@@ -1320,7 +1321,15 @@ final class G7DirectBLEManager: NSObject {
 
     private func cycleRelativeDelay(until targetDate: Date?, fallback: TimeInterval) -> TimeInterval {
         guard let targetDate else { return fallback }
-        return max(0.1, targetDate.timeIntervalSinceNow)
+        // 5s floor: in normal operation (target date 60-90s out) this has no effect.
+        // It exists to give downstream timers a real shot when the cycle window has been
+        // partially or fully consumed by per-attempt connect retries (Build 182). Without
+        // it, a timer scheduled after the target date would fire in 0.1s and fail before
+        // any useful work could complete.
+        // Callers: scheduleGattSetupTimeout, scheduleFirstEgvTimeout,
+        //          schedulePassiveObservationFallback (scheduling); armPassiveObservation,
+        //          triggerFallbackEgvRequestIfNeeded (log-only).
+        return max(5.0, targetDate.timeIntervalSinceNow)
     }
 
     private func loggedSeconds(_ interval: TimeInterval) -> Int {
@@ -1374,21 +1383,88 @@ final class G7DirectBLEManager: NSObject {
             guard let self else { return }
             guard generation == self.currentCycleGeneration else { return }
             Task { @MainActor in
-                await self.handleTimeout(stage: "awaiting_connect")
+                await self.handlePerAttemptConnectTimeout()
             }
         }
         connectTimeoutWorkItem = work
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + cycleRelativeDelay(
-                until: currentCycleHardStopDate,
-                fallback: G7BLEInstrumentation.connectTimeoutSeconds
-            ),
+            deadline: .now() + G7BLEInstrumentation.connectTimeoutSeconds,
             execute: work
         )
         Task {
             await logG7Ble(
-                "event=g7_ble_connect_timeout_armed timeout_s=\(loggedSeconds(cycleRelativeDelay(until: currentCycleHardStopDate, fallback: G7BLEInstrumentation.connectTimeoutSeconds)))"
+                "event=g7_ble_connect_timeout_armed timeout_s=\(Int(G7BLEInstrumentation.connectTimeoutSeconds))"
             )
+        }
+    }
+
+    @MainActor
+    private func handlePerAttemptConnectTimeout() async {
+        guard scanningStarted else { return }
+        // BUG 2: bail if didConnect already ran before this Task was scheduled on the main actor.
+        // connectionState stays .connecting through all of didConnect/service/characteristic discovery,
+        // so checking it alone is insufficient; latestSessionDidConnect is the authoritative flag.
+        guard connectionState == .connecting, !latestSessionDidConnect else { return }
+        connectTimeoutWorkItem = nil
+        if activeTimeoutStage == "awaiting_connect" {
+            activeTimeoutStage = nil
+        }
+
+        // BUG 3: capture before first await so post-suspension rechecks detect stop()/new-cycle.
+        let capturedGeneration = currentCycleGeneration
+        let attemptCount = connectAttemptsSinceStartScanning
+        let hardStopDate = currentCycleHardStopDate
+        let timeRemaining = hardStopDate.map { max(0.0, $0.timeIntervalSinceNow) } ?? 0.0
+        let withinWindow = hardStopDate.map { Date() < $0 } ?? false
+
+        // BUG 1: mark the forthcoming disconnect as expected so didDisconnectPeripheral
+        // skips teardown — cancelPeripheralConnection on a .connecting peripheral delivers
+        // didDisconnectPeripheral (not didFailToConnect), which would otherwise set
+        // scanningStarted=false and kill the retry loop.
+        if let p = peripheral {
+            pendingDisconnectReason = "per_attempt_timeout_cancel"
+            central?.cancelPeripheralConnection(p)
+        } else {
+            pendingDisconnectReason = nil
+        }
+        peripheral = nil
+        attemptedConnectPeripheralIdentifiers.removeAll()
+        // Do not stopScan() — keep the scan live so a new didDiscover during the 2s retry
+        // delay connects immediately without waiting the full interval. The scanForPeripherals
+        // call in the retry closure is insurance-only in case the scan somehow dropped.
+
+        await logG7Ble(
+            "event=g7_ble_per_attempt_timeout attempt_count=\(attemptCount) time_remaining_s=\(Int(timeRemaining)) restarting_scan=\(withinWindow)"
+        )
+        // BUG 3: recheck — stop() or a new cycle may have run during the await.
+        guard scanningStarted, capturedGeneration == currentCycleGeneration else { return }
+
+        // Recompute timing after suspension — hard-stop may have expired during await.
+        let currentTimeRemaining = hardStopDate.map { max(0.0, $0.timeIntervalSinceNow) } ?? 0.0
+        let currentWithinWindow = hardStopDate.map { Date() < $0 } ?? false
+
+        guard currentWithinWindow else {
+            teardownSession(reason: "timeout_awaiting_connect", isFailure: true)
+            return
+        }
+
+        connectionState = .scanning
+        emitStageIfChanged("scanning")  // BUG 6: transition stage back so retries don't stay stuck at "connecting"
+
+        await logG7Ble(
+            "event=g7_ble_scan_retry_scheduled delay_s=2 attempt_count=\(attemptCount)"
+        )
+        // BUG 3: recheck again before dispatching the retry closure.
+        guard scanningStarted, capturedGeneration == currentCycleGeneration else { return }
+
+        let generation = currentCycleGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + G7BLEInstrumentation.scanRetryDelaySeconds) { [weak self] in
+            guard let self, self.scanningStarted, generation == self.currentCycleGeneration else { return }
+            guard let central = self.central, central.state == .poweredOn else { return }
+            central.scanForPeripherals(withServices: [G7BLEUUID.advertisement], options: nil)
+            Task {
+                await self.logG7Ble("event=g7_ble_scan_started")
+            }
         }
     }
 
@@ -1475,6 +1551,9 @@ final class G7DirectBLEManager: NSObject {
         guard shouldEmitTimeout(stage: stage) else { return }
         switch stage {
         case "awaiting_connect":
+            // Build 182: scheduleConnectTimeout now dispatches to handlePerAttemptConnectTimeout,
+            // so this branch is unreachable. Kept to avoid a silent default-fall-through if the
+            // routing ever changes.
             connectTimeoutWorkItem = nil
         case "awaiting_gatt_setup":
             gattSetupTimeoutWorkItem = nil
@@ -2229,19 +2308,14 @@ final class G7DirectBLEManager: NSObject {
             }
             return
         }
-        // Build 181 change 2: skip the dedup insert for retrieval-identifier
-        // attempts so a later scan-path `connect(_:options:)` on a live
-        // advertisement reference is not suppressed as a duplicate. Field logs
-        // show retrieval-path connects often carry `rssi=0` and the scan path
-        // is the one most likely to deliver `didConnect` on current hardware;
-        // this tests whether the live-advertisement reference is what unblocks
-        // it. Other sources (scan / retrieved_connected / connection_event)
-        // keep the existing insert so same-cycle duplicates stay suppressed.
-        if source != "retrieved_identifier" {
-            attemptedConnectPeripheralIdentifiers.insert(peripheral.identifier)
-        }
+        // Always insert the UUID so scan-path didDiscover callbacks for the same peripheral
+        // can't call beginConnectToG7Peripheral a second time during this attempt window,
+        // which would reset the 8s timer and inflate attempt_count. Build 181 skipped the
+        // insert for retrieved_identifier to allow a later live-advertisement connect(); with
+        // build 182's per-attempt retry model that window is no longer needed — the dedup set
+        // is cleared when the per-attempt timeout fires, giving the scan path a clean slate.
+        attemptedConnectPeripheralIdentifiers.insert(peripheral.identifier)
         let idShort = peripheralIdShort(peripheral)
-        central?.stopScan()
         self.peripheral = peripheral
         peripheral.delegate = self
         connectionState = .connecting
@@ -2252,23 +2326,24 @@ final class G7DirectBLEManager: NSObject {
         lastSeenPeripheralAt = now
         lastAttachSource = source ?? "scan"
         emitStageIfChanged("connecting")
+        let attemptCount = connectAttemptsSinceStartScanning + 1
+        connectAttemptsSinceStartScanning = attemptCount
         Task {
             if let source {
                 await logG7Ble(
                     "event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi) source=\(source) peripheral_id_short=\(idShort)"
                 )
                 await logG7Ble(
-                    "event=g7_ble_connect_attempt peripheral=\(name) source=\(source) peripheral_id_short=\(idShort)"
+                    "event=g7_ble_connect_attempt peripheral=\(name) source=\(source) peripheral_id_short=\(idShort) attempt_count=\(attemptCount)"
                 )
             } else {
                 await logG7Ble(
                     "event=g7_ble_peripheral_discovered peripheral=\(name) rssi=\(rssi) peripheral_id_short=\(idShort)"
                 )
-                await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name) peripheral_id_short=\(idShort)")
+                await logG7Ble("event=g7_ble_connect_attempt peripheral=\(name) peripheral_id_short=\(idShort) attempt_count=\(attemptCount)")
             }
         }
-        let firstAttempt = connectAttemptsSinceStartScanning == 0
-        connectAttemptsSinceStartScanning += 1
+        let firstAttempt = attemptCount == 1
         let preConnectSource = source ?? "scan"
         let peripheralState = peripheral.state.rawValue
         let centralState = central?.state.rawValue ?? -1
@@ -2480,36 +2555,49 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
             }
             return
         }
-        let canceledConnectTimeout = cancelConnectTimeoutIfNeeded()
+        _ = cancelConnectTimeoutIfNeeded()
         let name = peripheral.name ?? "unknown"
         let idShort = peripheralIdShort(peripheral)
-        if let err = error {
-            let ns = err as NSError
+        let ns = error.map { $0 as NSError }
+        let errorCode = ns?.code ?? -1
+        let errorDesc = ns?.localizedDescription ?? "none"
+        let attemptCount = connectAttemptsSinceStartScanning
+        let hardStopDate = currentCycleHardStopDate
+        let timeRemaining = hardStopDate.map { max(0.0, $0.timeIntervalSinceNow) } ?? 0.0
+        let withinWindow = hardStopDate.map { Date() < $0 } ?? false
+
+        self.peripheral = nil
+        attemptedConnectPeripheralIdentifiers.removeAll()
+        // Do not stopScan() — same rationale as handlePerAttemptConnectTimeout: keep scan
+        // live so a didDiscover during the 2s delay connects immediately.
+
+        Task {
+            await logG7Ble(
+                "event=g7_ble_did_fail_to_connect error_code=\(errorCode) error_desc=\(errorDesc) attempt_count=\(attemptCount) time_remaining_s=\(Int(timeRemaining)) restarting_scan=\(withinWindow) peripheral=\(name) peripheral_id_short=\(idShort)"
+            )
+        }
+
+        guard withinWindow else {
+            teardownSession(reason: "connect_failed", isFailure: true)
+            return
+        }
+
+        connectionState = .scanning
+        emitStageIfChanged("scanning")
+        let generation = currentCycleGeneration
+        Task {
+            await logG7Ble(
+                "event=g7_ble_scan_retry_scheduled delay_s=2 attempt_count=\(attemptCount)"
+            )
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + G7BLEInstrumentation.scanRetryDelaySeconds) { [weak self] in
+            guard let self, self.scanningStarted, generation == self.currentCycleGeneration else { return }
+            guard let central = self.central, central.state == .poweredOn else { return }
+            central.scanForPeripherals(withServices: [G7BLEUUID.advertisement], options: nil)
             Task {
-                await logG7Ble(
-                    "event=g7_ble_did_fail_to_connect peripheral=\(name) peripheral_id_short=\(idShort) error_domain=\(ns.domain) error_code=\(ns.code) error_desc=\(ns.localizedDescription)"
-                )
-                if canceledConnectTimeout {
-                    await logG7Ble("event=g7_ble_connect_timeout_canceled reason=did_fail_to_connect")
-                }
-                await logG7Ble(
-                    "event=g7_ble_connect_failed peripheral=\(name) error_domain=\(ns.domain) error_code=\(ns.code) error_desc=\(ns.localizedDescription)"
-                )
-            }
-        } else {
-            Task {
-                await logG7Ble(
-                    "event=g7_ble_did_fail_to_connect peripheral=\(name) peripheral_id_short=\(idShort) error_domain=none error_code=-1 error_desc=none"
-                )
-                if canceledConnectTimeout {
-                    await logG7Ble("event=g7_ble_connect_timeout_canceled reason=did_fail_to_connect")
-                }
-                await logG7Ble(
-                    "event=g7_ble_connect_failed peripheral=\(name) error_domain=none error_code=-1 error_desc=none"
-                )
+                await self.logG7Ble("event=g7_ble_scan_started")
             }
         }
-        teardownSession(reason: "connect_failed", isFailure: true)
     }
 
     func centralManager(_: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -2569,6 +2657,13 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         }
         if override == "startScanning_rescan" {
             invalidateExtendedSession(reason: "startScanning_rescan")
+            return
+        }
+        // Per-attempt timeout cancel: handlePerAttemptConnectTimeout already owns state
+        // cleanup and retry scheduling; the disconnect callback is expected and should
+        // not trigger teardown.
+        if override == "per_attempt_timeout_cancel" {
+            pendingDisconnectReason = nil  // consume the one-shot override
             return
         }
         teardownSession(reason: reason, isFailure: isFailure)
