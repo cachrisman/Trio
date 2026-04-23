@@ -212,8 +212,8 @@ final class G7DirectBLEManager: NSObject {
     private(set) var latestSessionSnapshotSaved = false
 
     private enum G7BLEInstrumentation {
-        static let connectTimeoutSeconds: TimeInterval = 8
-        static let scanRetryDelaySeconds: TimeInterval = 2
+        static let connectTimeoutSeconds: TimeInterval = 2  // was 8
+        static let scanRetryDelaySeconds: TimeInterval = 0.5
         static let gattSetupTimeoutSeconds: TimeInterval = 60
         static let firstEgvTimeoutSeconds: TimeInterval = 90
         // Leave most of the first-EGV window to the passive path; fallback should be rescue behavior, not default.
@@ -500,7 +500,7 @@ final class G7DirectBLEManager: NSObject {
 
         switch central.state {
         case .poweredOn:
-            // registerForConnectionEventsIfNeeded(on: central)
+            registerForConnectionEventsIfNeeded(on: central)
             central.scanForPeripherals(
                 withServices: [G7BLEUUID.advertisement],
                 options: nil
@@ -565,12 +565,12 @@ final class G7DirectBLEManager: NSObject {
         return true
     }
 
-    // private func registerForConnectionEventsIfNeeded(on central: CBCentralManager) {
-    //     guard central.state == .poweredOn else { return }
-    //     central.registerForConnectionEvents(options: [
-    //         CBConnectionEventMatchingOption.serviceUUIDs: Self.connectedAttachServiceUUIDs
-    //     ])
-    // }
+    private func registerForConnectionEventsIfNeeded(on central: CBCentralManager) {
+        guard central.state == .poweredOn else { return }
+        central.registerForConnectionEvents(options: [
+            CBConnectionEventMatchingOption.serviceUUIDs: [G7BLEUUID.advertisement]
+        ])
+    }
 
     func notePhoneRelayReadingDate(_ readingDate: Date?) {
         guard let readingDate else { return }
@@ -1397,8 +1397,12 @@ final class G7DirectBLEManager: NSObject {
             execute: work
         )
         Task {
+            let timeoutStr = String(
+                format: "%.1f",
+                G7BLEInstrumentation.connectTimeoutSeconds
+            )
             await logG7Ble(
-                "event=g7_ble_connect_timeout_armed timeout_s=\(Int(G7BLEInstrumentation.connectTimeoutSeconds))"
+                "event=g7_ble_connect_timeout_armed timeout_s=\(timeoutStr)"
             )
         }
     }
@@ -2397,7 +2401,7 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
             blockedSource: "powered_on_retrieve"
         )
 
-        // registerForConnectionEventsIfNeeded(on: central)
+        registerForConnectionEventsIfNeeded(on: central)
         central.scanForPeripherals(
             withServices: [G7BLEUUID.advertisement],
             options: nil
@@ -2432,28 +2436,28 @@ extension G7DirectBLEManager: CBCentralManagerDelegate {
         }
     }
 
-    // func centralManager(
-    //     _ central: CBCentralManager,
-    //     connectionEventDidOccur event: CBConnectionEvent,
-    //     for peripheral: CBPeripheral
-    // ) {
-    //     guard scanningStarted, central.state == .poweredOn else { return }
-    //     guard event == .peerConnected else { return }
-    //     let expectedCycleGeneration = currentCycleGeneration
-    //     let name = peripheral.name ?? "unknown"
-    //     let idShort = peripheralIdShort(peripheral)
-    //     let alreadyAttempted = attemptedConnectPeripheralIdentifiers.contains(peripheral.identifier)
-    //     Task {
-    //         await logG7Ble(
-    //             "event=g7_ble_connection_event_fired peripheral=\(name) peripheral_id_short=\(idShort) source=connection_event already_attempted=\(alreadyAttempted)"
-    //         )
-    //     }
-    //     _ = beginRetrievedOrEventAttachIfEligible(
-    //         peripheral,
-    //         source: "connection_event",
-    //         expectedCycleGeneration: expectedCycleGeneration
-    //     )
-    // }
+    func centralManager(
+        _ central: CBCentralManager,
+        connectionEventDidOccur event: CBConnectionEvent,
+        for peripheral: CBPeripheral
+    ) {
+        guard scanningStarted, central.state == .poweredOn else { return }
+        guard event == .peerDisconnected else { return }
+        let expectedCycleGeneration = currentCycleGeneration
+        let name = peripheral.name ?? "unknown"
+        let idShort = peripheralIdShort(peripheral)
+        let alreadyAttempted = attemptedConnectPeripheralIdentifiers.contains(peripheral.identifier)
+        Task {
+            await logG7Ble(
+                "event=g7_ble_connection_event_fired peripheral=\(name) peripheral_id_short=\(idShort) source=connection_event already_attempted=\(alreadyAttempted)"
+            )
+        }
+        _ = beginRetrievedOrEventAttachIfEligible(
+            peripheral,
+            source: "connection_event",
+            expectedCycleGeneration: expectedCycleGeneration
+        )
+    }
 
     func centralManager(
         _: CBCentralManager,

@@ -13,20 +13,18 @@ struct ProgressRingView: View {
         let arcColor: Color = fraction < 0.9 ? .green : (fraction < 0.95 ? .yellow : .red)
         let lineWidth: CGFloat = 8
 
-        GeometryReader { _ in
-            ConcentricRectangle()
-                .trim(from: 0, to: fraction)
-                .stroke(
-                    arcColor,
-                    style: StrokeStyle(
-                        lineWidth: lineWidth,
-                        lineCap: .round,
-                        lineJoin: .round
-                    )
+        ConcentricRectangle()
+            .trim(from: 0, to: fraction)
+            .stroke(
+                arcColor,
+                style: StrokeStyle(
+                    lineWidth: lineWidth,
+                    lineCap: .round,
+                    lineJoin: .round
                 )
-                .rotationEffect(.degrees(-90))
-                .animation(.linear(duration: 0.95), value: tick)
-        }
-        .allowsHitTesting(false)
+            )
+            .rotationEffect(.degrees(-90))
+            .animation(.linear(duration: 0.95), value: tick)
+            .allowsHitTesting(false)
     }
 }
