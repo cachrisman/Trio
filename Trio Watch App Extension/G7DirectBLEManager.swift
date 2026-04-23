@@ -769,15 +769,17 @@ final class G7DirectBLEManager: NSObject {
         case .starting:
             Task {
                 await logG7Ble(
-                    "event=g7_ble_cycle_started trigger=\(trigger) action=await_runtime_activation expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                    "event=g7_ble_cycle_started trigger=\(trigger) action=scan_while_runtime_starting expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
                 )
             }
+            continueCurrentCycleExecution(trigger: trigger)
         case .unavailable:
-            let category = "runtime"
             Task {
-                await logG7Ble("event=g7_ble_cycle_missed category=\(category) reason=runtime_unavailable")
+                await logG7Ble(
+                    "event=g7_ble_cycle_started trigger=\(trigger) action=scan_without_extended_runtime expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                )
             }
-            scheduleNextCycleAfterMiss(reason: "runtime_unavailable", category: category)
+            continueCurrentCycleExecution(trigger: trigger)
         }
     }
 
@@ -842,10 +844,9 @@ final class G7DirectBLEManager: NSObject {
         if delay <= 0 {
             Task {
                 await logG7Ble(
-                    "event=g7_ble_runtime_gate trigger=runtime_activation_deadline state=activation_timeout expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                    "event=g7_ble_runtime_activation_timeout note=scan_already_in_progress generation=\(generation) expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
                 )
             }
-            scheduleNextCycleAfterMiss(reason: "runtime_unavailable", category: "runtime")
             return
         }
 
@@ -855,10 +856,9 @@ final class G7DirectBLEManager: NSObject {
             guard self.runtimeState != .active else { return }
             Task {
                 await self.logG7Ble(
-                    "event=g7_ble_runtime_gate trigger=runtime_activation_deadline state=activation_timeout expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                    "event=g7_ble_runtime_activation_timeout note=scan_already_in_progress generation=\(generation) expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
                 )
             }
-            self.scheduleNextCycleAfterMiss(reason: "runtime_unavailable", category: "runtime")
         }
         cycleRuntimeActivationWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
@@ -940,23 +940,28 @@ final class G7DirectBLEManager: NSObject {
                 return
             }
             guard let expectedReadingDate = self.currentCycleExpectedReadingDate else { return }
-            switch self.ensureRuntimeForCurrentCycle(trigger: "same_cycle_retry", expectedReadingDate: expectedReadingDate) {
+            let runtimeGate = self.ensureRuntimeForCurrentCycle(
+                trigger: "same_cycle_retry",
+                expectedReadingDate: expectedReadingDate
+            )
+            switch runtimeGate {
             case .active:
                 break
             case .starting:
-                self.cycleRetryScheduled = false
                 Task {
                     await self.logG7Ble(
-                        "event=g7_ble_cycle_started trigger=same_cycle_retry action=await_runtime_activation expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                        "event=g7_ble_cycle_started trigger=same_cycle_retry action=scan_while_runtime_starting expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
                     )
                 }
-                return
             case .unavailable:
-                self.scheduleNextCycleAfterMiss(reason: "runtime_unavailable", category: "runtime")
-                return
+                Task {
+                    await self.logG7Ble(
+                        "event=g7_ble_cycle_started trigger=same_cycle_retry action=scan_without_extended_runtime expected_epoch=\(Int(expectedReadingDate.timeIntervalSince1970))"
+                    )
+                }
             }
             self.cycleRetryScheduled = false
-            self.startScanning()
+            self.continueCurrentCycleExecution(trigger: "same_cycle_retry")
         }
         cycleRetryWorkItem = workItem
         cycleRetryScheduled = true

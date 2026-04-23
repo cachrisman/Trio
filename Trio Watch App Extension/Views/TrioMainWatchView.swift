@@ -1,4 +1,5 @@
 import Charts
+import Combine
 import SwiftUI
 import WatchKit
 
@@ -19,6 +20,16 @@ struct TrioMainWatchView: View {
 
     // treatments
     @State private var selectedTreatment: TreatmentOption?
+
+    // complication progress ring — 1 Hz tick only while page 2 is visible (see `maintainRingRefreshTimer`)
+    @State private var ringRefreshTick = Date()
+    private let ringRefreshTimer = Timer.publish(every: 1.0, on: .main, in: .common)
+    @State private var ringTimerCancellable: Cancellable?
+
+    private var arcReferenceReadingDate: Date? {
+        state.g7DebugManager.lastReadingDate
+            ?? TrioComplicationDataStore.shared.latestSnapshot()?.readingDate
+    }
 
     var isWatchStateDated: Bool {
         // `lastWatchStateUpdate` is WC-only monotonic; main UI freshness uses `effectiveWatchUiFreshnessAt`
@@ -279,6 +290,35 @@ struct TrioMainWatchView: View {
             }
         }
         .ignoresSafeArea()
+        .overlay {
+            if currentPage == 2 {
+                if #available(watchOS 26.0, *) {
+                    ProgressRingView(
+                        arcReferenceReadingDate: arcReferenceReadingDate,
+                        tick: ringRefreshTick
+                    )
+                }
+            }
+        }
+        .onAppear {
+            maintainRingRefreshTimer(forPage: currentPage)
+        }
+        .onChange(of: currentPage) { _, newPage in
+            maintainRingRefreshTimer(forPage: newPage)
+        }
+        .onReceive(ringRefreshTimer) { date in
+            if currentPage == 2 { ringRefreshTick = date }
+        }
+    }
+
+    private func maintainRingRefreshTimer(forPage page: Int) {
+        if page == 2 {
+            ringTimerCancellable?.cancel()
+            ringTimerCancellable = ringRefreshTimer.connect()
+        } else {
+            ringTimerCancellable?.cancel()
+            ringTimerCancellable = nil
+        }
     }
 
     private func updateRotation(for trend: String?) {
