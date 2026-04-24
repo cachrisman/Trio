@@ -32,6 +32,39 @@ enum BackgroundTaskWindowCounter {
     }
 }
 
+enum G7DirectBLEStatus: String, Equatable {
+    case off
+    case searching
+    case connecting
+    case active
+    case stalled
+    case unavailable
+
+    var badgeText: String {
+        switch self {
+        case .off: return "off"
+        case .searching: return "scan"
+        case .connecting: return "conn"
+        case .active: return "ok"
+        case .stalled: return "stall"
+        case .unavailable: return "n/a"
+        }
+    }
+
+    var shortLabel: String { badgeText }
+}
+
+extension TrioComplicationDataSource {
+    var watchBadgeText: String {
+        switch self {
+        case .watchConnectivity: return "Phone"
+        case .healthKit: return "HK"
+        case .g7DirectBLE: return "BLE"
+        case .unknown: return "?"
+        }
+    }
+}
+
 @Observable final class WatchState: NSObject, WCSessionDelegate {
     static let shared = WatchState()
 
@@ -53,6 +86,17 @@ enum BackgroundTaskWindowCounter {
     var cob: String? = "--"
     var iob: String? = "--"
     var lastLoopTime: String? = "--"
+    var displayedReadingSource: TrioComplicationDataSource = .unknown
+    var g7DirectBleStatus: G7DirectBLEStatus = .off
+    var g7DirectBleLastEventAt: Date?
+    var g7DirectBleLastReadingAt: Date?
+    var g7DirectBleLastEventAgeText: String {
+        guard let g7DirectBleLastEventAt else { return "--" }
+        let seconds = max(0, Int(Date().timeIntervalSince(g7DirectBleLastEventAt)))
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        return "\(seconds / 3600)h"
+    }
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
@@ -233,6 +277,8 @@ enum BackgroundTaskWindowCounter {
         noteAppBecameActive()
         WatchErrorReporter.markBecameActiveImmediately()
         scheduleStartupSequenceOnMain(activationSequence: activationSequence)
+        applyG7DirectBleScenePhase("active")
+        G7DirectBLEObserver.shared.applyForegroundActiveEntry()
 
         Task {
             await WatchLogger.shared.log(
@@ -259,6 +305,8 @@ enum BackgroundTaskWindowCounter {
         cancelStartupSequenceOnMain()
         startupCurrentActivationSequence = nil
         WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
+        applyG7DirectBleScenePhase("inactive_or_background")
+        G7DirectBLEObserver.shared.noteForegroundInactiveOrBackground("inactive_or_background")
 
         if let activationSequence {
             WatchStartupTransportGate.disarm(activationSequence: activationSequence)
@@ -670,7 +718,8 @@ enum BackgroundTaskWindowCounter {
             delta: deltaString,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: nil
+            glucoseColor: nil,
+            source: .healthKit
         )
 
         DispatchQueue.main.async {
@@ -840,6 +889,42 @@ enum BackgroundTaskWindowCounter {
         case 20 ..< 30: return "SingleUp"
         default: return "DoubleUp"
         }
+    }
+
+    static func trendString(fromDirectBleRate trendRate: Double?) -> String {
+        guard let trendRate else { return "" }
+        let fiveMinuteDelta = Int((trendRate * 5.0).rounded())
+        return hkTrendString(fromDeltaMgDl: fiveMinuteDelta)
+    }
+
+    func applyG7DirectBleStatus(_ status: G7DirectBLEStatus) {
+        assert(Thread.isMainThread, "applyG7DirectBleStatus must be called on main thread")
+        g7DirectBleStatus = status
+        g7DirectBleLastEventAt = Date()
+    }
+
+    func applyG7DirectBleScenePhase(_ phase: String) {
+        assert(Thread.isMainThread, "applyG7DirectBleScenePhase must be called on main thread")
+        g7DirectBleLastEventAt = Date()
+        Task {
+            await WatchLogger.shared.log("event=g7_ble_lifecycle scene_phase=\(phase) status=\(self.g7DirectBleStatus.rawValue)")
+        }
+    }
+
+    func applyG7DirectBleSnapshot(_ snapshot: TrioComplicationSnapshot) {
+        assert(Thread.isMainThread, "applyG7DirectBleSnapshot must be called on main thread")
+        currentGlucose = snapshot.glucose
+        trend = snapshot.trend
+        delta = snapshot.delta
+        if let glucoseColor = snapshot.glucoseColor {
+            currentGlucoseColorString = glucoseColor
+        }
+        lastWatchStateUpdate = snapshot.readingDate
+        displayedReadingSource = snapshot.source ?? .g7DirectBLE
+        g7DirectBleStatus = .active
+        g7DirectBleLastEventAt = Date()
+        g7DirectBleLastReadingAt = snapshot.readingDate
+        showSyncingAnimation = false
     }
 
     /// Path B1 — Summarize inbound WC messages without stringifying nested `glucoseValues` (avoids large transient `String` allocations).
@@ -1097,7 +1182,8 @@ enum BackgroundTaskWindowCounter {
             trend: payload[WatchMessageKeys.trend] as? String ?? "",
             delta: payload[WatchMessageKeys.delta] as? String ?? "",
             readingDate: readingDate,
-            date: Date()
+            date: Date(),
+            source: .watchConnectivity
         )
         if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
             DispatchQueue.main.async { [weak self] in
@@ -1713,6 +1799,13 @@ enum BackgroundTaskWindowCounter {
             self.lastLoopTime = lastLoopTime
         }
 
+        if message[WatchMessageKeys.currentGlucose] != nil
+            || message[WatchMessageKeys.trend] != nil
+            || message[WatchMessageKeys.delta] != nil
+        {
+            displayedReadingSource = .watchConnectivity
+        }
+
         if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
             glucoseValues = glucoseData.compactMap { data in
                 guard let glucose = data["glucose"] as? Double,
@@ -1843,7 +1936,8 @@ enum BackgroundTaskWindowCounter {
             delta: deltaValue,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: glucoseColorValue
+            glucoseColor: glucoseColorValue,
+            source: .watchConnectivity
         )
 
         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -1904,7 +1998,8 @@ enum BackgroundTaskWindowCounter {
             delta: delta ?? "",
             readingDate: effectiveReadingDate,
             date: Date(),
-            glucoseColor: currentGlucoseColorString
+            glucoseColor: currentGlucoseColorString,
+            source: displayedReadingSource
         )
 
         Task {
@@ -2077,6 +2172,7 @@ enum BackgroundTaskWindowCounter {
                 self.currentGlucoseColorString = glucoseColor
             }
             self.lastWatchStateUpdate = snapshot.readingDate
+            self.displayedReadingSource = snapshot.source ?? .unknown
             self.showSyncingAnimation = false
             self.syncTimeoutWorkItem?.cancel()
         }
