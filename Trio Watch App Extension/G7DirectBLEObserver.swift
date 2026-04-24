@@ -87,7 +87,7 @@ final class G7DirectBLEObserver: NSObject {
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
-    private let authFallbackDelay: TimeInterval = 8
+    private let authFallbackDelay: TimeInterval = 6
     private let egvRequestInterval: TimeInterval = 60
     private let minimumSavedReadingSpacing: TimeInterval = 60
 
@@ -443,8 +443,10 @@ final class G7DirectBLEObserver: NSObject {
         log("event=g7_ble_auth_payload_received opcode=0x\(opcode.hexByte) authenticated=\(authenticated) bonded=\(bonded) byte_count=\(data.count) preview=\(data.hexPreview)")
 
         guard opcode == G7BLEOpcode.authStatusReply.byte else { return }
-        if authenticated {
-            advanceToControl(reason: bonded ? "auth_authenticated_bonded" : "auth_authenticated_not_bonded")
+        if authenticated && bonded {
+            advanceToControl(reason: "auth_authenticated_bonded")
+        } else if authenticated && !bonded {
+            log("event=g7_ble_blocked_auth_partial authenticated=true bonded=false byte_count=\(data.count)")
         } else {
             log("event=g7_ble_blocked_auth_incomplete authenticated=false bonded=\(bonded)")
         }
