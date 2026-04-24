@@ -229,6 +229,12 @@ final class G7DirectBLEObserver: NSObject {
         noteStatus(.searching)
         log("event=g7_ble_scan_start reason=\(reason) services=nil")
         centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        centralManager.registerForConnectionEvents(options: [
+            CBConnectionEventMatchingOption.serviceUUIDs: [
+                G7BLEUUID.advertisement,
+                G7BLEUUID.dataService
+            ]
+        ])
         scheduleScanTimeout()
     }
 
@@ -763,6 +769,17 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         if shouldConnect(peripheral: peripheral, advertisementData: advertisementData, rssi: RSSI, source: "scan") {
             connect(peripheral, source: "scan")
+        }
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        connectionEventDidOccur event: CBConnectionEvent,
+        for peripheral: CBPeripheral
+    ) {
+        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected")")
+        if event == .peerConnected, !isHardStopped {
+            startOrResume(reason: "connection_event_peer_connected")
         }
     }
 
