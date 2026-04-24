@@ -148,12 +148,7 @@ struct GlucoseTrendView: View {
 
             Spacer()
 
-            Text(
-                isWatchStateDated ?
-                    String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
-            )
+            Text(state.g7BLEStatusLine(isWatchStateDated: isWatchStateDated))
             .font(.system(size: minutesAgoFontSize))
             .fontWidth(isWatchStateDated ? .expanded : .standard)
 
