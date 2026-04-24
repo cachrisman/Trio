@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftUI
 import WatchConnectivity
 
@@ -62,6 +63,23 @@ import WatchConnectivity
 
     var recommendedBolus: Decimal = 0
 
+    // MARK: - Direct BLE observer status
+    var directBLEStatus: G7BLEObserverStatus = .off
+    var currentReadingSource: TrioReadingSource = .unknown
+    var lastDirectBLEEventAt: Date?
+
+    @ObservationIgnored private let g7Observer = G7DirectBLEObserver()
+
+    var directBLEStatusText: String {
+        directBLEStatus.rawValue.uppercased()
+    }
+
+    var directBLEEventRecencyText: String {
+        guard let lastDirectBLEEventAt else { return "BLE:--" }
+        let minutes = max(0, Int(Date().timeIntervalSince(lastDirectBLEEventAt) / 60))
+        return "BLE:\(minutes)m"
+    }
+
     // MARK: - Debouncing and batch processing helpers
 
     /// Temporary storage for new data arriving via WatchConnectivity.
@@ -78,6 +96,53 @@ import WatchConnectivity
     override init() {
         super.init()
         setupSession()
+        configureDirectBLEObserver()
+    }
+
+    func handleScenePhaseChange(_ phase: ScenePhase) {
+        g7Observer.handleScenePhase(phase)
+    }
+
+    func stopDirectBLEObserver() {
+        g7Observer.stop()
+    }
+
+    private func configureDirectBLEObserver() {
+        g7Observer.onStatus = { [weak self] status in
+            self?.directBLEStatus = status
+        }
+
+        g7Observer.onDirectEvent = { [weak self] date in
+            self?.lastDirectBLEEventAt = date
+        }
+
+        g7Observer.onReading = { [weak self] reading in
+            guard let self else { return }
+            self.currentReadingSource = .directBLE
+            self.currentGlucose = reading.glucose
+            self.trend = reading.trend
+            self.lastLoopTime = self.minutesAgoString(from: reading.readingDate)
+
+            let snapshot = TrioComplicationSnapshot(
+                glucose: reading.glucose,
+                trend: reading.trend,
+                readingDate: reading.readingDate,
+                date: Date(),
+                source: .directBLE
+            )
+            TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
+
+            Task {
+                await WatchLogger.shared.log(
+                    "event=g7_ble_snapshot_saved source=direct_ble glucose=\(reading.glucose) trend=\(reading.trend)"
+                )
+            }
+        }
+    }
+
+    private func minutesAgoString(from date: Date) -> String {
+        let minutes = max(0, Int(Date().timeIntervalSince(date) / 60))
+        return "\(minutes) min"
     }
 
     /// Configures the WatchConnectivity session if supported on the device
@@ -463,6 +528,14 @@ import WatchConnectivity
             }
         }
 
+        if let sourceRaw = message[WatchMessageKeys.readingSource] as? String,
+           let source = TrioReadingSource(rawValue: sourceRaw)
+        {
+            currentReadingSource = source
+        } else {
+            currentReadingSource = .watchConnectivity
+        }
+
         if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
             self.currentGlucose = currentGlucose
         }
@@ -572,6 +645,16 @@ import WatchConnectivity
             if let booleanValue = confirmBolusFaster as? Bool {
                 self.confirmBolusFaster = booleanValue
             }
+        }
+        if let readingDateSeconds = message[WatchMessageKeys.readingDate] as? TimeInterval {
+            let snapshot = TrioComplicationSnapshot(
+                glucose: currentGlucose,
+                trend: trend ?? "--",
+                readingDate: Date(timeIntervalSince1970: readingDateSeconds),
+                date: Date(),
+                source: currentReadingSource
+            )
+            TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
         }
     }
 }
