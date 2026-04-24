@@ -43,6 +43,9 @@ enum WatchMessageKeys {
     static let maxYAxisValue = "maxYAxisValue"
     static let overridePresets = "overridePresets"
     static let tempTargetPresets = "tempTargetPresets"
+    static let readingDate = "readingDate"
+    static let readingSource = "readingSource"
+    static let activeG7PeripheralName = "activeG7PeripheralName"
 
     // Limits and Settings Keys
     static let maxBolus = "maxBolus"

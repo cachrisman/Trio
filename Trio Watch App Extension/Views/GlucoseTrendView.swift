@@ -157,6 +157,12 @@ struct GlucoseTrendView: View {
             .font(.system(size: minutesAgoFontSize))
             .fontWidth(isWatchStateDated ? .expanded : .standard)
 
+            Text("\(state.currentReadingSource.shortLabel) · BLE:\(state.directBLEStatusText) · \(state.directBLEEventRecencyText)")
+                .font(.system(size: max(8, minutesAgoFontSize - 1)))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+
             Spacer()
 
         }.frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -3,6 +3,7 @@ import UserNotifications
 
 @main struct TrioWatchApp: App {
     @Environment(\.scenePhase) private var scenePhase
+    @State private var watchState = WatchState()
 
     init() {
         WatchNotificationHandler.shared.configure()
@@ -10,9 +11,10 @@ import UserNotifications
 
     var body: some Scene {
         WindowGroup {
-            TrioMainWatchView()
+            TrioMainWatchView(state: watchState)
         }
         .onChange(of: scenePhase) { _, newScenePhase in
+            watchState.handleScenePhaseChange(newScenePhase)
             if newScenePhase == .background {
                 Task {
                     await WatchLogger.shared.flushPersistedLogs()
