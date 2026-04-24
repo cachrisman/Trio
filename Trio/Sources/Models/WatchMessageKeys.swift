@@ -46,6 +46,7 @@ enum WatchMessageKeys {
 
     // Transfer Metadata Keys
     static let readingEpoch = "reading_epoch"
+    static let complicationSource = "complication_source"
     static let transferEnqueuedAt = "transfer_enqueued_at"
 
     // Limits and Settings Keys

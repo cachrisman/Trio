@@ -53,6 +53,10 @@ enum BackgroundTaskWindowCounter {
     var cob: String? = "--"
     var iob: String? = "--"
     var lastLoopTime: String? = "--"
+    var complicationSource: TrioComplicationDataSource = .unknown
+    var g7BLEStatus: G7DirectBLEStatus = .off
+    var g7BLELastEventAt: Date?
+    var g7BLELastReadingAt: Date?
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
@@ -233,6 +237,7 @@ enum BackgroundTaskWindowCounter {
         noteAppBecameActive()
         WatchErrorReporter.markBecameActiveImmediately()
         scheduleStartupSequenceOnMain(activationSequence: activationSequence)
+        G7DirectBLEObserver.shared.start()
 
         Task {
             await WatchLogger.shared.log(
@@ -259,6 +264,7 @@ enum BackgroundTaskWindowCounter {
         cancelStartupSequenceOnMain()
         startupCurrentActivationSequence = nil
         WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
+        g7BLEStatus = g7BLEStatus == .active ? .active : .stalled
 
         if let activationSequence {
             WatchStartupTransportGate.disarm(activationSequence: activationSequence)
@@ -670,7 +676,8 @@ enum BackgroundTaskWindowCounter {
             delta: deltaString,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: nil
+            glucoseColor: nil,
+            source: .healthKit
         )
 
         DispatchQueue.main.async {
@@ -1092,12 +1099,14 @@ enum BackgroundTaskWindowCounter {
         // state is not populated here (defaults to nil) because no call site currently sets it.
         // If state is ever set during snapshot construction, add it here too — otherwise this
         // fingerprint will always differ from the saved one, defeating dedup for this path.
+        let payloadSource = TrioComplicationDataSource(rawValue: payload[WatchMessageKeys.complicationSource] as? String ?? "") ?? .watchConnectivity
         let tempSnapshot = TrioComplicationSnapshot(
             glucose: payload[WatchMessageKeys.currentGlucose] as? String ?? "--",
             trend: payload[WatchMessageKeys.trend] as? String ?? "",
             delta: payload[WatchMessageKeys.delta] as? String ?? "",
             readingDate: readingDate,
-            date: Date()
+            date: Date(),
+            source: payloadSource
         )
         if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
             DispatchQueue.main.async { [weak self] in
@@ -1713,6 +1722,12 @@ enum BackgroundTaskWindowCounter {
             self.lastLoopTime = lastLoopTime
         }
 
+        if let sourceRaw = message[WatchMessageKeys.complicationSource] as? String {
+            self.complicationSource = TrioComplicationDataSource(rawValue: sourceRaw) ?? .watchConnectivity
+        } else {
+            self.complicationSource = .watchConnectivity
+        }
+
         if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
             glucoseValues = glucoseData.compactMap { data in
                 guard let glucose = data["glucose"] as? Double,
@@ -1837,13 +1852,17 @@ enum BackgroundTaskWindowCounter {
             await WatchLogger.shared.log("🔍 Debug: glucoseValue source - message: \(message[WatchMessageKeys.currentGlucose] as? String ?? "nil"), currentGlucose: \(currentGlucose)")
         }
 
+        let sourceRaw = message[WatchMessageKeys.complicationSource] as? String
+        let source = TrioComplicationDataSource(rawValue: sourceRaw ?? "") ?? .watchConnectivity
+
         let snapshot = TrioComplicationSnapshot(
             glucose: glucoseValue,
             trend: trendValue,
             delta: deltaValue,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: glucoseColorValue
+            glucoseColor: glucoseColorValue,
+            source: source
         )
 
         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -1904,7 +1923,8 @@ enum BackgroundTaskWindowCounter {
             delta: delta ?? "",
             readingDate: effectiveReadingDate,
             date: Date(),
-            glucoseColor: currentGlucoseColorString
+            glucoseColor: currentGlucoseColorString,
+            source: complicationSource
         )
 
         Task {
@@ -2077,6 +2097,7 @@ enum BackgroundTaskWindowCounter {
                 self.currentGlucoseColorString = glucoseColor
             }
             self.lastWatchStateUpdate = snapshot.readingDate
+            self.complicationSource = snapshot.source ?? .unknown
             self.showSyncingAnimation = false
             self.syncTimeoutWorkItem?.cancel()
         }

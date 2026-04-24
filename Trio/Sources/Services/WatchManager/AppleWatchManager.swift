@@ -546,7 +546,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             WatchMessageKeys.maxProtein: state.maxProtein,
             WatchMessageKeys.bolusIncrement: state.bolusIncrement,
             WatchMessageKeys.confirmBolusFaster: state.confirmBolusFaster,
-            WatchMessageKeys.units: state.units.rawValue
+            WatchMessageKeys.units: state.units.rawValue,
+            WatchMessageKeys.complicationSource: TrioComplicationDataSource.watchConnectivity.rawValue
         ]
 
         // R1a: Use max(by: date) rather than .first/.last to avoid sorted-order assumption.
