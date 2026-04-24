@@ -1,0 +1,92 @@
+<svg width="100%" viewBox="0 0 680 380" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>Current state: watch messaging architecture</title>
+  <desc>Phone and watch each hold scattered responsibilities with no central decode or dispatch layer.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: system-ui, sans-serif; }
+      .th { font-size: 14px; font-weight: 600; }
+      .ts { font-size: 12px; font-weight: 400; }
+      .label { font-size: 12px; font-weight: 500; fill: #5F5E5A; }
+      .group { font-size: 11px; font-weight: 600; fill: #7A7872; letter-spacing: 0.04em; }
+
+      .blue-box { fill: #E6F1FB; stroke: #185FA5; }
+      .blue-th { fill: #0C447C; }
+      .blue-ts { fill: #185FA5; }
+
+      .purple-box { fill: #EEEDFE; stroke: #534AB7; }
+      .purple-th { fill: #3C3489; }
+      .purple-ts { fill: #534AB7; }
+
+      .container {
+        fill: none;
+        stroke: #B4B2A9;
+        stroke-width: 1;
+        stroke-dasharray: 5 3;
+      }
+
+      .transport-label { font-size: 12px; font-weight: 500; fill: #5F5E5A; }
+      .transport-line { stroke: #888780; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <!-- iPhone container -->
+  <rect x="15" y="45" width="255" height="285" rx="12" class="container"/>
+  <text class="label" x="142" y="66" text-anchor="middle">iPhone</text>
+
+  <!-- iPhone boxes -->
+  <rect x="28" y="78" width="229" height="52" rx="6" class="blue-box" stroke-width="0.5"/>
+  <text class="th blue-th" x="142" y="95" text-anchor="middle" dominant-baseline="central">BaseWatchManager</text>
+  <text class="ts blue-ts" x="142" y="113" text-anchor="middle" dominant-baseline="central">all delegate logic + send paths</text>
+
+  <rect x="28" y="140" width="229" height="52" rx="6" class="blue-box" stroke-width="0.5"/>
+  <text class="th blue-th" x="142" y="157" text-anchor="middle" dominant-baseline="central">WatchMessageKeys</text>
+  <text class="ts blue-ts" x="142" y="175" text-anchor="middle" dominant-baseline="central">partial + inline literals scattered</text>
+
+  <rect x="28" y="202" width="229" height="44" rx="6" class="blue-box" stroke-width="0.5"/>
+  <text class="th blue-th" x="142" y="217" text-anchor="middle" dominant-baseline="central">ACK / dedup state</text>
+  <text class="ts blue-ts" x="142" y="233" text-anchor="middle" dominant-baseline="central">embedded in manager</text>
+
+  <rect x="28" y="256" width="229" height="44" rx="6" class="blue-box" stroke-width="0.5"/>
+  <text class="th blue-th" x="142" y="271" text-anchor="middle" dominant-baseline="central">Transport + send logic</text>
+  <text class="ts blue-ts" x="142" y="287" text-anchor="middle" dominant-baseline="central">scattered across methods</text>
+
+  <!-- Apple Watch container -->
+  <rect x="410" y="45" width="255" height="285" rx="12" class="container"/>
+  <text class="label" x="537" y="66" text-anchor="middle">Apple Watch</text>
+
+  <!-- Watch boxes -->
+  <rect x="423" y="78" width="229" height="52" rx="6" class="purple-box" stroke-width="0.5"/>
+  <text class="th purple-th" x="537" y="95" text-anchor="middle" dominant-baseline="central">WatchState</text>
+  <text class="ts purple-ts" x="537" y="113" text-anchor="middle" dominant-baseline="central">delegate + inbound + tasks</text>
+
+  <rect x="423" y="140" width="229" height="52" rx="6" class="purple-box" stroke-width="0.5"/>
+  <text class="th purple-th" x="537" y="157" text-anchor="middle" dominant-baseline="central">WatchState+Requests</text>
+  <text class="ts purple-ts" x="537" y="175" text-anchor="middle" dominant-baseline="central">raw dict senders</text>
+
+  <rect x="423" y="202" width="229" height="44" rx="6" class="purple-box" stroke-width="0.5"/>
+  <text class="th purple-th" x="537" y="217" text-anchor="middle" dominant-baseline="central">WatchLogger</text>
+  <text class="ts purple-ts" x="537" y="233" text-anchor="middle" dominant-baseline="central">buffered flush + startup gate</text>
+
+  <rect x="423" y="256" width="229" height="44" rx="6" class="purple-box" stroke-width="0.5"/>
+  <text class="th purple-th" x="537" y="271" text-anchor="middle" dominant-baseline="central">WatchNotificationHandler</text>
+  <text class="ts purple-ts" x="537" y="287" text-anchor="middle" dominant-baseline="central">snooze + fallback</text>
+
+  <!-- Transport labels + arrows -->
+  <text class="transport-label" x="340" y="96" text-anchor="middle">sendMessage</text>
+  <line x1="282" y1="104" x2="398" y2="104" class="transport-line" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+
+  <text class="transport-label" x="340" y="158" text-anchor="middle">transferUserInfo</text>
+  <line x1="282" y1="166" x2="398" y2="166" class="transport-line" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+
+  <text class="transport-label" x="340" y="204" text-anchor="middle">transferCurrent</text>
+  <text class="transport-label" x="340" y="217" text-anchor="middle">ComplicationUserInfo</text>
+  <line x1="282" y1="224" x2="398" y2="224" class="transport-line" marker-end="url(#arrow)"/>
+
+  <text class="transport-label" x="340" y="259" text-anchor="middle">updateApplication</text>
+  <text class="transport-label" x="340" y="272" text-anchor="middle">Context</text>
+  <line x1="282" y1="278" x2="398" y2="278" class="transport-line" marker-end="url(#arrow)"/>
+</svg>

@@ -1,5 +1,8 @@
 # Doc lifecycle
 
+**Version:** v1.0  
+**Last updated:** 2026-04-12 13:09 CET  
+
 This repo uses docs as working artifacts: they start messy, get reviewed in tight loops, and end up as a frozen record of what we decided and shipped.
 
 ## Folder meanings
@@ -42,6 +45,15 @@ In `docs/in-progress/`, every doc should have at the top:
 And include a `Changelog` section at the bottom with short bullets per version.
 
 In `docs/completed/`, the final version should remain visible (do not remove changelog).
+
+### Cross-document references (sibling docs)
+
+When one in-progress doc links to another (e.g. design → implementation plan → report in the same initiative folder):
+
+- Prefer **links by filename**; **do not** repeat the linked doc’s **version number** next to the link (e.g. avoid suffixes like **`(v1.2)`** on the linked title). The **linked file’s own `Version:`** at its header is authoritative.
+- Editing **one** doc should not force version-only edits in **siblings** just to update embedded version numbers in cross-references.
+
+Normative detail and rationale: **`.cursor/rules/docs-version-and-changelog.mdc`**.
 
 ## Review loop rules (how docs get edited)
 
@@ -107,3 +119,10 @@ Before moving to completed:
 - [ ] Status is `Complete`/`Accepted`
 - [ ] Final review returned `PASS`
 - [ ] Any follow-ups are captured as links
+
+---
+
+## Changelog
+
+### v1.0 (2026-04-12 13:09 CET)
+- Introduced **Version** / **Last updated** for this process doc; added **Cross-document references (sibling docs)** under versioning (link without embedding sibling **`(vX.Y)`**; pointer to **`docs-version-and-changelog.mdc`**). Reason: document repo-wide practice and match Cursor rule **v3**.

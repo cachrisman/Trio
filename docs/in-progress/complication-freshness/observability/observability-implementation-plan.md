@@ -1,9 +1,9 @@
 # Observability Hardening — Implementation Plan (Step 6)
 
-**Version:** v1.1
+**Version:** v1.2
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-21 15:17 CET
-**Status:** COMPLETED — All R5 items shipped. R5b/R5c/R5f (build 141), R5d (build 143). See implementation log for R5d details.
+**Last updated:** 2026-04-08 22:09 CET
+**Status:** COMPLETED — All R5 items shipped (R5b/R5c/R5f build 141; R5d build 143). Build 144 additions **4G/4H/4I** (unified R4 transfer log, `queue_depth` in budget check, fresh-snapshot retry skip) are recorded in [observability-implementation-log.md](observability-implementation-log.md), not in the Step 6 checklist below.
 
 Design: [observability-design.md](observability-design.md)
 Implementation log: [observability-implementation-log.md](observability-implementation-log.md)
@@ -58,14 +58,22 @@ In both paths, `data_age_seconds` must be from the snapshot **actually used to b
 
 > **Post-review corrections (2026-03-15):** After implementation of R5b/R5c, a review identified (1) R5c attribution risk — a shared boolean could be overwritten before finalize ran. Fix: pass `fromUserInfo` and (for the userInfo path) `userInfoReceiveTimestamp` through the chain; capture the timestamp outside the work item in the pending-tasks path; in `saveComplicationSnapshot`, use only the threaded timestamp for `decode_ms` and derive `reading_epoch` from the payload being saved; no fallback to instance state; remove dead `lastUserInfoReadingEpoch`. (2) R5b verification — confirm watch-side epoch is read from the inner payload. Verified and documented in code. Follow-up reviews (ChatGPT, Claude) confirmed the shape and requested removal of the fallback and dead state. See [remediation plan changelog v1.50–v1.51](../archive/remediation-plan-changelog-full.md) and [observability-design.md §R5b/§R5c](observability-design.md) "As implemented (post-review)."
 
-> ## 🛑 STOP — Code Review + Build/Deploy
+> ## 🛑 STOP — Code Review + Build/Deploy *(historical — R5d shipped build 143)*
 > 1. **Code review** this PR — verify `forceWidgetReloadIfStale(receivedGap:)` signature matches all call sites, `lastDataReceivedAt` is updated in both `didReceiveUserInfo` and `didReceiveApplicationContext` (if Step 5/R4 has shipped; if not, verify only `didReceiveUserInfo` — the `didReceiveApplicationContext` update is part of Step 5), and rename is complete (no remaining `lastUserInfoReceivedAt` references)
 > 2. **Build and deploy** to device
 > 3. **Confirm in BetterStack:** `timeline_built snapshot_age` p90 < 600s after sleep gaps; `reload_with_stale_snapshot` events are rare
 
 ---
 
+**Note:** Follow-on work **4G/4H/4I** (build 144) is documented in [observability-implementation-log.md](observability-implementation-log.md) and [build-144-plan.md](../build-144-plan.md).
+
+---
+
 ## Changelog
+
+### v1.2 (2026-04-08 22:09 CET)
+- Status line: noted build 144 observability items (4G/4H/4I) with pointer to implementation log. Marked STOP block as historical; added cross-link to `build-144-plan.md`.
+- Reason: avoid implying R5 is the latest observability work; align with epic README and problem-and-strategy.
 
 ### v1.1 (2026-03-21 15:17 CET)
 - Status updated from IN PROGRESS to COMPLETED. R5d shipped in build 143.

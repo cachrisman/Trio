@@ -1,8 +1,8 @@
 # Observability Hardening — Design (R5)
 
-**Version:** v1.1
+**Version:** v1.2
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-21 15:17 CET
+**Last updated:** 2026-04-08 22:26 CET
 **Status:** COMPLETED — All R5 items shipped. R5a (build 133), R5e (build 132), R5b/R5c/R5f (build 141), R5d (build 143).
 
 See [problem-and-strategy.md](../problem-and-strategy.md) for overall context.
@@ -194,7 +194,8 @@ The complication can render fresh data from **both** WidgetKit entry paths: `get
 Add to `getTimeline(in:completion:)` in `Trio Watch Complication/TrioWatchComplication.swift` after building entries (~line 229):
 
 ```swift
-// R5f: timeline_entry_epoch — validates WidgetKit is picking up fresh App Group data.
+// R5f: debug line — reading_epoch + snapshot_age (informal). Structured R5f events use
+// event=complication_get_timeline_called with data_age_seconds (not a log field named timeline_entry_epoch).
 // Confirmed by Cursor Round 2: TrioWatchComplicationEntry.readingDate is the CGM reading
 // timestamp; date is the WidgetKit display time (distinct). All 30 entries share the same
 // readingDate but have different date values (1 per minute).
@@ -236,6 +237,10 @@ In both A and B, `data_age_seconds` must be computed from the snapshot **actuall
 ---
 
 ## Changelog
+
+### v1.2 (2026-04-08 22:26 CET)
+- **R5f code comment:** Clarified that `timeline_entry_epoch` was not implemented as a log field name; structured metrics use `data_age_seconds` / `complication_get_timeline_called` (consistent with `build-144-plan.md` v1.5 changelog).
+- Reason: avoid confusion with `validation-protocol.md` and gate queries.
 
 ### v1.1 (2026-03-21 15:17 CET)
 - Status updated from IN PROGRESS to COMPLETED. R5d shipped in build 143 (deployed 2026-03-19).

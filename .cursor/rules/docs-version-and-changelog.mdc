@@ -6,10 +6,10 @@ alwaysApply: false
 
 # Rule: Version Number and Changelog for `docs/`
 
-**Version:** v2
+**Version:** v3
 **Status:** In Use
 **Created:** 2026-03-17 10:30 CET
-**Last updated:** 2026-03-17 11:00 CET
+**Last updated:** 2026-04-12 13:09 CET
 
 When editing any Markdown file under `docs/`, apply all of the following:
 
@@ -50,6 +50,15 @@ The explanation should preserve intent and rationale so that future edits do not
 - Place the changelog at the end of the document. If the changelog section is found elsewhere in the doc (e.g. after the title or in the middle), move it to the end.
 - When adding a new changelog entry, insert it at the top of the changelog, above older entries.
 
+## Cross-document references (sibling docs)
+
+When linking to another Markdown file in this repo (e.g. design ↔ implementation plan ↔ ideas within the same initiative):
+
+1. **Use links and paths** — `[title](relative-path.md)` or plain filenames; **section pointers** are fine when helpful.
+2. **Do not embed the linked file’s version** next to the link in headers or running text (e.g. avoid **`[plan](foo.md) (v2.3)`**). The **linked document’s own `Version:` field** is authoritative. Repeating sibling versions in cross-references forces **cascading edits** when any linked doc bumps.
+3. **Bump only the file you edit** — updating a doc’s version does **not** require touching sibling files solely to refresh their version numbers in cross-links.
+4. **Changelog history** may still mention sibling versions when recording *what changed at the time* (traceability); do not rewrite old changelog lines unless correcting a factual error.
+
 ## Example format
 
 ```markdown
@@ -84,6 +93,9 @@ The explanation should preserve intent and rationale so that future edits do not
 Whenever you change a file in `docs/`, always increment the version number and update the changelog section.
 
 ## Changelog
+
+### v3 (2026-04-12 13:09 CET)
+- Added **Cross-document references (sibling docs)** — link by path/title; **do not** append sibling **`(vX.Y)`** next to links; linked file’s **`Version:`** is authoritative; avoid cascading cross-doc version churn. Reason: align agent/human practice with initiative doc hygiene in this repo.
 
 ### v2 (2026-03-17 11:00 CET)
 - Added **Version** and **Changelog** to this rule file. Reason: rule should follow its own requirements and preserve document history.

@@ -6,7 +6,9 @@ globs:
 
 # Code Review Diff Document
 
-When the user asks you to "make a code review diff doc" (or similar), produce a markdown document at `docs/code-review/<build-or-feature-name>-code-review.md` that combines human-readable change summaries with the full unified diffs, organized by patch/branch.
+When the user asks you to "make a code review diff doc" (or similar), produce a markdown document at **`docs/code-review/<build-or-feature-name>-code-review.md`** in **this repo (`Trio-dev`)** that combines human-readable change summaries with the full unified diffs, organized by patch/branch. Gather **`git diff`** from the sibling **`Trio`** worktree where Swift sources live.
+
+See **`docs/README.md`** § **`docs/code-review/`**.
 
 ## How to gather the diffs
 

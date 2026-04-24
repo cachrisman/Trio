@@ -1,8 +1,10 @@
 # Build 144 — Code Review Diff
 
-**Date:** 2026-03-21
-**Branches:** `feature/cloud-logging` (4D/4E/4F), `feature/watch-complication-improvements` (4G/4H/4I)
-**Plan:** `docs/in-progress/complication-freshness/build-144-plan.md` v1.3
+**Version:** v1.1  
+**Date:** 2026-03-21  
+**Last updated:** 2026-04-08 22:09 CET  
+**Branches:** `feature/cloud-logging` (4D/4E/4F), `feature/watch-complication-improvements` (4G/4H/4I)  
+**Plan:** `docs/in-progress/complication-freshness/build-144-plan.md` v1.5
 
 ---
 
@@ -311,3 +313,14 @@ Makes queue depth visible every cycle. Field name `queue_depth` is consistent wi
 | `AppleWatchManager.swift` | 4G, 4H | +2 −1 |
 | `TrioComplicationDataStore.swift` | 4I | +6 −0 |
 | **Total** | | **+141 −63** |
+
+---
+
+## Changelog
+
+### v1.1 (2026-04-08 22:09 CET)
+- Plan reference updated from v1.3 to v1.5 to match `build-144-plan.md`. Added version metadata.
+- Reason: doc consistency with finalized build 144 plan.
+
+### v1.0 (2026-03-21)
+- Initial code review diff capture for build 144 patches.

@@ -1,8 +1,8 @@
 # Transfer Optimization — Design (R1 + R2 + R3)
 
-**Version:** v1.2
+**Version:** v1.3
 **Created:** 2026-03-19 11:33 CET
-**Last updated:** 2026-03-19 15:08 CET
+**Last updated:** 2026-04-08 22:26 CET
 **Status:** COMPLETED — all steps shipped (builds 132-138); reachability-gate bug fix shipped (build 142)
 
 ## Overview
@@ -297,7 +297,7 @@ After ≥24h of `coalescer_fired sources=` data confirms publisher attribution, 
 
 ```swift
 // Replace the in-memory property with App Group persistence:
-// (reuses APP_GROUP_SUITE constant, same as lastUserInfoReceivedAt in R5d)
+// (reuses APP_GROUP_SUITE constant, same suite as lastDataReceivedAt / R5d gap detection)
 private var lastDispatchedGateKey: String {
     get { UserDefaults(suiteName: APP_GROUP_SUITE)?.string(forKey: "lastDispatchedGateKey") ?? "" }
     set { UserDefaults(suiteName: APP_GROUP_SUITE)?.set(newValue, forKey: "lastDispatchedGateKey") }
@@ -791,6 +791,11 @@ if session.isReachable {
 ---
 
 ## Changelog
+
+### v1.3 (2026-04-08 22:26 CET)
+
+- R2b pseudocode comment: `lastUserInfoReceivedAt` → `lastDataReceivedAt` (R5d rename, build 143).
+- Reason: symbol name accuracy in cross-reference to App Group persistence.
 
 ### v1.2 (2026-03-19 15:08 CET)
 

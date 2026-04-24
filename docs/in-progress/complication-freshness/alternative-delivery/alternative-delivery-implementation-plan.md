@@ -1,8 +1,9 @@
 # Alternative Delivery — Implementation Plan (Steps 5, 7)
 
-**Version:** 1.0
-**Date:** 2026-03-19 11:33 CET
-**Status:** COMPLETED — both steps shipped
+**Version:** 1.3
+**Date:** 2026-03-30 22:46 CEST
+**Last updated:** 2026-04-06 17:27 CET
+**Status:** COMPLETED — both steps shipped; build-146 second-pass follow-up **observed in production** (Better Stack 2026-04-06 — see [implementation log snapshot](alternative-delivery-implementation-log.md#better-stack--production-snapshot-queried-2026-04-06))
 
 Design: [alternative-delivery-design.md](alternative-delivery-design.md)
 
@@ -57,6 +58,75 @@ func session(_ session: WCSession, didReceiveApplicationContext applicationConte
 > - Watch: `didReceiveApplicationContext` log events present
 > - Freshness: `save_age` p90 = 384s during exhaustion windows, compared to pre-R4 baseline
 > - Freshness improvement alone is suggestive but not sufficient — correlate with send/receive evidence
+
+### Step 5.1 — staged follow-up: background-task completion alignment for R4/R5d
+
+**Status:** First-pass task-completion alignment shipped in build 146. Production logs showed partial improvement but the user-visible 5-second dismissal persisted. Second-pass follow-up (commit `58f706a0f`, patch 09 regenerated) is **live in production telemetry** as of **2026-04-06** (terminal-marker + retry log lines present in Better Stack). **Open:** pin the exact TestFlight build, confirm UX vs the 5-second dismissal, drive `late_task_late_task` to zero if possible, and compare `path=timeout` rate vs a build-146 baseline with matching version filters.
+
+**Files:** `Trio Watch App Extension/WatchState.swift`
+**Companion observability changes staged in feature worktree:** `Trio Watch App Extension/ExtensionDelegate.swift`, `Trio Watch App Extension/TrioWatchApp.swift`
+
+**Build-146 findings that triggered the second pass:**
+
+1. `path=fast`, `path=application_context`, and `..._late_task` completions do appear in production — the first-pass fix was not dead code.
+2. `path=timeout` still dominates many wake windows, so the common case still behaves like a 5-second watchdog completion.
+3. `complication_bgtask_completion_deferred ... pending_content=true` frequently had no follow-up completion except timeout.
+4. `fast_late_task_late_task` proved the terminal marker path was being chained instead of canonicalized.
+
+**Problem now being addressed:** Reduce the remaining timeout-dominant wakes without removing the `hasContentPending` safety gate that prevents over-completing a wake while buffered session content still exists.
+
+**Implementation shape now committed / patch-regenerated:**
+
+1. Add a centralized helper in `WatchState.swift` to complete pending connectivity tasks and log the completion path.
+2. Add a short-lived terminal marker (`lastConnectivityTerminalAt` / `lastConnectivityTerminalPath`) with a 2-second rescue window.
+3. Let **successful terminal paths** record a marker even when there are zero pending tasks:
+   - valid `didReceiveUserInfo` terminal path (`fast`)
+   - valid `didReceiveApplicationContext` terminal path (`application_context`)
+   - valid finalize path carrying a pending completion path
+4. Canonicalize marker paths before storage so late rescue appends `_late_task` only once.
+5. Keep **invalid / dedup / outdated / malformed** paths guarded:
+   - complete only when `WCSession.hasContentPending == false`
+   - these paths must not leave a broad terminal marker while more session content may still arrive
+6. When completion is deferred because `hasContentPending == true`, schedule a bounded main-thread retry loop:
+   - exponential backoff starting at 0.2s
+   - capped at 1.0s
+   - stops after a 4-second total retry budget
+7. In `handleBackgroundTasks`, when a `WKWatchConnectivityRefreshBackgroundTask` is appended late, first check for a recent terminal marker and attempt an immediate completion before arming the 5-second timeout.
+8. Make `scheduleUIUpdate` self-route to main before touching completion helpers or debounce state.
+9. Add observability to distinguish:
+   - terminal marker with zero pending tasks
+   - finalize path with zero pending tasks
+   - retry pending / retry ready / retry expired states
+10. Keep `setTaskCompletedWithSnapshot(false)` unchanged on all proactive completion paths. This is a task-lifecycle fix, not a snapshot/UI semantics change.
+
+**Intentional policy choice:** late-task rescue still calls the helper with `requiresNoPendingContent == true`.
+
+**Why this is the correct staged choice:**
+
+- A valid terminal marker proves that one watch-state path finished, not that the entire session wake is drained.
+- `applicationContext` and `transferUserInfo` can both participate in the same wake; a valid `applicationContext` save must not be allowed to end the wake if queued `userInfo` complication payloads are still buffered.
+- `hasContentPending` is coarse, but the unsafe failure mode is over-completing the wake and reintroducing the original suspension-before-processing bug.
+- The bounded retry loop is the compromise that reduces timeout-only completions without discarding that safety gate.
+
+**Alternative considered and deferred:** watch-state-specific pending-work tracking. This was explicitly deferred because it is a larger lifecycle change requiring a separate state model for semantic queue ownership; it is not a small logging enhancement.
+
+**Validation gate for this staged follow-up:**
+
+1. The watch no longer returns to the clock face at about 5 seconds after opening from the complication or app menu — **on-device**; not closed from logs alone.
+2. `event=complication_bgtask_completing path=timeout` drops relative to the build-146 baseline, especially for wakes that previously logged `complication_bgtask_completion_deferred` — **requires version-filtered before/after**; 7-day aggregate in [implementation log](alternative-delivery-implementation-log.md#better-stack--production-snapshot-queried-2026-04-06) is a coarse sanity check only.
+3. No `..._late_task_late_task` chaining appears in logs — **not yet met** in the 2026-04-06 window (**4** lines / 7d in snapshot); keep investigating edge paths.
+4. Multiple pending deliveries still converge correctly — no sign that later watch-state updates are missed when both `applicationContext` and `transferUserInfo` participate in the same wake.
+5. New logs confirm the decision boundary:
+   - `..._late_task` completion paths appear
+   - `event=complication_bgtask_completion_deferred ... pending_content=true` appears when rescue is intentionally deferred
+   - `event=complication_bgtask_completion_retry_ready` appears when a deferred wake drains in time — **observed** in snapshot
+   - `event=complication_bgtask_completion_retry_expired` explains residual timeouts when pending content never clears quickly enough — **zero in snapshot window**; keep monitoring
+
+**Do not add in this staged change:**
+
+- no watch-state-specific pending queue tracker
+- no change to stale-data or syncing UI
+- no change to snapshot completion semantics (`setTaskCompletedWithSnapshot(false)` remains)
 
 ---
 
@@ -170,7 +240,7 @@ All events use `debug(.watchManager, ...)` or WatchLogger per target; watch exte
 > - Code reviewed (ChatGPT rounds 1-3): CR1-CR5 all addressed, sanity checks passed
 > - Build 140 deployed to TestFlight
 > - BetterStack confirmed: `hk_background_delivery_registered success=true` at 15:45:19 UTC; `hk_observer_fired` events at 15:45:20, 15:52:54, 15:54:15 UTC with correct glucose/delta values
-> - Observing 48h for cadence, save_age p90, budget-exhaustion coverage, and dual-delivery dedup behavior
+> - Ongoing: cadence, HK log latency (`save_age` build 140 → `sync_lag` build 141+), budget-exhaustion coverage, dual-delivery dedup — see [implementation log — production snapshot](alternative-delivery-implementation-log.md#better-stack--production-snapshot-queried-2026-04-06) and design §R6 validation (2026-04-06)
 >
 > **Deviations from plan:**
 > 1. **`HKUnit.milligramsPerDeciliter` unavailable on watchOS:** The plan specified `.milligramsPerDeciliter()` but this is a custom extension in `LoopKit/MockKitUI`, not linked to the watchOS target. Fixed with inline `HKUnit.gramUnit(with: .milli).unitDivided(by: .literUnit(with: .deci))`.
@@ -386,6 +456,15 @@ Build 140 used R6's `HKSampleQuery`-based events; build 141+ uses R6.1's `HKAnch
 ---
 
 ## Changelog
+
+### v1.3 (2026-04-06 17:27 CET)
+- Step 5.1 / doc status: second-pass telemetry confirmed in Better Stack (2026-04-06); updated validation gate items with observed vs open outcomes; pointed R6 ongoing observation to implementation log snapshot and `sync_lag` (R6.1) instead of `save_age` p90-only wording.
+
+### v1.2 (2026-03-30 22:46 CEST)
+- Updated Step 5.1 after build 146. Recorded that the first-pass completion alignment was only partially effective in production, documented the second-pass committed follow-up (`58f706a0f`) and regenerated patch state, and added the canonical late-marker fix, bounded deferred-completion retry policy, widened 2-second rescue window, main-thread hardening for `scheduleUIUpdate`, and the new retry/marker telemetry expectations for the next deploy.
+
+### v1.1 (2026-03-30)
+- Added Step 5.1 documenting the staged follow-up that aligns `WKWatchConnectivityRefreshBackgroundTask` completion with the R4/R5d terminal paths. Recorded the terminal-marker implementation, the conservative `hasContentPending` gate for late-task rescue, the deferred watch-state-specific tracker alternative, and the exact post-build validation gate for the staged change.
 
 ### v1.0 (2026-03-19 11:33 CET)
 - Initial version. Extracted Steps 5, 7, and 7.1 implementation plans from `complication-freshness-implementation-guide.md` into a standalone alternative-delivery implementation plan. Step 5 gate updated from "pending build/deploy" to COMPLETED with build 142 validation results. Reason: docs reorganization — group related alternative delivery channel implementation content for easier navigation and maintenance.

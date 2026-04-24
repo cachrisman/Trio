@@ -1,8 +1,9 @@
 # Alternative Delivery — Design (R4 + R6)
 
-**Version:** 1.0
-**Date:** 2026-03-19 11:33 CET
-**Status:** COMPLETED — R4 shipped build 142 (validated), R6 shipped build 140
+**Version:** 1.4
+**Date:** 2026-03-30 22:46 CEST
+**Last updated:** 2026-04-08 22:26 CET
+**Status:** COMPLETED — R4 shipped build 142 (validated), R6 shipped build 140; post-build-146 second-pass follow-up **observed in production logs** (Better Stack snapshot 2026-04-06 — see [implementation log](alternative-delivery-implementation-log.md))
 
 Both R4 and R6 provide fallback delivery channels during budget exhaustion. R6 uses HealthKit as a WCSession-independent path — when the iPhone writes a blood glucose sample to HealthKit, Apple syncs it to the watch, and an `HKObserverQuery` wakes the extension to save a complication snapshot. R4 uses `applicationContext` as a budget-free parallel WCSession channel — during exhaustion or deep queue conditions, iOS sends the complication payload via `updateApplicationContext`, which the watch app extension receives and writes to the App Group store.
 
@@ -108,6 +109,71 @@ Validation requires correlation across three signals — freshness improvement a
 - **Signal 3 — Freshness improvement:** `save_age` distribution during `budget_exhausted=true` hours, compared to pre-R4 baseline.
 - **Pass:** All three signals present, and `save_age` p90 < 300s during exhaustion windows.
 - **Falsified if:** `save_age` unchanged during exhaustion despite `context_succeeded` events on iOS → watch app extension not receiving context, or `saveComplicationSnapshot` not being called from `didReceiveApplicationContext`. Also falsified if `context_succeeded` events are absent → R4 gate or readiness check is preventing sends.
+
+### Post-build-146 follow-up — connectivity background-task completion policy
+
+**Status:** First-pass terminal-path alignment shipped in build 146. Production logs showed partial improvement but the user-visible 5-second dismissal persisted. The second-pass follow-up (canonical late marker, bounded deferred-completion retries, added telemetry) is **present in production logs** as of Better Stack queries on **2026-04-06** — see [implementation log — production snapshot](alternative-delivery-implementation-log.md#better-stack--production-snapshot-queried-2026-04-06). Residual `late_task_late_task` lines remain low-volume but non-zero; UX and timeout-ratio vs build 146 still need explicit on-device / pinned-build comparison.
+
+The original R4 design was still correct about `applicationContext` being a valid parallel delivery channel, but build-146 production behavior showed that lifecycle handling was only partially fixed:
+
+1. **Early completion paths do run.**
+   - `path=fast`
+   - `path=application_context`
+   - `..._late_task`
+2. **`path=timeout` still dominates many wakes.**
+   - the background task often still lives until the 5-second watchdog
+3. **Deferred completions were too passive.**
+   - `complication_bgtask_completion_deferred ... pending_content=true` had no follow-up path except another terminal call or timeout
+4. **A real marker bug existed.**
+   - `fast_late_task_late_task` proved the late-task suffix was stacking instead of reusing a canonical base marker
+
+The current follow-up extends the watch-side terminal-point model:
+
+1. **Successful terminal paths may still leave a short-lived rescue marker even when no connectivity task is pending yet.**
+   - valid `didReceiveUserInfo` finalize path
+   - valid `didReceiveApplicationContext` path
+   - valid finalize path carrying a connectivity completion token
+2. **Late rescue now uses a canonical base path.**
+   - trailing `_late_task` segments are stripped before the marker is stored
+   - rescue appends `_late_task` only once
+3. **The rescue window is now 2 seconds, not 1 second.**
+4. **Guarded failure / dedup / outdated paths remain conservative.**
+   - invalid payload
+   - pre-dispatch dedup
+   - outdated watch-state payload
+   - malformed message path
+5. **Deferred completion now retries before falling through to timeout.**
+   - if `hasContentPending == true` and tasks are pending, watch-side code schedules a bounded main-thread retry loop
+   - exponential backoff starts at 0.2s, caps at 1.0s, and stops after a 4-second total budget
+6. **Main-thread safety and telemetry were tightened.**
+   - `scheduleUIUpdate` re-enters on main before touching lifecycle helpers
+   - logs now distinguish terminal markers, finalize-with-no-pending-tasks, and retry lifecycle events
+7. **`setTaskCompletedWithSnapshot(false)` remains unchanged.**
+
+#### Why `hasContentPending` remains the correct late-rescue gate
+
+Even when a valid terminal marker exists, immediate completion is still allowed only when `WCSession` no longer reports pending content.
+
+This is the correct choice because:
+
+- A valid `applicationContext` terminal event does **not** prove that queued `transferUserInfo` complication payloads have drained.
+- Completing a late-arriving connectivity task while queued content still exists can recreate the original failure mode: the extension may be suspended before the remaining watch-state delivery for that wake is processed.
+- In this codebase, the session also carries other `transferUserInfo` traffic (`watchLogConfirm`, watch-log delivery). That makes `hasContentPending` **coarse**, but a conservative false negative is safer than an aggressive false positive.
+
+The current compromise is therefore:
+
+- keep `hasContentPending` as the correctness gate
+- add a bounded retry loop so short-lived pending-content drains can complete without waiting for the full 5-second watchdog
+- still fall back to timeout if `hasContentPending` remains true through the retry budget
+
+#### Tradeoff accepted
+
+- **Pros:** prevents over-completing a connectivity wake that still has buffered content while reducing timeout-only completions caused by quickly draining session content.
+- **Cons:** some wakes may still fall through to the 5-second fallback if unrelated session traffic keeps `hasContentPending` true past the retry budget.
+
+#### Deferred refinement
+
+A watch-state-specific pending-work tracker was considered and rejected for this staged change. It would be a larger lifecycle addition, not a small instrumentation tweak, because `WCSession` does not expose queue contents by semantic type. The design decision is to ship the smaller terminal-marker + conservative late-rescue fix first, then revisit a richer tracker only if post-deploy telemetry shows `hasContentPending` is too coarse and `path=timeout` remains materially elevated for non-watch-state reasons.
 
 ---
 
@@ -366,10 +432,10 @@ ORDER BY hour DESC
 ```
 
 **Pass conditions (two distinct failure modes):**
-1. **Budget exhaustion:** During hours where `complication_transfer_remaining=0`, `hk_observer_fired` events should appear with `save_age` p90 < 300s — confirms HealthKit delivers when WatchConnectivity budget is exhausted.
+1. **Budget exhaustion:** During hours where `complication_transfer_remaining=0`, `hk_observer_fired` events should continue to appear — confirms HealthKit delivers when WatchConnectivity budget is exhausted. **Latency in logs:** build 140 R6 used `save_age=`; build **141+** (R6.1) renames the same metric to **`sync_lag=`** (`now - readingDate`). Do not treat a single global p90 threshold as a hard gate — bootstrap / catch-up fires (`query_type=sampleQuery_bootstrap`, large `samples_in_batch`) inflate tails; segment before judging steady-state behavior.
 2. **WidgetKit scheduling gaps:** `reload_age` p90 < 300s overall (not just exhaustion windows). The `hk_observer_fired` → `reloadTimelines` path provides an independent wake trigger that should reduce gaps where fresh data sits in the App Group unread.
 
-**New structured log event:** `hk_observer_fired reading_epoch=X save_age=Y glucose=Z delta=D` — distinguishable from WatchConnectivity deliveries via `msg LIKE '%hk_observer_fired%'` vs `msg LIKE '%didReceiveUserInfo%'` or `msg LIKE '%didReceiveMessage%'`.
+**Structured log event (`hk_observer_fired`):** Build 140: `reading_epoch=X save_age=Y glucose=…`. Build 141+: adds `sync_lag=`, `query_type=`, `trend_derived=`, `samples_in_batch=`, etc. — distinguishable from WatchConnectivity via `msg LIKE '%hk_observer_fired%'` vs `msg LIKE '%didReceiveUserInfo%'` or `msg LIKE '%didReceiveMessage%'`.
 
 ### Decision Gate
 
@@ -425,11 +491,24 @@ if let firstEntry = entries.first {
     debug(.complication, "📅 timeline_built entry_count=\(entries.count) reading_epoch=\(Int(firstEntry.readingDate.timeIntervalSince1970)) snapshot_age=\(Int(Date().timeIntervalSince(firstEntry.readingDate)))s")
 }
 ```
-This gives `timeline_entry_epoch` and `snapshot_age` at timeline-build time — confirms WidgetKit is picking up fresh App Group data. The same `event=complication_get_timeline_called` log (complication-extension / getTimeline side, not HealthKit) should include `get_timeline_at_epoch_seconds` and `data_age_seconds` per §R5f above. R5f also specifies `event=complication_get_snapshot_called` with `get_snapshot_at_epoch_seconds` and `data_age_seconds` for the getSnapshot path — see §R5f for both entry-path specs.
+This debug line emits **`reading_epoch`** and **`snapshot_age`** (informal) at timeline-build time — confirms WidgetKit is picking up fresh App Group data. There is **no** separate log field named `timeline_entry_epoch` (that phrase was design-only; see `build-144-plan.md` / `observability-design.md`). The structured R5f event **`event=complication_get_timeline_called`** should include `get_timeline_at_epoch_seconds` and **`data_age_seconds`** per §R5f above. R5f also specifies `event=complication_get_snapshot_called` with `get_snapshot_at_epoch_seconds` and `data_age_seconds` for the getSnapshot path — see §R5f for both entry-path specs.
 
 ---
 
 ## Changelog
+
+### v1.4 (2026-04-08 22:26 CET)
+- **R5f-getTimeline:** Clarified naming: debug line uses `reading_epoch` / `snapshot_age`; structured metrics use `data_age_seconds`, not a field called `timeline_entry_epoch`.
+- Reason: align with shipped logging and `validation-protocol.md` / `build-144-plan.md`.
+
+### v1.3 (2026-04-06 17:27 CET)
+- Status: second-pass watch connectivity follow-up is no longer “pending redeploy” — production Better Stack snapshot recorded in the implementation log. Updated §Validation for R6 / R6.1: `save_age` vs `sync_lag` rename, tail segmentation note, and relaxed wording on using a single p90 as a hard gate for HK lag.
+
+### v1.2 (2026-03-30 22:46 CEST)
+- Updated the post-build-143 follow-up into a post-build-146 design note. Recorded that build 146 only partially improved task completion, documented the canonical late-task marker fix, the bounded deferred-completion retry policy (0.2s exponential backoff, 1s cap, 4s budget), the widened 2-second rescue window, and the decision to keep `hasContentPending` as the correctness gate while still deferring a watch-state-specific pending-work tracker.
+
+### v1.1 (2026-03-30)
+- Added staged post-build-143 follow-up section documenting the connectivity background-task completion policy for R4/R5d integration. Captured the terminal-marker design, the decision to keep late-task rescue gated by `hasContentPending`, the explicit tradeoff accepted, and the deferral of watch-state-specific pending-work tracking until post-deploy telemetry justifies it.
 
 ### v1.0 (2026-03-19 11:33 CET)
 - Initial version. Extracted R4 and R6 design sections from `complication-freshness-remediation-plan.md` and Cursor Audit Round 2 findings into a standalone alternative-delivery design document. R4 status updated to COMPLETED (build 142, validated). Reason: docs reorganization — group related alternative delivery channel content for easier navigation and maintenance.

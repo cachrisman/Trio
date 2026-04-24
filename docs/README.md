@@ -1,8 +1,8 @@
 # Docs
 
-**Version:** v3  
+**Version:** v4  
 **Created:** 2026-03-12 17:34 CET  
-**Last updated:** 2026-03-20 09:37 CET
+**Last updated:** 2026-04-12 13:31 CET
 
 ---
 
@@ -54,6 +54,9 @@ One-off or alternative prompts not part of the numbered sequence:
 - `review-and-repair-workflow.md` — Combined review + fix workflow.
 - `trio-red-team-implementation-review.md` — Standalone red-team review prompt.
 - `nightscout-precompute-docs-prompt.md` — Nightscout precompute service docs prompt.
+
+### `docs/code-review/`
+**Optional implementation diff review artifacts** (verbatim `git diff` + per-file summaries), typically keyed by feature. Lives in **`Trio-dev`** alongside design/plan docs; Swift sources may still live in the sibling **`Trio`** worktree. Example: [`feature-watch-direct-ble-cgm-code-review.md`](code-review/feature-watch-direct-ble-cgm-code-review.md). Rule: [`.cursor/rules/code-review-diff-doc.mdc`](../.cursor/rules/code-review-diff-doc.mdc).
 
 ### `docs/in-progress/`
 **Active work under iteration.** Organized by initiative folder (e.g., `complication-freshness/`). Expect frequent edits, review loops, and version bumps.
@@ -109,6 +112,9 @@ Start here:
 ---
 
 ## Changelog
+
+### v4 (2026-04-12 13:31 CET)
+- **Folder map:** Added **`docs/code-review/`** — optional feature diff review docs (canonical **`Trio-dev`** location; sibling **`Trio`** may hold Swift only).
 
 ### v3 (2026-03-20 09:37 CET)
 - Added **Multi-root workspaces** note: `AGENTS.md` and similar rules are scoped to each workspace root; `docs/` here does not automatically apply to sibling repos in a multi-root workspace.

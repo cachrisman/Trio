@@ -1,8 +1,8 @@
 # Complication Freshness — Problem and Strategy
 
-**Version:** 1.5
+**Version:** 1.8
 **Created:** 2026-03-19 11:30 CET
-**Last updated:** 2026-03-20 22:10 CET
+**Last updated:** 2026-04-08 22:31 CET
 
 ---
 
@@ -117,7 +117,7 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 | R5c — didReceiveUserInfo decode latency | 141 | `decode_ms` threaded through save path; `reading_epoch` from payload |
 | R5f — WidgetKit getTimeline + getSnapshot logging | 141 | `data_age_seconds` at both WidgetKit entry points |
 | #24 — Consistent `reading_epoch` across pipeline | 141 | Closed by R5a (build 133) + R5b (build 141); all pipeline stages now use CGM epoch |
-| R4 — updateApplicationContext safety net | 142 | Budget-free parallel channel during exhaustion or deep queue; standalone watch handler (R5d integration pending) |
+| R4 — updateApplicationContext safety net | 142–143 | Budget-free parallel channel during exhaustion or deep queue. R5d ordering in `didReceiveApplicationContext` shipped build 143 (see R4 handler upgrade row). |
 | Bug fix — reachable + budget=0 transfer skip | 142 | `transferUserInfo` fallback was gated inside `!isReachable`; extracted to independent block. BetterStack-confirmed in production (two instances, 2026-03-18/19). See `transfer-optimization-implementation-log.md`. |
 | Monotonic snapshot acceptance guard on watch | 130 (FP-Phase 3) | `saveOnMain` rejects older snapshots via `shouldUpdate` (±1s tolerance) + `lastValidTimestamp` persisted fallback. Channel-agnostic; all delivery paths funnel through `save()`. Confirmed by code audit 2026-03-19. |
 | readingDate wall-clock fallback fixes (1A/1B/1C) | 143 | 3 code paths substituting `Date()` for nil CGM dates — `saveComplicationSnapshot` fallback now returns early, `didReceiveUserInfo` removes `?? dateValue` fallback, `setupWatchState` filters nil-date entries via compactMap. See investigation report §2. |
@@ -126,12 +126,15 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 | Watch log flush observability (4A/4B/4C) | 143 | Truncation logging in `WatchLogger.flushToPhone()`, phone-side upload nudge via `trioWatchLogsAppended` notification, Flush Logs debug button replacing Burst Save x14. |
 | WCSession crash guard (5A/5B) | 143 | Delegate callback debounce (0.5s coalescer), activation state guard, reachability debounce, `retryConnection()` removal, `loadServices()` force-unwrap → guard-let. New patch 10. |
 | Bug fix — Foundation.NotificationCenter shadowing | 143 | Custom `protocol NotificationCenter` shadows `Foundation.NotificationCenter`; qualified 4 call sites in `AppleWatchManager.swift` with `Foundation.` prefix. |
+| 4G — unified `Transferred` log for R4 (`updateApplicationContext`) | 144 | Better Stack `transfer_via` parity; see `observability/observability-implementation-log.md`. |
+| 4H — `queue_depth` in `complication_budget_check` | 144 | Real-time queue depth every send cycle. |
+| 4I — skip WidgetKit reload retry when snapshot fresh (<60s) | 144 | `coalescedReloadOnMain`; see `build-144-plan.md` success criteria. |
 
 ---
 
 ### Pending (planned, fully specced)
 
-*None — all planned items shipped as of build 143.*
+*None — all specced remediation through build 144 (including watch-log 4D–4F and complication observability 4G–4I) is shipped.*
 
 ---
 
@@ -143,7 +146,7 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 |---|---|---|
 | ~~readingDate wall-clock fallback bug~~ | ~~P0~~ → **Shipped (143)** | Fixed in build 143 (Items 1A/1B/1C). See Shipped table. |
 | Post-dead-zone recovery: pull request after stall drain | Medium | In `didFinishUserInfoTransfer` success path, check staleness of `lastDataReceivedAt`; if still stale, send `requestWatchUpdate`. Addresses 66-minute dead-zone recovery gap observed 2026-03-17. |
-| Proactive transfer on iOS app foreground | Medium | On `applicationDidBecomeActive` / `sceneDidBecomeActive`, call `setupWatchState()` + `sendDataToWatch()` only when the current snapshot is stale or no recent successful transfer exists. Addresses the “I just opened Trio on my phone, my watch should update” mental model without reintroducing budget spam. Deferred — re-evaluate after R4 and R5d observation windows close. |
+| Proactive transfer on iOS app foreground | Medium | On `applicationDidBecomeActive` / `sceneDidBecomeActive`, call `setupWatchState()` + `sendDataToWatch()` only when the current snapshot is stale or no recent successful transfer exists. Addresses the “I just opened Trio on my phone, my watch should update” mental model without reintroducing budget spam. Deferred — re-evaluate by product priority (post–R5d gate completed 2026-03-21; see Process row). **Specced (draft):** [`proactive-transfer/proactive-transfer-01-design.md`](proactive-transfer/proactive-transfer-01-design.md), [`proactive-transfer/proactive-transfer-02-implementation-plan.md`](proactive-transfer/proactive-transfer-02-implementation-plan.md). |
 | HK trend metadata on iPhone writes | Medium | Add `"com.trio.trend": glucoseSample.direction?.rawValue ?? ""` to HK metadata in `uploadGlucose(_:)`. Eliminates transient trend regression (`""` overwriting real trend) in dual-delivery normal operation. Specced in `alternative-delivery-design.md §R6`. Verify HealthKit consumer apps before shipping. |
 | Adaptive budget throttling | Medium | Dynamically increase stale-first gate threshold T as remaining complication budget depletes, using remaining budget, time-of-day / projected burn, and current snapshot age as inputs. Example: if 40/50 transfers are used by noon, stretch T from 600s to 900–1200s to avoid exhaustion. Extends the budget-ok window without sacrificing freshness at the start of the day. |
 
@@ -157,14 +160,13 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 
 | Item | Priority | Notes |
 |---|---|---|
-| Unified `Transferred` log for `updateApplicationContext` (R4) | Low–Medium | **App change (`AppleWatchManager.sendDataToWatch`):** after a successful `session.updateApplicationContext`, emit the same sentence shape as the other channels, e.g. `📤 Transferred new WatchState snapshot via=updateApplicationContext …` (include `reading_date_epoch_seconds` and any useful R4 context such as `budget_exhausted`, `queue_depth`). **Why:** Better Stack `transfer_via` is extracted with `via=(\w+)` from lines matching the `Transferred new WatchState snapshot` pattern; R4 today only logs `context_succeeded`, so `transfer_via` never buckets application context. Keeps the “Transfers / bucket” dashboard as a single metric family; `r4_context_*` metrics can remain for funnel detail. Optional: drop or fold `context_succeeded` to avoid double-counting if charts sum on substring overlap. |
-| Log `outstandingUserInfoTransfers.count` in heartbeat | Medium | One log line per `sendDataToWatch` call alongside existing `complication_budget_check`. Makes WC dead-zone stall visible as a rising count in real time. Prerequisite for dead-zone stall alerting. |
 | Log queue flush lag per delivery | Medium | Add `queue_flush_lag_seconds` to the existing `complication_did_receive_user_info` log line. Direct per-delivery WC queue dwell time; one-liner. |
 | Log phone-side pipeline lag (HK write → transfer) | Medium | Add `hk_write_epoch_seconds` to the existing transfer log line. Measures phone-side HK → heartbeat → transfer latency, currently invisible. |
 | Watch-side transfer completion outcome logging | Low–Medium | Watch-side `didFinishUserInfoTransfer` logs errors (with retry) but not successes. Phone-side `transfer_path` logging covers attempts. Gap: no watch-side success confirmation and no aggregate completion outcome accounting. Add a one-line success log to pair with the existing error path. |
 | Synthesized freshness-state diagnostic event | Medium | Add one roll-up event at snapshot save and/or reload time with: source, `reading_epoch`, receive lag, snapshot age, reload age, queue depth, remaining complication budget, and whether the new snapshot replaced older data. Makes transport vs. WidgetKit debugging much faster than correlating narrow logs. |
 | WidgetKit dispatch-to-callback black-box observability | Medium | Local reload management is well-instrumented (`coalescedReloadOnMain` logs debounce, trigger, retry skip/cancel). The blind spot is after dispatch: whether `WidgetCenter.reloadTimelines()` actually caused WidgetKit to call `getTimeline`, or was silently dropped/deferred. Investigation 2026-03-19 found that roughly 45% of logged reload dispatches were not followed by a corresponding `getTimeline` callback in the sampled 48h window (see `docs/investigations/`). Improve correlation between reload generation and `getTimeline` invocation to distinguish "fresh snapshot, stale UI" from "reload silently ignored by platform." |
-| Retry only when snapshot was stale at reload time | Medium | Skip retry scheduling in `coalescedReloadOnMain` when `snapshot_age_seconds < 60` at reload time. Reduces unnecessary WidgetKit budget pressure. Specced in `snapshot-age-improvements-suggestions.md §3.1`. |
+
+*Shipped (build 144):* items **4G** (unified R4 `Transferred` log), **4H** (`queue_depth` in `complication_budget_check`), **4I** (skip reload retry when snapshot fresh) — see Shipped table and `observability/observability-implementation-log.md`. Optional Better Stack spot-checks vs [`build-144-plan.md`](build-144-plan.md) success criteria are not gating.
 
 *Cross-reference:* Visible recency sawtooth metric reconstruction is specced as a standalone service in `docs/completed/nightscout-sawtooth-precompute/`. No Trio app changes required.
 
@@ -179,14 +181,14 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 
 | Item | Priority | Notes |
 |---|---|---|
-| Investigate feasibility of Background app refresh on watch (`WKApplicationRefreshBackgroundTask`) | Low–Medium | Scheduled wake-up to proactively pull data from the phone when all delivery channels (WCSession, HK observer, applicationContext) have gone silent. The App Group is written by the watch app process, so "check for fresh data already in App Group" is not the use case — the value is a fallback pull trigger when no push has arrived. Heavier and more speculative than R4/R5d follow-ups; defer until after post-R5d remeasurement. |
+| Investigate feasibility of Background app refresh on watch (`WKApplicationRefreshBackgroundTask`) | Low–Medium | Scheduled wake-up to proactively pull data from the phone when all delivery channels (WCSession, HK observer, applicationContext) have gone silent. The App Group is written by the watch app process, so "check for fresh data already in App Group" is not the use case — the value is a fallback pull trigger when no push has arrived. Heavier and more speculative than R4/R5d follow-ups; defer until product priority (post–R5d gate completed 2026-03-21 per Process row). |
 | `WKExtendedRuntimeSession` for urgent glucose | Out of scope | Separate project for critical low / rapid-fall scenarios. High value, high effort, but not part of the current complication freshness remediation backlog. Keep here only as a future adjacent project so it is not mistaken for the next remediation step. |
 
 #### Process
 
 | Item | Priority | Notes |
 |---|---|---|
-| Post-R4 + R5d freshness baseline re-measurement | **P0 — NOW UNBLOCKED** | R5d shipped in build 143 (deployed 2026-03-19 ~21:09 UTC). Re-measure `save_age` p90, `reload_age` p90, `receive_lag` p50/p90, and `data_age` at `getTimeline` after R5d has 48h of data (earliest: 2026-03-21 ~21:09 UTC). Determines whether further transport changes are warranted. This is the gate for the entire remaining backlog. |
+| Post-R4 + R5d freshness baseline re-measurement | **Completed** | **Done — no further action required** to close the initiative gate. Better Stack queries were run **2026-03-21 ~22:40 UTC** (~49.5h after build 143 deploy). Full metric table, R5d gap correlation, and transport assessment are recorded in **[`build-144-plan.md`](build-144-plan.md) §Prerequisites** (“Gate Results”). Outcome: `receive_lag` **pass** (sub-second); marginal p90 threshold misses on `save_age` / `reload_age` / `data_age` at getTimeline attributed to WidgetKit scheduling and overnight gaps — **transport judged healthy**; build 144 (4D–4I) proceeded without pulling deferred transport backlog items. Re-running the same queries later is **optional** (operational monitoring), not a backlog blocker. |
 
 ---
 
@@ -207,6 +209,20 @@ Items are ordered roughly by priority within each group. “Shipped” items are
 ---
 
 ## Changelog
+
+### v1.8 (2026-04-08 22:31 CET)
+- **Backlog:** Proactive transfer row — added links to **proactive-transfer** initiative design + implementation plan (draft).
+- Reason: promote backlog item to specced initiative without changing priority text.
+
+### v1.7 (2026-04-08 22:26 CET)
+- **Pending:** Wording updated from “build 143” to “through build 144” so it does not omit specced build 144 work (4D–4I).
+- Reason: consistency with milestone history and `build-144-plan.md`.
+
+### v1.6 (2026-04-08 22:20 CET)
+- **Process:** Post-R4+R5d re-measurement marked **Completed** with pointer to `build-144-plan.md` gate results (~2026-03-21). Clarified that the work was already executed and recorded; optional re-queries are monitoring only.
+- **Shipped table:** R4 row corrected (142–143); added 4G/4H/4I (build 144).
+- **Backlog:** Removed observability rows superseded by 4G/4H/4I; added footnote. Updated “defer until post-R5d remeasurement” wording in remediation/platform rows to reference completed gate.
+- Reason: align strategy doc with completed P0 gate and build 144; remove misleading “still to do” framing.
 
 ### v1.5 (2026-03-20 22:10 CET)
 - Build 143 deployment update (deployed 2026-03-19 ~21:09 UTC, confirmed via Better Stack).

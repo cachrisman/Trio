@@ -1,8 +1,8 @@
 # Complication Freshness — Key File Reference
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** 2026-03-19 11:30 CET
-**Last updated:** 2026-03-19 11:30 CET
+**Last updated:** 2026-04-08 22:26 CET
 
 All line numbers are approximate — verify before implementing.
 
@@ -19,9 +19,9 @@ All line numbers are approximate — verify before implementing.
 | `ComplicationSnapshotFingerprint` | `Trio Watch Shared/TrioComplicationDataStore.swift` | — | Defined in FP-Plan; implemented FP-Phase 3.0; watch extension target only |
 | `processRawDataForWatchState` | `Trio Watch App Extension/WatchState.swift` | ~542 | Extracts dict keys; builds `TrioComplicationSnapshot` |
 | `saveComplicationSnapshot` | `Trio Watch App Extension/WatchState.swift` | ~664 | Calls `TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)` |
-| `didReceiveUserInfo` | `Trio Watch App Extension/WatchState.swift` | ~286 | Watch app extension process; sets `lastUserInfoReceivedAt` (~331) |
+| `didReceiveUserInfo` | `Trio Watch App Extension/WatchState.swift` | ~286 | Watch app extension process; participates in `lastDataReceivedAt` / R5d gap path (verify line in tree) |
 | `didReceiveMessage` | `Trio Watch App Extension/WatchState.swift` | ~230 | Watch app extension process |
-| `lastUserInfoReceivedAt` | `Trio Watch App Extension/WatchState.swift` | ~102 | `private var Date?`; in-memory only; needs App Group persistence for R5d |
+| `lastDataReceivedAt` | `Trio Watch App Extension/WatchState.swift` | — | Renamed from `lastUserInfoReceivedAt` (R5d, build 143); **App Group–backed** for gap detection across restarts; updated from both `didReceiveUserInfo` and `didReceiveApplicationContext` |
 | `saveOnMain` | `Trio Watch Shared/TrioComplicationDataStore.swift` | ~507 | Authoritative dedup gate from FP-Phase 3.1 |
 | `save(_ snapshot:)` | `Trio Watch Shared/TrioComplicationDataStore.swift` | ~581 | Accepts `TrioComplicationSnapshot` directly |
 | `fetchGlucose` | `Trio/Sources/Services/WatchManager/AppleWatchManager.swift` | ~415 | Fetches up to 288 entries (limit at ~422) |
@@ -31,6 +31,10 @@ All line numbers are approximate — verify before implementing.
 ---
 
 ## Changelog
+
+### v1.1 (2026-04-08 22:26 CET)
+- **Symbols:** Replaced obsolete `lastUserInfoReceivedAt` row with shipped `lastDataReceivedAt` (R5d, App Group persistence). Updated `didReceiveUserInfo` note.
+- Reason: table had pre-143 state; line numbers were already approximate.
 
 ### v1.0 (2026-03-19 11:30 CET)
 - Initial creation: extracted key file reference table from remediation plan.
