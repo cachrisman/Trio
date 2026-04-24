@@ -53,6 +53,17 @@ struct TrioMainWatchView: View {
         isAdjustmentActive(for: state.overridePresets) { $0.isEnabled }
     }
 
+    /// Size for the §14 BLE status row; scaled to the watch size using the
+    /// same thresholds `GlucoseTrendView.minutesAgoFontSize` uses.
+    private var g7StatusRowFontSize: CGFloat {
+        switch state.deviceType {
+        case .watch40mm, .watch41mm: return 9
+        case .watch42mm, .watch44mm: return 10
+        case .watch45mm, .unknown: return 11
+        case .watch49mm: return 11
+        }
+    }
+
     private var trioBackgroundColor = LinearGradient(
         gradient: Gradient(colors: [Color.bgDarkBlue, Color.bgDarkerDarkBlue]),
         startPoint: .top,
@@ -64,16 +75,26 @@ struct TrioMainWatchView: View {
             TabView(selection: $currentPage) {
                 // Page 1: Current glucose trend in "BG bobble"
                 ZStack {
-                    GlucoseTrendView(
-                        state: state,
-                        rotationDegrees: rotationDegrees,
-                        isWatchStateDated: isWatchStateDated || isSessionUnreachable
-                    )
-                    .onLongPressGesture(minimumDuration: 1.0) {
-                        // Long press to quickly access debug view
-                        withAnimation {
-                            currentPage = 2
+                    VStack(spacing: 0) {
+                        GlucoseTrendView(
+                            state: state,
+                            rotationDegrees: rotationDegrees,
+                            isWatchStateDated: isWatchStateDated || isSessionUnreachable
+                        )
+                        .onLongPressGesture(minimumDuration: 1.0) {
+                            // Long press to quickly access debug view
+                            withAnimation {
+                                currentPage = 2
+                            }
                         }
+
+                        // Direct-BLE + source attribution status row. Hidden
+                        // when all signals are at defaults (§14). Font size
+                        // tracks existing minutesAgoFontSize values.
+                        G7DirectBLEStatusRow(
+                            state: state,
+                            deviceFontSize: g7StatusRowFontSize
+                        )
                     }
 
                     if state.showSyncingAnimation {
