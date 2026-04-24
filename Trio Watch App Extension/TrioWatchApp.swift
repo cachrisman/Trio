@@ -13,6 +13,17 @@ import UserNotifications
             TrioMainWatchView()
         }
         .onChange(of: scenePhase) { _, newScenePhase in
+            switch newScenePhase {
+            case .active:
+                G7DirectBLEManager.shared.onSceneActive()
+            case .inactive:
+                G7DirectBLEManager.shared.onSceneInactive()
+            case .background:
+                G7DirectBLEManager.shared.onSceneInactive()
+            @unknown default:
+                break
+            }
+
             if newScenePhase == .background {
                 Task {
                     await WatchLogger.shared.flushPersistedLogs()

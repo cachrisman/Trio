@@ -13,6 +13,9 @@ import WatchConnectivity
     var isReachable = false
 
     var lastWatchStateUpdate: TimeInterval?
+    var displayedReadingSource: TrioReadingSource = .watchConnectivity
+    var directBLEStatus: G7DirectBLEStatus = .off
+    var lastDirectBLEEventAt: Date?
 
     /// main view relevant metrics
     var currentGlucose: String = "--"
@@ -78,6 +81,31 @@ import WatchConnectivity
     override init() {
         super.init()
         setupSession()
+        startDirectBLESnapshotObserver()
+    }
+
+    private func startDirectBLESnapshotObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDirectBLESnapshot(_:)),
+            name: .g7DirectBLESnapshotSaved,
+            object: nil
+        )
+    }
+
+    @objc private func handleDirectBLESnapshot(_ note: Notification) {
+        guard let snapshot = note.object as? TrioComplicationSnapshot else { return }
+        applyDirectBleSnapshot(snapshot)
+    }
+
+    @MainActor
+    func applyDirectBleSnapshot(_ snapshot: TrioComplicationSnapshot) {
+        currentGlucose = snapshot.glucose
+        trend = snapshot.trend
+        lastWatchStateUpdate = snapshot.readingDate.timeIntervalSince1970
+        displayedReadingSource = .directBLE
+        directBLEStatus = TrioComplicationDataStore.shared.directBLEStatus()
+        lastDirectBLEEventAt = TrioComplicationDataStore.shared.lastDirectBLEEventAt()
     }
 
     /// Configures the WatchConnectivity session if supported on the device
@@ -465,6 +493,7 @@ import WatchConnectivity
 
         if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
             self.currentGlucose = currentGlucose
+            displayedReadingSource = .watchConnectivity
         }
 
         if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
@@ -474,6 +503,16 @@ import WatchConnectivity
         if let trend = message[WatchMessageKeys.trend] as? String {
             self.trend = trend
         }
+        if let sourceRaw = message[WatchMessageKeys.readingSource] as? String,
+           let source = TrioReadingSource(rawValue: sourceRaw)
+        {
+            displayedReadingSource = source
+        } else if message[WatchMessageKeys.currentGlucose] != nil {
+            displayedReadingSource = .watchConnectivity
+        }
+
+        directBLEStatus = TrioComplicationDataStore.shared.directBLEStatus()
+        lastDirectBLEEventAt = TrioComplicationDataStore.shared.lastDirectBLEEventAt()
 
         if let delta = message[WatchMessageKeys.delta] as? String {
             self.delta = delta
