@@ -56,6 +56,14 @@ enum BackgroundTaskWindowCounter {
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
+    // MARK: - G7 direct-BLE observer (watch-side)
+    // Populated by `G7DirectBLEObserver` on each status / EGV event. UI
+    // reads these through `TrioMainWatchView` → `G7DirectBLEStatusRow`.
+    var g7ObserverSnapshot: G7DirectBLEObserverSnapshot = G7DirectBLEObserverSnapshot()
+    /// Which ingestion path served the currently-displayed glucose reading
+    /// (§15 source attribution model).
+    var latestReadingSource: TrioComplicationDataSource?
+
     // MARK: - Treatment inputs
 
     var carbsAmount: Int = 0
@@ -670,11 +678,16 @@ enum BackgroundTaskWindowCounter {
             delta: deltaString,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: nil
+            glucoseColor: nil,
+            source: .healthKit
         )
 
         DispatchQueue.main.async {
             TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+            if self.latestReadingSource != .g7DirectBLE
+                || (self.lastWatchStateUpdate ?? .distantPast) < readingDate {
+                self.latestReadingSource = .healthKit
+            }
             completionHandler()
         }
     }
@@ -1843,7 +1856,8 @@ enum BackgroundTaskWindowCounter {
             delta: deltaValue,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: glucoseColorValue
+            glucoseColor: glucoseColorValue,
+            source: .watchConnectivity
         )
 
         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -1852,6 +1866,7 @@ enum BackgroundTaskWindowCounter {
         }
 
         TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+        latestReadingSource = .watchConnectivity
 
         // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
         // Use only the threaded userInfoReceiveTimestamp; no fallback to instance state so attribution stays unambiguous.
@@ -2128,5 +2143,46 @@ enum BackgroundTaskWindowCounter {
             return .rejectedDateOnly
         }
         return .missing
+    }
+
+    // MARK: - G7 direct-BLE observer bridge (main-thread confined)
+
+    /// Called by `G7DirectBLEObserver` on every observer status / EGV
+    /// timestamp change. Main-thread confined.
+    @MainActor
+    func applyG7ObserverSnapshot(_ snapshot: G7DirectBLEObserverSnapshot) {
+        assert(Thread.isMainThread, "applyG7ObserverSnapshot must be called on main thread")
+        g7ObserverSnapshot = snapshot
+    }
+
+    /// Called by `G7DirectBLEObserver` after a snapshot save triggered by
+    /// an EGV. Updates the visible `WatchState` glucose fields so the
+    /// main view immediately reflects the BLE-delivered reading, and
+    /// records `latestReadingSource = .g7DirectBLE` for the UI indicator.
+    ///
+    /// Analogous to the WC `processRawDataForWatchState` path and the HK
+    /// `finishHKGlucoseObserverFetch` path; kept deliberately narrow
+    /// (glucose / trend / delta / reading date only).
+    @MainActor
+    func applyBLEObservedReading(
+        glucose: String,
+        trend: String,
+        delta: String,
+        readingDate: Date
+    ) {
+        assert(Thread.isMainThread, "applyBLEObservedReading must be called on main thread")
+        let currentLast = lastWatchStateUpdate ?? .distantPast
+        // Only overwrite visible fields if this BLE reading is newer than
+        // the currently displayed state. Otherwise leave the live WC
+        // pipeline's state untouched and only record the source/timestamp.
+        if readingDate > currentLast {
+            currentGlucose = glucose
+            self.trend = trend
+            self.delta = delta
+            lastWatchStateUpdate = readingDate
+            latestReadingSource = .g7DirectBLE
+        } else if latestReadingSource == nil {
+            latestReadingSource = .g7DirectBLE
+        }
     }
 }

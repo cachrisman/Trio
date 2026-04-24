@@ -18,6 +18,11 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let readingDate: Date
     let state: String?
     let glucoseColor: String?
+    /// Which ingestion path delivered this snapshot.
+    /// Optional + decoded with `decodeIfPresent` so snapshots written by
+    /// prior builds (no `source` field) still decode. See
+    /// `docs/in-progress/watch-g7-direct-ble-observer/01-design.md` §15.
+    let source: TrioComplicationDataSource?
 
     // INVARIANT (Phase 3.4): All display-field sanitization here.
     // Dedup always compares sanitized values.
@@ -28,7 +33,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         readingDate: Date,
         date: Date,
         state: String? = nil,
-        glucoseColor: String? = nil
+        glucoseColor: String? = nil,
+        source: TrioComplicationDataSource? = nil
     ) {
         glucose = Self.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,6 +43,37 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         self.date = date
         self.state = state
         self.glucoseColor = glucoseColor
+        self.source = source
+    }
+
+    // Custom Codable so `source` decodes missing-as-nil (backward compatible
+    // with snapshots written before the field existed).
+    private enum CodingKeys: String, CodingKey {
+        case glucose, trend, delta, date, readingDate, state, glucoseColor, source
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        glucose = try c.decode(String.self, forKey: .glucose)
+        trend = try c.decode(String.self, forKey: .trend)
+        delta = try c.decode(String.self, forKey: .delta)
+        date = try c.decode(Date.self, forKey: .date)
+        readingDate = try c.decode(Date.self, forKey: .readingDate)
+        state = try c.decodeIfPresent(String.self, forKey: .state)
+        glucoseColor = try c.decodeIfPresent(String.self, forKey: .glucoseColor)
+        source = try c.decodeIfPresent(TrioComplicationDataSource.self, forKey: .source)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(glucose, forKey: .glucose)
+        try c.encode(trend, forKey: .trend)
+        try c.encode(delta, forKey: .delta)
+        try c.encode(date, forKey: .date)
+        try c.encode(readingDate, forKey: .readingDate)
+        try c.encodeIfPresent(state, forKey: .state)
+        try c.encodeIfPresent(glucoseColor, forKey: .glucoseColor)
+        try c.encodeIfPresent(source, forKey: .source)
     }
 
     private static func sanitizedGlucose(from value: String) -> String {
@@ -621,6 +658,7 @@ final class TrioComplicationDataStore {
         readingDate: Date,
         date: Date,
         glucoseColor: String? = nil,
+        source: TrioComplicationDataSource? = nil,
         triggerReload: Bool = true
     ) {
         let snapshot = TrioComplicationSnapshot(
@@ -629,7 +667,8 @@ final class TrioComplicationDataStore {
             delta: delta ?? "",
             readingDate: readingDate,
             date: date,
-            glucoseColor: glucoseColor
+            glucoseColor: glucoseColor,
+            source: source
         )
         save(snapshot, triggerReload: triggerReload)
     }

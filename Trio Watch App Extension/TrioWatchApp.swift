@@ -24,8 +24,14 @@ import WatchKit
 
             if newPhase == .active {
                 WatchState.shared.handleForegroundActiveEntry()
+                G7DirectBLEObserver.shared.scenePhaseChanged(.active)
             } else if newPhase == .background || newPhase == .inactive {
                 WatchState.shared.handleForegroundInactiveOrBackground()
+                // Deliberately a no-op for the observer — brief .inactive
+                // transitions (Digital Crown detour, notifications) must
+                // not tear down a healthy session. Design §13 / anti-
+                // patterns item 1.
+                G7DirectBLEObserver.shared.scenePhaseChanged(.inactive)
             }
 
             let forceFlush = newPhase != .active
