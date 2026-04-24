@@ -53,6 +53,9 @@ enum BackgroundTaskWindowCounter {
     var cob: String? = "--"
     var iob: String? = "--"
     var lastLoopTime: String? = "--"
+    var g7BLEStatus: String = "off"
+    var g7BLELastEventAt: Date?
+    var currentComplicationSource: TrioComplicationDataSource = .unknown
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
@@ -170,6 +173,8 @@ enum BackgroundTaskWindowCounter {
 
     var deviceType = WatchSize.current
 
+    private var g7DirectBLEObserver: G7DirectBLEObserver?
+
     private var isColdStart: Bool {
         guard let activationTimestamp = activationTimestamp else { return true }
         return Date().timeIntervalSince(activationTimestamp) < 60
@@ -178,11 +183,43 @@ enum BackgroundTaskWindowCounter {
     override init() {
         super.init()
         setupSession()
+        setupG7DirectBLEObserver()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             self.forceComplicationUpdate()
             self.scheduleBackgroundRefresh()
         }
+    }
+
+    private func setupG7DirectBLEObserver() {
+        g7DirectBLEObserver = G7DirectBLEObserver(
+            onReading: { [weak self] snapshot in
+                guard let self else { return }
+                TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+                self.currentComplicationSource = .directBLE
+                self.currentGlucose = snapshot.glucose
+                self.trend = snapshot.trend
+                self.delta = snapshot.delta
+                self.lastWatchStateUpdate = snapshot.readingDate
+            },
+            onStatus: { [weak self] status, lastEventAt in
+                guard let self else { return }
+                self.g7BLEStatus = status.shortLabel
+                self.g7BLELastEventAt = lastEventAt
+            }
+        )
+    }
+
+    func g7BLEStatusLine(isWatchStateDated: Bool) -> String {
+        let recency = isWatchStateDated ? String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") : (lastLoopTime ?? "--")
+        let source = currentComplicationSource.shortLabel
+        let bleEvent = g7BLELastEventAt.map { "ble \(Self.minutesAgoText(since: $0))" } ?? "ble --"
+        return "\(recency) · \(source) · BLE:\(g7BLEStatus) · \(bleEvent)"
+    }
+
+    private static func minutesAgoText(since date: Date) -> String {
+        let minutes = max(0, Int(Date().timeIntervalSince(date) / 60.0))
+        return "\(minutes)m"
     }
 
     func noteAppBecameActive() {
@@ -231,6 +268,8 @@ enum BackgroundTaskWindowCounter {
         startupBackgroundLaunchDisarmWorkItem = nil
         WatchStartupTransportGate.arm(activationSequence: activationSequence)
         noteAppBecameActive()
+        g7DirectBLEObserver?.start()
+        g7DirectBLEObserver?.sceneDidBecomeActive()
         WatchErrorReporter.markBecameActiveImmediately()
         scheduleStartupSequenceOnMain(activationSequence: activationSequence)
 
@@ -258,6 +297,7 @@ enum BackgroundTaskWindowCounter {
         let pendingTasks = startupPendingTasksFieldOnMain()
         cancelStartupSequenceOnMain()
         startupCurrentActivationSequence = nil
+        g7DirectBLEObserver?.sceneDidResignActive()
         WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
 
         if let activationSequence {
@@ -670,7 +710,8 @@ enum BackgroundTaskWindowCounter {
             delta: deltaString,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: nil
+            glucoseColor: nil,
+            source: .healthKit
         )
 
         DispatchQueue.main.async {
@@ -1843,7 +1884,8 @@ enum BackgroundTaskWindowCounter {
             delta: deltaValue,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: glucoseColorValue
+            glucoseColor: glucoseColorValue,
+            source: .watchConnectivity
         )
 
         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -1904,7 +1946,8 @@ enum BackgroundTaskWindowCounter {
             delta: delta ?? "",
             readingDate: effectiveReadingDate,
             date: Date(),
-            glucoseColor: currentGlucoseColorString
+            glucoseColor: currentGlucoseColorString,
+            source: currentComplicationSource
         )
 
         Task {
@@ -2077,6 +2120,7 @@ enum BackgroundTaskWindowCounter {
                 self.currentGlucoseColorString = glucoseColor
             }
             self.lastWatchStateUpdate = snapshot.readingDate
+            self.currentComplicationSource = snapshot.source
             self.showSyncingAnimation = false
             self.syncTimeoutWorkItem?.cancel()
         }
