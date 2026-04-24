@@ -590,15 +590,34 @@ final class TrioComplicationDataStore {
     //   Same timestamp, different glucose → true
     //   Newer timestamp (>1s)            → true
     //   Older timestamp (<-1s)           → false
+    //   Within ±1s, same glucose+trend, higher-priority source → true (MOD-D synthesis)
     func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
         let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
         if timeDiff > 1.0  { return true }
         if timeDiff < -1.0 { return false }
+        let sameCore = new.glucose == current.glucose && new.trend == current.trend
+        if sameCore {
+            let newP = Self.sourcePriority(new.source)
+            let curP = Self.sourcePriority(current.source)
+            if newP > curP { return true }
+            if newP < curP { return false }
+        }
         return new.glucose != current.glucose
             || new.trend   != current.trend
             || new.delta   != current.delta
             || new.state   != current.state
             || new.source  != current.source
+    }
+
+    /// Tie-break when two channels race within the ±1s dedup window (direct BLE preferred).
+    private static func sourcePriority(_ source: TrioComplicationDataSource?) -> Int {
+        guard let source else { return 0 }
+        switch source {
+        case .g7DirectBLE: return 3
+        case .watchConnectivity: return 2
+        case .healthKit: return 1
+        case .unknown: return 0
+        }
     }
 
     // MARK: - Phase 3.0 Pre-dispatch Dedup
