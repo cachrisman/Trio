@@ -35,6 +35,21 @@ struct GlucoseTrendView: View {
         }
     }
 
+    private var observerStatusColor: Color {
+        switch state.g7DirectBleStatus {
+        case .active:
+            return Color.loopGreen
+        case .searching,
+             .connecting:
+            return Color.loopYellow
+        case .stalled,
+             .unavailable:
+            return Color.loopRed
+        case .off:
+            return Color.secondary
+        }
+    }
+
     var circleSize: CGFloat {
         switch state.deviceType {
         case .watch40mm:
@@ -148,14 +163,22 @@ struct GlucoseTrendView: View {
 
             Spacer()
 
-            Text(
-                isWatchStateDated ?
-                    String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
-            )
-            .font(.system(size: minutesAgoFontSize))
-            .fontWidth(isWatchStateDated ? .expanded : .standard)
+            VStack(spacing: 2) {
+                Text(
+                    isWatchStateDated ?
+                        String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
+                        state
+                        .lastLoopTime ?? "--"
+                )
+                .font(.system(size: minutesAgoFontSize))
+                .fontWidth(isWatchStateDated ? .expanded : .standard)
+
+                Text("\(state.displayedReadingSource.shortLabel) · BLE:\(state.g7DirectBleStatus.shortLabel) \(state.g7DirectBleLastEventAgeText)")
+                    .font(.system(size: max(8, minutesAgoFontSize - 1)))
+                    .foregroundStyle(observerStatusColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+            }
 
             Spacer()
 

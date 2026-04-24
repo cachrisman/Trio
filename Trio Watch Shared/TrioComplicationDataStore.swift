@@ -5,6 +5,22 @@ import WatchConnectivity
 #endif
 import WidgetKit
 
+enum TrioComplicationDataSource: String, Codable, Equatable {
+    case watchConnectivity = "watch_connectivity"
+    case healthKit = "healthkit"
+    case g7DirectBLE = "g7_direct_ble"
+    case unknown = "unknown"
+
+    var shortLabel: String {
+        switch self {
+        case .watchConnectivity: return "Phone"
+        case .healthKit: return "HK"
+        case .g7DirectBLE: return "BLE"
+        case .unknown: return "?"
+        }
+    }
+}
+
 struct TrioComplicationSnapshot: Equatable, Codable {
     private enum Constants {
         static let fallbackGlucose = "--"
@@ -18,6 +34,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let readingDate: Date
     let state: String?
     let glucoseColor: String?
+    let source: TrioComplicationDataSource?
 
     // INVARIANT (Phase 3.4): All display-field sanitization here.
     // Dedup always compares sanitized values.
@@ -28,7 +45,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         readingDate: Date,
         date: Date,
         state: String? = nil,
-        glucoseColor: String? = nil
+        glucoseColor: String? = nil,
+        source: TrioComplicationDataSource? = nil
     ) {
         glucose = Self.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,6 +55,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         self.date = date
         self.state = state
         self.glucoseColor = glucoseColor
+        self.source = source
     }
 
     private static func sanitizedGlucose(from value: String) -> String {
@@ -89,6 +108,7 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
     let trend: String
     let delta: String
     let state: String
+    let source: String
 }
 
 extension ComplicationSnapshotFingerprint {
@@ -100,6 +120,7 @@ extension ComplicationSnapshotFingerprint {
         // Sentinel for nil: state is always optional in the model; sentinel ensures
         // nil and non-nil are always distinguishable in Equatable comparison.
         state = snapshot.state ?? "<nil>"
+        source = snapshot.source?.rawValue ?? "<nil>"
     }
 }
 
@@ -577,6 +598,7 @@ final class TrioComplicationDataStore {
             || new.trend   != current.trend
             || new.delta   != current.delta
             || new.state   != current.state
+            || new.source  != current.source
     }
 
     // MARK: - Phase 3.0 Pre-dispatch Dedup
