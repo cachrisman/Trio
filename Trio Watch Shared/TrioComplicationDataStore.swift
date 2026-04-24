@@ -18,6 +18,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let readingDate: Date
     let state: String?
     let glucoseColor: String?
+    let source: TrioComplicationDataSource
 
     // INVARIANT (Phase 3.4): All display-field sanitization here.
     // Dedup always compares sanitized values.
@@ -28,7 +29,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         readingDate: Date,
         date: Date,
         state: String? = nil,
-        glucoseColor: String? = nil
+        glucoseColor: String? = nil,
+        source: TrioComplicationDataSource = .unknown
     ) {
         glucose = Self.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,6 +39,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         self.date = date
         self.state = state
         self.glucoseColor = glucoseColor
+        self.source = source
     }
 
     private static func sanitizedGlucose(from value: String) -> String {
@@ -81,6 +84,43 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     }
 }
 
+extension TrioComplicationSnapshot {
+    private enum CodingKeys: String, CodingKey {
+        case glucose
+        case trend
+        case delta
+        case date
+        case readingDate
+        case state
+        case glucoseColor
+        case source
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        glucose = try container.decode(String.self, forKey: .glucose)
+        trend = try container.decode(String.self, forKey: .trend)
+        delta = try container.decode(String.self, forKey: .delta)
+        date = try container.decode(Date.self, forKey: .date)
+        readingDate = try container.decode(Date.self, forKey: .readingDate)
+        state = try container.decodeIfPresent(String.self, forKey: .state)
+        glucoseColor = try container.decodeIfPresent(String.self, forKey: .glucoseColor)
+        source = try container.decodeIfPresent(TrioComplicationDataSource.self, forKey: .source) ?? .unknown
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(glucose, forKey: .glucose)
+        try container.encode(trend, forKey: .trend)
+        try container.encode(delta, forKey: .delta)
+        try container.encode(date, forKey: .date)
+        try container.encode(readingDate, forKey: .readingDate)
+        try container.encodeIfPresent(state, forKey: .state)
+        try container.encodeIfPresent(glucoseColor, forKey: .glucoseColor)
+        try container.encode(source, forKey: .source)
+    }
+}
+
 // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
 // glucoseColor excluded: see shouldUpdate comment (Phase 3.2) for rationale.
 struct ComplicationSnapshotFingerprint: Codable, Equatable {
@@ -89,6 +129,7 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
     let trend: String
     let delta: String
     let state: String
+    let source: String?
 }
 
 extension ComplicationSnapshotFingerprint {
@@ -100,6 +141,7 @@ extension ComplicationSnapshotFingerprint {
         // Sentinel for nil: state is always optional in the model; sentinel ensures
         // nil and non-nil are always distinguishable in Equatable comparison.
         state = snapshot.state ?? "<nil>"
+        source = snapshot.source.rawValue
     }
 }
 
@@ -629,7 +671,8 @@ final class TrioComplicationDataStore {
             delta: delta ?? "",
             readingDate: readingDate,
             date: date,
-            glucoseColor: glucoseColor
+            glucoseColor: glucoseColor,
+            source: .unknown
         )
         save(snapshot, triggerReload: triggerReload)
     }

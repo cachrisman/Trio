@@ -56,6 +56,11 @@ enum BackgroundTaskWindowCounter {
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
+    var directBLEStatus: G7DirectBLEStatus = .off
+    var directBLELastEventAt: Date?
+    var directBLELastReadingAt: Date?
+    var currentReadingSource: TrioComplicationDataSource = .unknown
+
     // MARK: - Treatment inputs
 
     var carbsAmount: Int = 0
@@ -173,6 +178,18 @@ enum BackgroundTaskWindowCounter {
     private var isColdStart: Bool {
         guard let activationTimestamp = activationTimestamp else { return true }
         return Date().timeIntervalSince(activationTimestamp) < 60
+    }
+
+    func updateDirectBLEStatus(_ status: G7DirectBLEStatus, eventAt: Date = Date()) {
+        directBLEStatus = status
+        directBLELastEventAt = eventAt
+    }
+
+    func recordDirectBLEReading(_ readingDate: Date) {
+        directBLELastReadingAt = readingDate
+        directBLELastEventAt = Date()
+        currentReadingSource = .directBLE
+        lastWatchStateUpdate = readingDate
     }
 
     override init() {
@@ -664,13 +681,15 @@ enum BackgroundTaskWindowCounter {
             )
         }
 
+        currentReadingSource = .healthKit
         let snapshot = TrioComplicationSnapshot(
             glucose: glucoseString,
             trend: trendString,
             delta: deltaString,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: nil
+            glucoseColor: nil,
+            source: .healthKit
         )
 
         DispatchQueue.main.async {
@@ -1097,7 +1116,8 @@ enum BackgroundTaskWindowCounter {
             trend: payload[WatchMessageKeys.trend] as? String ?? "",
             delta: payload[WatchMessageKeys.delta] as? String ?? "",
             readingDate: readingDate,
-            date: Date()
+            date: Date(),
+            source: .watchConnectivity
         )
         if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
             DispatchQueue.main.async { [weak self] in
@@ -1837,13 +1857,15 @@ enum BackgroundTaskWindowCounter {
             await WatchLogger.shared.log("🔍 Debug: glucoseValue source - message: \(message[WatchMessageKeys.currentGlucose] as? String ?? "nil"), currentGlucose: \(currentGlucose)")
         }
 
+        currentReadingSource = .watchConnectivity
         let snapshot = TrioComplicationSnapshot(
             glucose: glucoseValue,
             trend: trendValue,
             delta: deltaValue,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: glucoseColorValue
+            glucoseColor: glucoseColorValue,
+            source: .watchConnectivity
         )
 
         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -1898,13 +1920,15 @@ enum BackgroundTaskWindowCounter {
             return
         }
 
+        currentReadingSource = .watchConnectivity
         let snapshot = TrioComplicationSnapshot(
             glucose: currentGlucose,
             trend: trend ?? "",
             delta: delta ?? "",
             readingDate: effectiveReadingDate,
             date: Date(),
-            glucoseColor: currentGlucoseColorString
+            glucoseColor: currentGlucoseColorString,
+            source: .watchConnectivity
         )
 
         Task {
