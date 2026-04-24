@@ -439,6 +439,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             WatchMessageKeys.currentGlucoseColorString: state.currentGlucoseColorString ?? "#ffffff",
             WatchMessageKeys.trend: state.trend ?? "",
             WatchMessageKeys.delta: state.delta ?? "",
+            WatchMessageKeys.readingDate: state.date.timeIntervalSince1970,
+            WatchMessageKeys.readingSource: "phone_relay",
             WatchMessageKeys.iob: state.iob ?? "",
             WatchMessageKeys.cob: state.cob ?? "",
             WatchMessageKeys.lastLoopTime: state.lastLoopTime ?? "",

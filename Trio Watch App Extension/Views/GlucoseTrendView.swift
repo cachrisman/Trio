@@ -148,17 +148,37 @@ struct GlucoseTrendView: View {
 
             Spacer()
 
-            Text(
-                isWatchStateDated ?
-                    String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
-            )
+            Text(statusLineText)
             .font(.system(size: minutesAgoFontSize))
             .fontWidth(isWatchStateDated ? .expanded : .standard)
 
             Spacer()
 
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var statusLineText: String {
+        if isWatchStateDated {
+            return String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.")
+        }
+
+        let recency = state.lastLoopTime ?? "--"
+        let source: String
+        switch state.currentReadingSource {
+        case .directBLE: source = "BLE"
+        case .phoneRelay: source = "Phone"
+        case .healthKit: source = "HK"
+        case .unknown: source = "?"
+        }
+
+        let bleRecency: String
+        if let lastBLE = state.lastDirectBLEEventAt {
+            let mins = max(0, Int(Date().timeIntervalSince(lastBLE) / 60))
+            bleRecency = "\(mins)m"
+        } else {
+            bleRecency = "--"
+        }
+
+        return "\(recency) · \(source) · BLE:\(state.directBLEStatus.rawValue) \(bleRecency)"
     }
 }

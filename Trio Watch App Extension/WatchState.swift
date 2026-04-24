@@ -19,6 +19,10 @@ import WatchConnectivity
     var currentGlucoseColorString: String = "#ffffff"
     var trend: String? = ""
     var delta: String? = "--"
+    var readingDate: Date?
+    var currentReadingSource: TrioReadingSource = .unknown
+    var directBLEStatus: G7DirectBLEObserver.Status = .off
+    var lastDirectBLEEventAt: Date?
     var glucoseValues: [(date: Date, glucose: Double, color: Color)] = []
     var minYAxisValue: Decimal = 39
     var maxYAxisValue: Decimal = 200
@@ -78,6 +82,7 @@ import WatchConnectivity
     override init() {
         super.init()
         setupSession()
+        setupDirectBLEObserver()
     }
 
     /// Configures the WatchConnectivity session if supported on the device
@@ -94,6 +99,20 @@ import WatchConnectivity
             Task {
                 await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
             }
+        }
+    }
+
+    private func setupDirectBLEObserver() {
+        G7DirectBLEObserver.shared.onStatusChange = { [weak self] status, lastEventAt in
+            guard let self else { return }
+            self.directBLEStatus = status
+            self.lastDirectBLEEventAt = lastEventAt
+        }
+
+        G7DirectBLEObserver.shared.onSnapshot = { [weak self] snapshot in
+            guard let self else { return }
+            TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
+            self.applyComplicationSnapshot(snapshot)
         }
     }
 
@@ -479,6 +498,16 @@ import WatchConnectivity
             self.delta = delta
         }
 
+        if let readingDate = message[WatchMessageKeys.readingDate] as? TimeInterval {
+            self.readingDate = Date(timeIntervalSince1970: readingDate)
+        }
+
+        if let readingSourceRaw = message[WatchMessageKeys.readingSource] as? String,
+           let readingSource = TrioReadingSource(rawValue: readingSourceRaw)
+        {
+            self.currentReadingSource = readingSource
+        }
+
         if let iob = message[WatchMessageKeys.iob] as? String {
             self.iob = iob
         }
@@ -573,5 +602,15 @@ import WatchConnectivity
                 self.confirmBolusFaster = booleanValue
             }
         }
+    }
+
+    private func applyComplicationSnapshot(_ snapshot: TrioComplicationSnapshot) {
+        currentGlucose = snapshot.glucose
+        trend = snapshot.trend
+        delta = snapshot.delta ?? delta
+        readingDate = snapshot.readingDate
+        currentReadingSource = snapshot.source
+        lastWatchStateUpdate = snapshot.date.timeIntervalSince1970
+        lastDirectBLEEventAt = snapshot.date
     }
 }
