@@ -56,6 +56,12 @@ enum BackgroundTaskWindowCounter {
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
+    // MARK: - G7 direct BLE observer
+
+    var _g7BLEStatus: G7BLEStatus = .off
+    var _g7LastDirectEventAt: Date?
+    var _g7DisplayedSource: TrioComplicationDataSource = .unknown
+
     // MARK: - Treatment inputs
 
     var carbsAmount: Int = 0
@@ -232,6 +238,7 @@ enum BackgroundTaskWindowCounter {
         WatchStartupTransportGate.arm(activationSequence: activationSequence)
         noteAppBecameActive()
         WatchErrorReporter.markBecameActiveImmediately()
+        startG7ObserverForActiveScene()
         scheduleStartupSequenceOnMain(activationSequence: activationSequence)
 
         Task {
@@ -258,6 +265,7 @@ enum BackgroundTaskWindowCounter {
         let pendingTasks = startupPendingTasksFieldOnMain()
         cancelStartupSequenceOnMain()
         startupCurrentActivationSequence = nil
+        updateG7ObserverForScene(active: false)
         WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
 
         if let activationSequence {
@@ -670,10 +678,12 @@ enum BackgroundTaskWindowCounter {
             delta: deltaString,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: nil
+            glucoseColor: nil,
+            source: .healthKit
         )
 
         DispatchQueue.main.async {
+            self.g7DisplayedSource = .healthKit
             TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
             completionHandler()
         }
@@ -1843,7 +1853,8 @@ enum BackgroundTaskWindowCounter {
             delta: deltaValue,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: glucoseColorValue
+            glucoseColor: glucoseColorValue,
+            source: .watchConnectivity
         )
 
         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -1851,6 +1862,7 @@ enum BackgroundTaskWindowCounter {
             return
         }
 
+        g7DisplayedSource = .watchConnectivity
         TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
 
         // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
@@ -1904,7 +1916,8 @@ enum BackgroundTaskWindowCounter {
             delta: delta ?? "",
             readingDate: effectiveReadingDate,
             date: Date(),
-            glucoseColor: currentGlucoseColorString
+            glucoseColor: currentGlucoseColorString,
+            source: g7DisplayedSource
         )
 
         Task {

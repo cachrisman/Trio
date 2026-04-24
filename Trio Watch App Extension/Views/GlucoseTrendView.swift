@@ -114,6 +114,16 @@ struct GlucoseTrendView: View {
         }
     }
 
+
+    private var sourceBadge: String {
+        state.g7DisplayedSource.shortLabel
+    }
+
+    private var bleHeartbeat: String {
+        guard let at = state.g7LastDirectEventAt else { return "--" }
+        return "\(Int(Date().timeIntervalSince(at) / 60))m"
+    }
+
     var body: some View {
         VStack {
             ZStack {
@@ -151,8 +161,7 @@ struct GlucoseTrendView: View {
             Text(
                 isWatchStateDated ?
                     String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
+                    "\(state.lastLoopTime ?? "--") · \(sourceBadge) · BLE:\(state.g7BLEStatus.display) · \(bleHeartbeat)"
             )
             .font(.system(size: minutesAgoFontSize))
             .fontWidth(isWatchStateDated ? .expanded : .standard)
