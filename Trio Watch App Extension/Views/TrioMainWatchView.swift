@@ -4,6 +4,7 @@ import WatchKit
 
 struct TrioMainWatchView: View {
     @State private var state = WatchState()
+    @Environment(\.scenePhase) private var scenePhase
 
     // misc
     @State private var currentPage: Int = 0
@@ -100,6 +101,15 @@ struct TrioMainWatchView: View {
                 /// Reset `bolusAmount` and `recommendedBolus` to ensure no stale / old value is set when user opens bolus input or meal combo the next time.
                 state.bolusAmount = 0
                 state.recommendedBolus = 0
+                G7DirectBLEManager.shared.bind(watchState: state)
+                if scenePhase == .active {
+                    G7DirectBLEManager.shared.start()
+                }
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    G7DirectBLEManager.shared.start()
+                }
             }
             .background(trioBackgroundColor)
             .tabViewStyle(.verticalPage)

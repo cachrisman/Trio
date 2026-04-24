@@ -73,6 +73,18 @@ import WatchConnectivity
     /// A flag to tell the UI we’re still updating.
     var showSyncingAnimation: Bool = false
 
+    /// Which data path last *won* the complication pipeline for the value on screen (see `TrioComplicationDataStore`).
+    var displayedComplicationDataSource: TrioComplicationDataSource = .unknown
+
+    // MARK: - G7 direct BLE observer (watch extension)
+
+    /// Glanceable status for `GlucoseTrendView` (not scene phase).
+    var g7DirectBLEStatus: G7DirectBLEStatus = .off
+    /// Last time the G7 direct path did something useful (EGV received, connect, etc.).
+    var lastG7DirectBLEEventDate: Date?
+    /// Human-readable short label for the UI line, e.g. "searching".
+    var g7DirectBLEStatusLabel: String = ""
+
     var deviceType = WatchSize.current
 
     override init() {
@@ -573,5 +585,7 @@ import WatchConnectivity
                 self.confirmBolusFaster = booleanValue
             }
         }
+
+        applyPhonePathToComplicationPipeline()
     }
 }
