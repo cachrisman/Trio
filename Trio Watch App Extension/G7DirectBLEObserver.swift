@@ -72,6 +72,7 @@ final class G7DirectBLEObserver: NSObject {
     private var scanTimeoutWorkItem: DispatchWorkItem?
     private var connectTimeoutWorkItem: DispatchWorkItem?
     private var egvRequestWorkItem: DispatchWorkItem?
+    private var controlWriteRetryWorkItem: DispatchWorkItem?
     private var reconnectWorkItem: DispatchWorkItem?
     private var sessionStartDate: Date?
     private var sessionID = UUID()
@@ -84,11 +85,16 @@ final class G7DirectBLEObserver: NSObject {
     private var lastSavedGlucose: (value: Int, date: Date)?
     /// Anchored once per connect cycle so consecutive EGV parses share the same activation instant (sub-second drift fix).
     private var sessionActivationDate: Date?
+    private var controlWriteConsecutiveFailures = 0
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
     private let authFallbackDelay: TimeInterval = 6
-    private let egvRequestInterval: TimeInterval = 60
+    /// Fallback EGV request cadence when auth-transition triggers are sparse (~sensor EGV period).
+    private let egvFallbackTimerSeconds: TimeInterval = 330
+    /// Shorter reschedule when control notify is not yet enabled (preserves responsiveness vs 330s fallback).
+    private let egvControlNotReadyRetryDelay: TimeInterval = 60
+    private let controlWriteRetryDelay: TimeInterval = 10
     private let minimumSavedReadingSpacing: TimeInterval = 60
 
     private override init() {
@@ -261,6 +267,9 @@ final class G7DirectBLEObserver: NSObject {
         authNotifyEnabled = false
         hasAdvancedBeyondAuth = false
         sessionActivationDate = nil
+        controlWriteConsecutiveFailures = 0
+        controlWriteRetryWorkItem?.cancel()
+        controlWriteRetryWorkItem = nil
         characteristics.removeAll()
         noteStatus(.connecting)
         log("event=g7_ble_connect_attempt source=\(source) peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
@@ -444,7 +453,11 @@ final class G7DirectBLEObserver: NSObject {
 
         guard opcode == G7BLEOpcode.authStatusReply.byte else { return }
         if authenticated && bonded {
-            advanceToControl(reason: "auth_authenticated_bonded")
+            if hasAdvancedBeyondAuth {
+                sendEGVRequest(reason: "auth_transition")
+            } else {
+                advanceToControl(reason: "auth_authenticated_bonded")
+            }
         } else if authenticated && !bonded {
             log("event=g7_ble_blocked_auth_partial authenticated=true bonded=false byte_count=\(data.count)")
         } else {
@@ -480,6 +493,8 @@ final class G7DirectBLEObserver: NSObject {
 
     private func sendEGVRequest(reason: String) {
         egvRequestWorkItem?.cancel()
+        controlWriteRetryWorkItem?.cancel()
+        controlWriteRetryWorkItem = nil
         guard let peripheral = activePeripheral, peripheral.state == .connected else {
             log("event=g7_ble_blocked_egv_request reason=no_connected_peripheral trigger=\(reason)")
             scheduleReconnect(reason: "egv_request_no_peripheral")
@@ -495,16 +510,27 @@ final class G7DirectBLEObserver: NSObject {
         let payload = Data([G7BLEOpcode.egv.byte])
         peripheral.writeValue(payload, for: control, type: .withResponse)
         log("event=g7_ble_egv_request_sent reason=\(reason) write_type=withResponse payload=\(payload.hexString)")
-        scheduleEGVRequest(reason: "periodic")
+        if reason == "control_not_ready" {
+            scheduleEGVRequest(reason: "control_not_ready")
+        }
     }
 
     private func scheduleEGVRequest(reason: String) {
         egvRequestWorkItem?.cancel()
+        let delay: TimeInterval
+        let fireReason: String
+        if reason == "control_not_ready" {
+            delay = egvControlNotReadyRetryDelay
+            fireReason = "control_not_ready"
+        } else {
+            delay = egvFallbackTimerSeconds
+            fireReason = "fallback_timer_330s"
+        }
         let workItem = DispatchWorkItem { [weak self] in
-            self?.sendEGVRequest(reason: reason)
+            self?.sendEGVRequest(reason: fireReason)
         }
         egvRequestWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + egvRequestInterval, execute: workItem)
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private func handleControlPayload(_ data: Data) {
@@ -652,10 +678,12 @@ final class G7DirectBLEObserver: NSObject {
         connectTimeoutWorkItem?.cancel()
         authFallbackWorkItem?.cancel()
         egvRequestWorkItem?.cancel()
+        controlWriteRetryWorkItem?.cancel()
         scanTimeoutWorkItem = nil
         connectTimeoutWorkItem = nil
         authFallbackWorkItem = nil
         egvRequestWorkItem = nil
+        controlWriteRetryWorkItem = nil
     }
 
     private func cancelReconnect() {
@@ -769,6 +797,9 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         authNotifyEnabled = false
         hasAdvancedBeyondAuth = false
         sessionActivationDate = nil
+        controlWriteConsecutiveFailures = 0
+        controlWriteRetryWorkItem?.cancel()
+        controlWriteRetryWorkItem = nil
         noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
         scheduleReconnect(reason: "disconnect")
     }
@@ -792,6 +823,44 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        if characteristic.uuid == G7BLEUUID.control {
+            if let error {
+                logError(event: "g7_ble_control_write_failed", error: error, extra: "characteristic=\(characteristic.uuid.uuidString)")
+                egvRequestWorkItem?.cancel()
+                egvRequestWorkItem = nil
+                controlWriteConsecutiveFailures += 1
+                if controlWriteConsecutiveFailures > 3 {
+                    controlWriteRetryWorkItem?.cancel()
+                    controlWriteRetryWorkItem = nil
+                    scheduleReconnect(reason: "control_write_retries_exhausted")
+                    return
+                }
+                log("event=g7_ble_control_write_retry_scheduled attempt=\(controlWriteConsecutiveFailures) delay_s=\(Int(controlWriteRetryDelay))")
+                let workItem = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    guard self.activePeripheral?.identifier == peripheral.identifier,
+                          peripheral.state == .connected,
+                          self.controlNotifyEnabled,
+                          let control = self.characteristics[G7BLEUUID.control] else {
+                        self.scheduleReconnect(reason: "control_write_retry_aborted")
+                        return
+                    }
+                    self.stage = .requestingEGV
+                    let payload = Data([G7BLEOpcode.egv.byte])
+                    peripheral.writeValue(payload, for: control, type: .withResponse)
+                    self.log("event=g7_ble_egv_request_sent reason=control_write_retry attempt=\(self.controlWriteConsecutiveFailures) write_type=withResponse payload=\(payload.hexString)")
+                }
+                controlWriteRetryWorkItem = workItem
+                queue.asyncAfter(deadline: .now() + controlWriteRetryDelay, execute: workItem)
+                return
+            }
+            controlWriteConsecutiveFailures = 0
+            controlWriteRetryWorkItem?.cancel()
+            controlWriteRetryWorkItem = nil
+            log("event=g7_ble_control_write_ack characteristic=\(characteristic.uuid.uuidString)")
+            scheduleEGVRequest(reason: "fallback_timer_330s")
+            return
+        }
         if let error {
             logError(event: "g7_ble_control_write_failed", error: error, extra: "characteristic=\(characteristic.uuid.uuidString)")
             scheduleReconnect(reason: "control_write_failed")
