@@ -18,6 +18,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let readingDate: Date
     let state: String?
     let glucoseColor: String?
+    let dataSource: TrioComplicationDataSource?
 
     // INVARIANT (Phase 3.4): All display-field sanitization here.
     // Dedup always compares sanitized values.
@@ -28,7 +29,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         readingDate: Date,
         date: Date,
         state: String? = nil,
-        glucoseColor: String? = nil
+        glucoseColor: String? = nil,
+        dataSource: TrioComplicationDataSource? = nil
     ) {
         glucose = Self.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,6 +39,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         self.date = date
         self.state = state
         self.glucoseColor = glucoseColor
+        self.dataSource = dataSource
     }
 
     private static func sanitizedGlucose(from value: String) -> String {
@@ -89,6 +92,8 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
     let trend: String
     let delta: String
     let state: String
+    /// Optional for migration: older `UserDefaults` entries omit this key.
+    let dataSource: String?
 }
 
 extension ComplicationSnapshotFingerprint {
@@ -100,6 +105,7 @@ extension ComplicationSnapshotFingerprint {
         // Sentinel for nil: state is always optional in the model; sentinel ensures
         // nil and non-nil are always distinguishable in Equatable comparison.
         state = snapshot.state ?? "<nil>"
+        dataSource = snapshot.dataSource?.rawValue
     }
 }
 
@@ -569,14 +575,41 @@ final class TrioComplicationDataStore {
     //   Same timestamp, different glucose → true
     //   Newer timestamp (>1s)            → true
     //   Older timestamp (<-1s)           → false
+    /// Whether `saveOnMain` would write this snapshot (main thread; mirrors future-skew + dedup checks, not pre-dispatch).
+    @MainActor
+    func wouldAcceptMainThreadSave(_ snapshot: TrioComplicationSnapshot) -> Bool {
+        if snapshot.readingDate.timeIntervalSinceNow > 120 { return false }
+        if let existing = inMemorySavedSnapshot {
+            return shouldUpdate(new: snapshot, current: existing)
+        }
+        if let lastTS = Self.lastValidTimestamp, snapshot.readingDate.timeIntervalSince(lastTS) < 0.0 {
+            return false
+        }
+        return true
+    }
+
     func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
         let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
-        if timeDiff > 1.0  { return true }
+        if timeDiff > 1.0 { return true }
         if timeDiff < -1.0 { return false }
-        return new.glucose != current.glucose
-            || new.trend   != current.trend
-            || new.delta   != current.delta
-            || new.state   != current.state
+        if new.glucose != current.glucose
+            || new.trend != current.trend
+            || new.delta != current.delta
+            || new.state != current.state
+        {
+            return true
+        }
+        if new.dataSource == current.dataSource { return false }
+        return dataSourcePriority(new.dataSource) > dataSourcePriority(current.dataSource)
+    }
+
+    private func dataSourcePriority(_ s: TrioComplicationDataSource?) -> Int {
+        switch s {
+        case .g7DirectBLE: 3
+        case .watchConnectivityPhone: 2
+        case .healthKit: 1
+        case .none, .unknown, nil: 0
+        }
     }
 
     // MARK: - Phase 3.0 Pre-dispatch Dedup

@@ -53,6 +53,16 @@ enum BackgroundTaskWindowCounter {
     var cob: String? = "--"
     var iob: String? = "--"
     var lastLoopTime: String? = "--"
+
+    /// Which data path last *won* the complication store for the value on screen.
+    var displayedComplicationDataSource: TrioComplicationDataSource = .unknown
+
+    // MARK: - G7 direct BLE observer (watch)
+
+    var g7DirectBLEStatus: G7DirectBLEStatus = .off
+    var lastG7DirectBLEEventDate: Date?
+    var g7DirectBLEStatusLabel: String = ""
+
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
@@ -670,11 +680,13 @@ enum BackgroundTaskWindowCounter {
             delta: deltaString,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: nil
+            glucoseColor: nil,
+            dataSource: .healthKit
         )
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [self] in
             TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+            displayedComplicationDataSource = .healthKit
             completionHandler()
         }
     }
@@ -1097,7 +1109,8 @@ enum BackgroundTaskWindowCounter {
             trend: payload[WatchMessageKeys.trend] as? String ?? "",
             delta: payload[WatchMessageKeys.delta] as? String ?? "",
             readingDate: readingDate,
-            date: Date()
+            date: Date(),
+            dataSource: .watchConnectivityPhone
         )
         if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
             DispatchQueue.main.async { [weak self] in
@@ -1843,7 +1856,8 @@ enum BackgroundTaskWindowCounter {
             delta: deltaValue,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: glucoseColorValue
+            glucoseColor: glucoseColorValue,
+            dataSource: .watchConnectivityPhone
         )
 
         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -1852,6 +1866,7 @@ enum BackgroundTaskWindowCounter {
         }
 
         TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+        displayedComplicationDataSource = .watchConnectivityPhone
 
         // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
         // Use only the threaded userInfoReceiveTimestamp; no fallback to instance state so attribution stays unambiguous.
@@ -1904,7 +1919,8 @@ enum BackgroundTaskWindowCounter {
             delta: delta ?? "",
             readingDate: effectiveReadingDate,
             date: Date(),
-            glucoseColor: currentGlucoseColorString
+            glucoseColor: currentGlucoseColorString,
+            dataSource: .watchConnectivityPhone
         )
 
         Task {

@@ -4,6 +4,7 @@ import WatchKit
 
 struct TrioMainWatchView: View {
     @State private var state = WatchState.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     // misc
     @State private var currentPage: Int = 0
@@ -132,6 +133,7 @@ struct TrioMainWatchView: View {
                         state.currentGlucoseColorString = glucoseColor
                     }
                     state.lastWatchStateUpdate = snapshot.readingDate
+                    if let s = snapshot.dataSource { state.displayedComplicationDataSource = s }
                     state.showSyncingAnimation = true
                 } else if let snapshot = cachedSnapshot,
                           let lastUpdate = state.lastWatchStateUpdate,
@@ -144,13 +146,24 @@ struct TrioMainWatchView: View {
                         state.currentGlucoseColorString = glucoseColor
                     }
                     state.lastWatchStateUpdate = snapshot.readingDate
+                    if let s = snapshot.dataSource { state.displayedComplicationDataSource = s }
                     state.showSyncingAnimation = false
                 }
 
                 state.bolusAmount = 0
                 state.recommendedBolus = 0
 
+                G7DirectBLEManager.shared.bind(watchState: state)
+                if scenePhase == .active {
+                    G7DirectBLEManager.shared.start()
+                }
+
                 state.noteMainWatchRootViewAppearedForResidentTelemetry()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    G7DirectBLEManager.shared.start()
+                }
             }
             .onChange(of: currentPage) { _, newPage in
                 if newPage == 1 {
