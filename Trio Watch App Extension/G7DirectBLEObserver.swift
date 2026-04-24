@@ -95,6 +95,10 @@ final class G7DirectBLEObserver: NSObject {
     /// Shorter reschedule when control notify is not yet enabled (preserves responsiveness vs 330s fallback).
     private let egvControlNotReadyRetryDelay: TimeInterval = 60
     private let controlWriteRetryDelay: TimeInterval = 10
+    /// Consecutive failed control EGV **write acks** before `control_write_retries_exhausted` reconnect.
+    /// **4** means the **fourth** failure ends the cycle: one initial failed write plus **three** retries at
+    /// `controlWriteRetryDelay` (synthesis MOD-A / blueprint “cap of 3” = three retry attempts, not three total failures).
+    private let maxConsecutiveControlWriteFailuresBeforeReconnect = 4
     private let minimumSavedReadingSpacing: TimeInterval = 60
 
     private override init() {
@@ -846,7 +850,7 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
                 egvRequestWorkItem?.cancel()
                 egvRequestWorkItem = nil
                 controlWriteConsecutiveFailures += 1
-                if controlWriteConsecutiveFailures > 3 {
+                if controlWriteConsecutiveFailures >= maxConsecutiveControlWriteFailuresBeforeReconnect {
                     controlWriteRetryWorkItem?.cancel()
                     controlWriteRetryWorkItem = nil
                     scheduleReconnect(reason: "control_write_retries_exhausted")

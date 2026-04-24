@@ -278,7 +278,7 @@ extension TrioComplicationDataSource {
         WatchErrorReporter.markBecameActiveImmediately()
         scheduleStartupSequenceOnMain(activationSequence: activationSequence)
         applyG7DirectBleScenePhase("active")
-        G7DirectBLEObserver.shared.handleForegroundActiveEntry()
+        G7DirectBLEObserver.shared.applyForegroundActiveEntry()
 
         Task {
             await WatchLogger.shared.log(
