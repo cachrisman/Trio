@@ -114,6 +114,26 @@ struct GlucoseTrendView: View {
         }
     }
 
+
+    private var sourceLabel: String {
+        switch state.currentReadingSource {
+        case .directBLE: return "SRC:BLE"
+        case .watchConnectivity: return "SRC:PHONE"
+        case .healthKit: return "SRC:HK"
+        case .unknown: return "SRC:--"
+        }
+    }
+
+    private var bleStatusLabel: String {
+        "BLE:\(state.directBLEStatus.shortLabel)"
+    }
+
+    private var bleRecencyLabel: String {
+        guard let lastEvent = state.directBLELastEventAt else { return "BLE:--" }
+        let age = max(0, Int(Date().timeIntervalSince(lastEvent) / 60))
+        return "BLE:\(age)m"
+    }
+
     var body: some View {
         VStack {
             ZStack {
@@ -151,11 +171,14 @@ struct GlucoseTrendView: View {
             Text(
                 isWatchStateDated ?
                     String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
+                    "\(state.lastLoopTime ?? "--") · \(bleStatusLabel)"
             )
             .font(.system(size: minutesAgoFontSize))
             .fontWidth(isWatchStateDated ? .expanded : .standard)
+
+            Text("\(sourceLabel) · \(bleRecencyLabel)")
+                .font(.system(size: max(8, minutesAgoFontSize - 1)))
+                .foregroundStyle(.secondary)
 
             Spacer()
 

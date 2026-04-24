@@ -132,6 +132,7 @@ struct TrioMainWatchView: View {
                         state.currentGlucoseColorString = glucoseColor
                     }
                     state.lastWatchStateUpdate = snapshot.readingDate
+                    state.currentReadingSource = snapshot.source
                     state.showSyncingAnimation = true
                 } else if let snapshot = cachedSnapshot,
                           let lastUpdate = state.lastWatchStateUpdate,
@@ -144,6 +145,7 @@ struct TrioMainWatchView: View {
                         state.currentGlucoseColorString = glucoseColor
                     }
                     state.lastWatchStateUpdate = snapshot.readingDate
+                    state.currentReadingSource = snapshot.source
                     state.showSyncingAnimation = false
                 }
 

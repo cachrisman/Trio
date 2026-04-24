@@ -24,8 +24,10 @@ import WatchKit
 
             if newPhase == .active {
                 WatchState.shared.handleForegroundActiveEntry()
+                G7DirectBLEObserver.shared.handleSceneDidBecomeActive()
             } else if newPhase == .background || newPhase == .inactive {
                 WatchState.shared.handleForegroundInactiveOrBackground()
+                G7DirectBLEObserver.shared.handleSceneDidResignActive()
             }
 
             let forceFlush = newPhase != .active
