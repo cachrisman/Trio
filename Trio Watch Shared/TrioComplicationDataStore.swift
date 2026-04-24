@@ -18,6 +18,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let readingDate: Date
     let state: String?
     let glucoseColor: String?
+    let source: TrioComplicationDataSource?
 
     // INVARIANT (Phase 3.4): All display-field sanitization here.
     // Dedup always compares sanitized values.
@@ -28,7 +29,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         readingDate: Date,
         date: Date,
         state: String? = nil,
-        glucoseColor: String? = nil
+        glucoseColor: String? = nil,
+        source: TrioComplicationDataSource? = nil
     ) {
         glucose = Self.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,6 +39,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         self.date = date
         self.state = state
         self.glucoseColor = glucoseColor
+        self.source = source
     }
 
     private static func sanitizedGlucose(from value: String) -> String {
@@ -621,6 +624,7 @@ final class TrioComplicationDataStore {
         readingDate: Date,
         date: Date,
         glucoseColor: String? = nil,
+        source: TrioComplicationDataSource? = nil,
         triggerReload: Bool = true
     ) {
         let snapshot = TrioComplicationSnapshot(
@@ -629,7 +633,8 @@ final class TrioComplicationDataStore {
             delta: delta ?? "",
             readingDate: readingDate,
             date: date,
-            glucoseColor: glucoseColor
+            glucoseColor: glucoseColor,
+            source: source
         )
         save(snapshot, triggerReload: triggerReload)
     }
