@@ -82,6 +82,8 @@ final class G7DirectBLEObserver: NSObject {
     private var authFallbackWorkItem: DispatchWorkItem?
     private var hasAdvancedBeyondAuth = false
     private var lastSavedGlucose: (value: Int, date: Date)?
+    /// Anchored once per connect cycle so consecutive EGV parses share the same activation instant (sub-second drift fix).
+    private var sessionActivationDate: Date?
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
@@ -258,6 +260,7 @@ final class G7DirectBLEObserver: NSObject {
         controlNotifyEnabled = false
         authNotifyEnabled = false
         hasAdvancedBeyondAuth = false
+        sessionActivationDate = nil
         characteristics.removeAll()
         noteStatus(.connecting)
         log("event=g7_ble_connect_attempt source=\(source) peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
@@ -526,7 +529,10 @@ final class G7DirectBLEObserver: NSObject {
         let glucoseBytes = UInt16(littleEndian: data.integer(at: 12))
         guard glucoseBytes != 0xffff else { return nil }
         let glucose = glucoseBytes & 0x0fff
-        let activationDate = Date().addingTimeInterval(-TimeInterval(messageTimestamp))
+        if sessionActivationDate == nil {
+            sessionActivationDate = Date().addingTimeInterval(-TimeInterval(messageTimestamp))
+        }
+        guard let activationDate = sessionActivationDate else { return nil }
         let readingTimestamp = messageTimestamp >= UInt32(age) ? messageTimestamp - UInt32(age) : messageTimestamp
         let readingDate = activationDate.addingTimeInterval(TimeInterval(readingTimestamp))
         let predictionBytes = UInt16(littleEndian: data.integer(at: 16))
@@ -760,6 +766,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         controlNotifyEnabled = false
         authNotifyEnabled = false
         hasAdvancedBeyondAuth = false
+        sessionActivationDate = nil
         noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
         scheduleReconnect(reason: "disconnect")
     }
