@@ -114,6 +114,28 @@ struct GlucoseTrendView: View {
         }
     }
 
+
+    private func sourceLabel() -> String {
+        state.complicationSource.shortLabel
+    }
+
+    private func bleStatusLabel() -> String {
+        switch state.g7BLEStatus {
+        case .off: return "OFF"
+        case .searching: return "SEARCH"
+        case .connecting: return "CONN"
+        case .active: return "ACTIVE"
+        case .stalled: return "STALL"
+        case .unavailable: return "UNAV"
+        }
+    }
+
+    private func bleFreshnessLabel() -> String {
+        guard let last = state.g7BLELastReadingAt ?? state.g7BLELastEventAt else { return "--" }
+        let minutes = max(0, Int(Date().timeIntervalSince(last) / 60.0))
+        return "\(minutes)m"
+    }
+
     var body: some View {
         VStack {
             ZStack {
@@ -148,14 +170,20 @@ struct GlucoseTrendView: View {
 
             Spacer()
 
-            Text(
-                isWatchStateDated ?
-                    String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
-            )
-            .font(.system(size: minutesAgoFontSize))
-            .fontWidth(isWatchStateDated ? .expanded : .standard)
+            VStack(spacing: 2) {
+                Text(
+                    isWatchStateDated ?
+                        String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
+                        state
+                        .lastLoopTime ?? "--"
+                )
+                .font(.system(size: minutesAgoFontSize))
+                .fontWidth(isWatchStateDated ? .expanded : .standard)
+
+                Text("SRC:\(sourceLabel()) · BLE:\(bleStatusLabel()) · \(bleFreshnessLabel())")
+                    .font(.system(size: max(8, minutesAgoFontSize - 1)))
+                    .foregroundStyle(.secondary)
+            }
 
             Spacer()
 
