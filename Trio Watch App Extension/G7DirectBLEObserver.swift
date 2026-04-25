@@ -369,7 +369,7 @@ final class G7DirectBLEObserver: NSObject {
         }
         isDiscoveringServices = true
         stage = .discoveringServices
-        log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
+        log("event=g7_ble_service_discovery_started peripheral_id=\(peripheral.identifier.uuidString)")
         peripheral.discoverServices(nil)
     }
 
@@ -705,6 +705,7 @@ final class G7DirectBLEObserver: NSObject {
     private func hardStopOnQueue(reason: String) {
         connectInFlight = false
         isDiscoveringServices = false
+        lastSessionWasSuccess = false
         postEGVBackoffWorkItem?.cancel()
         postEGVBackoffWorkItem = nil
         cancelTransientTimers()
@@ -841,6 +842,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         connectTimeoutWorkItem?.cancel()
         connectInFlight = false
         failedAttempts = 0
+        log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
         discoverServicesIfNeeded(peripheral)
     }
 
@@ -881,9 +883,9 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         if lastSessionWasSuccess {
             // G7 re-auth window is ~20-30s every ~300s. Sleep 290s to avoid hammering the sensor
             // between windows. MOD-E (peerConnected) cancels this work item early when the window
-            // opens, making the guard self?.isHardStopped the only stop condition.
+            // opens; the stage guard catches any teardown path (stop or hardStop both land on .stopped).
             let workItem = DispatchWorkItem { [weak self] in
-                guard let self, !self.isHardStopped else { return }
+                guard let self, self.stage != .stopped else { return }
                 self.startOrResume(reason: "post_egv_backoff")
             }
             postEGVBackoffWorkItem = workItem
