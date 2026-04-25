@@ -93,6 +93,12 @@ final class G7DirectBLEObserver: NSObject {
     /// One-shot session gate — cleared only on full teardown, never on mid-session phase transition.
     /// CBPeripheral.services is unreliable as a guard (can be non-nil from cached prior-session state).
     private var isDiscoveringServices = false
+    /// Delayed kickAttach work item scheduled after a successful EGV session.
+    /// Cancelled immediately by a MOD-E peerConnected event, or on stop/hardStop.
+    private var postEGVBackoffWorkItem: DispatchWorkItem?
+    /// True when the completed session delivered at least one EGV. Reset to false at the start
+    /// of every connect() call. Set in didDisconnect to gate the post-EGV backoff branch.
+    private var lastSessionWasSuccess = false
     /// Set to true when willRestoreState fires; stays true for the manager lifetime.
     /// Per-manager-lifecycle flag — do NOT reset in per-session teardown paths.
     private var didReceiveWillRestoreState = false
@@ -275,6 +281,9 @@ final class G7DirectBLEObserver: NSObject {
             return
         }
         connectInFlight = true
+        lastSessionWasSuccess = false
+        postEGVBackoffWorkItem?.cancel()
+        postEGVBackoffWorkItem = nil
 
         scanTimeoutWorkItem?.cancel()
         if centralManager.isScanning {
@@ -696,6 +705,8 @@ final class G7DirectBLEObserver: NSObject {
     private func hardStopOnQueue(reason: String) {
         connectInFlight = false
         isDiscoveringServices = false
+        postEGVBackoffWorkItem?.cancel()
+        postEGVBackoffWorkItem = nil
         cancelTransientTimers()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -817,6 +828,11 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     ) {
         log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected")")
         if event == .peerConnected, !isHardStopped {
+            if postEGVBackoffWorkItem != nil {
+                postEGVBackoffWorkItem?.cancel()
+                postEGVBackoffWorkItem = nil
+                log("event=g7_ble_post_egv_backoff_cancelled reason=connection_event")
+            }
             startOrResume(reason: "connection_event_peer_connected")
         }
     }
@@ -861,7 +877,21 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         controlWriteRetryWorkItem?.cancel()
         controlWriteRetryWorkItem = nil
         noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
-        scheduleReconnect(reason: "disconnect")
+        lastSessionWasSuccess = sessionEGVCount > 0
+        if lastSessionWasSuccess {
+            // G7 re-auth window is ~20-30s every ~300s. Sleep 290s to avoid hammering the sensor
+            // between windows. MOD-E (peerConnected) cancels this work item early when the window
+            // opens, making the guard self?.isHardStopped the only stop condition.
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self, !self.isHardStopped else { return }
+                self.startOrResume(reason: "post_egv_backoff")
+            }
+            postEGVBackoffWorkItem = workItem
+            queue.asyncAfter(deadline: .now() + 290, execute: workItem)
+            log("event=g7_ble_post_egv_backoff_scheduled delay_s=290")
+        } else {
+            scheduleReconnect(reason: "disconnect")
+        }
     }
 }
 
