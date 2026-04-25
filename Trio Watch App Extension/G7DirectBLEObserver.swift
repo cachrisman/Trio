@@ -89,6 +89,10 @@ final class G7DirectBLEObserver: NSObject {
     /// True while a centralManager.connect() call is in-flight. Guards against parallel connects
     /// from rapid scene transitions. Per-session — reset on every connect completion or teardown.
     private var connectInFlight = false
+    /// True once peripheral.discoverServices() has been called for the current connection.
+    /// One-shot session gate — cleared only on full teardown, never on mid-session phase transition.
+    /// CBPeripheral.services is unreliable as a guard (can be non-nil from cached prior-session state).
+    private var isDiscoveringServices = false
     /// Set to true when willRestoreState fires; stays true for the manager lifetime.
     /// Per-manager-lifecycle flag — do NOT reset in per-session teardown paths.
     private var didReceiveWillRestoreState = false
@@ -350,6 +354,11 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func discoverServicesIfNeeded(_ peripheral: CBPeripheral) {
+        guard !isDiscoveringServices else {
+            log("event=g7_ble_service_discovery_skipped reason=already_in_progress peripheral_id=\(peripheral.identifier.uuidString)")
+            return
+        }
+        isDiscoveringServices = true
         stage = .discoveringServices
         log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
         peripheral.discoverServices(nil)
@@ -686,6 +695,7 @@ final class G7DirectBLEObserver: NSObject {
 
     private func hardStopOnQueue(reason: String) {
         connectInFlight = false
+        isDiscoveringServices = false
         cancelTransientTimers()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -821,6 +831,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         connectTimeoutWorkItem?.cancel()
         connectInFlight = false
+        isDiscoveringServices = false
         if let error {
             logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
         } else {
@@ -831,6 +842,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         connectInFlight = false
+        isDiscoveringServices = false
         if let error {
             logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
             emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
