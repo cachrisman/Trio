@@ -86,6 +86,9 @@ final class G7DirectBLEObserver: NSObject {
     /// Anchored once per connect cycle so consecutive EGV parses share the same activation instant (sub-second drift fix).
     private var sessionActivationDate: Date?
     private var controlWriteConsecutiveFailures = 0
+    /// Set to true when willRestoreState fires; stays true for the manager lifetime.
+    /// Per-manager-lifecycle flag — do NOT reset in per-session teardown paths.
+    private var didReceiveWillRestoreState = false
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
@@ -732,7 +735,7 @@ final class G7DirectBLEObserver: NSObject {
 
 extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        log("event=g7_ble_lifecycle action=central_state state=\(central.state.rawValue)")
+        log("event=g7_ble_central_state state=\(central.state.rawValue) was_restored=\(didReceiveWillRestoreState)")
         switch central.state {
         case .poweredOn:
             noteStatus(.searching)
@@ -756,18 +759,22 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        didReceiveWillRestoreState = true
         let restored = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
-        log("event=g7_ble_lifecycle action=will_restore_state restored_peripherals=\(restored.map { $0.identifier.uuidString }.joined(separator: ","))")
+        log("event=g7_ble_will_restore_state restored_count=\(restored.count) peripherals=\(restored.map { $0.identifier.uuidString }.joined(separator: ","))")
         for peripheral in restored {
-            peripheral.delegate = self
-            if shouldConnect(peripheral: peripheral, advertisementData: nil, rssi: nil, source: "restored_state") {
-                activePeripheral = peripheral
-                sourceForPeripheral[peripheral.identifier] = "restored_state"
-                if peripheral.state == .connected {
-                    discoverServicesIfNeeded(peripheral)
-                }
+            // Cancel CB's preserved pending connection before the attach ladder issues its own
+            // connect(). Without this, both paths can fire simultaneously producing duplicate
+            // didConnect callbacks and triple auth_notify_enabled events.
+            // Never cancel a .connected peripheral — that tears down a live session.
+            if peripheral.state != .connected {
+                central.cancelPeripheralConnection(peripheral)
+                log("event=g7_ble_restore_cancelled peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") state=\(peripheral.state.rawValue)")
+            } else {
+                log("event=g7_ble_restore_skipped_cancel peripheral_id=\(peripheral.identifier.uuidString) reason=already_connected")
             }
         }
+        // Do NOT issue connect() here — let centralManagerDidUpdateState drive the attach ladder.
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
