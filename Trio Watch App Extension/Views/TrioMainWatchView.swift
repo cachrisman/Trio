@@ -128,6 +128,7 @@ struct TrioMainWatchView: View {
                     state.currentGlucose = snapshot.glucose
                     state.trend = snapshot.trend
                     state.delta = snapshot.delta
+                    state.displayedReadingSource = snapshot.source ?? .unknown
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
@@ -140,6 +141,7 @@ struct TrioMainWatchView: View {
                     state.currentGlucose = snapshot.glucose
                     state.trend = snapshot.trend
                     state.delta = snapshot.delta
+                    state.displayedReadingSource = snapshot.source ?? .unknown
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
