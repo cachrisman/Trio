@@ -86,6 +86,9 @@ final class G7DirectBLEObserver: NSObject {
     /// Anchored once per connect cycle so consecutive EGV parses share the same activation instant (sub-second drift fix).
     private var sessionActivationDate: Date?
     private var controlWriteConsecutiveFailures = 0
+    /// True while a centralManager.connect() call is in-flight. Guards against parallel connects
+    /// from rapid scene transitions. Per-session — reset on every connect completion or teardown.
+    private var connectInFlight = false
     /// Set to true when willRestoreState fires; stays true for the manager lifetime.
     /// Per-manager-lifecycle flag — do NOT reset in per-session teardown paths.
     private var didReceiveWillRestoreState = false
@@ -263,6 +266,12 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func connect(_ peripheral: CBPeripheral, source: String) {
+        guard !connectInFlight else {
+            log("event=g7_ble_connect_skipped reason=already_connecting source=\(source)")
+            return
+        }
+        connectInFlight = true
+
         scanTimeoutWorkItem?.cancel()
         if centralManager.isScanning {
             centralManager.stopScan()
@@ -286,6 +295,12 @@ final class G7DirectBLEObserver: NSObject {
         characteristics.removeAll()
         noteStatus(.connecting)
         log("event=g7_ble_connect_attempt source=\(source) peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
+        // Defensive cleanup: if a stale CB pending connect is lingering, cancel it so the
+        // fresh connect() below is the only in-flight attempt. Never cancel .connected.
+        if peripheral.state == .connecting {
+            centralManager.cancelPeripheralConnection(peripheral)
+            log("event=g7_ble_stale_connect_cancelled peripheral_id=\(peripheral.identifier.uuidString)")
+        }
         centralManager.connect(
             peripheral,
             options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
@@ -303,6 +318,7 @@ final class G7DirectBLEObserver: NSObject {
                 return
             }
             self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString)")
+            self.connectInFlight = false
             self.centralManager.cancelPeripheralConnection(peripheral)
             self.scheduleReconnect(reason: "connect_timeout")
         }
@@ -669,6 +685,7 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func hardStopOnQueue(reason: String) {
+        connectInFlight = false
         cancelTransientTimers()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -796,12 +813,14 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectTimeoutWorkItem?.cancel()
+        connectInFlight = false
         failedAttempts = 0
         discoverServicesIfNeeded(peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         connectTimeoutWorkItem?.cancel()
+        connectInFlight = false
         if let error {
             logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
         } else {
@@ -811,6 +830,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        connectInFlight = false
         if let error {
             logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
             emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
