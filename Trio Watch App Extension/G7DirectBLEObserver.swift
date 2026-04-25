@@ -332,6 +332,7 @@ final class G7DirectBLEObserver: NSObject {
             }
             self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString)")
             self.connectInFlight = false
+            self.isDiscoveringServices = false
             self.centralManager.cancelPeripheralConnection(peripheral)
             self.scheduleReconnect(reason: "connect_timeout")
         }
