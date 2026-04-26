@@ -111,6 +111,8 @@ final class G7DirectBLEObserver: NSObject {
     private var connectionEventsSinceLaunch = 0
     /// Connect attempts that ended in timeout or explicit connect failure (reset on `didConnect`).
     private var consecutiveConnectFailures = 0
+    /// Ensures timeout + `didFailToConnect` for the same attempt do not double-increment the counter.
+    private var connectFailureMetricCountedThisAttempt = false
     /// Phase timestamps for `session_outcome` ladder (reset each `connect()`).
     private var sessionPhaseConnectAt: Date?
     private var sessionPhaseAuthNotifyAt: Date?
@@ -307,12 +309,12 @@ final class G7DirectBLEObserver: NSObject {
         stage = .connecting
         sessionID = UUID()
         sessionStartDate = Date()
-        sessionPhaseConnectAt = nil
         sessionPhaseAuthNotifyAt = nil
         sessionPhaseControlNotifyAt = nil
         sessionPhaseEgvWriteAt = nil
         sessionPhaseEgvAckAt = nil
         sessionEGVCount = 0
+        connectFailureMetricCountedThisAttempt = false
         controlNotifyEnabled = false
         authNotifyEnabled = false
         hasAdvancedBeyondAuth = false
@@ -329,6 +331,7 @@ final class G7DirectBLEObserver: NSObject {
             centralManager.cancelPeripheralConnection(peripheral)
             log("event=g7_ble_stale_connect_cancelled peripheral_id=\(peripheral.identifier.uuidString)")
         }
+        sessionPhaseConnectAt = Date()
         centralManager.connect(peripheral, options: nil)
         scheduleConnectTimeout(for: peripheral)
     }
@@ -364,7 +367,10 @@ final class G7DirectBLEObserver: NSObject {
                 self.log("event=g7_ble_connect_timeout_ignored reason=already_connected peripheral_id=\(id.uuidString)")
                 return
             }
-            self.consecutiveConnectFailures += 1
+            if !self.connectFailureMetricCountedThisAttempt {
+                self.connectFailureMetricCountedThisAttempt = true
+                self.consecutiveConnectFailures += 1
+            }
             self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString) consecutive_failures=\(self.consecutiveConnectFailures)")
             self.connectInFlight = false
             self.isDiscoveringServices = false
@@ -959,7 +965,6 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         failedAttempts = 0
         consecutiveConnectFailures = 0
         log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
-        sessionPhaseConnectAt = Date()
         discoverServicesIfNeeded(peripheral)
     }
 
@@ -967,7 +972,10 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         connectTimeoutWorkItem?.cancel()
         connectInFlight = false
         isDiscoveringServices = false
-        consecutiveConnectFailures += 1
+        if !connectFailureMetricCountedThisAttempt {
+            connectFailureMetricCountedThisAttempt = true
+            consecutiveConnectFailures += 1
+        }
         if let error {
             logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) consecutive_failures=\(consecutiveConnectFailures)")
         } else {

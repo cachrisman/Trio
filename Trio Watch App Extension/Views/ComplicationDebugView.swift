@@ -139,8 +139,6 @@ struct ComplicationDebugView: View {
         .id(refreshTrigger)
     }
 
-    // MARK: - G7 Direct BLE Section
-
     // MARK: - Reload Status Section
 
     private var reloadStatusView: some View {
@@ -180,7 +178,6 @@ struct ComplicationDebugView: View {
             }
         }
         .font(.caption)
-        .id(refreshTrigger)
     }
 
     // MARK: - Log Files Section
@@ -207,6 +204,7 @@ struct ComplicationDebugView: View {
             }
         }
         .font(.caption)
+        .id(refreshTrigger)
     }
 
     private func loadLogFileStats() {
