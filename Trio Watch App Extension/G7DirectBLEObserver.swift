@@ -71,6 +71,7 @@ final class G7DirectBLEObserver: NSObject {
     private var isHardStopped = false
     private var scanTimeoutWorkItem: DispatchWorkItem?
     private var connectTimeoutWorkItem: DispatchWorkItem?
+    private var stageTimeoutWorkItem: DispatchWorkItem?
     private var egvRequestWorkItem: DispatchWorkItem?
     private var controlWriteRetryWorkItem: DispatchWorkItem?
     private var reconnectWorkItem: DispatchWorkItem?
@@ -340,6 +341,28 @@ final class G7DirectBLEObserver: NSObject {
         scheduleConnectTimeout(for: peripheral)
     }
 
+    private func scheduleDiscoveringServicesStageTimeout(for peripheral: CBPeripheral) {
+        stageTimeoutWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.stage == .discoveringServices else { return }
+            self.log("event=g7_ble_stage_timeout stage=discoveringServices")
+            self.centralManager.cancelPeripheralConnection(peripheral)
+        }
+        stageTimeoutWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + 30, execute: workItem)
+    }
+
+    private func scheduleObservingAuthStageTimeout(for peripheral: CBPeripheral) {
+        stageTimeoutWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.stage == .observingAuth else { return }
+            self.log("event=g7_ble_stage_timeout stage=observingAuth")
+            self.centralManager.cancelPeripheralConnection(peripheral)
+        }
+        stageTimeoutWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + 10, execute: workItem)
+    }
+
     private func scheduleConnectTimeout(for peripheral: CBPeripheral) {
         connectTimeoutWorkItem?.cancel()
         let id = peripheral.identifier
@@ -392,15 +415,20 @@ final class G7DirectBLEObserver: NSObject {
         stage = .discoveringServices
         log("event=g7_ble_service_discovery_started peripheral_id=\(peripheral.identifier.uuidString)")
         peripheral.discoverServices(nil)
+        scheduleDiscoveringServicesStageTimeout(for: peripheral)
     }
 
     private func handleServiceDiscovery(for peripheral: CBPeripheral, error: Error?) {
         if let error {
+            stageTimeoutWorkItem?.cancel()
+            stageTimeoutWorkItem = nil
             logError(event: "g7_ble_services_discovered", error: error, extra: "result=failure")
             scheduleReconnect(reason: "service_discovery_error")
             return
         }
 
+        stageTimeoutWorkItem?.cancel()
+        stageTimeoutWorkItem = nil
         let services = peripheral.services ?? []
         log("event=g7_ble_services_discovered result=success services=\(services.map { $0.uuid.uuidString }.joined(separator: ","))")
         stage = .discoveringCharacteristics
@@ -411,6 +439,8 @@ final class G7DirectBLEObserver: NSObject {
 
     private func handleCharacteristicDiscovery(for peripheral: CBPeripheral, service: CBService, error: Error?) {
         if let error {
+            stageTimeoutWorkItem?.cancel()
+            stageTimeoutWorkItem = nil
             logError(event: "g7_ble_characteristics_discovered", error: error, extra: "service=\(service.uuid.uuidString) result=failure")
             scheduleReconnect(reason: "characteristic_discovery_error")
             return
@@ -447,6 +477,7 @@ final class G7DirectBLEObserver: NSObject {
         peripheral.setNotifyValue(true, for: auth)
         log("event=g7_ble_auth_notify_enable_requested characteristic=\(auth.uuid.uuidString)")
         scheduleAuthFallback(peripheral)
+        scheduleObservingAuthStageTimeout(for: peripheral)
     }
 
     private func scheduleAuthFallback(_ peripheral: CBPeripheral) {
@@ -546,6 +577,8 @@ final class G7DirectBLEObserver: NSObject {
 
     private func advanceToControl(reason: String) {
         guard !hasAdvancedBeyondAuth else { return }
+        stageTimeoutWorkItem?.cancel()
+        stageTimeoutWorkItem = nil
         guard let peripheral = activePeripheral, peripheral.state == .connected else {
             log("event=g7_ble_blocked_control_enable reason=no_connected_peripheral")
             return
@@ -772,11 +805,13 @@ final class G7DirectBLEObserver: NSObject {
         authFallbackWorkItem?.cancel()
         egvRequestWorkItem?.cancel()
         controlWriteRetryWorkItem?.cancel()
+        stageTimeoutWorkItem?.cancel()
         scanTimeoutWorkItem = nil
         connectTimeoutWorkItem = nil
         authFallbackWorkItem = nil
         egvRequestWorkItem = nil
         controlWriteRetryWorkItem = nil
+        stageTimeoutWorkItem = nil
     }
 
     private func cancelReconnect() {
