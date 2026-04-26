@@ -569,8 +569,6 @@ final class G7DirectBLEObserver: NSObject {
 
     private func advanceToControl(reason: String) {
         guard !hasAdvancedBeyondAuth else { return }
-        stageTimeoutWorkItem?.cancel()
-        stageTimeoutWorkItem = nil
         guard let peripheral = activePeripheral, peripheral.state == .connected else {
             log("event=g7_ble_blocked_control_enable reason=no_connected_peripheral")
             return
@@ -581,6 +579,8 @@ final class G7DirectBLEObserver: NSObject {
             return
         }
 
+        stageTimeoutWorkItem?.cancel()
+        stageTimeoutWorkItem = nil
         hasAdvancedBeyondAuth = true
         authFallbackWorkItem?.cancel()
         stage = .enablingControl
