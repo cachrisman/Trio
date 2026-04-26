@@ -523,6 +523,9 @@ final class G7DirectBLEObserver: NSObject {
         let authenticated = data.count > 1 ? data[1] == 1 : false
         let bonded = data.count > 2 ? data[2] == 1 : false
         log("event=g7_ble_auth_payload_received opcode=0x\(opcode.hexByte) authenticated=\(authenticated) bonded=\(bonded) byte_count=\(data.count) preview=\(data.hexPreview)")
+        if hasAdvancedBeyondAuth, opcode == G7BLEOpcode.authStatusReply.byte {
+            log("event=g7_ble_auth_payload_post_advance opcode=0x\(opcode.hexByte) authenticated=\(authenticated) bonded=\(bonded)")
+        }
 
         guard opcode == G7BLEOpcode.authStatusReply.byte else { return }
         if authenticated && bonded {
