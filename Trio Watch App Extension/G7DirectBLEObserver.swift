@@ -108,6 +108,12 @@ final class G7DirectBLEObserver: NSObject {
     private var egvsSinceLaunch = 0
     /// Process-lifetime MOD-E peerConnected count. Mirrors to WatchState for debug UI.
     private var connectionEventsSinceLaunch = 0
+    /// Phase timestamps for `session_outcome` ladder (reset each `connect()`).
+    private var sessionPhaseConnectAt: Date?
+    private var sessionPhaseAuthNotifyAt: Date?
+    private var sessionPhaseControlNotifyAt: Date?
+    private var sessionPhaseEgvWriteAt: Date?
+    private var sessionPhaseEgvAckAt: Date?
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
@@ -306,6 +312,11 @@ final class G7DirectBLEObserver: NSObject {
         stage = .connecting
         sessionID = UUID()
         sessionStartDate = Date()
+        sessionPhaseConnectAt = nil
+        sessionPhaseAuthNotifyAt = nil
+        sessionPhaseControlNotifyAt = nil
+        sessionPhaseEgvWriteAt = nil
+        sessionPhaseEgvAckAt = nil
         sessionEGVCount = 0
         controlNotifyEnabled = false
         authNotifyEnabled = false
@@ -462,6 +473,9 @@ final class G7DirectBLEObserver: NSObject {
         case G7BLEUUID.authentication:
             authNotifyEnabled = characteristic.isNotifying
             log("event=g7_ble_auth_notify_enabled result=success notifying=\(characteristic.isNotifying)")
+            if characteristic.isNotifying {
+                sessionPhaseAuthNotifyAt = Date()
+            }
             if characteristic.isNotifying, !hasAdvancedBeyondAuth {
                 authFallbackWorkItem?.cancel()
                 advanceToControl(reason: "auth_notify_enabled_observer")
@@ -470,6 +484,7 @@ final class G7DirectBLEObserver: NSObject {
             controlNotifyEnabled = characteristic.isNotifying
             log("event=g7_ble_control_notify_enabled result=success notifying=\(characteristic.isNotifying)")
             if characteristic.isNotifying {
+                sessionPhaseControlNotifyAt = Date()
                 sendEGVRequest(reason: "control_notify_enabled")
             }
         case G7BLEUUID.backfill:
@@ -566,6 +581,7 @@ final class G7DirectBLEObserver: NSObject {
 
         stage = .requestingEGV
         let payload = Data([G7BLEOpcode.egv.byte])
+        sessionPhaseEgvWriteAt = Date()
         peripheral.writeValue(payload, for: control, type: .withResponse)
         log("event=g7_ble_egv_request_sent reason=\(reason) write_type=withResponse payload=\(payload.hexString)")
         if reason == "control_not_ready" {
@@ -764,7 +780,27 @@ final class G7DirectBLEObserver: NSObject {
     private func emitSessionOutcome(outcome: String) {
         let duration = sessionStartDate.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
         let finalOutcome = sessionEGVCount > 0 && outcome != "cancelled" ? "success" : outcome
-        log("event=g7_ble_session_outcome outcome=\(finalOutcome) final_stage=\(stage.rawValue) duration_ms=\(duration) g7_session=\(sessionID.uuidString) egv_count=\(sessionEGVCount)")
+        let ladder: (Int, Int, Int, Int, Int) = {
+            let c = sessionPhaseConnectAt
+            let a = sessionPhaseAuthNotifyAt
+            let ctrl = sessionPhaseControlNotifyAt
+            let w = sessionPhaseEgvWriteAt
+            let ack = sessionPhaseEgvAckAt
+            let ms: (Date?, Date?) -> Int = { from, to in
+                guard let from, let to else { return -1 }
+                return Int(to.timeIntervalSince(from) * 1000)
+            }
+            let connectToAuth = ms(c, a)
+            let authToControl = ms(a, ctrl)
+            let controlToEgv = ms(ctrl, w)
+            let egvToAck = ms(w, ack)
+            let totalLadder = ms(c, ack)
+            let totalMs = totalLadder >= 0 ? totalLadder : duration
+            return (connectToAuth, authToControl, controlToEgv, egvToAck, totalMs)
+        }()
+        log(
+            "event=g7_ble_session_outcome outcome=\(finalOutcome) final_stage=\(stage.rawValue) duration_ms=\(duration) connect_to_auth_notify_ms=\(ladder.0) auth_notify_to_control_ms=\(ladder.1) control_to_egv_write_ms=\(ladder.2) egv_write_to_ack_ms=\(ladder.3) connect_to_egv_ack_total_ms=\(ladder.4) g7_session=\(sessionID.uuidString) egv_count=\(sessionEGVCount)"
+        )
     }
 
     private func noteStatus(_ status: G7DirectBLEStatus) {
@@ -892,6 +928,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         }
         failedAttempts = 0
         log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
+        sessionPhaseConnectAt = Date()
         discoverServicesIfNeeded(peripheral)
     }
 
@@ -998,6 +1035,7 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
             controlWriteConsecutiveFailures = 0
             controlWriteRetryWorkItem?.cancel()
             controlWriteRetryWorkItem = nil
+            sessionPhaseEgvAckAt = Date()
             log("event=g7_ble_control_write_ack characteristic=\(characteristic.uuid.uuidString)")
             scheduleEGVRequest(reason: "fallback_timer_330s")
             return
