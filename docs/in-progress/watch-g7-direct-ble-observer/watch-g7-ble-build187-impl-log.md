@@ -1,8 +1,8 @@
 # Build 187 implementation log
 
-**Version:** v1.0  
+**Version:** v1.1  
 **Created:** 2026-04-26 12:11 CET  
-**Last updated:** 2026-04-26 12:11 CET  
+**Last updated:** 2026-04-26 20:55 CET  
 **Plan:** [watch-g7-ble-build187-impl-plan.md](watch-g7-ble-build187-impl-plan.md)  
 **Branch:** `feature/watch-g7-direct-ble-observer-synthesis` (Trio worktree)
 
@@ -10,7 +10,11 @@
 
 ## Summary
 
-Implemented build 187 **Tasks A, B, E, and F** per the plan: load-bearing `registerForConnectionEvents` in `centralManagerDidUpdateState` `.poweredOn` before the foreground gate, `connect` with `options: nil`, process-lifetime counters and WatchState mirrors with `Task { @MainActor in … }` and capture-before-dispatch, main glanceable BLE EGV/conn line in `GlucoseTrendView`, and debug **G7 DIRECT BLE** section with APP GROUP block removed plus 5s refresh timer. Build 188 items (C, D) were not implemented.
+Implemented build 187 **Tasks A, B, E, and F** per the plan: load-bearing `registerForConnectionEvents` in `centralManagerDidUpdateState` `.poweredOn` before the foreground gate, `connect` with `options: nil`, process-lifetime counters and WatchState mirrors with `Task { @MainActor in … }` and capture-before-dispatch, main glanceable BLE EGV/conn line in `GlucoseTrendView`, and debug **G7 DIRECT BLE** section with APP GROUP block removed plus 5s refresh (`.task` + `Task.sleep` loop for stable lifecycle; `onAppear` for first paint). Build 188 items (C, D) were not implemented.
+
+**v1.1 follow-up (external review):** Mirror `bleWasRestored` in `willRestoreState` as soon as `didReceiveWillRestoreState = true`. Replace per-body `Timer.publish(…).onReceive` with a single `.task` sleep loop (drops `import Combine`). Extract `G7DirectBleDebugSection` so `WatchState` is read from a dedicated view `body` (clearer than a parent `private var` for `@Observable` tracking; DATA STORE / logs still refresh-driven). Fix EGV line grammar (`1 EGV` vs `N EGVs`).
+
+**Claude note (WatchState):** New BLE properties live on the **`@Observable class WatchState`** (main metrics block, ~lines 101–109), not on `extension TrioComplicationDataSource` (that extension only adds `watchBadgeText` and ends before the class). The earlier diff line-number read was a false alarm; no file move was required.
 
 **Acceptance / verification (agent session):** Static re-read of all touched files; `read_lints` on Swift sources; line-length nits in `GlucoseTrendView` addressed. **No** `xcodebuild` / `ci/local-build.sh` (per **AGENTS.md**). On-device / BetterStack checks are user follow-up per the plan.
 
@@ -34,7 +38,7 @@ Implemented build 187 **Tasks A, B, E, and F** per the plan: load-bearing `regis
 - **What:**  
   - Observer: `connectsSinceLaunch`, `egvsSinceLaunch` (increments in `didConnect` and `handleGlucose` with captured ints for main-actor mirrors).  
   - `WatchState`: `bleConnectsSinceLaunch`, `bleEGVsSinceLaunch`, `bleLastConnectAt`.  
-  - UI: one line `BLE: N EGVs / M conn` when `bleConnectsSinceLaunch > 0`; primary vs secondary by `bleEGVsSinceLaunch > 0`.  
+  - UI: one line `BLE: N EGV(s) / M conn` (singular `EGV` when `N == 1`) when `bleConnectsSinceLaunch > 0`; primary vs secondary by EGV count.  
 - **Files:** `G7DirectBLEObserver.swift`, `WatchState.swift`, `Views/GlucoseTrendView.swift`  
 - **Note:** Plan listed `TrioMainWatchView.swift`; the recency / source block lives in **`GlucoseTrendView`**, which is the main tab content—implemented there (same user-visible location).
 
@@ -43,9 +47,10 @@ Implemented build 187 **Tasks A, B, E, and F** per the plan: load-bearing `regis
 - **What:**  
   - Removed APP GROUP subsection from `dataStoreStateView` (Divider through container files), kept Path row.  
   - New **G7 DIRECT BLE** after RELOAD STATUS: Status, Last connect, Last BLE EGV (from `bleLastEGVDate` / `bleLastEGVValue` only), connects/launch, EGVs/launch, MOD-E count, Was restored.  
-  - Observer: `connectionEventsSinceLaunch` in `connectionEventDidOccur` for `.peerConnected`; `bleLastEGV*` in `handleGlucose` in same `Task { @MainActor in … }` as snapshot save, with value capture; `bleWasRestored` from `didReceiveWillRestoreState` on each `centralManagerDidUpdateState` (via `Task { @MainActor in }` with captured `Bool`).  
-  - `onReceive(Timer.publish(every: 5, …))` → `loadSnapshot()`, `loadLogFileStats()`, `refreshTrigger = UUID()`.  
-- **Files:** `G7DirectBLEObserver.swift`, `WatchState.swift`, `Views/ComplicationDebugView.swift` (`import Combine` for `Timer.publish`).
+  - Observer: `connectionEventsSinceLaunch` in `connectionEventDidOccur` for `.peerConnected`; `bleLastEGV*` in `handleGlucose` in same `Task { @MainActor in … }` as snapshot save, with value capture; `bleWasRestored` mirrored in `willRestoreState` (immediate) and on each `centralManagerDidUpdateState` (captured `Bool`).  
+  - 5s refresh: `.task { while !Task.isCancelled { await sleep 5s; loadSnapshot; loadLogFileStats; refreshTrigger } }` (no `Timer.publish` / no `import Combine`).  
+  - G7 UI: `G7DirectBleDebugSection` (reads `WatchState.shared` in its own `body`).  
+- **Files:** `G7DirectBLEObserver.swift`, `WatchState.swift`, `Views/ComplicationDebugView.swift`, `Views/GlucoseTrendView.swift` (EGV copy).
 
 ---
 
@@ -64,10 +69,10 @@ Implemented build 187 **Tasks A, B, E, and F** per the plan: load-bearing `regis
 - **Threading:** All new `WatchState` mutations go through `Task { @MainActor in }` (or the existing `noteStatus` / same MainActor `Task` as snapshot for `bleLast*`, `bleEGVsSinceLaunch`). Counters use `let` capture before `Task` for `connectsSinceLaunch`, `egvsSinceLaunch`, `connectionEventsSinceLaunch`—matches plan.  
 - **DidConnect vs handleGlucose order:** Counters on BLE queue, then async hop—acceptable per plan.  
 - **dedup path in** `handleGlucose`: EGV/egv-mirror/last-EGV not updated on early return (correct).  
-- **bleWasRestored** mirrored on every `centralManagerDidUpdateState` so the debug screen reflects current `didReceiveWillRestoreState` (stable after first willRestore if any).  
+- **bleWasRestored** set to `true` in `willRestoreState` (after `didReceiveWillRestoreState = true`) and re-mirrored from `centralManagerDidUpdateState` (idempotent).  
 - **No** stage timeouts or consecutive-failure counter (Build 188).
 
-**Findings:** None blocking; optional nit that `bleWasRestored` main-actor updates on every state transition is slightly chatty (harmless for a Bool).
+**Findings (v1.0):** Stale `bleWasRestored` until next `didUpdateState` was addressed in v1.1 by mirroring in `willRestoreState` too.
 
 ### Pass 2 — UI / Observation
 
@@ -91,6 +96,10 @@ Implemented build 187 **Tasks A, B, E, and F** per the plan: load-bearing `regis
 ---
 
 ## Changelog
+
+### v1.1 (2026-04-26 20:55 CET)
+
+- Logged post-review hardening: `bleWasRestored` immediate mirror in `willRestoreState`, stable 5s polling via `.task` + `Task.sleep`, `G7DirectBleDebugSection` for observation, EGV line grammar, and clarification that BLE `WatchState` storage is on the `WatchState` class (not the small `TrioComplicationDataSource` extension).
 
 ### v1.0 (2026-04-26 12:11 CET)
 

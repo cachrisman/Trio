@@ -97,6 +97,16 @@ extension TrioComplicationDataSource {
         if seconds < 3600 { return "\(seconds / 60)m" }
         return "\(seconds / 3600)h"
     }
+
+    /// G7 direct BLE: process-lifetime counters and debug values (in-memory; set from observer on main actor).
+    var bleConnectsSinceLaunch: Int = 0
+    var bleEGVsSinceLaunch: Int = 0
+    var bleConnectionEventsSinceLaunch: Int = 0
+    var bleLastConnectAt: Date?
+    var bleLastEGVDate: Date?
+    var bleLastEGVValue: Int?
+    /// True when `CBCentralManager` had state restored this process (willRestoreState).
+    var bleWasRestored: Bool = false
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 

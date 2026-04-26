@@ -37,7 +37,13 @@ struct ComplicationDebugView: View {
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 4: Actions
+                // SECTION 4: G7 Direct BLE
+                sectionHeader("G7 DIRECT BLE")
+                G7DirectBleDebugSection()
+
+                Divider().padding(.vertical, 4)
+
+                // SECTION 5: Actions
                 sectionHeader("ACTIONS")
                 actionsView
             }
@@ -47,6 +53,14 @@ struct ComplicationDebugView: View {
         .onAppear {
             loadSnapshot()
             loadLogFileStats()
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                loadSnapshot()
+                loadLogFileStats()
+                refreshTrigger = UUID()
+            }
         }
         .overlay(confirmationOverlay)
         .id(refreshTrigger)
@@ -116,90 +130,11 @@ struct ComplicationDebugView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
-
-            Divider().padding(.vertical, 2)
-
-            // App Group ID Debug Section
-            sectionHeader("APP GROUP")
-
-            HStack {
-                Text("AppGroupID:")
-                Spacer()
-                if let appGroupID = dataStore.appGroupID {
-                    Text(appGroupID)
-                        .font(.system(size: 9))
-                        .foregroundColor(.green)
-                        .lineLimit(1)
-                } else {
-                    Text("Not Found")
-                        .font(.system(size: 9))
-                        .foregroundColor(.red)
-                }
-            }
-
-            HStack {
-                Text("Container:")
-                Spacer()
-                if dataStore.appGroupContainerURL != nil {
-                    Text(dataStore.appGroupContainerAccessible ? "✓ Accessible" : "✗ Not Accessible")
-                        .font(.system(size: 9))
-                        .foregroundColor(dataStore.appGroupContainerAccessible ? .green : .red)
-                } else {
-                    Text("✗ No URL")
-                        .font(.system(size: 9))
-                        .foregroundColor(.red)
-                }
-            }
-
-            if let containerURL = dataStore.appGroupContainerURL {
-                HStack {
-                    Text("Container Path:")
-                    Spacer()
-                    Text(truncatePath(containerURL.path))
-                        .font(.system(size: 8))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-
-                HStack {
-                    Text("Snapshot File:")
-                    Spacer()
-                    if dataStore.snapshotFileExists {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("✓ Exists")
-                                .font(.system(size: 9))
-                                .foregroundColor(.green)
-                            if let size = dataStore.snapshotFileSize {
-                                Text("\(size) bytes")
-                                    .font(.system(size: 7))
-                                    .foregroundColor(.secondary)
-                            }
-                            if let age = dataStore.snapshotFileAge {
-                                Text("\(Int(age))s old")
-                                    .font(.system(size: 7))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    } else {
-                        Text("✗ Missing")
-                            .font(.system(size: 9))
-                            .foregroundColor(.red)
-                    }
-                }
-
-                if let files = try? FileManager.default.contentsOfDirectory(atPath: containerURL.path), !files.isEmpty {
-                    HStack {
-                        Text("Container Files:")
-                        Spacer()
-                        Text("\(files.count)")
-                            .font(.system(size: 8))
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
         }
         .font(.caption)
     }
+
+    // MARK: - G7 Direct BLE Section
 
     // MARK: - Reload Status Section
 
@@ -501,6 +436,66 @@ struct ComplicationDebugView: View {
             return ".../" + components.suffix(2).joined(separator: "/")
         }
         return path
+    }
+}
+
+/// G7 debug rows: read `WatchState` from this type’s `body` so updates observe reliably (vs. a
+/// `private var` on the parent). DATA STORE / log stats still use `refreshTrigger` and `.task` poll.
+private struct G7DirectBleDebugSection: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Status:")
+                Spacer()
+                Text(WatchState.shared.g7DirectBleStatus.rawValue)
+            }
+            HStack {
+                Text("Last connect:")
+                Spacer()
+                if let t = WatchState.shared.bleLastConnectAt {
+                    Text(formatG7Time(t))
+                } else {
+                    Text("--")
+                }
+            }
+            HStack {
+                Text("Last BLE EGV:")
+                Spacer()
+                if let d = WatchState.shared.bleLastEGVDate, let v = WatchState.shared.bleLastEGVValue {
+                    Text("\(formatG7Time(d)) · \(v) mg/dL")
+                } else {
+                    Text("--")
+                }
+            }
+            HStack {
+                Text("Connects / launch:")
+                Spacer()
+                Text("\(WatchState.shared.bleConnectsSinceLaunch)")
+            }
+            HStack {
+                Text("EGVs / launch:")
+                Spacer()
+                Text("\(WatchState.shared.bleEGVsSinceLaunch)")
+            }
+            HStack {
+                Text("MOD-E events:")
+                Spacer()
+                Text("\(WatchState.shared.bleConnectionEventsSinceLaunch)")
+            }
+            HStack {
+                Text("Was restored:")
+                Spacer()
+                Text(WatchState.shared.bleWasRestored ? "Yes" : "No")
+            }
+        }
+        .font(.caption)
+    }
+
+    private func formatG7Time(_ date: Date) -> String {
+        if date == .distantPast { return "--" }
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: date)
     }
 }
 
