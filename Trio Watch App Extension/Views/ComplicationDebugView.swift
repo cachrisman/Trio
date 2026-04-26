@@ -56,14 +56,18 @@ struct ComplicationDebugView: View {
         }
         .task {
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
                 loadSnapshot()
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
                 loadLogFileStats()
                 refreshTrigger = UUID()
             }
         }
         .overlay(confirmationOverlay)
-        .id(refreshTrigger)
     }
 
     // MARK: - Data Store State Section
@@ -132,6 +136,7 @@ struct ComplicationDebugView: View {
             }
         }
         .font(.caption)
+        .id(refreshTrigger)
     }
 
     // MARK: - G7 Direct BLE Section
@@ -175,6 +180,7 @@ struct ComplicationDebugView: View {
             }
         }
         .font(.caption)
+        .id(refreshTrigger)
     }
 
     // MARK: - Log Files Section
@@ -313,22 +319,6 @@ struct ComplicationDebugView: View {
             }
             .buttonStyle(.bordered)
             .tint(.orange)
-
-            Button {
-                loadSnapshot()
-                loadLogFileStats()
-                refreshTrigger = UUID()
-                showConfirmation(message: "🔄 Refreshed")
-            } label: {
-                HStack {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                    Text("Refresh View")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .tint(.gray)
-            .disabled(isLoadingLogFiles)
 
             Button {
                 flushWatchLogs()
