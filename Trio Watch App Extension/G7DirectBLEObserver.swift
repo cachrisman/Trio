@@ -102,6 +102,12 @@ final class G7DirectBLEObserver: NSObject {
     /// Set to true when willRestoreState fires; stays true for the manager lifetime.
     /// Per-manager-lifecycle flag — do NOT reset in per-session teardown paths.
     private var didReceiveWillRestoreState = false
+    /// Process-lifetime connect count (not cleared on stop/start). Mirrors to WatchState for UI.
+    private var connectsSinceLaunch = 0
+    /// Process-lifetime EGV count (not cleared on stop/start). Mirrors to WatchState for UI.
+    private var egvsSinceLaunch = 0
+    /// Process-lifetime MOD-E peerConnected count. Mirrors to WatchState for debug UI.
+    private var connectionEventsSinceLaunch = 0
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
@@ -249,6 +255,8 @@ final class G7DirectBLEObserver: NSObject {
         noteStatus(.searching)
         log("event=g7_ble_scan_start reason=\(reason) services=nil")
         centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        // Redundant defensive call — .poweredOn is the load-bearing registration site.
+        // Remove after Task A is validated in build 187.
         centralManager.registerForConnectionEvents(options: [
             CBConnectionEventMatchingOption.serviceUUIDs: [
                 G7BLEUUID.advertisement,
@@ -314,10 +322,7 @@ final class G7DirectBLEObserver: NSObject {
             centralManager.cancelPeripheralConnection(peripheral)
             log("event=g7_ble_stale_connect_cancelled peripheral_id=\(peripheral.identifier.uuidString)")
         }
-        centralManager.connect(
-            peripheral,
-            options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
-        )
+        centralManager.connect(peripheral, options: nil)
         scheduleConnectTimeout(for: peripheral)
     }
 
@@ -639,6 +644,8 @@ final class G7DirectBLEObserver: NSObject {
         }
 
         sessionEGVCount += 1
+        egvsSinceLaunch += 1
+        let egvCount = egvsSinceLaunch
         failedAttempts = 0
         stage = .receivingEGV
         noteStatus(.active)
@@ -661,9 +668,14 @@ final class G7DirectBLEObserver: NSObject {
 
         log("event=g7_ble_egv_received glucose=\(value) trend_rate=\(reading.trendRate.map { String($0) } ?? "nil") trend=\(trend) delta=\(delta) sequence=\(reading.sequence) message_timestamp=\(reading.messageTimestamp) age_s=\(reading.age) reading_epoch=\(Int(reading.readingDate.timeIntervalSince1970)) activation_epoch=\(Int(reading.activationDate.timeIntervalSince1970)) algorithm_state=\(reading.algorithmState) display_only=\(reading.glucoseIsDisplayOnly)")
 
+        let lastEgvV = value
+        let lastEgvD = reading.readingDate
         Task { @MainActor in
             TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
             WatchState.shared.applyG7DirectBleSnapshot(snapshot)
+            WatchState.shared.bleEGVsSinceLaunch = egvCount
+            WatchState.shared.bleLastEGVValue = lastEgvV
+            WatchState.shared.bleLastEGVDate = lastEgvD
             await WatchLogger.shared.log(
                 "event=g7_ble_snapshot_saved glucose=\(snapshot.glucose) reading_epoch=\(Int(snapshot.readingDate.timeIntervalSince1970)) source=\(snapshot.source?.rawValue ?? "nil")"
             )
@@ -775,10 +787,24 @@ final class G7DirectBLEObserver: NSObject {
 
 extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        let restoredFlag = didReceiveWillRestoreState
+        Task { @MainActor in
+            WatchState.shared.bleWasRestored = restoredFlag
+        }
         log("event=g7_ble_central_state state=\(central.state.rawValue) was_restored=\(didReceiveWillRestoreState)")
         switch central.state {
         case .poweredOn:
             noteStatus(.searching)
+            // MUST be before hasReceivedForegroundEntry gate — registration is required
+            // on every process lifetime regardless of foreground state, including
+            // restoration relaunches where hasReceivedForegroundEntry is false.
+            central.registerForConnectionEvents(options: [
+                CBConnectionEventMatchingOption.serviceUUIDs: [
+                    G7BLEUUID.advertisement,
+                    G7BLEUUID.dataService
+                ]
+            ])
+            log("event=g7_ble_connection_events_registered reason=powered_on")
             if hasReceivedForegroundEntry {
                 startOrResume(reason: "central_powered_on")
             } else {
@@ -800,6 +826,9 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         didReceiveWillRestoreState = true
+        Task { @MainActor in
+            WatchState.shared.bleWasRestored = true
+        }
         let restored = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
         log("event=g7_ble_will_restore_state restored_count=\(restored.count) peripherals=\(restored.map { $0.identifier.uuidString }.joined(separator: ","))")
         for peripheral in restored {
@@ -829,6 +858,13 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         for peripheral: CBPeripheral
     ) {
         log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected")")
+        if event == .peerConnected {
+            connectionEventsSinceLaunch += 1
+            let m = connectionEventsSinceLaunch
+            Task { @MainActor in
+                WatchState.shared.bleConnectionEventsSinceLaunch = m
+            }
+        }
         if event == .peerConnected, !isHardStopped {
             if postEGVBackoffWorkItem != nil {
                 postEGVBackoffWorkItem?.cancel()
@@ -842,6 +878,13 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectTimeoutWorkItem?.cancel()
         connectInFlight = false
+        connectsSinceLaunch += 1
+        let c = connectsSinceLaunch
+        let connectAt = Date()
+        Task { @MainActor in
+            WatchState.shared.bleConnectsSinceLaunch = c
+            WatchState.shared.bleLastConnectAt = connectAt
+        }
         failedAttempts = 0
         log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
         discoverServicesIfNeeded(peripheral)
