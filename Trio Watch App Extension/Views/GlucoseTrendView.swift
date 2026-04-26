@@ -35,18 +35,20 @@ struct GlucoseTrendView: View {
         }
     }
 
-    private var observerStatusColor: Color {
-        switch state.g7DirectBleStatus {
-        case .active:
-            return Color.loopGreen
-        case .searching,
-             .connecting:
-            return Color.loopYellow
-        case .stalled,
-             .unavailable:
-            return Color.loopRed
-        case .off:
-            return Color.secondary
+    /// Single status line under the glucose bubble: recency, optional `· BLE · egvs/conns`.
+    @ViewBuilder
+    private func bleRecencyStatusLine(recency: String) -> some View {
+        let conns = state.bleConnectsSinceLaunch
+        let egvs = state.bleEGVsSinceLaunch
+        let fromBle = state.displayedReadingSource == .g7DirectBLE
+
+        if conns > 0 {
+            let suffixColor: Color = egvs > 0 ? .primary : .secondary
+            Text(recency) + Text(" · BLE · \(egvs)/\(conns)").foregroundStyle(suffixColor)
+        } else if fromBle {
+            Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
+        } else {
+            Text(recency)
         }
     }
 
@@ -170,28 +172,10 @@ struct GlucoseTrendView: View {
                 let recency: String = isWatchStateDated
                     ? String(localized: "STALE DATA", comment: "Outdated watch data label.")
                     : (state.lastLoopTime ?? "--")
-                Text(recency)
+                let statusLine = bleRecencyStatusLine(recency: recency)
+                statusLine
                     .font(.system(size: minutesAgoFontSize))
                     .fontWidth(isWatchStateDated ? .expanded : .standard)
-
-                if state.bleConnectsSinceLaunch > 0 {
-                    let n = state.bleEGVsSinceLaunch
-                    let egvUnit = n == 1 ? "EGV" : "EGVs"
-                    let bleLine = "BLE: \(n) \(egvUnit) / \(state.bleConnectsSinceLaunch) conn"
-                    let bleEmphasis: Color = n > 0 ? .primary : .secondary
-                    Text(bleLine)
-                        .font(.system(size: max(8, minutesAgoFontSize - 1)))
-                        .foregroundStyle(bleEmphasis)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.55)
-                }
-
-                let src = state.displayedReadingSource.shortLabel
-                let g7s = state.g7DirectBleStatus.shortLabel
-                let age = state.g7DirectBleLastEventAgeText
-                Text("\(src) · BLE:\(g7s) \(age)")
-                    .font(.system(size: max(8, minutesAgoFontSize - 1)))
-                    .foregroundStyle(observerStatusColor)
                     .lineLimit(1)
                     .minimumScaleFactor(0.55)
             }
