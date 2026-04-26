@@ -964,6 +964,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         }
         failedAttempts = 0
         consecutiveConnectFailures = 0
+        connectFailureMetricCountedThisAttempt = false
         log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
         discoverServicesIfNeeded(peripheral)
     }
