@@ -1,364 +1,218 @@
 # Implementation plan: Build 187 / 188
 
-**Version:** v1.7
+**Version:** v1.9
 **Created:** 2026-04-26
-**Last updated:** 2026-04-26 15:00 CET
+**Last updated:** 2026-04-27 00:44 CEST
 **Branch:** `feature/watch-g7-direct-ble-observer-synthesis`
-**Predecessor:** Build 186 (B0–B3 reliability fixes)
 
 ---
 
-## Context
+## Build 187 — SHIPPED ✅
 
-Build 186 delivered B0–B3: `willRestoreState` handling, `connectInFlight` guard, `isDiscoveringServices` flag, and post-success sleep. Those are correct and stay unchanged.
+All tasks complete. Key outcomes:
+- **Task A** confirmed working: `connection_events_registered reason=powered_on` fires on every process start including post-UUID-persist restarts. MOD-E is now reliable.
+- **Task B** confirmed: `options: nil` on connect. Notifications suppressed.
+- **Tasks E + F**: BLE counters, glanceable status line, debug screen section — all shipped.
 
-**Build 187 is a validation build.** Its primary purpose is to test the MOD-E registration root-cause hypothesis. The build is kept minimal on behavior changes so the signal is unambiguous: if EGV delivery is restored after process restart with a persisted UUID, Task A is the fix. Tasks E and F (UI and debug screen) are included because they are additive and non-behavioral — they don't affect the signal from Task A and actively help with on-device validation.
+**Outstanding UI issues from build 187 (addressed in build 188):**
+- Debug screen scrolls to top on every 5s refresh tick — caused by `.id(refreshTrigger)` on the whole scroll view
+- Debug screen refreshes snapshot and log stats at the same 5s cadence — should be decoupled (1s / 10s)
+- "Refresh View" button exists — remove it
+- Main watch view BLE status is too small, on a separate line, and the existing `Phone · BLE:scan 0s` third line is confusing and hidden behind the action button
+- Horizontal tab layout not yet implemented (chart / main / debug)
+- Complication `· BLE` second line not implemented
 
-**Build 188** adds the remaining behavior changes (stage timeouts, observability counters) only after Task A is validated.
-
-**Issue summary and evidence:** `g7-ble-mode-issue-summary.md`
+**Validated in build 187:**
+- Build 188 can remove the scan-path `registerForConnectionEvents` call (redundant defense confirmed no longer needed)
+- Build 188 can remove the redundant `bleWasRestored` write from `centralManagerDidUpdateState`
 
 ---
-
-## Build 187 scope
-
-| Task | Description | File(s) | Risk |
-|---|---|---|---|
-| A | `registerForConnectionEvents` in `.poweredOn` | `G7DirectBLEObserver.swift` | Very low |
-| B | `CBConnectPeripheralOptionNotifyOnDisconnectionKey: nil` | `G7DirectBLEObserver.swift` | Very low |
-| E | Main watch view BLE clarity | `TrioMainWatchView.swift`, `WatchState.swift` | Low |
-| F | Debug screen — BLE section + remove app group ID | Debug screen file | Low |
 
 ## Build 188 scope
 
-| Task | Description | File(s) | Risk |
-|---|---|---|---|
-| C | Stage-level timeouts | `G7DirectBLEObserver.swift` | Low-medium |
-| D | Observability counters + peripheral ID log | `G7DirectBLEObserver.swift`, `WatchState.swift` | Very low |
+### Priority order
+
+1. **Auth timing fix** — highest impact, every EGV is currently failing
+2. **Debug screen + tab layout** — needed for overnight validation visibility
+3. **Main watch view** — usability
+4. **Complication** — investigate and fix
+5. **Observability additions** — logging improvements
+6. **Stage timeouts** — safety net
+7. **Housekeeping** — cleanup
 
 ---
 
-## Build 187 scope note
+## Task A — Auth timing fix (Option C)
 
-**Build 187 is primarily a validation build for Task A, but it is not purely A/B in terms of observer-side code.** Task F requires adding writes to `WatchState` from inside `connectionEventDidOccur` (for `bleConnectionEventsSinceLaunch`) and `centralManagerDidUpdateState` (for `bleWasRestored`). These are observer-side code changes in the BLE path.
+**Status of current problem:** Every G7 cycle in build 187 fails with `outcome=failure final_stage=requestingEGV`. The 6-second `authFallbackDelay` consumes most of the sensor's ~7-10 second session window. The EGV write lands at ~6-7s; the sensor closes at ~7-10s. Not enough margin for the response to arrive.
 
-This is a deliberate tradeoff: the debug visibility from Task F is worth the small additional observer-side surface, and the additions are read-only state mirroring with no effect on BLE timing logic, connection behavior, or forced disconnects. Build 187 makes no changes to when or how the observer connects, disconnects, or times out — those changes belong to Build 188 (Task C).
+**Primary hypothesis (high confidence):** Reducing the time from connect to EGV write will move the write inside the window. The 6s fallback is the leading suspect. Not proven until Option C ships and we observe success.
 
-The relevant distinction: **observer-side debug state mirroring (Build 187) vs. observer-side timing/disconnect changes (Build 188).**
+**Why Option C and not A or B:**
+- Option A (reduce timer to 2s): simpler but still timer-driven. An arbitrary 2s constant is still arbitrary.
+- Option B (skip auth subscribe entirely): loses diagnostic visibility; slightly more aggressive toward sensor protocol expectations.
+- Option C: advances on a real CB event (`auth_notify_enabled` fires at ~1s reliably), keeps auth subscription live for diagnostic and future-proofing, uses 30s as a pure watchdog.
+
+**File:** `Trio Watch App Extension/G7DirectBLEObserver.swift`
+
+**Change 1** — Line 114, reduce watchdog delay:
+````swift
+private let authFallbackDelay: TimeInterval = 30  // watchdog only; primary trigger is auth_notify_enabled
+````
+
+**Change 2** — In `handleNotificationState`, in the `case G7BLEUUID.authentication:` branch, after the existing log line, add:
+````swift
+if characteristic.isNotifying, !hasAdvancedBeyondAuth {
+    authFallbackWorkItem?.cancel()
+    advanceToControl(reason: "auth_notify_enabled_observer")
+}
+````
+
+**Change 3** — Add phase timestamps to `session_outcome` log. Store timestamps at key moments during the session (connect, auth_notify_enabled, control_notify_enabled, egv_write, egv_write_ack, disconnect) and emit derived intervals in the `session_outcome` log line:
+````
+event=g7_ble_session_outcome outcome=success ... connect_to_auth_notify_ms=950 auth_notify_to_control_ms=120 control_to_egv_write_ms=80 egv_write_to_ack_ms=45 total_ms=1195
+````
+This makes every future session instantly diagnosable from one log line.
+
+**Change 4** — Log whether auth payload arrives after Option C advance. In `handleAuthPayload`, if `hasAdvancedBeyondAuth == true` when the payload arrives, log it explicitly:
+````
+event=g7_ble_auth_payload_post_advance opcode=0x05 authenticated=<bool> bonded=<bool>
+````
+This tells us whether 0x05 ever arrives on the watch (key data for the "late subscriber misses auth payload" hypothesis).
+
+**Success criteria (ship/no-ship gate for this task):**
+- `control_notify_enable_requested reason=auth_notify_enabled_observer` appears at ~1s after connect (not ~6s)
+- `session_outcome outcome=success` with `connect_to_egv_write_ms` in the 1000-2500ms range
+- Repeated EGV delivery across multiple consecutive cycles — not just one
+
+**Falsification criteria (if these occur, Option C is not the full answer):**
+- `auth_notify_enabled_observer` fires at ~1s, `0x4E` goes out at ~1.5s, sessions still die before EGV reply → timing is not the only problem; something else is gating the sensor's response
+- Total connect→write time is <2s but EGVs still fail → investigate control notify/write ordering or whether the observer is missing another readiness signal
+
+**If Option C is ambiguous:** a follow-up build with just `authFallbackDelay = 2` (Option A) isolates "earlier" from "event-driven" as the benefit.
 
 ---
 
-## Threading / actor ownership rule
+## Task B — Debug screen overhaul
 
-**All observer-originated WatchState writes must be marshalled onto the main actor.** The observer runs on a private `DispatchQueue` (BLE queue). `WatchState` properties that drive UI are `@Observable` or `@Published` and must be mutated on the main actor. The existing `noteStatus(_:)` function already demonstrates the correct pattern:
+**File:** `Trio Watch App Extension/Views/ComplicationDebugView.swift`
+
+### B1 — Fix scroll-to-top on refresh
+
+Remove `.id(refreshTrigger)` from the root scroll view or the top-level VStack. The `G7DirectBleDebugSection` is `@Observable`-tracked and auto-updates without forced invalidation. The `.id()` trick is only needed for the DATA STORE and LOG FILES sections which use local `@State` vars.
+
+Apply `.id(refreshTrigger)` only to the `dataStoreStateView` and `reloadStatusView` subviews, not to the whole scroll view.
+
+### B2 — Decouple refresh cadences
+
+Replace the current single `.task` loop (5s for everything) with two separate loops:
 
 ````swift
-private func noteStatus(_ status: G7DirectBLEStatus) {
-    Task { @MainActor in
-        WatchState.shared.applyG7DirectBleStatus(status)
+// 1s cadence for snapshot/BLE values
+.task {
+    while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        loadSnapshot()
+    }
+}
+// 10s cadence for log file stats (expensive on watch)
+.task {
+    while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 10_000_000_000)
+        loadLogFileStats()
+        refreshTrigger = UUID()  // force @State subview refresh
     }
 }
 ````
 
-Every new WatchState write introduced in Tasks E and F must follow this same pattern. This applies to:
-- `bleConnectsSinceLaunch`
-- `bleEGVsSinceLaunch`
-- `bleLastConnectAt`
-- `bleConsecutiveFailures`
-- `bleConnectionEventsSinceLaunch`
-- `bleWasRestored`
+Remove `import Combine` if it was only added for the timer.
 
-Failure to do this will cause mutations from the BLE queue to race with main-thread rendering.
+### B3 — Remove "Refresh View" button
+
+Remove the button from `actionsView`. The periodic refresh makes it redundant.
 
 ---
 
-## State flag reset requirements
+## Task C — Horizontal tab layout
 
-**Per-session flags** (reset on `didDisconnect`, `didFailToConnect`, connect-timeout, `hardStopOnQueue`, `stop()`):
-- `stageTimeoutWorkItem` (Build 188 / Task C)
+**Context:** Previous implementation had chart / main / debug as horizontal swipe tabs. Current implementation is vertical scroll. Switch back to horizontal.
 
-**Per-manager-lifecycle observer counters** (live on the observer, reset only in `init()` — never in per-session teardown):
-- `didReceiveWillRestoreState` — carried over from B0
-- `connectionEventsSinceLaunch: Int` — authoritative MOD-E counter, owned by observer, incremented in `connectionEventDidOccur(.peerConnected)`
-- `connectsSinceLaunch: Int` — authoritative connect counter, owned by observer, incremented in `didConnect`
-- `egvsSinceLaunch: Int` — authoritative EGV counter, owned by observer, incremented in `handleGlucose`
+**Files:** Identify the top-level watch app view (likely `TrioApp.swift` or `ContentView.swift` for the watch extension) and the tab container.
 
-**WatchState UI mirrors** (set via `Task { @MainActor in ... }` from observer — these are NOT authoritative counters):
-- `bleConnectionEventsSinceLaunch: Int` — mirrors observer's `connectionEventsSinceLaunch`
-- `bleConnectsSinceLaunch: Int` — mirrors observer's `connectsSinceLaunch`
-- `bleEGVsSinceLaunch: Int` — mirrors observer's `egvsSinceLaunch`
-- `bleLastConnectAt: Date?`
-- `bleWasRestored: Bool`
-
-The WatchState mirrors are in-memory only, reset to zero on process restart by definition. Do not persist them to disk.
-
-Observer-side counters (`connectsSinceLaunch`, `egvsSinceLaunch`, `connectionEventsSinceLaunch`) are also in-memory only. They are **not cleared when the observer stops and restarts within the same process lifetime** (e.g., if `stop()` and then `start()` is called). They accumulate for the full process lifetime. If you want process-local analysis boundaries, reset them in `hardStopOnQueue` — but the current intent is full process-lifetime accumulation.
-
-**Reset on `didConnect` success only** (NOT in every teardown — intentional accumulator):
-- `consecutiveConnectFailures` (Build 188 / Task D) — measures failures across attempts until next success. Resetting on teardown would define a single-attempt counter, which is not the metric needed to test the session-duration escalation hypothesis.
+**Change:** Use `TabView` with `tabViewStyle(.page)` (horizontal swipe). Order: chart (left) → main (center) → debug (right). Match the previous implementation's structure exactly — the agent should read the git history or the skipped patch to identify the prior tab container structure.
 
 ---
 
-## Build 187
+## Task D — Main watch view single status line
 
-### Task A — Root-cause fix: `registerForConnectionEvents` in `.poweredOn`
+**File:** `Trio Watch App Extension/Views/GlucoseTrendView.swift` (or wherever the recency and BLE lines are rendered)
 
-**Problem:** `registerForConnectionEvents` is only called inside `startScanning(reason:)`. Once a peripheral UUID is persisted after the first successful EGV, the attach ladder succeeds at `retrieved_identifier` and returns early — never reaching the scan path. MOD-E is never registered on any subsequent process start.
+**Current state (wrong):**
+- Line 1: recency (`5 min`)
+- Line 2: BLE count (`BLE: 0 EGVs / 5 conn`) — different font size, separate line
+- Line 3: `Phone · BLE:scan 0s` — hidden behind action button, confusing
+
+**Target state (correct):**
+- Single line: `5 min · BLE · 1/3` when `bleConnectsSinceLaunch > 0`
+- Single line: `5 min` only when `bleConnectsSinceLaunch == 0` and source is not BLE
+- Same font size as the current recency text
+- Remove lines 2 and 3 entirely
+
+**Format rules:**
+- `[recency] · BLE · [egvs]/[conns]` when `bleConnectsSinceLaunch > 0` (regardless of source)
+- `[recency] · BLE` when source is `g7DirectBLE` but `bleConnectsSinceLaunch == 0` (edge case)
+- `[recency]` when source is not BLE and `bleConnectsSinceLaunch == 0`
+- `bleEmphasis`: primary color when `bleEGVsSinceLaunch > 0`, secondary when `bleConnectsSinceLaunch > 0` but `bleEGVsSinceLaunch == 0`
+- Drop `scan 0s` and all connection state detail entirely — not meaningful to users
+
+---
+
+## Task E — Complication `· BLE` second line
+
+**Investigation required first.** Open `TrioWatchComplication.swift` and identify where the complication second line content is set. The complication template has a header and a body line — find the body line source.
+
+Once identified:
+- When `TrioComplicationDataStore.shared.latestSnapshot()?.source == .g7DirectBLE`, append `· BLE` to the second line
+- Otherwise leave exactly as before
+- If the second line is constructed from a function or computed property, add the conditional there
+
+---
+
+## Task F — Observability additions
 
 **File:** `Trio Watch App Extension/G7DirectBLEObserver.swift`
 
-**Code-verified placement:** The existing `.poweredOn` handler contains a hard foreground gate — `if hasReceivedForegroundEntry` — which defers `startOrResume` until the user has opened the app. `registerForConnectionEvents` must be placed before this gate so it fires unconditionally on every process start, including background state-restoration relaunches where `hasReceivedForegroundEntry` is false.
-
-**Exact required structure** (insert between `noteStatus(.searching)` and the existing `if hasReceivedForegroundEntry` check):
+### F1 — Consecutive failure counter (D1 from Phase 2 plan)
 
 ````swift
-case .poweredOn:
-    noteStatus(.searching)
-    // MUST be before hasReceivedForegroundEntry gate — registration is required
-    // on every process lifetime regardless of foreground state, including
-    // restoration relaunches where hasReceivedForegroundEntry is false.
-    centralManager.registerForConnectionEvents(options: [
-        CBConnectionEventMatchingOption.serviceUUIDs: [
-            G7BLEUUID.advertisement,
-            G7BLEUUID.dataService
-        ]
-    ])
-    log("event=g7_ble_connection_events_registered reason=powered_on")
-    if hasReceivedForegroundEntry {
-        startOrResume(reason: "central_powered_on")
-    } else {
-        log("event=g7_ble_lifecycle action=central_powered_on_deferred reason=awaiting_foreground_active")
-    }
+private var consecutiveConnectFailures = 0
+// Reset in centralManager(_:didConnect:) alongside failedAttempts = 0
+// Increment in scheduleConnectTimeout work item and in didFailToConnect
+// Log: add consecutive_failures=\(consecutiveConnectFailures) to existing timeout log line
 ````
 
-**Do NOT remove the `registerForConnectionEvents` call from `startScanning(reason:)` in this build.** Keep it with a comment marking it as redundant defense:
+### F2 — `mode_e_total` log field (D2)
 
+`connectionEventsSinceLaunch` already exists from Build 187. Add `mode_e_total=\(connectionEventsSinceLaunch)` to the existing `connection_event` log line in `connectionEventDidOccur`.
+
+### F3 — Peripheral ID persistence log (D3)
+
+In `handleGlucose(_:)`, immediately after `persistedPeripheralIdentifier = activePeripheral?.identifier`:
 ````swift
-// Redundant defensive call — .poweredOn is the load-bearing registration site.
-// Remove after Task A is validated in build 187.
-centralManager.registerForConnectionEvents(options: [...])
+log("event=g7_ble_peripheral_id_persisted peripheral_id=\(activePeripheral?.identifier.uuidString ?? "nil") sequence=\(reading.sequence)")
 ````
-
-Removing it changes two things simultaneously (registration placement + number of registration sites), which weakens attribution of the fix. Remove it only in the build after Task A validation confirms the fix.
-
-**Acceptance:**
-- `event=g7_ble_connection_events_registered reason=powered_on` appears in BetterStack on every process start, including starts where `retrieved_identifier` succeeds immediately
-- **Critical validation signal:** `connection_events_registered reason=powered_on` must appear even when `central_powered_on_deferred reason=awaiting_foreground_active` also appears in the same startup sequence — this proves registration is truly independent of foreground entry
-- `connection_event peer_connected DXCM08` begins firing on subsequent G7 cycles after process start — not just on fresh install (the first cycle after startup may still be missed depending on timing)
-- After first EGV: `post_egv_backoff_scheduled` → `post_egv_backoff_cancelled reason=connection_event` ~5 minutes later — the full healthy cycle confirmed
 
 ---
 
-### Task B — UX fix: Suppress "accessory disconnected" notifications
-
-**Problem:** `centralManager.connect(peripheral, options:)` passes `CBConnectPeripheralOptionNotifyOnDisconnectionKey: true`. Every CBError 7 disconnect while backgrounded generates a watchOS system notification. 20+ notifications appeared in a single day.
+## Task G — Stage-level timeouts
 
 **File:** `Trio Watch App Extension/G7DirectBLEObserver.swift`
 
-**Change:** Line ~319 in build 186:
+**Note:** Less urgent now that Option C should bring sessions to ~1-2s. Still worth having as a safety net to prevent a rogue session from draining battery.
 
-````swift
-centralManager.connect(peripheral, options: nil)
-````
+**New property:** `private var stageTimeoutWorkItem: DispatchWorkItem?` — add to `cancelTransientTimers()`.
 
-Trio handles disconnection in `centralManager(_:didDisconnectPeripheral:error:)` and does not need the OS notification.
-
-**Acceptance:** Zero "accessory disconnected" system notifications.
-
----
-
-### Task E — Main watch view: glanceable BLE status
-
-**Problem:** The UI doesn't show whether BLE EGVs are actually being received. Connection state is visible but delivery success is not.
-
-**Observer-side authoritative counters** (new properties on `G7DirectBLEObserver`, per-manager-lifecycle):
-
-````swift
-// On G7DirectBLEObserver — live on the observer, never on WatchState directly
-private var connectsSinceLaunch = 0      // increment in didConnect
-private var egvsSinceLaunch = 0          // increment in handleGlucose
-````
-
-**WatchState mirrors** — set from observer via `Task { @MainActor in ... }`:
-
-````swift
-// In WatchState — UI-facing mirrors only, not authoritative
-var bleConnectsSinceLaunch: Int = 0
-var bleEGVsSinceLaunch: Int = 0
-````
-
-Set by `G7DirectBLEObserver` — **capture the value before dispatching to avoid a cross-actor data race** (the Task executes on the main actor; reading `self.counter` inside it would be an unsynchronized cross-actor read):
-- In `centralManager(_:didConnect:)` after `connectInFlight = false`:
-  ```swift
-  connectsSinceLaunch += 1
-  let c = connectsSinceLaunch
-  Task { @MainActor in WatchState.shared.bleConnectsSinceLaunch = c }
-  ```
-- In `handleGlucose(_:)` after `sessionEGVCount += 1`:
-  ```swift
-  egvsSinceLaunch += 1
-  let e = egvsSinceLaunch
-  Task { @MainActor in WatchState.shared.bleEGVsSinceLaunch = e }
-  ```
-This matches the existing pattern in the file (`applyG7DirectBleSnapshot` and `applyG7DirectBleStatus` are both called with self-contained values, not `self.property` references inside Task closures).
-
-**UI display:** A single compact line below the existing recency line, shown only when `bleConnectsSinceLaunch > 0`:
-
-```
-BLE: 2 EGVs / 4 conn
-```
-
-- `bleEGVsSinceLaunch > 0`: normal text weight — working
-- `bleEGVsSinceLaunch == 0` and `bleConnectsSinceLaunch > 0`: muted/secondary text — connecting but not delivering
-- `bleConnectsSinceLaunch == 0`: line hidden entirely
-
-**Files:** `G7DirectBLEObserver.swift` (increment counters), `WatchState.swift` (add properties), `TrioMainWatchView.swift` (render line)
-
-**Acceptance:**
-- After a successful EGV cycle: `BLE: 1 EGVs / 1 conn` appears below the recency line
-- After failed connects with no EGV: `BLE: 0 EGVs / 4 conn` in muted style
-- Before any connect: no BLE line shown
-
----
-
-### Task F — Debug screen: BLE section + remove app group ID
-
-**File:** `Trio Watch App Extension/ComplicationDebugView.swift` — the existing debug screen with sections DATA STORE, LOG FILES, RELOAD STATUS, and ACTIONS.
-
-#### F1 — Remove app group ID section
-
-Inside `private var dataStoreStateView`, remove the following block (lines ~120–199 in build 186):
-
-````swift
-Divider().padding(.vertical, 2)
-
-// App Group ID Debug Section
-sectionHeader("APP GROUP")
-
-HStack { Text("AppGroupID:") ... }
-HStack { Text("Container:") ... }
-// and all subsequent HStacks (Container Path, Snapshot File, Container Files)
-````
-
-Keep the `HStack { Text("Path:") ... }` row immediately above this block — that is DATA STORE content, not APP GROUP.
-
-#### F2 — Add G7 Direct BLE section
-
-In `body`'s main VStack, add a new section after the existing RELOAD STATUS section, following the exact same pattern as existing sections:
-
-````swift
-Divider().padding(.vertical, 4)
-
-sectionHeader("G7 DIRECT BLE")
-g7BLEDebugView
-````
-
-Add a new computed property `private var g7BLEDebugView: some View` reading from `WatchState.shared`. Use the same `HStack { Text("Label:"); Spacer(); Text(value) }` pattern and `.font(.caption)` as `dataStoreStateView`.
-
-**New WatchState properties required** (all set from observer via `Task { @MainActor in ... }`):
-
-| Debug row label | WatchState property | Set in observer |
-|---|---|---|
-| Status | `g7DirectBLEStatus` (existing) | Existing `noteStatus()` |
-| Last connect | `bleLastConnectAt: Date?` (new) | `centralManager(_:didConnect:)` |
-| Last BLE EGV | `bleLastEGVDate: Date?` + `bleLastEGVValue: Int?` — pushed directly from observer, never inferred from `latestSnapshot()` | `handleGlucose(_:)` after successful save |
-| Connects / launch | `bleConnectsSinceLaunch` (Task E) | `centralManager(_:didConnect:)` |
-| EGVs / launch | `bleEGVsSinceLaunch` (Task E) | `handleGlucose(_:)` |
-| MOD-E events | `bleConnectionEventsSinceLaunch: Int` (new) | `connectionEventDidOccur(.peerConnected)` |
-
-The observer sets `bleLastEGVDate` and `bleLastEGVValue` in `handleGlucose(_:)` after the successful snapshot save, using the same capture-before-Task pattern:
-```swift
-let v = Int(reading.glucose)
-let d = reading.readingDate
-Task { @MainActor in
-    WatchState.shared.bleLastEGVValue = v
-    WatchState.shared.bleLastEGVDate = d
-}
-```
-| Was restored | `bleWasRestored: Bool` (new) | `centralManagerDidUpdateState` — set from `didReceiveWillRestoreState` |
-
-Note: `consecutiveConnectFailures` is a **Build 188 Task D** item. Do not include it here; leave a `// TODO: add consecutive failures after Build 188` comment placeholder if desired.
-
-**Display rows:**
-
-```
-G7 DIRECT BLE
-Status:             searching
-Last connect:       --  or  12:34:05
-Last BLE EGV:       --  or  12:34:07 · 122 mg/dL  (from bleLastEGVDate/bleLastEGVValue — never from latestSnapshot())
-Connects / launch:  0
-EGVs / launch:      0
-MOD-E events:       0
-Was restored:       No
-```
-
-Use `formatTime(_:)` (already defined in the file) for date display. Use `--` for nil/zero/distantPast values, matching the existing style.
-
-**WatchState access pattern:** `g7BLEDebugView` reads `WatchState.shared` properties directly using standard Swift property access — no `@StateObject`, `@ObservedObject`, or `@EnvironmentObject` needed. Since `WatchState` is `@Observable`, SwiftUI auto-tracks these reads and re-renders the BLE section immediately whenever the observer pushes new values via `Task { @MainActor in ... }`.
-
-**Periodic refresh timer:** The existing DATA STORE and LOG FILES sections use local `@State` vars loaded manually and won't auto-update from `@Observable`. Add a 5-second timer to keep all sections current — attach it alongside the existing `.onAppear`:
-
-```swift
-.onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
-    loadSnapshot()
-    refreshTrigger = UUID()
-}
-```
-
-This gives the BLE section immediate auto-updates via `@Observable` tracking plus a periodic backstop, and keeps the existing sections fresh without the user needing to tap "Refresh View". The timer cancels automatically when the view disappears.
-
-**Acceptance:**
-- "G7 DIRECT BLE" section appears after RELOAD STATUS, before ACTIONS
-- "APP GROUP" section and all its HStacks are gone
-- All rows populate correctly on `.onAppear`
-- `bleConnectionEventsSinceLaunch` matches BetterStack `connection_event peer_connected` count within the same process lifetime — allowing slight async lag from `Task { @MainActor in ... }` dispatch; verify after a view refresh or 5s timer tick
-
----
-
-## Build 187 commit sequence
-
-1. `fix: register connection events in .poweredOn unconditionally (Task A)`
-2. `fix: suppress accessory-disconnected notification — options: nil (Task B)`
-3. `feat: BLE connect/EGV counters on WatchState (Task E setup)`
-4. `feat: main watch view BLE status line (Task E UI)`
-5. `feat: debug screen BLE section, remove app group ID (Task F)`
-
----
-
-## Build 187 validation
-
-**Task A — the hypothesis test (evaluate first):**
-- `connection_events_registered reason=powered_on` appears on every process start
-- **Key proof:** `connection_events_registered reason=powered_on` appears in the same startup sequence as `central_powered_on_deferred reason=awaiting_foreground_active` — proves registration is foreground-independent
-- After first EGV with persisted UUID: force-kill the app, restart it, confirm `connection_events_registered reason=powered_on` still appears and `connection_event peer_connected` fires within the next G7 cycle (~5 min)
-- `post_egv_backoff_cancelled reason=connection_event` before every successful attach — MOD-E is driving
-
-**Task B:**
-- Zero "accessory disconnected" system notifications
-
-**Tasks E and F:**
-- Debug screen "G7 Direct BLE" section shows correct values
-- `bleConnectionEventsSinceLaunch` matches BetterStack `connection_event peer_connected` count
-- `bleWasRestored=false` on cold launches — verifiable on demand by force-killing and relaunching
-- `bleWasRestored=true` when a restoration relaunch is actually observed — not a required overnight gate, since restoration relaunches are not under direct user control
-- Main view `BLE: N EGVs / M conn` line visible and correct
-
----
-
-## Build 188
-
-### Task C — Stage-level timeouts
-
-**Why deferred:** Stage timeouts introduce active forced disconnects in `discoveringServices` and `observingAuth` — exactly the phases where timing issues are being debugged. If included in Build 187, a session terminating at 30s cannot be unambiguously attributed to MOD-E fixing the attach timing vs the stage timeout cutting the failing session short.
-
-**Problem:** No timeout exists on the `discoveringServices` or `observingAuth` phases. Trio connects to the sensor outside its re-auth window and can sit for up to ~10 minutes before CBError 7 closes the session.
-
-**File:** `Trio Watch App Extension/G7DirectBLEObserver.swift`
-
-**New property:** `private var stageTimeoutWorkItem: DispatchWorkItem?` — add to the existing `cancelTransientTimers()` function (which already cancels `scanTimeoutWorkItem`, `connectTimeoutWorkItem`, `authFallbackWorkItem`, `egvRequestWorkItem`, `controlWriteRetryWorkItem`). This propagates cancellation to all teardown paths since `hardStopOnQueue` calls `cancelTransientTimers()`.
-
-**Service discovery timeout (30s):** In `discoverServicesIfNeeded`, after `peripheral.discoverServices(nil)`:
-
+**Service discovery timeout (30s):** After `peripheral.discoverServices(nil)`:
 ````swift
 let workItem = DispatchWorkItem { [weak self] in
     guard let self, self.stage == .discoveringServices else { return }
@@ -366,11 +220,10 @@ let workItem = DispatchWorkItem { [weak self] in
     self.centralManager.cancelPeripheralConnection(peripheral)
 }
 stageTimeoutWorkItem = workItem
-queue.asyncAfter(deadline: .now() + 30, execute: workItem)  // use observer's existing `queue` symbol
+queue.asyncAfter(deadline: .now() + 30, execute: workItem)
 ````
 
-**Auth observation timeout (10s):** When entering `observingAuth` (auth notify enabled), cancel the discovery timeout and arm the auth timeout. A single `stageTimeoutWorkItem` serves both timeouts in sequence — it is cancelled and replaced when transitioning from discovery to auth phase:
-
+**Auth observation timeout (10s):** When entering `observingAuth`, cancel discovery timeout and arm auth timeout. A single `stageTimeoutWorkItem` serves both — cancel and replace on stage transition:
 ````swift
 stageTimeoutWorkItem?.cancel()
 let authWorkItem = DispatchWorkItem { [weak self] in
@@ -379,170 +232,130 @@ let authWorkItem = DispatchWorkItem { [weak self] in
     self.centralManager.cancelPeripheralConnection(peripheral)
 }
 stageTimeoutWorkItem = authWorkItem
-queue.asyncAfter(deadline: .now() + 10, execute: authWorkItem)  // use observer's existing `queue` symbol
+queue.asyncAfter(deadline: .now() + 10, execute: authWorkItem)
 ````
 
-**Additional cancellation required:**
-- In `handleAuthPayload` (or equivalent) when the auth gate fires and the session advances past `observingAuth` — cancel `stageTimeoutWorkItem` before proceeding to enable control
-- In `peripheral(_:didDiscoverServices:error:)` when `error != nil` — cancel `stageTimeoutWorkItem` before the error teardown path proceeds
-- In `peripheral(_:didDiscoverCharacteristicsFor:service:error:)` when `error != nil` — cancel `stageTimeoutWorkItem` before the error teardown path proceeds
+**Additional cancellation** (beyond `cancelTransientTimers()`):
+- In `handleAuthPayload` when auth gate fires and session advances past `observingAuth`
+- In `peripheral(_:didDiscoverServices:error:)` when `error != nil`
+- In `peripheral(_:didDiscoverCharacteristicsFor:service:error:)` when `error != nil`
 
-These failure callbacks precede the full teardown and `cancelTransientTimers()` call. Explicit cancellation here prevents a stale work item from firing a redundant `cancelPeripheralConnection` after teardown has already cleaned up.
-
-**Relationship to auth fallback timer:** The 6s `auth_fallback` fires before the 10s stage timeout. These are independent timers. The stage timeout is a backstop if the fallback fires but control-enable still stalls.
-
-**Acceptance:**
-- `stage_timeout stage=discoveringServices` appears when Trio connects outside the re-auth window
-- No `final_stage=discoveringServices` session outcome with `duration_ms` > 35,000
-- Stage timeout does NOT fire on successful sessions (cancellation working correctly)
+**Note:** With Option C in place, `authFallbackDelay` fires at ~1s (via `auth_notify_enabled_observer`), then the 10s auth stage timeout is a backstop. These are independent timers.
 
 ---
 
-### Task D — Observability counters + peripheral ID persistence log
+## Task H — Housekeeping
 
 **File:** `Trio Watch App Extension/G7DirectBLEObserver.swift`
 
-#### D1 — Consecutive failure counter
+### H1 — Remove redundant `bleWasRestored` write from `centralManagerDidUpdateState`
 
-**Reset semantics:** This counter measures consecutive failures across attempts until the next successful connection. It is NOT a per-session counter and must NOT be reset in every teardown path. It resets only on `didConnect` success.
+`willRestoreState` already sets `WatchState.shared.bleWasRestored = true` directly. The write in `centralManagerDidUpdateState` is redundant (for cold launches it's a no-op write of the default `false`; for restoration it duplicates `willRestoreState`). Remove it.
 
-- Add `private var consecutiveConnectFailures = 0`
-- Reset to 0 in `centralManager(_:didConnect:)` alongside the existing `failedAttempts = 0` reset
-- Increment in two places: (1) inside the `scheduleConnectTimeout` work item closure, after the existing timeout log line; (2) in `centralManager(_:didFailToConnect:error:)` after the existing error log
-- Add `consecutive_failures=\(consecutiveConnectFailures)` to the existing timeout log line
+### H2 — Remove scan-path `registerForConnectionEvents`
 
-No behaviour change. Data collection only.
-
-#### D2 — MOD-E event counter log field
-
-The observer-side `connectionEventsSinceLaunch` counter was already added in Build 187 Task F (it drives `WatchState.bleConnectionEventsSinceLaunch` for the debug screen). Build 188 D2 only adds the log field — no new counter concept.
-
-- In `connectionEventDidOccur` for `.peerConnected`, add `mode_e_total=\(connectionEventsSinceLaunch)` to the existing `connection_event` log line
-
-That is the only change for D2.
-
-#### D3 — Peripheral ID persistence log
-
-The UUID save happens in `handleGlucose(_:)` at `persistedPeripheralIdentifier = activePeripheral?.identifier`. Add the log immediately after that line:
-
-````swift
-persistedPeripheralIdentifier = activePeripheral?.identifier
-log("event=g7_ble_peripheral_id_persisted peripheral_id=\(activePeripheral?.identifier.uuidString ?? "nil") sequence=\(reading.sequence)")
-````
-
-**Acceptance:**
-- `consecutive_failures` field in `connect_failed` events, correlatable with `duration_ms`
-- `mode_e_total` incrementing in `connection_event` events
-- `peripheral_id_persisted` appears once per fresh install after first successful EGV
+Task A from Build 187 is validated. The scan-path call with the "redundant defensive call" comment is no longer needed. Remove it entirely.
 
 ---
 
-## Build 188 commit sequence
+## Commit sequence for Build 188
 
-1. `feat: stage-level timeouts for discoverServices and observingAuth (Task C)`
-2. `feat: consecutive failure counter, MOD-E counter, peripheral ID log (Task D)`
-3. Remove the now-redundant scan-path `registerForConnectionEvents` call (after Task A validated)
-
----
-
-## What is NOT included
-
-- B4 (MOD-E re-registration on `foreground_active`) — superseded by Task A
-- Backfill (Phase C from Phase 2 impl plan) — deferred
-- Watch-side glucose history store (Phase F from Phase 2 impl plan) — deferred
-- WKExtendedRuntimeSession — deferred
-- iPhone-side changes
+1. `fix: advance to control on auth_notify_enabled, 30s watchdog (Task A)`
+2. `feat: phase timing ladder in session_outcome log (Task A)`
+3. `feat: log auth payload arrival after Option C advance (Task A)`
+4. `fix: debug screen scroll, decoupled timers, remove refresh button (Task B)`
+5. `feat: horizontal tab layout chart/main/debug (Task C)`
+6. `fix: main watch view single status line (Task D)`
+7. `fix: complication · BLE second line (Task E)`
+8. `feat: consecutive failure counter, mode_e_total, peripheral ID log (Task F)`
+9. `feat: stage-level timeouts (Task G)`
+10. `chore: remove redundant bleWasRestored write, remove scan-path registration (Task H)`
 
 ---
 
-## Open questions (do not block)
+## Build 188 overnight validation checklist
 
-**`auth_fallback reason=no_status_reply` on every DXCM08 session:** The strict auth gate (`authenticated && bonded`) has never been observed firing on DXCM08. The fallback fires every time. Expected behaviour — Dexcom app already handled auth and Trio never receives the challenge. Not a bug; worth monitoring if sensor behaviour changes.
+Check BetterStack in the morning for:
 
-**`peer_connected` + `peer_disconnected` in same second:** Seen at 05:22 and 05:34 in post-reinstall data. Window opened and closed before the attach ladder could proceed. No action; Build 187's Task A (MOD-E fix) and Build 188's Task C (stage timeouts) both reduce the conditions where this matters.
+1. `connection_events_registered reason=powered_on` on every process start ✓ (Build 187 already confirmed — just verify it's still there)
+2. `control_notify_enable_requested reason=auth_notify_enabled_observer` at ~1s after connect (not ~6s)
+3. `session_outcome outcome=success` with `connect_to_egv_write_ms` in 1000-2500ms range
+4. `post_egv_backoff_scheduled` → `post_egv_backoff_cancelled reason=connection_event` — B2 sleep working
+5. `peripheral_id_persisted` fired once this process lifetime (D3)
+6. Whether any `auth_payload_post_advance` events appear (did 0x05 ever arrive after advance?)
+7. Consecutive EGV delivery across multiple cycles — not just one success
+8. Zero "accessory disconnected" system notifications (Build 187 fix still holding)
+
+---
+
+## Confidence levels (for context, not for debate)
+
+| Claim | Confidence |
+|---|---|
+| 6s fallback is harming EGV success rate | High |
+| Option C will fix it | Medium-high (strong hypothesis, not proven) |
+| Late subscribers miss the 0x05 auth payload | Medium |
+| Private entitlement is the best-known structural long-term fix | Medium (watchOS behavior not guaranteed to match iOS exactly) |
+
+---
+
+## Implementation log (Build 188)
+
+Execution followed **Trio-dev** `docs/prompts/04-execute-implementation-plan.md` on branch **`feature/watch-g7-direct-ble-observer-synthesis`** (Trio worktree). Verification: static re-read of each change; no `xcodebuild` / `ci/local-build.sh` per AGENTS.md rule 10.
+
+| Commit / step | What was done | Files | Acceptance |
+|---------------|---------------|-------|------------|
+| Task A (1/3) | `authFallbackDelay = 30`; advance on `auth_notify_enabled_observer` in `handleNotificationState` | `G7DirectBLEObserver.swift` | Matches plan Option C; fallback remains watchdog-only. |
+| Task A (2/3) | Phase timestamps + extended `g7_ble_session_outcome` ladder fields; `sessionPhaseEgvAckAt` on control write ack | `G7DirectBLEObserver.swift` | Ladder uses `-1` for missing segments; `connect_to_egv_ack_total_ms` falls back to `duration_ms` when no ack. |
+| Task A (3/3) | `g7_ble_auth_payload_post_advance` when `hasAdvancedBeyondAuth` and opcode 0x05 | `G7DirectBLEObserver.swift` | Diagnostic only; no control-flow change. |
+| Task B | 1s + 10s `.task` loops; `.id(refreshTrigger)` only on data store + reload sections; removed Refresh button | `ComplicationDebugView.swift` | Root `ScrollView` no longer `.id`’d; log stats refresh on 10s tick. |
+| Task C | `TabView` order chart (0) → main (1) → debug (2); `.page`; default page 1; telemetry `newPage == 0` for chart | `TrioMainWatchView.swift` | Horizontal swipe; long-press still jumps to debug (2). |
+| Task D | Single recency line with `· BLE · egvs/conns` rules and `g7DirectBLE` edge case | `GlucoseTrendView.swift` | Removed phone/BLE detail line; font matches recency. |
+| Task E | `source` on `TrioWatchComplicationEntry`; `· BLE` on corner second line when `source == .g7DirectBLE`; timeline copies `source` | `TrioWatchComplication.swift` | Placeholder/fallback entries keep `source == nil` → unchanged. |
+| Task F | `consecutiveConnectFailures`; `mode_e_total` on connection event (after increment); `peripheral_id_persisted` log | `G7DirectBLEObserver.swift` | Counter reset on `didConnect`; timeout/`didFailToConnect` increment + log. |
+| Task G | `stageTimeoutWorkItem`: 30s discovering services, 10s observing auth; cancel in `cancelTransientTimers`, service/char errors, success paths, `advanceToControl` | `G7DirectBLEObserver.swift` | See red-team fix: cancel auth timeout only after control char guard passes. |
+| Task H | Removed `bleWasRestored` write from `centralManagerDidUpdateState`; removed scan-path `registerForConnectionEvents` | `G7DirectBLEObserver.swift` | Restoration still set in `willRestoreState`. |
+| Red-team | Moved `stageTimeoutWorkItem` cancel in `advanceToControl` to after control characteristic guard | `G7DirectBLEObserver.swift` | Avoids dropping auth timeout on early return. |
 
 ---
 
 ## Changelog
 
+### v1.9 (2026-04-27 00:44 CEST)
+- **Build 188 executed:** ten plan commits + one red-team fix commit on `feature/watch-g7-direct-ble-observer-synthesis`; **Implementation log** section added above.
+
+### v1.8 (2026-04-27)
+Consolidated into Build 187 (done) + Build 188 (tonight). Major additions:
+- Auth timing fix (Option C) as highest-priority Build 188 task with full evidence, success/falsification criteria, confidence table
+- Phase timing ladder added to session_outcome log (ChatGPT suggestion — high value)
+- Auth payload post-advance logging (ChatGPT suggestion — key diagnostic)
+- Debug screen split into 1s/10s cadences, scroll fix, remove Refresh button
+- Horizontal tab layout added to scope
+- Main watch view collapsed to single status line `5 min · BLE · 1/3`
+- Complication investigation task added
+- Housekeeping: remove redundant bleWasRestored write, remove scan-path registration call
+- Status language corrected throughout per review: "primary hypothesis" not "root cause confirmed"
+
 ### v1.7 (2026-04-26)
-
-Three small fixes from final review.
-
-1. **WatchState access instruction consolidated.** v1.6 had two slightly different instructions ("read directly" and "follow whatever pattern other views use"). v1.7 picks one: read `WatchState.shared` properties directly using standard Swift property access — no binding or StateObject needed. `@Observable` handles tracking automatically.
-
-2. **Validation wording made consistent.** `bleConnectionEventsSinceLaunch` validation now uses the same "within the same process lifetime, allowing slight async lag" phrasing used for other counter validation criteria.
-
-3. **Duplicate "Last BLE EGV" rows in Task F table collapsed.** Two rows (`Last BLE EGV` and `Last BLE EGV details`) carried the same content. Collapsed to one row with the key clarification inline: "never inferred from `latestSnapshot()`."
+Three small fixes: WatchState access instruction consolidated; validation wording consistent; duplicate Last BLE EGV table rows collapsed.
 
 ### v1.6 (2026-04-26)
-
-Added periodic refresh timer to Task F. `WatchState` is `@Observable`, so the BLE section auto-updates immediately when the observer pushes new values — no timer needed for those. But the existing DATA STORE and LOG FILES sections use local `@State` vars loaded manually; a 5-second `Timer.publish` + `refreshTrigger = UUID()` keeps those fresh too. Matches the pattern used in a previous implementation of the debug screen. Timer cancels automatically on view disappear.
+Periodic refresh timer added to Task F. WatchState is @Observable so BLE section auto-updates; timer handles DATA STORE / LOG FILES @State vars.
 
 ### v1.5 (2026-04-26)
-
-Fourth ChatGPT review + self red-team. Seven targeted fixes.
-
-**From ChatGPT review:**
-
-1. **Task F "Last BLE EGV" ambiguity resolved.** Removed the `latestSnapshot()` lookup (which would return `--` if the latest snapshot is from WC/HK, not BLE). Observer now pushes dedicated `bleLastEGVDate: Date?` and `bleLastEGVValue: Int?` to WatchState directly in `handleGlucose(_:)`. The debug screen reads these properties, never `latestSnapshot()`.
-
-2. **Task C queue name corrected.** `bleQueue` changed to `queue` throughout — the observer's actual private queue symbol confirmed at line 53 of `G7DirectBLEObserver.swift`. Added note to use the observer's existing `queue` symbol and not introduce a second queue name.
-
-3. **Build 187 validation eventual consistency noted.** Counter validation now says "within the same process lifetime, after tapping Refresh View" — acknowledges that `Task { @MainActor in ... }` updates are asynchronous and may lag slightly behind BLE events.
-
-4. **Counter persistence through observer stop/restart stated.** Observer counters are not cleared on `stop()`/`start()` within the same process — they accumulate for the full process lifetime. Documented with explicit note in the state flag section.
-
-**From self red-team:**
-
-5. **Data race in counter mirroring fixed (real hazard).** The plan had `Task { @MainActor in WatchState.shared.counter = self.counter }` — reading `self.counter` inside the Task closure is a cross-actor read without synchronization. Fixed to capture value before dispatch: `let c = counter; Task { @MainActor in WatchState.shared.counter = c }`. This matches the existing pattern in the file.
-
-6. **WatchState access pattern in ComplicationDebugView specified.** The plan said "read from WatchState at render time" without saying how. Added note: follow whatever observation pattern other watch views use for WatchState; the existing "Refresh View" button forces a redraw that re-reads all values.
-
-7. **Task C stageTimeoutWorkItem double-duty clarified.** Added explicit sentence: "A single `stageTimeoutWorkItem` serves both timeouts in sequence — it is cancelled and replaced when transitioning from discovery to auth phase." Prevents an agent from creating two separate properties.
+Seven fixes: Last BLE EGV uses dedicated WatchState properties (not latestSnapshot()); queue name corrected to `queue`; eventual consistency note; counter persistence through observer stop/restart; data race fix (capture before Task dispatch); WatchState access pattern specified; stageTimeoutWorkItem double-duty clarified.
 
 ### v1.4 (2026-04-26)
-
-Fourth review (ChatGPT) identified three substantive issues and one nit. All addressed.
-
-1. **Counter ownership model clarified.** v1.3 had a fuzzy boundary between observer-side counters and WatchState mirrors. v1.4 establishes a clear model: observer owns authoritative counters (`connectionEventsSinceLaunch`, `connectsSinceLaunch`, `egvsSinceLaunch`); WatchState holds UI-facing mirrors (`bleConnectionEventsSinceLaunch`, `bleConnectsSinceLaunch`, `bleEGVsSinceLaunch`). The reset section now separates "per-manager-lifecycle observer counters" from "WatchState UI mirrors" explicitly.
-
-2. **Task D2 overlap fixed.** Build 187 already adds `connectionEventsSinceLaunch` on the observer (to drive the debug screen mirror). Build 188 D2 was redundantly re-adding the same counter concept. v1.4 clarifies that D2 only adds the `mode_e_total` log field to the existing `connection_event` log line — the observer counter was already established in Build 187.
-
-3. **Task F file targeting made precise.** File is now named: `ComplicationDebugView.swift`. F1 specifies exactly which block to remove (the APP GROUP subsection inside `dataStoreStateView`, lines ~120–199, including the preceding Divider). F2 specifies the exact insertion point in `body` (after RELOAD STATUS, before ACTIONS), the computed property name (`g7BLEDebugView`), uses `formatTime(_:)` (already in the file), and uses `latestSnapshot()` (already exposed on `TrioComplicationDataStore.shared`) for last BLE EGV data.
-
-4. **Task A acceptance nit fixed.** "fires every ~5 minutes" softened to "begins firing on subsequent G7 cycles — the first cycle after startup may still be missed depending on timing."
+Counter ownership model clarified; Task D2 overlap fixed; Task F file targeting precise (ComplicationDebugView.swift); Task A acceptance softened.
 
 ### v1.3 (2026-04-26)
-
-Third review (ChatGPT) identified three substantive issues and one nit. All addressed.
-
-1. **Build 187 scope explicitly acknowledged (user-directed).** Build 187 includes observer-side debug state mirroring from Task F (writes to WatchState in `connectionEventDidOccur` and `centralManagerDidUpdateState`), in addition to A/B. This is a deliberate tradeoff stated explicitly in a new "Build 187 scope note" section. The key distinction: debug state mirroring (Build 187) vs. timing/disconnect changes (Build 188).
-
-2. **Task C cancellation hole fixed.** Added explicit `stageTimeoutWorkItem` cancellation in `peripheral(_:didDiscoverServices:error:)` and `peripheral(_:didDiscoverCharacteristicsFor:service:error:)` failure callbacks. These fire before full teardown; without explicit cancellation, a stale work item could fire a redundant `cancelPeripheralConnection` after teardown already cleaned up.
-
-3. **`bleWasRestored` validation criteria corrected.** v1.2 treated `bleWasRestored=true` as a required overnight validation gate. Since restoration relaunches are not under user control, this is now correctly framed as an expected signal when observed — not a required criterion. `bleWasRestored=false` on cold launches is the verifiable gate.
-
-4. **Task E in-memory clarification added.** Properties explicitly noted as "in-memory only — reset to zero on process restart by definition" to prevent future attempts to persist them.
+Build 187 scope explicitly acknowledged as including observer-side debug state mirroring; Task C cancellation hole fixed; bleWasRestored validation corrected; in-memory note added.
 
 ### v1.2 (2026-04-26)
-
-Second review (ChatGPT) identified four substantial issues. All four addressed, plus user adjustment (E+F included in Build 187):
-
-1. **Build composition restructured.** v1.1 bundled A/B/C/D/E/F in one build. v1.2 splits into Build 187 (A+B+E+F — hypothesis validation + additive UI) and Build 188 (C+D — behavior changes after validation). Task C in particular introduces active forced disconnects in exactly the phases being debugged; including it in the validation build would prevent clean attribution of Task A's fix.
-
-2. **`consecutiveConnectFailures` reset semantics corrected.** v1.1 had an internal contradiction: the per-session reset list at the top said "reset on didDisconnect, didFailToConnect, etc." while Task D1 said "reset on didConnect success only." These define two different metrics. For the escalation hypothesis, the accumulator (reset only on success) is correct. `consecutiveConnectFailures` is now explicitly excluded from the per-session reset list with the rationale stated.
-
-3. **Threading / actor ownership rule added.** All observer-originated WatchState writes must be marshalled onto the main actor via `Task { @MainActor in ... }`. The pattern already exists in `noteStatus()`. v1.2 states this as an explicit rule with the full list of affected properties. This was a real implementation hazard, not a nit.
-
-4. **Scan-path `registerForConnectionEvents` preserved as redundant defense in Build 187.** v1.1 said to remove it, which would change two things simultaneously (registration placement + number of sites), weakening attribution of the fix. v1.2 keeps it with a comment in Build 187 and defers removal to the Build 188 commit sequence after validation.
-
-5. **Critical validation signal added to Task A acceptance.** `connection_events_registered reason=powered_on` must appear even when `central_powered_on_deferred reason=awaiting_foreground_active` also appears — this proves registration is foreground-independent, which is the specific property the fix depends on.
-
-6. **User adjustment:** Tasks E and F included in Build 187 (not deferred to Build 189). Rationale: they are additive and non-behavioral — they don't affect the MOD-E signal and the debug screen is actively useful during the overnight validation run.
+Build 187/188 split. B0-B3 minimum shippable. Threading rule explicit. consecutiveConnectFailures semantics corrected. Scan-path registration preserved as redundant defense.
 
 ### v1.1 (2026-04-26)
-Red team review + code verification against build 186 source. Foreground gate constraint added with exact variable name (`hasReceivedForegroundEntry`). UUID constants corrected (`G7BLEUUID` not `G7DirectBLEConstants`). `cancelTransientTimers()` identified as correct cancellation hook for Task C. Exact reset and increment locations for Task D1 specified. WatchState routing table added for Task F.
+Red team + code verification. foreground gate constraint exact. UUID constants corrected. cancelTransientTimers hook. Exact reset/increment locations for D1.
 
 ### v1.0 (2026-04-26)
 Initial build 187 plan.
