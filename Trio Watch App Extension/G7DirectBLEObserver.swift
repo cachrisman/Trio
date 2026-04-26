@@ -108,6 +108,8 @@ final class G7DirectBLEObserver: NSObject {
     private var egvsSinceLaunch = 0
     /// Process-lifetime MOD-E peerConnected count. Mirrors to WatchState for debug UI.
     private var connectionEventsSinceLaunch = 0
+    /// Connect attempts that ended in timeout or explicit connect failure (reset on `didConnect`).
+    private var consecutiveConnectFailures = 0
     /// Phase timestamps for `session_outcome` ladder (reset each `connect()`).
     private var sessionPhaseConnectAt: Date?
     private var sessionPhaseAuthNotifyAt: Date?
@@ -347,7 +349,8 @@ final class G7DirectBLEObserver: NSObject {
                 self.log("event=g7_ble_connect_timeout_ignored reason=already_connected peripheral_id=\(id.uuidString)")
                 return
             }
-            self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString)")
+            self.consecutiveConnectFailures += 1
+            self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString) consecutive_failures=\(self.consecutiveConnectFailures)")
             self.connectInFlight = false
             self.isDiscoveringServices = false
             self.centralManager.cancelPeripheralConnection(peripheral)
@@ -674,6 +677,7 @@ final class G7DirectBLEObserver: NSObject {
         stage = .receivingEGV
         noteStatus(.active)
         persistedPeripheralIdentifier = activePeripheral?.identifier
+        log("event=g7_ble_peripheral_id_persisted peripheral_id=\(activePeripheral?.identifier.uuidString ?? "nil") sequence=\(reading.sequence)")
 
         let previous = lastSavedGlucose
         lastSavedGlucose = (value, reading.readingDate)
@@ -901,7 +905,6 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         connectionEventDidOccur event: CBConnectionEvent,
         for peripheral: CBPeripheral
     ) {
-        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected")")
         if event == .peerConnected {
             connectionEventsSinceLaunch += 1
             let m = connectionEventsSinceLaunch
@@ -909,6 +912,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
                 WatchState.shared.bleConnectionEventsSinceLaunch = m
             }
         }
+        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected") mode_e_total=\(connectionEventsSinceLaunch)")
         if event == .peerConnected, !isHardStopped {
             if postEGVBackoffWorkItem != nil {
                 postEGVBackoffWorkItem?.cancel()
@@ -930,6 +934,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
             WatchState.shared.bleLastConnectAt = connectAt
         }
         failedAttempts = 0
+        consecutiveConnectFailures = 0
         log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
         sessionPhaseConnectAt = Date()
         discoverServicesIfNeeded(peripheral)
@@ -939,10 +944,11 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         connectTimeoutWorkItem?.cancel()
         connectInFlight = false
         isDiscoveringServices = false
+        consecutiveConnectFailures += 1
         if let error {
-            logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
+            logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) consecutive_failures=\(consecutiveConnectFailures)")
         } else {
-            log("event=g7_ble_connect_failed peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil")
+            log("event=g7_ble_connect_failed peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil consecutive_failures=\(consecutiveConnectFailures)")
         }
         scheduleReconnect(reason: "connect_failed")
     }
