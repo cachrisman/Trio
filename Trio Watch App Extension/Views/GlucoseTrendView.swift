@@ -35,6 +35,21 @@ struct GlucoseTrendView: View {
         }
     }
 
+    private var observerStatusColor: Color {
+        switch state.g7DirectBleStatus {
+        case .active:
+            return Color.loopGreen
+        case .searching,
+             .connecting:
+            return Color.loopYellow
+        case .stalled,
+             .unavailable:
+            return Color.loopRed
+        case .off:
+            return Color.secondary
+        }
+    }
+
     var circleSize: CGFloat {
         switch state.deviceType {
         case .watch40mm:
@@ -132,10 +147,13 @@ struct GlucoseTrendView: View {
                 .shadow(color: Color.black.opacity(0.5), radius: 5)
 
                 VStack(alignment: .center) {
+                    let glucoseColor: Color = isWatchStateDated
+                        ? Color.secondary
+                        : state.currentGlucoseColorString.toColor()
                     Text(isWatchStateDated ? "--" : state.currentGlucose)
                         .fontWeight(.semibold)
                         .font(currentGlucoseFontSize)
-                        .foregroundStyle(isWatchStateDated ? Color.secondary : state.currentGlucoseColorString.toColor())
+                        .foregroundStyle(glucoseColor)
 
                     if let delta = state.delta {
                         Text(isWatchStateDated ? "--" : delta)
@@ -148,14 +166,35 @@ struct GlucoseTrendView: View {
 
             Spacer()
 
-            Text(
-                isWatchStateDated ?
-                    String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
-            )
-            .font(.system(size: minutesAgoFontSize))
-            .fontWidth(isWatchStateDated ? .expanded : .standard)
+            VStack(spacing: 2) {
+                let recency: String = isWatchStateDated
+                    ? String(localized: "STALE DATA", comment: "Outdated watch data label.")
+                    : (state.lastLoopTime ?? "--")
+                Text(recency)
+                    .font(.system(size: minutesAgoFontSize))
+                    .fontWidth(isWatchStateDated ? .expanded : .standard)
+
+                if state.bleConnectsSinceLaunch > 0 {
+                    let n = state.bleEGVsSinceLaunch
+                    let egvUnit = n == 1 ? "EGV" : "EGVs"
+                    let bleLine = "BLE: \(n) \(egvUnit) / \(state.bleConnectsSinceLaunch) conn"
+                    let bleEmphasis: Color = n > 0 ? .primary : .secondary
+                    Text(bleLine)
+                        .font(.system(size: max(8, minutesAgoFontSize - 1)))
+                        .foregroundStyle(bleEmphasis)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.55)
+                }
+
+                let src = state.displayedReadingSource.shortLabel
+                let g7s = state.g7DirectBleStatus.shortLabel
+                let age = state.g7DirectBleLastEventAgeText
+                Text("\(src) · BLE:\(g7s) \(age)")
+                    .font(.system(size: max(8, minutesAgoFontSize - 1)))
+                    .foregroundStyle(observerStatusColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+            }
 
             Spacer()
 

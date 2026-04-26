@@ -1,0 +1,1306 @@
+diff --git a/Trio Watch App Extension/G7/G7AlgorithmState.swift b/Trio Watch App Extension/G7/G7AlgorithmState.swift
+new file mode 100644
+index 000000000..f421d8b9e
+--- /dev/null
++++ b/Trio Watch App Extension/G7/G7AlgorithmState.swift	
+@@ -0,0 +1,65 @@
++import Foundation
++
++// Mirrors G7SensorKit `AlgorithmState.swift` (G7SensorKit/AlgorithmState.swift) for parsing only.
++
++enum G7AlgorithmState: RawRepresentable, Equatable {
++    typealias RawValue = UInt8
++
++    enum State: UInt8 {
++        case stopped = 1
++        case warmup = 2
++        case excessNoise = 3
++        case firstOfTwoBGsNeeded = 4
++        case secondOfTwoBGsNeeded = 5
++        case ok = 6
++        case needsCalibration = 7
++        case calibrationError1 = 8
++        case calibrationError2 = 9
++        case calibrationLinearityFitFailure = 10
++        case sensorFailedDuetoCountsAberration = 11
++        case sensorFailedDuetoResidualAberration = 12
++        case outOfCalibrationDueToOutlier = 13
++        case outlierCalibrationRequest = 14
++        case sessionExpired = 15
++        case sessionFailedDueToUnrecoverableError = 16
++        case sessionFailedDueToTransmitterError = 17
++        case temporarySensorIssue = 18
++        case sensorFailedDueToProgressiveSensorDecline = 19
++        case sensorFailedDuetoHighCountsAberration = 20
++        case sensorFailedDuetoLowCountsAberration = 21
++        case sensorFailedDuetoRestart = 22
++        case expired = 24
++        case sensorFailed = 25
++        case sessionEnded = 26
++    }
++
++    case known(State)
++    case unknown(RawValue)
++
++    init(rawValue: RawValue) {
++        if let s = State(rawValue: rawValue) {
++            self = .known(s)
++        } else {
++            self = .unknown(rawValue)
++        }
++    }
++
++    var rawValue: RawValue {
++        switch self {
++        case .known(let s):
++            s.rawValue
++        case .unknown(let v):
++            v
++        }
++    }
++
++    var hasReliableGlucose: Bool {
++        guard case .known(.ok) = self else { return false }
++        return true
++    }
++}
++
++enum G7GlucoseLimits {
++    static let minimum: UInt16 = 40
++    static let maximum: UInt16 = 400
++}
+diff --git a/Trio Watch App Extension/G7/G7AuthChallengeRxMessage.swift b/Trio Watch App Extension/G7/G7AuthChallengeRxMessage.swift
+new file mode 100644
+index 000000000..f8239acea
+--- /dev/null
++++ b/Trio Watch App Extension/G7/G7AuthChallengeRxMessage.swift	
+@@ -0,0 +1,15 @@
++import Foundation
++
++// G7SensorKit `AuthChallengeRxMessage.swift` (G7SensorKit/Messages/AuthChallengeRxMessage.swift).
++
++struct G7AuthChallengeRxMessage: Equatable {
++    let isAuthenticated: Bool
++    let isBonded: Bool
++
++    init?(data: Data) {
++        guard data.count >= 3 else { return nil }
++        guard data[0] == G7Opcode.authChallengeRx.rawValue else { return nil }
++        isAuthenticated = data[1] == 0x01
++        isBonded = data[2] == 0x01
++    }
++}
+diff --git a/Trio Watch App Extension/G7/G7BLEConstants.swift b/Trio Watch App Extension/G7/G7BLEConstants.swift
+new file mode 100644
+index 000000000..bccf06835
+--- /dev/null
++++ b/Trio Watch App Extension/G7/G7BLEConstants.swift	
+@@ -0,0 +1,32 @@
++import CoreBluetooth
++import Foundation
++
++// UUIDs match G7SensorKit `BluetoothServices.swift` (G7SensorKit/BluetoothServices.swift).
++
++enum G7BLEAdvertisement {
++    static let febc = CBUUID(string: "FEBC")
++}
++
++enum G7BLEService {
++    static let cgm = CBUUID(string: "F8083532-849E-531C-C594-30F1F86A4EA5")
++    static let serviceB = CBUUID(string: "F8084532-849E-531C-C594-30F1F86A4EA5")
++}
++
++enum G7BLECharacteristic {
++    static let communication = CBUUID(string: "F8083533-849E-531C-C594-30F1F86A4EA5")
++    static let control = CBUUID(string: "F8083534-849E-531C-C594-30F1F86A4EA5")
++    static let authentication = CBUUID(string: "F8083535-849E-531C-C594-30F1F86A4EA5")
++    static let backfill = CBUUID(string: "F8083536-849E-531C-C594-30F1F86A4EA5")
++    // Service B (J-PAKE path) — G7SensorKit `ServiceBCharacteristicUUID`
++    static let serviceB_E = CBUUID(string: "F8084533-849E-531C-C594-30F1F86A4EA5")
++    static let serviceB_F = CBUUID(string: "F8084534-849E-531C-C594-30F1F86A4EA5")
++}
++
++enum G7Opcode: UInt8 {
++    case authChallengeRx = 0x05
++    case glucoseTx = 0x4E
++    case backfillFinished = 0x59
++}
++
++/// Restoration identifier for same-device eavesdrop session (DiaBLE-style eager CBCentral; G7SensorKit also uses a stable ID).
++let kG7DirectBLERestoreIdentifier = "com.trio.watchapp.g7directble.observer"
+diff --git a/Trio Watch App Extension/G7/G7BLELog.swift b/Trio Watch App Extension/G7/G7BLELog.swift
+new file mode 100644
+index 000000000..d66e0af67
+--- /dev/null
++++ b/Trio Watch App Extension/G7/G7BLELog.swift	
+@@ -0,0 +1,21 @@
++import Foundation
++
++/// Structured logging for the G7 direct BLE observer. Forwards call-site context to `WatchLogger` so
++/// BetterStack shows the syntactic caller, not this helper. See `docs/in-progress/watch-g7-direct-ble-observer/01-design.md`.
++enum G7BLELog {
++    static func log(
++        _ message: String,
++        file: String = #fileID,
++        line: Int = #line,
++        function: String = #function
++    ) {
++        Task {
++            await WatchLogger.shared.log(
++                message,
++                function: function,
++                file: file,
++                line: line
++            )
++        }
++    }
++}
+diff --git a/Trio Watch App Extension/G7/G7Data+G7Bytes.swift b/Trio Watch App Extension/G7/G7Data+G7Bytes.swift
+new file mode 100644
+index 000000000..b1b5e22fe
+--- /dev/null
++++ b/Trio Watch App Extension/G7/G7Data+G7Bytes.swift	
+@@ -0,0 +1,25 @@
++import Foundation
++
++// Byte helpers following G7SensorKit `Common/Data.swift` patterns (G7SensorKit/Common/Data.swift).
++
++extension Data {
++    fileprivate func g7_toDefaultEndian<T: FixedWidthInteger>(_: T.Type) -> T {
++        withUnsafeBytes { raw in
++            guard raw.count >= MemoryLayout<T>.size, let base = raw.baseAddress else { return 0 }
++            return base.loadUnaligned(as: T.self)
++        }
++    }
++
++    func g7To<T: FixedWidthInteger>(_ type: T.Type) -> T {
++        T(littleEndian: g7_toDefaultEndian(T.self))
++    }
++
++    /// Four-byte little-endian value (e.g. message timestamp).
++    func g7ToUInt32() -> UInt32 {
++        g7To(UInt32.self)
++    }
++
++    func g7ToUInt16() -> UInt16 {
++        g7To(UInt16.self)
++    }
++}
+diff --git a/Trio Watch App Extension/G7/G7DirectBLEManager.swift b/Trio Watch App Extension/G7/G7DirectBLEManager.swift
+new file mode 100644
+index 000000000..fb75bf715
+--- /dev/null
++++ b/Trio Watch App Extension/G7/G7DirectBLEManager.swift	
+@@ -0,0 +1,507 @@
++import CoreBluetooth
++import Foundation
++
++/// Watch-only G7 eavesdrop observer. Dexcom G7 watch app owns the session; Trio attaches via same-device CoreBluetooth
++/// (G7SensorKit `G7BluetoothManager.swift`, DiaBLE `BluetoothDelegate.swift`).
++final class G7DirectBLEManager: NSObject {
++    static let shared = G7DirectBLEManager()
++
++    private let queue = DispatchQueue(label: "com.trio.g7directble", qos: .userInitiated)
++    private var central: CBCentralManager!
++    private weak var watchState: WatchState?
++
++    // BLE thread (queue) state
++    private var shouldRun = false
++    private var connectBackoff: TimeInterval = 0.5
++    private var sessionStart: Date?
++    private var receivedEGVThisSession = false
++    private var egvRequestTimer: DispatchSourceTimer?
++    private var authWatchdog: DispatchSourceTimer?
++    private var isScanning = false
++
++    private var targetPeripheral: CBPeripheral?
++    private var connectSourceTag = ""
++    private var authCharacteristic: CBCharacteristic?
++    private var controlCharacteristic: CBCharacteristic?
++    private var backfillCharacteristic: CBCharacteristic?
++    private var activationDate: Date?
++    private var authReady = false
++    private var controlNotifying = false
++    private var lastConnectAttempt: Date?
++    private let connectAttemptTimeout: TimeInterval = 25
++    private let authWatchdogTimeout: TimeInterval = 90
++
++    private let userDefaults = UserDefaults.standard
++    private let kLastPeripheralUUIDKey = "g7directble.lastPeripheralUUID"
++
++    private override init() {
++        super.init()
++        queue.sync { [self] in
++            self.central = CBCentralManager(
++                delegate: self,
++                queue: self.queue,
++                options: [
++                    CBCentralManagerOptionShowPowerAlertKey: true,
++                    CBCentralManagerOptionRestoreIdentifierKey: kG7DirectBLERestoreIdentifier
++                ]
++            )
++        }
++    }
++
++    func bind(watchState: WatchState) {
++        self.watchState = watchState
++    }
++
++    /// Call from `MainActor` / SwiftUI when the watch scene is active.
++    func start() {
++        queue.async { [self] in
++            self.shouldRun = true
++            self.sessionStart = Date()
++            self.receivedEGVThisSession = false
++            self.connectBackoff = 0.5
++            G7BLELog.log("event=g7_ble_lifecycle phase=start shouldRun=true")
++            self.performWorkAfterAttach(reason: "scene_active")
++        }
++    }
++
++    /// Hard off (tests / product), not from `ScenePhase` baseline.
++    func stop() {
++        queue.async { [self] in
++            if self.receivedEGVThisSession {
++                if let s = self.sessionStart {
++                    let duration = Int(Date().timeIntervalSince(s) * 1000)
++                    G7BLELog.log("event=g7_ble_session_outcome outcome=success final_stage=egv duration_ms=\(duration) g7_session=watch_observer")
++                }
++            } else {
++                if let s = self.sessionStart {
++                    let duration = Int(Date().timeIntervalSince(s) * 1000)
++                    G7BLELog.log("event=g7_ble_session_outcome outcome=incomplete final_stage=stop duration_ms=\(duration) g7_session=watch_observer")
++                }
++            }
++            self.shouldRun = false
++            self.cancelTimers()
++            self.central?.stopScan()
++            self.isScanning = false
++            if let p = self.targetPeripheral { self.central?.cancelPeripheralConnection(p) }
++        }
++        G7BLELog.log("event=g7_ble_lifecycle phase=stop")
++        Task { @MainActor in
++            self.watchState?.g7DirectBLEStatus = .off
++            self.watchState?.g7DirectBLEStatusLabel = "off"
++        }
++    }
++
++    // MARK: - Work loop
++
++    private func performWorkAfterAttach(reason: String) {
++        dispatchPrecondition(condition: .onQueue(queue))
++        guard shouldRun, let c = central else { return }
++        if c.state != .poweredOn {
++            G7BLELog.log("event=g7_ble_blocked_unavailable reason=cb_state_\(c.state.rawValue) detail=\(reason)")
++            return
++        }
++
++        if let p = targetPeripheral, p.state == .connecting, let start = lastConnectAttempt,
++           Date().timeIntervalSince(start) > connectAttemptTimeout
++        {
++            G7BLELog.log("event=g7_ble_connect_failed source=\(connectSourceTag) error_desc=connect_attempt_timeout_s=\(Int(connectAttemptTimeout))")
++            c.cancelPeripheralConnection(p)
++        }
++
++        if let p = targetPeripheral, p.state == .connected { return }
++        if let p = targetPeripheral, p.state == .connecting { return }
++
++        if let idStr = userDefaults.string(forKey: kLastPeripheralUUIDKey), let u = UUID(uuidString: idStr) {
++            let list = c.retrievePeripherals(withIdentifiers: [u])
++            if let p = list.first, self.nameMatchesG7(p.name) {
++                connectSourceTag = "retrieved_identifier"
++                beginConnect(p)
++                return
++            }
++        }
++
++        for p in c.retrieveConnectedPeripherals(withServices: [G7BLEAdvertisement.febc]) {
++            if nameMatchesG7(p.name) {
++                connectSourceTag = "retrieved_febc"
++                beginConnect(p)
++                return
++            }
++        }
++        for p in c.retrieveConnectedPeripherals(withServices: [G7BLEService.cgm]) {
++            if nameMatchesG7(p.name) {
++                connectSourceTag = "retrieved_data_service"
++                beginConnect(p)
++                return
++            }
++        }
++
++        startScanIfNeeded()
++    }
++
++    private func startScanIfNeeded() {
++        guard let c = central, !c.isScanning, targetPeripheral == nil else { return }
++        c.registerForConnectionEvents(
++            options: [CBConnectionEventMatchingOption.serviceUUIDs: [G7BLEAdvertisement.febc, G7BLEService.cgm]]
++        )
++        c.scanForPeripherals(withServices: [G7BLEAdvertisement.febc], options: [CBCentralManagerOptionAllowDuplicatesKey: true])
++        isScanning = true
++        connectSourceTag = "scan"
++        G7BLELog.log("event=g7_ble_scan_start allow_duplicates=true service=FEBC")
++        Task { @MainActor in
++            self.watchState?.g7DirectBLEStatus = .searching
++            self.watchState?.g7DirectBLEStatusLabel = "searching"
++        }
++    }
++
++    private func stopScanIfConnected() {
++        central?.stopScan()
++        isScanning = false
++        G7BLELog.log("event=g7_ble_scan_stopped")
++    }
++
++    // MARK: - Name filter (DiaBLE-style, tolerant)
++
++    private func nameMatchesG7(_ name: String?) -> Bool {
++        guard let n = name, !n.isEmpty else { return true }
++        let u = n.uppercased()
++        if u.hasPrefix("DXCM") { return n.count >= 2 }
++        if u.hasPrefix("DX02") { return n.count >= 2 }
++        if u.hasPrefix("DX01") { return n.count >= 2 }
++        if u.hasPrefix("DEXCOM") { return n.count >= 2 }
++        return true
++    }
++
++    // MARK: - Connect
++
++    private func beginConnect(_ peripheral: CBPeripheral) {
++        lastConnectAttempt = Date()
++        targetPeripheral = peripheral
++        peripheral.delegate = self
++        G7BLELog.log(
++            "event=g7_ble_connect_attempt source=\(connectSourceTag) peripheral_id=\(peripheral.identifier) name=\(peripheral.name ?? "nil")"
++        )
++        Task { @MainActor in
++            self.watchState?.g7DirectBLEStatus = .connecting
++            self.watchState?.g7DirectBLEStatusLabel = "connecting"
++        }
++        let opts: [String: Any] = [
++            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
++            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
++        ]
++        central?.connect(peripheral, options: opts)
++    }
++
++    private func increaseBackoff() {
++        connectBackoff = min(30, connectBackoff * 1.5)
++    }
++
++    private func resetBackoff() {
++        connectBackoff = 0.5
++    }
++
++    private func scheduleReconnect() {
++        let delay = min(8, connectBackoff)
++        G7BLELog.log("event=g7_ble_lifecycle schedule_reconnect after_s=\(String(format: "%.1f", delay))")
++        increaseBackoff()
++        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
++            self?.performWorkAfterAttach(reason: "reconnect")
++        }
++    }
++
++    // MARK: - GATT
++
++    private func onConnected() {
++        dispatchPrecondition(condition: .onQueue(queue))
++        receivedEGVThisSession = false
++        authReady = false
++        controlNotifying = false
++        authCharacteristic = nil
++        controlCharacteristic = nil
++        backfillCharacteristic = nil
++        if let p = targetPeripheral {
++            G7BLELog.log("event=g7_ble_did_connect peripheral_id=\(p.identifier) name=\(p.name ?? "nil") source=\(connectSourceTag)")
++            resetBackoff()
++            p.discoverServices([G7BLEService.cgm, G7BLEService.serviceB])
++        }
++    }
++
++    private func startAuthWatchdog() {
++        authWatchdog?.cancel()
++        let t = DispatchSource.makeTimer(queue: queue)
++        t.schedule(deadline: .now() + authWatchdogTimeout)
++        t.setEventHandler { [weak self] in
++            guard let self, !self.authReady, self.shouldRun else { return }
++            G7BLELog.log("event=g7_ble_blocked_auth_incomplete reason=watchdog_s=\(Int(self.authWatchdogTimeout))")
++            Task { @MainActor in
++                self.watchState?.g7DirectBLEStatus = .stalled
++                self.watchState?.g7DirectBLEStatusLabel = "stalled"
++            }
++        }
++        t.resume()
++        authWatchdog = t
++    }
++
++    private func subscribeAuth() {
++        guard let a = authCharacteristic, let p = targetPeripheral else { return }
++        p.setNotifyValue(true, for: a)
++        G7BLELog.log("event=g7_ble_auth_notify_enabling char=\(a.uuid)")
++        startAuthWatchdog()
++    }
++
++    private func onAuthPayload(_ data: Data) {
++        guard !data.isEmpty else { return }
++        G7BLELog.log(
++            "event=g7_ble_auth_payload_received opcode=0x\(String(format: "%02x", data[0])) len=\(data.count) hex_preview=\(data.prefix(32).map { String(format: "%02x", $0) }.joined())"
++        )
++        if let m = G7AuthChallengeRxMessage(data: data), m.isBonded, m.isAuthenticated {
++            if !authReady {
++                G7BLELog.log("event=g7_ble_auth_ready bonded=true auth=true")
++                authReady = true
++                authWatchdog?.cancel()
++            }
++            enableControlNotifyIfReady()
++            sendEGVRequest(reason: "auth_0x05")
++            scheduleEGVRequestTimer()
++        }
++    }
++
++    private func enableControlNotifyIfReady() {
++        guard let c = controlCharacteristic, let p = targetPeripheral, authReady, !c.isNotifying else { return }
++        p.setNotifyValue(true, for: c)
++        G7BLELog.log("event=g7_ble_control_notify_enabling char=\(c.uuid)")
++    }
++
++    private func sendEGVRequest(reason: String) {
++        guard let ctrl = controlCharacteristic, let p = targetPeripheral, authReady else {
++            G7BLELog.log("event=g7_ble_blocked_control_write reason=not_ready")
++            return
++        }
++        p.writeValue(Data([G7Opcode.glucoseTx.rawValue]), for: ctrl, type: .withResponse)
++        G7BLELog.log("event=g7_ble_egv_request_sent reason=\(reason) write_type=withResponse opcode=0x4e")
++    }
++
++    private func scheduleEGVRequestTimer() {
++        egvRequestTimer?.cancel()
++        let t = DispatchSource.makeTimer(queue: queue)
++        t.schedule(deadline: .now() + 4 * 60 + 50, repeating: 4 * 60 + 50)
++        t.setEventHandler { [weak self] in
++            self?.sendEGVRequest(reason: "timer_4m50s")
++        }
++        t.resume()
++        egvRequestTimer = t
++    }
++
++    private func handleControlData(_ data: Data) {
++        guard !data.isEmpty, data[0] == G7Opcode.glucoseTx.rawValue else { return }
++        if let m = G7GlucoseMessage(data: data) {
++            receivedEGVThisSession = true
++            G7BLELog.log(
++                "event=g7_ble_egv_received seq=\(m.sequence) glucose=\(m.glucose.map { String($0) } ?? "nil") alg=\(m.algorithmState.rawValue) ts=\(m.messageTimestamp) age_s=\(m.age)"
++            )
++            applyGlucose(m)
++        } else {
++            G7BLELog.log("event=g7_ble_egv_parse_fail len=\(data.count)")
++        }
++    }
++
++    private func applyGlucose(_ m: G7GlucoseMessage) {
++        if activationDate == nil, let p = targetPeripheral {
++            activationDate = Date().addingTimeInterval(-TimeInterval(m.messageTimestamp))
++            userDefaults.set(p.identifier.uuidString, forKey: kLastPeripheralUUIDKey)
++        }
++        guard let act = activationDate, let g = m.glucose, m.hasReliableGlucose else {
++            G7BLELog.log("event=g7_ble_egv_skipped reason=no_value_or_warmup alg=\(m.algorithmState.rawValue)")
++            return
++        }
++        let reading = act.addingTimeInterval(TimeInterval(m.glucoseTimestamp))
++        let s = min(max(g, G7GlucoseLimits.minimum), G7GlucoseLimits.maximum)
++        let tStr = m.trendString
++        let colorHex = colorHexForGlucose(mgPerDl: Int(s))
++        Task { @MainActor in
++            G7ComplicationDeltaState.previousGlucose = nil
++            self.watchState?.lastG7DirectBLEEventDate = reading
++            self.watchState?.applyG7DirectFromObserver(
++                glucoseMgDl: Int(s),
++                trend: tStr,
++                readingDate: reading,
++                glucoseColorHex: colorHex
++            )
++            G7BLELog.log("event=g7_ble_snapshot_saved source=g7DirectBLE reading_date=\(reading) glucose=\(s)")
++        }
++    }
++
++    private func colorHexForGlucose(mgPerDl: Int) -> String {
++        if mgPerDl < 80 { return "#ff8c00" }
++        if mgPerDl < 200 { return "#4cd964" }
++        if mgPerDl < 250 { return "#ffcc00" }
++        return "#ff3b30"
++    }
++
++    private func cancelTimers() {
++        egvRequestTimer?.cancel()
++        egvRequestTimer = nil
++        authWatchdog?.cancel()
++        authWatchdog = nil
++    }
++
++}
++
++// MARK: - CBCentral
++
++extension G7DirectBLEManager: CBCentralManagerDelegate {
++    func centralManager(_: CBCentralManager, willRestoreState dict: [String: Any]) {
++        if let pList = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral], let p = pList.first {
++            G7BLELog.log("event=g7_ble_lifecycle will_restore_state peripherals=\(pList.count) first_id=\(p.identifier)")
++            targetPeripheral = p
++            p.delegate = self
++        }
++    }
++
++    func centralManagerDidUpdateState(_ c: CBCentralManager) {
++        if c.state == .poweredOn {
++            G7BLELog.log("event=g7_ble_lifecycle cb=powered_on")
++            performWorkAfterAttach(reason: "powered_on")
++        } else {
++            G7BLELog.log("event=g7_ble_blocked_unavailable state=\(c.state.rawValue)")
++            Task { @MainActor in
++                self.watchState?.g7DirectBLEStatus = .unavailable
++                self.watchState?.g7DirectBLEStatusLabel = "unavailable"
++            }
++        }
++    }
++
++    func centralManager(
++        _ central: CBCentralManager,
++        didDiscover peripheral: CBPeripheral,
++        advertisementData: [String: Any],
++        rssi RSSI: NSNumber
++    ) {
++        let mfg = (advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data)?.prefix(4).map { String(format: "%02x", $0) }
++            .joined() ?? "nil"
++        G7BLELog.log(
++            "event=g7_ble_peripheral_discovered name=\(peripheral.name ?? "nil") id=\(peripheral.identifier) rssi=\(RSSI) mfg=\(mfg) adv_keys=\(advertisementData.keys.sorted().joined(separator: ","))"
++        )
++        if !nameMatchesG7(peripheral.name) {
++            G7BLELog.log("event=g7_ble_peripheral_skipped name=\(peripheral.name ?? "nil") reason=name_pattern")
++            return
++        }
++        if targetPeripheral == nil {
++            connectSourceTag = "scan"
++            beginConnect(peripheral)
++        }
++    }
++
++    func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
++        stopScanIfConnected()
++        targetPeripheral = peripheral
++        onConnected()
++    }
++
++    func centralManager(_: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: (any Error)?) {
++        let n = error as NSError?
++        G7BLELog.log(
++            "event=g7_ble_connect_failed source=\(connectSourceTag) error_domain=\(n?.domain ?? "nil") error_code=\(n?.code ?? -1) error_desc=\(n?.localizedDescription ?? "unknown")"
++        )
++        targetPeripheral = nil
++        scheduleReconnect()
++        Task { @MainActor in
++            self.watchState?.g7DirectBLEStatus = .stalled
++            self.watchState?.g7DirectBLEStatusLabel = "stalled"
++        }
++    }
++
++    func centralManager(_: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: (any Error)?) {
++        G7BLELog.log("event=g7_ble_did_disconnect peripheral=\(peripheral.identifier) err=\(error.map { $0.localizedDescription } ?? "none")")
++        let run = shouldRun
++        cancelTimers()
++        authReady = false
++        controlNotifying = false
++        targetPeripheral = nil
++        if run { scheduleReconnect() }
++        Task { @MainActor in
++            if run {
++                self.watchState?.g7DirectBLEStatus = .stalled
++                self.watchState?.g7DirectBLEStatusLabel = "disconnect"
++            }
++        }
++    }
++}
++
++// MARK: - Peripheral
++
++extension G7DirectBLEManager: CBPeripheralDelegate {
++    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: (any Error)?) {
++        if let e = error {
++            G7BLELog.log("event=g7_ble_services_discovered error=\(e.localizedDescription)")
++            return
++        }
++        for s in peripheral.services ?? [] {
++            if s.uuid == G7BLEService.cgm {
++                G7BLELog.log("event=g7_ble_services_discovered uuid=\(s.uuid) label=cgm")
++                peripheral.discoverCharacteristics(nil, for: s)
++            } else if s.uuid == G7BLEService.serviceB {
++                G7BLELog.log("event=g7_ble_services_discovered uuid=\(s.uuid) label=serviceB_jpake")
++                peripheral.discoverCharacteristics([G7BLECharacteristic.serviceB_E, G7BLECharacteristic.serviceB_F], for: s)
++            }
++        }
++    }
++
++    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: (any Error)?) {
++        if let e = error {
++            G7BLELog.log("event=g7_ble_characteristics_discovered err=\(e.localizedDescription)")
++            return
++        }
++        for ch in service.characteristics ?? [] {
++            G7BLELog.log("event=g7_ble_characteristics_discovered uuid=\(ch.uuid) props=\(ch.properties.rawValue)")
++            switch ch.uuid {
++            case G7BLECharacteristic.authentication: authCharacteristic = ch
++            case G7BLECharacteristic.control: controlCharacteristic = ch
++            case G7BLECharacteristic.backfill: backfillCharacteristic = ch
++            case G7BLECharacteristic.serviceB_E, G7BLECharacteristic.serviceB_F:
++                G7BLELog.log("event=g7_ble_jpake_discovered char=\(ch.uuid) (no_notify_safety)")
++            default: break
++            }
++        }
++        if service.uuid == G7BLEService.cgm, let a = authCharacteristic, let c = controlCharacteristic {
++            G7BLELog.log("event=g7_ble_services_ready auth=\(a.uuid) control=\(c.uuid) backfill=\(backfillCharacteristic != nil)")
++            subscribeAuth()
++        } else if service.uuid == G7BLEService.cgm, authCharacteristic == nil || controlCharacteristic == nil {
++            G7BLELog.log("event=g7_ble_blocked_missing_chars auth=\(authCharacteristic != nil) control=\(controlCharacteristic != nil)")
++        }
++    }
++
++    func peripheral(_: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: (any Error)?) {
++        if let e = error {
++            G7BLELog.log("event=g7_ble_error char=\(characteristic.uuid) \(e.localizedDescription)")
++        }
++        guard let v = characteristic.value, !v.isEmpty else { return }
++        if characteristic.uuid == G7BLECharacteristic.authentication {
++            onAuthPayload(v)
++        } else if characteristic.uuid == G7BLECharacteristic.control {
++            handleControlData(v)
++        } else if characteristic.uuid == G7BLECharacteristic.backfill {
++            G7BLELog.log("event=g7_ble_backfill_ignored len=\(v.count)")
++        }
++    }
++
++    func peripheral(_: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: (any Error)?) {
++        if characteristic.uuid == G7BLECharacteristic.authentication {
++            G7BLELog.log("event=g7_ble_auth_notify_enabled success=\(error == nil) notifying=\(characteristic.isNotifying)")
++        }
++        if characteristic.uuid == G7BLECharacteristic.control, characteristic.isNotifying {
++            controlNotifying = true
++            G7BLELog.log("event=g7_ble_control_notify_enabled success=\(error == nil)")
++            Task { @MainActor in
++                self.watchState?.g7DirectBLEStatus = .active
++                self.watchState?.g7DirectBLEStatusLabel = "active"
++                self.watchState?.lastG7DirectBLEEventDate = Date()
++            }
++        }
++    }
++
++    func peripheral(_: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: (any Error)?) {
++        if characteristic.uuid == G7BLECharacteristic.control, let e = error {
++            G7BLELog.log("event=g7_ble_connect_failed source=control_write error_desc=\(e.localizedDescription)")
++        }
++    }
++}
+diff --git a/Trio Watch App Extension/G7/G7DirectBLEStatus.swift b/Trio Watch App Extension/G7/G7DirectBLEStatus.swift
+new file mode 100644
+index 000000000..22fe7f0ff
+--- /dev/null
++++ b/Trio Watch App Extension/G7/G7DirectBLEStatus.swift	
+@@ -0,0 +1,11 @@
++import Foundation
++
++/// Glanceable observer state for the main watch face (see `01-design.md` § UI).
++enum G7DirectBLEStatus: String, Sendable, Equatable {
++    case off
++    case searching
++    case connecting
++    case active
++    case stalled
++    case unavailable
++}
+diff --git a/Trio Watch App Extension/G7/G7GlucoseMessage.swift b/Trio Watch App Extension/G7/G7GlucoseMessage.swift
+new file mode 100644
+index 000000000..e55d734a2
+--- /dev/null
++++ b/Trio Watch App Extension/G7/G7GlucoseMessage.swift	
+@@ -0,0 +1,63 @@
++import Foundation
++
++// Layout from G7SensorKit `G7GlucoseMessage.swift` (G7SensorKit/Messages/G7GlucoseMessage.swift).
++
++struct G7GlucoseMessage: Equatable {
++    let glucose: UInt16?
++    let predicted: UInt16?
++    let glucoseIsDisplayOnly: Bool
++    let messageTimestamp: UInt32
++    let algorithmState: G7AlgorithmState
++    let sequence: UInt16
++    let trend: Double?
++    let data: Data
++    let age: UInt16
++
++    var hasReliableGlucose: Bool { algorithmState.hasReliableGlucose }
++
++    var glucoseTimestamp: UInt32 { messageTimestamp - UInt32(age) }
++
++    /// Nightscout / Trio watch trend string (same naming as `WatchState.trend` from the phone).
++    var trendString: String? {
++        guard let t = trend else { return nil }
++        switch t {
++        case let x where x <= -3.0: "DoubleDown"
++        case let x where x <= -2.0: "SingleDown"
++        case let x where x <= -1.0: "FortyFiveDown"
++        case let x where x < 1.0: "Flat"
++        case let x where x < 2.0: "FortyFiveUp"
++        case let x where x < 3.0: "SingleUp"
++        default: "DoubleUp"
++        }
++    }
++
++    init?(data: Data) {
++        guard data.count >= 19 else { return nil }
++        guard data[1] == 0 else { return nil }
++
++        messageTimestamp = data.subdata(in: 2 ..< 6).g7ToUInt32()
++        sequence = data.subdata(in: 6 ..< 8).g7ToUInt16()
++        age = data.subdata(in: 10 ..< 12).g7ToUInt16()
++        let glucoseData = data.subdata(in: 12 ..< 14).g7ToUInt16()
++        if glucoseData != 0xFFFF {
++            glucose = glucoseData & 0x0FFF
++            glucoseIsDisplayOnly = (data[18] & 0x10) > 0
++        } else {
++            glucose = nil
++            glucoseIsDisplayOnly = false
++        }
++        let predictionData = data.subdata(in: 16 ..< 18).g7ToUInt16()
++        if predictionData != 0xFFFF {
++            predicted = predictionData & 0x0FFF
++        } else {
++            predicted = nil
++        }
++        algorithmState = G7AlgorithmState(rawValue: data[14])
++        if data[15] == 0x7F {
++            trend = nil
++        } else {
++            trend = Double(Int8(bitPattern: data[15])) / 10
++        }
++        self.data = data
++    }
++}
+diff --git a/Trio Watch App Extension/Views/GlucoseTrendView.swift b/Trio Watch App Extension/Views/GlucoseTrendView.swift
+index 20b50f21f..04944559c 100644
+--- a/Trio Watch App Extension/Views/GlucoseTrendView.swift	
++++ b/Trio Watch App Extension/Views/GlucoseTrendView.swift	
+@@ -114,6 +114,45 @@ struct GlucoseTrendView: View {
+         }
+     }
+ 
++    private var sourceAbbrev: String {
++        switch state.displayedComplicationDataSource {
++        case .g7DirectBLE: "BLE"
++        case .watchConnectivityPhone: "Phone"
++        case .healthKit: "HK"
++        case .unknown: "…"
++        }
++    }
++
++    private var bleStateAbbrev: String {
++        switch state.g7DirectBLEStatus {
++        case .off: "off"
++        case .searching: "scan"
++        case .connecting: "conn"
++        case .active: "ok"
++        case .stalled: "stall"
++        case .unavailable: "noBT"
++        }
++    }
++
++    private var lastBleRecency: String? {
++        guard let d = state.lastG7DirectBLEEventDate else { return nil }
++        let s = max(0, Int(Date().timeIntervalSince(d)))
++        if s < 60 { return "<1m" }
++        let m = s / 60
++        if m < 120 { return "\(m)m" }
++        return "\(m/60)h+"
++    }
++
++    private var recencyLine: String {
++        if isWatchStateDated {
++            return String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.")
++        }
++        let base = state.lastLoopTime ?? "--"
++        let path = "· src:\(sourceAbbrev)"
++        let ble = " · G7:\(bleStateAbbrev)\(lastBleRecency.map { "[\($0)]" } ?? "")"
++        return "\(base)\(path)\(ble)"
++    }
++
+     var body: some View {
+         VStack {
+             ZStack {
+@@ -148,13 +187,10 @@ struct GlucoseTrendView: View {
+ 
+             Spacer()
+ 
+-            Text(
+-                isWatchStateDated ?
+-                    String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
+-                    state
+-                    .lastLoopTime ?? "--"
+-            )
+-            .font(.system(size: minutesAgoFontSize))
++            Text(recencyLine)
++            .font(.system(size: minutesAgoFontSize - 1))
++            .lineLimit(2)
++            .minimumScaleFactor(0.55)
+             .fontWidth(isWatchStateDated ? .expanded : .standard)
+ 
+             Spacer()
+diff --git a/Trio Watch App Extension/Views/TrioMainWatchView.swift b/Trio Watch App Extension/Views/TrioMainWatchView.swift
+index 51999791d..08c16e9e3 100644
+--- a/Trio Watch App Extension/Views/TrioMainWatchView.swift	
++++ b/Trio Watch App Extension/Views/TrioMainWatchView.swift	
+@@ -4,6 +4,7 @@ import WatchKit
+ 
+ struct TrioMainWatchView: View {
+     @State private var state = WatchState.shared
++    @Environment(\.scenePhase) private var scenePhase
+ 
+     // misc
+     @State private var currentPage: Int = 0
+@@ -132,6 +133,7 @@ struct TrioMainWatchView: View {
+                         state.currentGlucoseColorString = glucoseColor
+                     }
+                     state.lastWatchStateUpdate = snapshot.readingDate
++                    if let s = snapshot.dataSource { state.displayedComplicationDataSource = s }
+                     state.showSyncingAnimation = true
+                 } else if let snapshot = cachedSnapshot,
+                           let lastUpdate = state.lastWatchStateUpdate,
+@@ -144,14 +146,25 @@ struct TrioMainWatchView: View {
+                         state.currentGlucoseColorString = glucoseColor
+                     }
+                     state.lastWatchStateUpdate = snapshot.readingDate
++                    if let s = snapshot.dataSource { state.displayedComplicationDataSource = s }
+                     state.showSyncingAnimation = false
+                 }
+ 
+                 state.bolusAmount = 0
+                 state.recommendedBolus = 0
+ 
++                G7DirectBLEManager.shared.bind(watchState: state)
++                if scenePhase == .active {
++                    G7DirectBLEManager.shared.start()
++                }
++
+                 state.noteMainWatchRootViewAppearedForResidentTelemetry()
+             }
++            .onChange(of: scenePhase) { _, newPhase in
++                if newPhase == .active {
++                    G7DirectBLEManager.shared.start()
++                }
++            }
+             .onChange(of: currentPage) { _, newPage in
+                 if newPage == 1 {
+                     state.noteChartTabBecameVisibleForResidentTelemetry()
+diff --git a/Trio Watch App Extension/WatchState+G7ComplicationPipeline.swift b/Trio Watch App Extension/WatchState+G7ComplicationPipeline.swift
+new file mode 100644
+index 000000000..78d49dfef
+--- /dev/null
++++ b/Trio Watch App Extension/WatchState+G7ComplicationPipeline.swift	
+@@ -0,0 +1,49 @@
++import Foundation
++
++@MainActor
++extension WatchState {
++    /// Apply a G7 eavesdrop EGV: update shared `TrioComplicationDataStore`, then `WatchState` for the main view.
++    func applyG7DirectFromObserver(
++        glucoseMgDl: Int,
++        trend: String?,
++        readingDate: Date,
++        glucoseColorHex: String
++    ) {
++        let trendV = trend ?? ""
++        var deltaV = delta ?? "--"
++        if let prev = G7ComplicationDeltaState.previousGlucose, prev != glucoseMgDl {
++            let d = glucoseMgDl - prev
++            if d > 0 { deltaV = "+\(d)" } else if d < 0 { deltaV = "\(d)" } else { deltaV = "0" }
++        }
++        G7ComplicationDeltaState.previousGlucose = glucoseMgDl
++
++        let snap = TrioComplicationSnapshot(
++            glucose: String(glucoseMgDl),
++            trend: trendV,
++            delta: deltaV,
++            readingDate: readingDate,
++            date: Date(),
++            glucoseColor: glucoseColorHex,
++            dataSource: .g7DirectBLE
++        )
++        if !TrioComplicationDataStore.shared.wouldAcceptMainThreadSave(snap) {
++            G7BLELog.log("event=g7_ble_snapshot_skipped reason=dedup_or_older reading_date=\(readingDate) glucose=\(glucoseMgDl)")
++            return
++        }
++        TrioComplicationDataStore.shared.save(snap, minInterval: 5)
++        currentGlucose = String(glucoseMgDl)
++        self.trend = trendV
++        delta = deltaV
++        currentGlucoseColorString = glucoseColorHex
++        if let a = Int(readingDate.timeIntervalSinceNow / -60.0) {
++            lastLoopTime = "\(max(0, a)) min"
++        }
++        lastWatchStateUpdate = readingDate
++        displayedComplicationDataSource = .g7DirectBLE
++    }
++}
++
++@MainActor
++enum G7ComplicationDeltaState {
++    static var previousGlucose: Int?
++}
+diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
+index 5b72af7de..6cc443ec8 100644
+--- a/Trio Watch App Extension/WatchState.swift	
++++ b/Trio Watch App Extension/WatchState.swift	
+@@ -53,6 +53,16 @@ enum BackgroundTaskWindowCounter {
+     var cob: String? = "--"
+     var iob: String? = "--"
+     var lastLoopTime: String? = "--"
++
++    /// Which data path last *won* the complication store for the value on screen.
++    var displayedComplicationDataSource: TrioComplicationDataSource = .unknown
++
++    // MARK: - G7 direct BLE observer (watch)
++
++    var g7DirectBLEStatus: G7DirectBLEStatus = .off
++    var lastG7DirectBLEEventDate: Date?
++    var g7DirectBLEStatusLabel: String = ""
++
+     var overridePresets: [OverridePresetWatch] = []
+     var tempTargetPresets: [TempTargetPresetWatch] = []
+ 
+@@ -670,11 +680,13 @@ enum BackgroundTaskWindowCounter {
+             delta: deltaString,
+             readingDate: readingDate,
+             date: Date(),
+-            glucoseColor: nil
++            glucoseColor: nil,
++            dataSource: .healthKit
+         )
+ 
+-        DispatchQueue.main.async {
++        DispatchQueue.main.async { [self] in
+             TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
++            displayedComplicationDataSource = .healthKit
+             completionHandler()
+         }
+     }
+@@ -1097,7 +1109,8 @@ enum BackgroundTaskWindowCounter {
+             trend: payload[WatchMessageKeys.trend] as? String ?? "",
+             delta: payload[WatchMessageKeys.delta] as? String ?? "",
+             readingDate: readingDate,
+-            date: Date()
++            date: Date(),
++            dataSource: .watchConnectivityPhone
+         )
+         if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
+             DispatchQueue.main.async { [weak self] in
+@@ -1843,7 +1856,8 @@ enum BackgroundTaskWindowCounter {
+             delta: deltaValue,
+             readingDate: readingDate,
+             date: Date(),
+-            glucoseColor: glucoseColorValue
++            glucoseColor: glucoseColorValue,
++            dataSource: .watchConnectivityPhone
+         )
+ 
+         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
+@@ -1852,6 +1866,7 @@ enum BackgroundTaskWindowCounter {
+         }
+ 
+         TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
++        displayedComplicationDataSource = .watchConnectivityPhone
+ 
+         // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
+         // Use only the threaded userInfoReceiveTimestamp; no fallback to instance state so attribution stays unambiguous.
+@@ -1904,7 +1919,8 @@ enum BackgroundTaskWindowCounter {
+             delta: delta ?? "",
+             readingDate: effectiveReadingDate,
+             date: Date(),
+-            glucoseColor: currentGlucoseColorString
++            glucoseColor: currentGlucoseColorString,
++            dataSource: .watchConnectivityPhone
+         )
+ 
+         Task {
+diff --git a/Trio Watch Shared/TrioComplicationDataSource.swift b/Trio Watch Shared/TrioComplicationDataSource.swift
+new file mode 100644
+index 000000000..bb29099ae
+--- /dev/null
++++ b/Trio Watch Shared/TrioComplicationDataSource.swift	
+@@ -0,0 +1,13 @@
++import Foundation
++
++/// Provenance of the glucose value saved to the complication data store.
++enum TrioComplicationDataSource: String, Sendable, Equatable, Codable, CaseIterable {
++    /// iPhone / WatchConnectivity watchState path.
++    case watchConnectivityPhone
++    /// Direct G7 eavesdrop on the watch.
++    case g7DirectBLE
++    /// R6 HealthKit path.
++    case healthKit
++    /// Unset.
++    case unknown
++}
+diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
+index 1cc2a5535..7b44d45bb 100644
+--- a/Trio Watch Shared/TrioComplicationDataStore.swift	
++++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
+@@ -18,6 +18,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
+     let readingDate: Date
+     let state: String?
+     let glucoseColor: String?
++    let dataSource: TrioComplicationDataSource?
+ 
+     // INVARIANT (Phase 3.4): All display-field sanitization here.
+     // Dedup always compares sanitized values.
+@@ -28,7 +29,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
+         readingDate: Date,
+         date: Date,
+         state: String? = nil,
+-        glucoseColor: String? = nil
++        glucoseColor: String? = nil,
++        dataSource: TrioComplicationDataSource? = nil
+     ) {
+         glucose = Self.sanitizedGlucose(from: rawGlucose)
+         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
+@@ -37,6 +39,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
+         self.date = date
+         self.state = state
+         self.glucoseColor = glucoseColor
++        self.dataSource = dataSource
+     }
+ 
+     private static func sanitizedGlucose(from value: String) -> String {
+@@ -89,6 +92,8 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
+     let trend: String
+     let delta: String
+     let state: String
++    /// Optional for migration: older `UserDefaults` entries omit this key.
++    let dataSource: String?
+ }
+ 
+ extension ComplicationSnapshotFingerprint {
+@@ -100,6 +105,7 @@ extension ComplicationSnapshotFingerprint {
+         // Sentinel for nil: state is always optional in the model; sentinel ensures
+         // nil and non-nil are always distinguishable in Equatable comparison.
+         state = snapshot.state ?? "<nil>"
++        dataSource = snapshot.dataSource?.rawValue
+     }
+ }
+ 
+@@ -569,14 +575,41 @@ final class TrioComplicationDataStore {
+     //   Same timestamp, different glucose → true
+     //   Newer timestamp (>1s)            → true
+     //   Older timestamp (<-1s)           → false
++    /// Whether `saveOnMain` would write this snapshot (main thread; mirrors future-skew + dedup checks, not pre-dispatch).
++    @MainActor
++    func wouldAcceptMainThreadSave(_ snapshot: TrioComplicationSnapshot) -> Bool {
++        if snapshot.readingDate.timeIntervalSinceNow > 120 { return false }
++        if let existing = inMemorySavedSnapshot {
++            return shouldUpdate(new: snapshot, current: existing)
++        }
++        if let lastTS = Self.lastValidTimestamp, snapshot.readingDate.timeIntervalSince(lastTS) < 0.0 {
++            return false
++        }
++        return true
++    }
++
+     func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
+         let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
+-        if timeDiff > 1.0  { return true }
++        if timeDiff > 1.0 { return true }
+         if timeDiff < -1.0 { return false }
+-        return new.glucose != current.glucose
+-            || new.trend   != current.trend
+-            || new.delta   != current.delta
+-            || new.state   != current.state
++        if new.glucose != current.glucose
++            || new.trend != current.trend
++            || new.delta != current.delta
++            || new.state != current.state
++        {
++            return true
++        }
++        if new.dataSource == current.dataSource { return false }
++        return dataSourcePriority(new.dataSource) > dataSourcePriority(current.dataSource)
++    }
++
++    private func dataSourcePriority(_ s: TrioComplicationDataSource?) -> Int {
++        switch s {
++        case .g7DirectBLE: 3
++        case .watchConnectivityPhone: 2
++        case .healthKit: 1
++        case .none, .unknown, nil: 0
++        }
+     }
+ 
+     // MARK: - Phase 3.0 Pre-dispatch Dedup
+diff --git a/docs/in-progress/watch-g7-direct-ble-observer/01-design.md b/docs/in-progress/watch-g7-direct-ble-observer/01-design.md
+new file mode 100644
+index 000000000..835a2e0d9
+--- /dev/null
++++ b/docs/in-progress/watch-g7-direct-ble-observer/01-design.md
+@@ -0,0 +1,72 @@
++# Watch G7 direct BLE observer — design
++
++**Version:** v2  
++**Status:** Draft (device validation pending)  
++**Created:** 2026-04-24 16:02 CEST  
++**Last updated:** 2026-04-24 17:24 CEST  
++
++---
++
++## Mission
++
++Trio’s watch app extension **eavesdrops** on the Dexcom G7 session that the **official Dexcom G7 watch app** already holds in direct-to-watch mode, using **same-device CoreBluetooth**: Trio’s `CBCentralManager` gets its own GATT view, subscribes to auth/control notifications, and **writes the EGV-request opcode** on the control characteristic. The goal is **sustained delivery of many EGV readings over time**, not a one-shot read.
++
++Trio does **not** own authentication (no J-PAKE, no app-key auth, no `sendAuthRequest`); it only **observes** auth traffic and **requests data** once the session is ready per the advance condition below.
++
++**References (read-only, not copied into the tree):** G7SensorKit `G7BluetoothManager.swift`, `G7Sensor.swift`, `G7GlucoseMessage.swift`, `AuthChallengeRxMessage.swift`, `BluetoothServices.swift`; DiaBLE `BluetoothDelegate.swift`, `DexcomG7.swift`.
++
++## Baseline: `dev` + patches 01–10
++
++The implementation is integrated on **`dev` with `patches/01-*.patch` … `patches/10-*.patch` applied** (watch complication data store, session/telemetry, etc.). The G7 observer **extends** the existing `Trio Watch Shared/TrioComplicationDataStore` (optional `TrioComplicationDataSource` on `TrioComplicationSnapshot`); it does **not** replace that store with a duplicate.
++
++---
++
++## Protocol sequence (high fidelity)
++
++1. `CBCentralManager` with **restore identifier** (G7SensorKit, DiaBLE pattern).
++2. **Attach ladder:** `retrievePeripherals(withIdentifiers:)` (last good UUID) → `retrieveConnectedPeripherals` with `FEBC` then cgm service → **scan** `FEBC` with allow-duplicates and `registerForConnectionEvents`.
++3. `connect` with `CBConnectPeripheralOptionNotifyOnConnectionKey` + `NotifyOnDisconnectionKey`.
++4. **Services:** `discoverServices` for cgm + serviceB (J-PAKE service for **discovery-only** logging; **no notify** on J-PAKE).
++5. **Characteristics:** `discoverCharacteristics(nil, for: cgm)`.
++6. Enable **auth** notify first; on **AuthChallengeRx** `0x05` with `isAuthenticated && isBonded`, enable **control** notify, then **write** `0x4E` to control **withResponse**.
++7. Parse EGV with **G7GlucoseMessage** field layout; activation: `Date() - messageTimestamp` on first EGV.
++8. **Backfill:** log only; does not gate.
++
++**Safety:** no auth writes; no J-PAKE subscription.
++
++---
++
++## Dedup / source (DQ 16, post-patch integration)
++
++- **Newer `readingDate` wins.**
++- **Within ±1s** with same glucose/trend/delta: **higher** `TrioComplicationDataSource` priority can replace (`g7DirectBLE` > `watchConnectivityPhone` > `healthKit` > unknown).
++- Saves use `TrioComplicationDataStore.save(..., minInterval: 5)`.
++
++## Source attribution (pipeline)
++
++- `TrioComplicationSnapshot.dataSource` (optional) + `WatchState.displayedComplicationDataSource` for the main view.
++
++## UI (DQ 17)
++
++- G7 status on `WatchState` + `GlucoseTrendView` recency line (`src:`, `G7:` line).
++
++## Observability
++
++- `event=g7_ble_*` via `G7BLELog` → `WatchLogger`.
++
++## Known risks
++
++- Device / Xcode: add new G7 `*.swift` files to the Watch App Extension target.
++- Fingerprint in App Group: new optional `dataSource` field; older fingerprints decode with `dataSource: nil` (treated as unknown).
++
++---
++
++## Changelog
++
++### v2 (2026-04-24 17:24 CEST)
++
++- Documented integration on **dev + patches 01–10** and use of **shared** `TrioComplicationDataStore` + `dataSource` (no duplicate G7 store).
++
++### v1 (2026-04-24 16:02 CEST)
++
++- Initial design: eavesdrop sequence, DQs, pipeline, UI, and risks for watch-only G7 observer POC.
+diff --git a/docs/in-progress/watch-g7-direct-ble-observer/02-implementation-plan.md b/docs/in-progress/watch-g7-direct-ble-observer/02-implementation-plan.md
+new file mode 100644
+index 000000000..3605aa7aa
+--- /dev/null
++++ b/docs/in-progress/watch-g7-direct-ble-observer/02-implementation-plan.md
+@@ -0,0 +1,38 @@
++# Watch G7 direct BLE observer — implementation plan
++
++**Version:** v2  
++**Status:** In progress (Xcode wiring on patched baseline)  
++**Created:** 2026-04-24 16:02 CEST  
++**Last updated:** 2026-04-24 17:24 CEST  
++
++---
++
++## New / modified (patched baseline)
++
++| Location | Change |
++|----------|--------|
++| `Trio Watch App Extension/G7/*.swift` | G7 protocol + `G7DirectBLEManager` (no duplicate `TrioComplicationDataStore`) |
++| `Trio Watch Shared/TrioComplicationDataSource.swift` | **New** enum for snapshot provenance |
++| `Trio Watch Shared/TrioComplicationDataStore.swift` | `TrioComplicationSnapshot` + optional `dataSource`; `shouldUpdate` tie-break; `ComplicationSnapshotFingerprint` includes optional `dataSource`; `wouldAcceptMainThreadSave` for G7 path |
++| `Trio Watch App Extension/WatchState+G7ComplicationPipeline.swift` | `applyG7DirectFromObserver` |
++| `Trio Watch App Extension/WatchState.swift` | G7 + `displayedComplicationDataSource`; WC/HK snapshot builders set `dataSource` |
++| `Trio Watch App Extension/Views/TrioMainWatchView.swift` | `ScenePhase` + G7 `bind`/`start` (with `WatchState.shared`) |
++| `Trio Watch App Extension/Views/GlucoseTrendView.swift` | Recency + source + G7 status |
++
++**Baseline:** `dev` with **`git am --3way patches/01-..` through `10-..`**. Human must add **G7 Swift files + `TrioComplicationDataSource.swift` + shared file edits** to the correct targets in Xcode.
++
++## Phases
++
++1. Apply patches 01–10.  
++2. Integrate G7 on top (shared store + G7 module).  
++3. Xcode: target membership for new files.  
++
++## Changelog
++
++### v2 (2026-04-24 17:24 CEST)
++
++- Replaced plan: integration with `Trio Watch Shared` after patches 1–10; drop G7-local duplicate `TrioComplication*` types.
++
++### v1 (2026-04-24 16:02 CEST)
++
++- Initial plan (pre-patch baseline, listed G7 copies of store) — **superseded** by v2.
+diff --git a/docs/in-progress/watch-g7-direct-ble-observer/03-implementation-log.md b/docs/in-progress/watch-g7-direct-ble-observer/03-implementation-log.md
+new file mode 100644
+index 000000000..8105819a7
+--- /dev/null
++++ b/docs/in-progress/watch-g7-direct-ble-observer/03-implementation-log.md
+@@ -0,0 +1,34 @@
++# Watch G7 direct BLE observer — implementation log
++
++**Version:** v2  
++**Created:** 2026-04-24 16:02 CEST  
++**Last updated:** 2026-04-24 17:24 CEST  
++
++---
++
++## Branch and base
++
++- **Branch:** `feature/watch-g7-direct-ble-observer-patched-cea9`  
++- **Base:** `dev` @ `1aa70ac077ef1492cddfce2bd39e0b2481f3d55c`  
++- **Patches applied (order):** `patches/01-*.patch` … `patches/10-*.patch` via `git am --3way` (clean apply, no conflict).  
++
++## What changed vs first attempt
++
++The earlier branch `feature/watch-g7-direct-ble-observer-clean-cea9` was from **plain `dev`** and missed the watch **complication / session** stack. Cherry-picking that commit onto **dev+01–10** **conflicts** with `TrioMainWatchView` and would **duplicate** `TrioComplicationDataStore` (patches 09+ already add `Trio Watch Shared/TrioComplicationDataStore.swift`).
++
++**Resolution:** Re-integrate the G7 observer to use the **shared** `TrioComplicationDataStore` + add optional `dataSource` on `TrioComplicationSnapshot`, G7 `applyG7DirectFromObserver`, and wire `TrioMainWatchView` to `G7DirectBLEManager` without dropping **WatchState.shared**, telemetry, or the third (debug) tab.
++
++## Validation
++
++- `scripts/patch-test.sh` not re-run in this follow-up; patches were applied with `git am` only.  
++- No `xcodebuild` (per process rules).  
++
++## Changelog
++
++### v2 (2026-04-24 17:24 CEST)
++
++- Logged rebased work on `dev+01–10`, conflict rationale, and shared-store integration.
++
++### v1 (2026-04-24 16:02 CEST)
++
++- Initial handoff log (plain-`dev` base).

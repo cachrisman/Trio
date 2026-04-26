@@ -1,0 +1,192 @@
+diff --git a/Trio Watch App Extension/G7DirectBLEObserver.swift b/Trio Watch App Extension/G7DirectBLEObserver.swift
+index 5fd96244a..59819c598 100644
+--- a/Trio Watch App Extension/G7DirectBLEObserver.swift	
++++ b/Trio Watch App Extension/G7DirectBLEObserver.swift	
+@@ -86,6 +86,22 @@ final class G7DirectBLEObserver: NSObject {
+     /// Anchored once per connect cycle so consecutive EGV parses share the same activation instant (sub-second drift fix).
+     private var sessionActivationDate: Date?
+     private var controlWriteConsecutiveFailures = 0
++    /// True while a centralManager.connect() call is in-flight. Guards against parallel connects
++    /// from rapid scene transitions. Per-session — reset on every connect completion or teardown.
++    private var connectInFlight = false
++    /// True once peripheral.discoverServices() has been called for the current connection.
++    /// One-shot session gate — cleared only on full teardown, never on mid-session phase transition.
++    /// CBPeripheral.services is unreliable as a guard (can be non-nil from cached prior-session state).
++    private var isDiscoveringServices = false
++    /// Delayed kickAttach work item scheduled after a successful EGV session.
++    /// Cancelled immediately by a MOD-E peerConnected event, or on stop/hardStop.
++    private var postEGVBackoffWorkItem: DispatchWorkItem?
++    /// True when the completed session delivered at least one EGV. Reset to false at the start
++    /// of every connect() call. Set in didDisconnect to gate the post-EGV backoff branch.
++    private var lastSessionWasSuccess = false
++    /// Set to true when willRestoreState fires; stays true for the manager lifetime.
++    /// Per-manager-lifecycle flag — do NOT reset in per-session teardown paths.
++    private var didReceiveWillRestoreState = false
+ 
+     private let scanTimeout: TimeInterval = 15
+     private let connectTimeout: TimeInterval = 20
+@@ -260,6 +276,15 @@ final class G7DirectBLEObserver: NSObject {
+     }
+ 
+     private func connect(_ peripheral: CBPeripheral, source: String) {
++        guard !connectInFlight else {
++            log("event=g7_ble_connect_skipped reason=already_connecting source=\(source)")
++            return
++        }
++        connectInFlight = true
++        lastSessionWasSuccess = false
++        postEGVBackoffWorkItem?.cancel()
++        postEGVBackoffWorkItem = nil
++
+         scanTimeoutWorkItem?.cancel()
+         if centralManager.isScanning {
+             centralManager.stopScan()
+@@ -283,6 +308,12 @@ final class G7DirectBLEObserver: NSObject {
+         characteristics.removeAll()
+         noteStatus(.connecting)
+         log("event=g7_ble_connect_attempt source=\(source) peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
++        // Defensive cleanup: if a stale CB pending connect is lingering, cancel it so the
++        // fresh connect() below is the only in-flight attempt. Never cancel .connected.
++        if peripheral.state == .connecting {
++            centralManager.cancelPeripheralConnection(peripheral)
++            log("event=g7_ble_stale_connect_cancelled peripheral_id=\(peripheral.identifier.uuidString)")
++        }
+         centralManager.connect(
+             peripheral,
+             options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
+@@ -300,6 +331,8 @@ final class G7DirectBLEObserver: NSObject {
+                 return
+             }
+             self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString)")
++            self.connectInFlight = false
++            self.isDiscoveringServices = false
+             self.centralManager.cancelPeripheralConnection(peripheral)
+             self.scheduleReconnect(reason: "connect_timeout")
+         }
+@@ -331,8 +364,13 @@ final class G7DirectBLEObserver: NSObject {
+     }
+ 
+     private func discoverServicesIfNeeded(_ peripheral: CBPeripheral) {
++        guard !isDiscoveringServices else {
++            log("event=g7_ble_service_discovery_skipped reason=already_in_progress peripheral_id=\(peripheral.identifier.uuidString)")
++            return
++        }
++        isDiscoveringServices = true
+         stage = .discoveringServices
+-        log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
++        log("event=g7_ble_service_discovery_started peripheral_id=\(peripheral.identifier.uuidString)")
+         peripheral.discoverServices(nil)
+     }
+ 
+@@ -666,6 +704,11 @@ final class G7DirectBLEObserver: NSObject {
+     }
+ 
+     private func hardStopOnQueue(reason: String) {
++        connectInFlight = false
++        isDiscoveringServices = false
++        lastSessionWasSuccess = false
++        postEGVBackoffWorkItem?.cancel()
++        postEGVBackoffWorkItem = nil
+         cancelTransientTimers()
+         reconnectWorkItem?.cancel()
+         reconnectWorkItem = nil
+@@ -732,7 +775,7 @@ final class G7DirectBLEObserver: NSObject {
+ 
+ extension G7DirectBLEObserver: CBCentralManagerDelegate {
+     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+-        log("event=g7_ble_lifecycle action=central_state state=\(central.state.rawValue)")
++        log("event=g7_ble_central_state state=\(central.state.rawValue) was_restored=\(didReceiveWillRestoreState)")
+         switch central.state {
+         case .poweredOn:
+             noteStatus(.searching)
+@@ -756,18 +799,22 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
+     }
+ 
+     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
++        didReceiveWillRestoreState = true
+         let restored = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
+-        log("event=g7_ble_lifecycle action=will_restore_state restored_peripherals=\(restored.map { $0.identifier.uuidString }.joined(separator: ","))")
++        log("event=g7_ble_will_restore_state restored_count=\(restored.count) peripherals=\(restored.map { $0.identifier.uuidString }.joined(separator: ","))")
+         for peripheral in restored {
+-            peripheral.delegate = self
+-            if shouldConnect(peripheral: peripheral, advertisementData: nil, rssi: nil, source: "restored_state") {
+-                activePeripheral = peripheral
+-                sourceForPeripheral[peripheral.identifier] = "restored_state"
+-                if peripheral.state == .connected {
+-                    discoverServicesIfNeeded(peripheral)
+-                }
++            // Cancel CB's preserved pending connection before the attach ladder issues its own
++            // connect(). Without this, both paths can fire simultaneously producing duplicate
++            // didConnect callbacks and triple auth_notify_enabled events.
++            // Never cancel a .connected peripheral — that tears down a live session.
++            if peripheral.state != .connected {
++                central.cancelPeripheralConnection(peripheral)
++                log("event=g7_ble_restore_cancelled peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") state=\(peripheral.state.rawValue)")
++            } else {
++                log("event=g7_ble_restore_skipped_cancel peripheral_id=\(peripheral.identifier.uuidString) reason=already_connected")
+             }
+         }
++        // Do NOT issue connect() here — let centralManagerDidUpdateState drive the attach ladder.
+     }
+ 
+     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
+@@ -783,18 +830,27 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
+     ) {
+         log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected")")
+         if event == .peerConnected, !isHardStopped {
++            if postEGVBackoffWorkItem != nil {
++                postEGVBackoffWorkItem?.cancel()
++                postEGVBackoffWorkItem = nil
++                log("event=g7_ble_post_egv_backoff_cancelled reason=connection_event")
++            }
+             startOrResume(reason: "connection_event_peer_connected")
+         }
+     }
+ 
+     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+         connectTimeoutWorkItem?.cancel()
++        connectInFlight = false
+         failedAttempts = 0
++        log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
+         discoverServicesIfNeeded(peripheral)
+     }
+ 
+     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+         connectTimeoutWorkItem?.cancel()
++        connectInFlight = false
++        isDiscoveringServices = false
+         if let error {
+             logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
+         } else {
+@@ -804,6 +860,8 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
+     }
+ 
+     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
++        connectInFlight = false
++        isDiscoveringServices = false
+         if let error {
+             logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
+             emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
+@@ -822,7 +880,21 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
+         controlWriteRetryWorkItem?.cancel()
+         controlWriteRetryWorkItem = nil
+         noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
+-        scheduleReconnect(reason: "disconnect")
++        lastSessionWasSuccess = sessionEGVCount > 0
++        if lastSessionWasSuccess {
++            // G7 re-auth window is ~20-30s every ~300s. Sleep 290s to avoid hammering the sensor
++            // between windows. MOD-E (peerConnected) cancels this work item early when the window
++            // opens; the stage guard catches any teardown path (stop or hardStop both land on .stopped).
++            let workItem = DispatchWorkItem { [weak self] in
++                guard let self, self.stage != .stopped else { return }
++                self.startOrResume(reason: "post_egv_backoff")
++            }
++            postEGVBackoffWorkItem = workItem
++            queue.asyncAfter(deadline: .now() + 290, execute: workItem)
++            log("event=g7_ble_post_egv_backoff_scheduled delay_s=290")
++        } else {
++            scheduleReconnect(reason: "disconnect")
++        }
+     }
+ }
+ 
