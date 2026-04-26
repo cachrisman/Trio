@@ -35,6 +35,23 @@ struct GlucoseTrendView: View {
         }
     }
 
+    /// Single status line under the glucose bubble: recency, optional `· BLE · egvs/conns`.
+    @ViewBuilder
+    private func bleRecencyStatusLine(recency: String) -> some View {
+        let conns = state.bleConnectsSinceLaunch
+        let egvs = state.bleEGVsSinceLaunch
+        let fromBle = state.displayedReadingSource == .g7DirectBLE
+
+        if conns > 0 {
+            let suffixColor: Color = egvs > 0 ? .primary : .secondary
+            Text(recency) + Text(" · BLE · \(egvs)/\(conns)").foregroundStyle(suffixColor)
+        } else if fromBle {
+            Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
+        } else {
+            Text(recency)
+        }
+    }
+
     var circleSize: CGFloat {
         switch state.deviceType {
         case .watch40mm:
@@ -132,10 +149,13 @@ struct GlucoseTrendView: View {
                 .shadow(color: Color.black.opacity(0.5), radius: 5)
 
                 VStack(alignment: .center) {
+                    let glucoseColor: Color = isWatchStateDated
+                        ? Color.secondary
+                        : state.currentGlucoseColorString.toColor()
                     Text(isWatchStateDated ? "--" : state.currentGlucose)
                         .fontWeight(.semibold)
                         .font(currentGlucoseFontSize)
-                        .foregroundStyle(isWatchStateDated ? Color.secondary : state.currentGlucoseColorString.toColor())
+                        .foregroundStyle(glucoseColor)
 
                     if let delta = state.delta {
                         Text(isWatchStateDated ? "--" : delta)
@@ -148,14 +168,17 @@ struct GlucoseTrendView: View {
 
             Spacer()
 
-            Text(
-                isWatchStateDated ?
-                    String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
-            )
-            .font(.system(size: minutesAgoFontSize))
-            .fontWidth(isWatchStateDated ? .expanded : .standard)
+            VStack(spacing: 2) {
+                let recency: String = isWatchStateDated
+                    ? String(localized: "STALE DATA", comment: "Outdated watch data label.")
+                    : (state.lastLoopTime ?? "--")
+                let statusLine = bleRecencyStatusLine(recency: recency)
+                statusLine
+                    .font(.system(size: minutesAgoFontSize))
+                    .fontWidth(isWatchStateDated ? .expanded : .standard)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+            }
 
             Spacer()
 
