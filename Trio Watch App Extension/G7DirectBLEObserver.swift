@@ -111,7 +111,8 @@ final class G7DirectBLEObserver: NSObject {
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
-    private let authFallbackDelay: TimeInterval = 6
+    /// Watchdog only; primary advance is `auth_notify_enabled` (Option C).
+    private let authFallbackDelay: TimeInterval = 30
     /// Fallback EGV request cadence when auth-transition triggers are sparse (~sensor EGV period).
     private let egvFallbackTimerSeconds: TimeInterval = 330
     /// Shorter reschedule when control notify is not yet enabled (preserves responsiveness vs 330s fallback).
@@ -461,6 +462,10 @@ final class G7DirectBLEObserver: NSObject {
         case G7BLEUUID.authentication:
             authNotifyEnabled = characteristic.isNotifying
             log("event=g7_ble_auth_notify_enabled result=success notifying=\(characteristic.isNotifying)")
+            if characteristic.isNotifying, !hasAdvancedBeyondAuth {
+                authFallbackWorkItem?.cancel()
+                advanceToControl(reason: "auth_notify_enabled_observer")
+            }
         case G7BLEUUID.control:
             controlNotifyEnabled = characteristic.isNotifying
             log("event=g7_ble_control_notify_enabled result=success notifying=\(characteristic.isNotifying)")
