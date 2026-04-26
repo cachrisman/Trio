@@ -265,14 +265,6 @@ final class G7DirectBLEObserver: NSObject {
         noteStatus(.searching)
         log("event=g7_ble_scan_start reason=\(reason) services=nil")
         centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
-        // Redundant defensive call — .poweredOn is the load-bearing registration site.
-        // Remove after Task A is validated in build 187.
-        centralManager.registerForConnectionEvents(options: [
-            CBConnectionEventMatchingOption.serviceUUIDs: [
-                G7BLEUUID.advertisement,
-                G7BLEUUID.dataService
-            ]
-        ])
         scheduleScanTimeout()
     }
 
@@ -870,10 +862,6 @@ final class G7DirectBLEObserver: NSObject {
 
 extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        let restoredFlag = didReceiveWillRestoreState
-        Task { @MainActor in
-            WatchState.shared.bleWasRestored = restoredFlag
-        }
         log("event=g7_ble_central_state state=\(central.state.rawValue) was_restored=\(didReceiveWillRestoreState)")
         switch central.state {
         case .poweredOn:
