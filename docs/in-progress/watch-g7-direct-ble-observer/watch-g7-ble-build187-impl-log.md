@@ -1,9 +1,9 @@
-# G7 direct BLE — implementation log (Build 187 & 188)
+# G7 direct BLE — implementation log (Build 187, 188, 189)
 
-**Version:** v1.3  
+**Version:** v1.4  
 **Created:** 2026-04-26 12:11 CET  
-**Last updated:** 2026-04-27 13:25 CEST  
-**Plan:** [watch-g7-ble-build187-impl-plan.md](watch-g7-ble-build187-impl-plan.md) (v1.11 — **Build 188** shipped & live; **Implementation log (Build 188)** table)  
+**Last updated:** 2026-04-27 16:56 CEST  
+**Plan:** [watch-g7-ble-build187-impl-plan.md](watch-g7-ble-build187-impl-plan.md) (v1.14 — **Build 189** implementation log; **Build 188** still shipped & live)  
 **Branch:** `feature/watch-g7-direct-ble-observer-synthesis` (Trio worktree)
 
 ---
@@ -17,6 +17,8 @@
 **Claude note (WatchState):** BLE session fields live on the **`@Observable class WatchState`**, not on the small `TrioComplicationDataSource` extension (badge text only).
 
 **Acceptance (agent, pre-release):** Static re-read; **no** `xcodebuild` / `ci/local-build.sh` (per **AGENTS.md**). **Ongoing:** success / regression checks in **production / BetterStack** per the plan’s validation list.
+
+**Build 189 (this session):** Five commits in plan order: Option C removed and passive auth; `authFallbackDelay` 6s, 10s `observingAuth` stage timeout removed; connect-in-flight + discovery dedupe + `isSelfCancelling`; `scheduleInterWindowSleep` + MOD-E anchor, removed 290s post-EGV backoff; daily `G7BLE.*` counters + `WatchState` renames to `*Today*`. **Not** shipped: user should run `ci/local-build.sh` to confirm compile.
 
 ---
 
@@ -96,6 +98,10 @@ See **[Implementation log (Build 188)](watch-g7-ble-build187-impl-plan.md#implem
 ---
 
 ## Changelog
+
+### v1.4 (2026-04-27 16:56 CEST)
+
+- **Build 189** one-paragraph summary; plan pointer **v1.14**; title includes **189**.
 
 ### v1.3 (2026-04-27 13:25 CEST)
 
