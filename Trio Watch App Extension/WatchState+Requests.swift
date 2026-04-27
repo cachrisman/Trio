@@ -61,7 +61,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("Error sending carbs request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -93,7 +93,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ Error sending cancel override request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -126,7 +126,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ Error sending activate override request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -158,7 +158,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ Error sending cancel temp target request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -191,7 +191,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ Error sending activate temp target request: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
 
@@ -224,7 +224,7 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("Error requesting bolus recommendation: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
     }
@@ -234,6 +234,8 @@ extension WatchState {
             Task {
                 await WatchLogger.shared.log("⌚️ No session available for state update")
             }
+            clearStartupFirstRefreshInFlightOnMain()
+            loadFallbackDataFromComplication()
             return
         }
 
@@ -242,6 +244,8 @@ extension WatchState {
                 await WatchLogger.shared.log("⌚️ Session not activated. Activating...")
             }
             session.activate()
+            clearStartupFirstRefreshInFlightOnMain()
+            loadFallbackDataFromComplication()
             return
         }
 
@@ -256,13 +260,33 @@ extension WatchState {
                 Task {
                     await WatchLogger.shared.log("⌚️ Error requesting WatchState update: \(error)")
                     await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                    await WatchLogger.shared.persistLogsLocally()
+                    await WatchLogger.shared.flushPersistedLogs()
+                }
+                DispatchQueue.main.async {
+                    self.clearStartupFirstRefreshInFlightOnMain()
+                    self.loadFallbackDataFromComplication()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                        self.requestWatchStateUpdate()
+                    }
                 }
             }
+
+            syncTimeoutWorkItem?.cancel()
+            let timeoutWorkItem = DispatchWorkItem { [weak self] in
+                Task {
+                    await WatchLogger.shared.log("WatchState update timeout - using fallback data")
+                }
+                self?.clearStartupFirstRefreshInFlightOnMain()
+                self?.loadFallbackDataFromComplication()
+            }
+            syncTimeoutWorkItem = timeoutWorkItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30.0, execute: timeoutWorkItem)
         } else {
             Task {
                 await WatchLogger.shared.log("⌚️ Phone not reachable for WatchState update")
             }
+            clearStartupFirstRefreshInFlightOnMain()
+            loadFallbackDataFromComplication()
         }
     }
 }

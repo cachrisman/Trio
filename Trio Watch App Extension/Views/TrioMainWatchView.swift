@@ -3,7 +3,8 @@ import SwiftUI
 import WatchKit
 
 struct TrioMainWatchView: View {
-    @State private var state = WatchState()
+    @State private var state = WatchState.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     // misc
     @State private var currentPage: Int = 0
@@ -25,8 +26,8 @@ struct TrioMainWatchView: View {
         guard let lastUpdateTimestamp = state.lastWatchStateUpdate else {
             return true
         }
-        let now = Date().timeIntervalSince1970
-        let secondsSinceUpdate = now - lastUpdateTimestamp
+        let now = Date()
+        let secondsSinceUpdate = now.timeIntervalSince(lastUpdateTimestamp)
         // Return true if last update older than 5 min, so 1 loop cycle
         return secondsSinceUpdate > 5 * 60
     }
@@ -69,6 +70,12 @@ struct TrioMainWatchView: View {
                         rotationDegrees: rotationDegrees,
                         isWatchStateDated: isWatchStateDated || isSessionUnreachable
                     )
+                    .onLongPressGesture(minimumDuration: 1.0) {
+                        // Long press to quickly access debug view
+                        withAnimation {
+                            currentPage = 2
+                        }
+                    }
 
                     if state.showSyncingAnimation {
                         Image(systemName: "iphone.radiowaves.left.and.right")
@@ -88,22 +95,84 @@ struct TrioMainWatchView: View {
                 }.tag(0)
 
                 // Page 2: Glucose chart
-                GlucoseChartView(
-                    glucoseValues: state.glucoseValues,
-                    minYAxisValue: state.minYAxisValue,
-                    maxYAxisValue: state.maxYAxisValue
-                )
+                Group {
+                    if currentPage == 1 {
+                        GlucoseChartView(
+                            glucoseValues: state.glucoseValues,
+                            minYAxisValue: state.minYAxisValue,
+                            maxYAxisValue: state.maxYAxisValue
+                        )
+                    } else {
+                        Color.clear
+                    }
+                }
                 .tag(1)
+
+                // Page 3: Complication Debug View (only constructed when visible)
+                Group {
+                    if currentPage == 2 {
+                        ComplicationDebugView()
+                    } else {
+                        Color.clear
+                    }
+                }
+                .tag(2)
             }
             .onAppear {
-                /// Hard reset variables when main view appears
-                /// Reset `bolusAmount` and `recommendedBolus` to ensure no stale / old value is set when user opens bolus input or meal combo the next time.
+                Task {
+                    await WatchLogger.shared.log("Watch main view appeared")
+                }
+
+                let cachedSnapshot = TrioComplicationDataStore.shared.latestSnapshot()
+                let hasValidWatchData = state.currentGlucose != "--" && !state.currentGlucose.isEmpty
+                if !hasValidWatchData, let snapshot = cachedSnapshot {
+                    state.currentGlucose = snapshot.glucose
+                    state.trend = snapshot.trend
+                    state.delta = snapshot.delta
+                    if let glucoseColor = snapshot.glucoseColor {
+                        state.currentGlucoseColorString = glucoseColor
+                    }
+                    state.lastWatchStateUpdate = snapshot.readingDate
+                    if let s = snapshot.dataSource { state.displayedComplicationDataSource = s }
+                    state.showSyncingAnimation = true
+                } else if let snapshot = cachedSnapshot,
+                          let lastUpdate = state.lastWatchStateUpdate,
+                          snapshot.readingDate > lastUpdate
+                {
+                    state.currentGlucose = snapshot.glucose
+                    state.trend = snapshot.trend
+                    state.delta = snapshot.delta
+                    if let glucoseColor = snapshot.glucoseColor {
+                        state.currentGlucoseColorString = glucoseColor
+                    }
+                    state.lastWatchStateUpdate = snapshot.readingDate
+                    if let s = snapshot.dataSource { state.displayedComplicationDataSource = s }
+                    state.showSyncingAnimation = false
+                }
+
                 state.bolusAmount = 0
                 state.recommendedBolus = 0
+
+                G7DirectBLEManager.shared.bind(watchState: state)
+                if scenePhase == .active {
+                    G7DirectBLEManager.shared.start()
+                }
+
+                state.noteMainWatchRootViewAppearedForResidentTelemetry()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    G7DirectBLEManager.shared.start()
+                }
+            }
+            .onChange(of: currentPage) { _, newPage in
+                if newPage == 1 {
+                    state.noteChartTabBecameVisibleForResidentTelemetry()
+                }
             }
             .background(trioBackgroundColor)
             .tabViewStyle(.verticalPage)
-            .digitalCrownRotation($currentPage.doubleBinding(), from: 0, through: 1, by: 1)
+            .digitalCrownRotation($currentPage.doubleBinding(), from: 0, through: 2, by: 1)
             .onChange(of: state.trend) { _, newTrend in
                 withAnimation {
                     updateRotation(for: newTrend)

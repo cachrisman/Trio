@@ -114,6 +114,45 @@ struct GlucoseTrendView: View {
         }
     }
 
+    private var sourceAbbrev: String {
+        switch state.displayedComplicationDataSource {
+        case .g7DirectBLE: "BLE"
+        case .watchConnectivityPhone: "Phone"
+        case .healthKit: "HK"
+        case .unknown: "…"
+        }
+    }
+
+    private var bleStateAbbrev: String {
+        switch state.g7DirectBLEStatus {
+        case .off: "off"
+        case .searching: "scan"
+        case .connecting: "conn"
+        case .active: "ok"
+        case .stalled: "stall"
+        case .unavailable: "noBT"
+        }
+    }
+
+    private var lastBleRecency: String? {
+        guard let d = state.lastG7DirectBLEEventDate else { return nil }
+        let s = max(0, Int(Date().timeIntervalSince(d)))
+        if s < 60 { return "<1m" }
+        let m = s / 60
+        if m < 120 { return "\(m)m" }
+        return "\(m/60)h+"
+    }
+
+    private var recencyLine: String {
+        if isWatchStateDated {
+            return String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.")
+        }
+        let base = state.lastLoopTime ?? "--"
+        let path = "· src:\(sourceAbbrev)"
+        let ble = " · G7:\(bleStateAbbrev)\(lastBleRecency.map { "[\($0)]" } ?? "")"
+        return "\(base)\(path)\(ble)"
+    }
+
     var body: some View {
         VStack {
             ZStack {
@@ -148,13 +187,10 @@ struct GlucoseTrendView: View {
 
             Spacer()
 
-            Text(
-                isWatchStateDated ?
-                    String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
-            )
-            .font(.system(size: minutesAgoFontSize))
+            Text(recencyLine)
+            .font(.system(size: minutesAgoFontSize - 1))
+            .lineLimit(2)
+            .minimumScaleFactor(0.55)
             .fontWidth(isWatchStateDated ? .expanded : .standard)
 
             Spacer()
