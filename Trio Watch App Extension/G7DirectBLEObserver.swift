@@ -508,10 +508,7 @@ final class G7DirectBLEObserver: NSObject {
             if characteristic.isNotifying {
                 sessionPhaseAuthNotifyAt = Date()
             }
-            if characteristic.isNotifying, !hasAdvancedBeyondAuth {
-                authFallbackWorkItem?.cancel()
-                advanceToControl(reason: "auth_notify_enabled_observer")
-            }
+            // Wait passively for sensor-emitted 0x05 0x01 0x01 (or auth fallback).
         case G7BLEUUID.control:
             controlNotifyEnabled = characteristic.isNotifying
             log("event=g7_ble_control_notify_enabled result=success notifying=\(characteristic.isNotifying)")
