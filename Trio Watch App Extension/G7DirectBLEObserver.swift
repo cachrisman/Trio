@@ -122,8 +122,8 @@ final class G7DirectBLEObserver: NSObject {
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
-    /// Watchdog only; primary advance is `auth_notify_enabled` (Option C).
-    private let authFallbackDelay: TimeInterval = 30
+    /// Passively wait for 0x05; fallback for missed window (build 185/189 contract).
+    private let authFallbackDelay: TimeInterval = 6
     /// Fallback EGV request cadence when auth-transition triggers are sparse (~sensor EGV period).
     private let egvFallbackTimerSeconds: TimeInterval = 330
     /// Shorter reschedule when control notify is not yet enabled (preserves responsiveness vs 330s fallback).
@@ -347,17 +347,6 @@ final class G7DirectBLEObserver: NSObject {
         queue.asyncAfter(deadline: .now() + 30, execute: workItem)
     }
 
-    private func scheduleObservingAuthStageTimeout(for peripheral: CBPeripheral) {
-        stageTimeoutWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, self.stage == .observingAuth else { return }
-            self.log("event=g7_ble_stage_timeout stage=observingAuth")
-            self.centralManager.cancelPeripheralConnection(peripheral)
-        }
-        stageTimeoutWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + 10, execute: workItem)
-    }
-
     private func scheduleConnectTimeout(for peripheral: CBPeripheral) {
         connectTimeoutWorkItem?.cancel()
         let id = peripheral.identifier
@@ -475,7 +464,6 @@ final class G7DirectBLEObserver: NSObject {
         peripheral.setNotifyValue(true, for: auth)
         log("event=g7_ble_auth_notify_enable_requested characteristic=\(auth.uuid.uuidString)")
         scheduleAuthFallback(peripheral)
-        scheduleObservingAuthStageTimeout(for: peripheral)
     }
 
     private func scheduleAuthFallback(_ peripheral: CBPeripheral) {
