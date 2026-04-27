@@ -35,11 +35,11 @@ struct GlucoseTrendView: View {
         }
     }
 
-    /// Single status line under the glucose bubble: recency, optional `· BLE · egvs/conns`.
+    /// Single status line under the glucose bubble: recency, optional `· BLE · egvs/conns` (daily totals).
     @ViewBuilder
     private func bleRecencyStatusLine(recency: String) -> some View {
-        let conns = state.bleConnectsSinceLaunch
-        let egvs = state.bleEGVsSinceLaunch
+        let conns = state.bleConnectsToday
+        let egvs = state.bleEGVsToday
         let fromBle = state.displayedReadingSource == .g7DirectBLE
 
         if conns > 0 {

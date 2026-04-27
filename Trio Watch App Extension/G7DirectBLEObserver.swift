@@ -97,12 +97,9 @@ final class G7DirectBLEObserver: NSObject {
     /// Set to true when willRestoreState fires; stays true for the manager lifetime.
     /// Per-manager-lifecycle flag — do NOT reset in per-session teardown paths.
     private var didReceiveWillRestoreState = false
-    /// Process-lifetime connect count (not cleared on stop/start). Mirrors to WatchState for UI.
-    private var connectsSinceLaunch = 0
-    /// Process-lifetime EGV count (not cleared on stop/start). Mirrors to WatchState for UI.
-    private var egvsSinceLaunch = 0
-    /// Process-lifetime MOD-E peerConnected count. Mirrors to WatchState for debug UI.
-    private var connectionEventsSinceLaunch = 0
+    private var bleConnectsToday = 0
+    private var bleEGVsToday = 0
+    private var bleConnectionEventsToday = 0
     /// Connect attempts that ended in timeout or explicit connect failure (reset on `didConnect`).
     private var consecutiveConnectFailures = 0
     /// Ensures timeout + `didFailToConnect` for the same attempt do not double-increment the counter.
@@ -137,11 +134,45 @@ final class G7DirectBLEObserver: NSObject {
 
     private override init() {
         super.init()
+        loadDailyCounters()
         centralManager = CBCentralManager(
             delegate: self,
             queue: queue,
             options: [CBCentralManagerOptionRestoreIdentifierKey: "org.nightscout.trio.watch.g7DirectBLEObserver"]
         )
+    }
+
+    private func loadDailyCounters() {
+        let today = Calendar.current.startOfDay(for: Date())
+        let stored = UserDefaults.standard.object(forKey: "G7BLE.countsDate") as? Date
+        if let stored, Calendar.current.isDate(stored, inSameDayAs: today) {
+            bleConnectsToday = UserDefaults.standard.integer(forKey: "G7BLE.connectsToday")
+            bleEGVsToday = UserDefaults.standard.integer(forKey: "G7BLE.egvsToday")
+            bleConnectionEventsToday = UserDefaults.standard.integer(forKey: "G7BLE.connectionEventsToday")
+        } else {
+            bleConnectsToday = 0
+            bleEGVsToday = 0
+            bleConnectionEventsToday = 0
+            UserDefaults.standard.set(today, forKey: "G7BLE.countsDate")
+            UserDefaults.standard.set(false, forKey: "G7BLE.wasRestored")
+            persistDailyCounters()
+        }
+        let wasRestored = UserDefaults.standard.bool(forKey: "G7BLE.wasRestored")
+        let c = bleConnectsToday
+        let e = bleEGVsToday
+        let m = bleConnectionEventsToday
+        Task { @MainActor in
+            WatchState.shared.bleConnectsToday = c
+            WatchState.shared.bleEGVsToday = e
+            WatchState.shared.bleConnectionEventsToday = m
+            WatchState.shared.bleWasRestored = wasRestored
+        }
+    }
+
+    private func persistDailyCounters() {
+        UserDefaults.standard.set(bleConnectsToday, forKey: "G7BLE.connectsToday")
+        UserDefaults.standard.set(bleEGVsToday, forKey: "G7BLE.egvsToday")
+        UserDefaults.standard.set(bleConnectionEventsToday, forKey: "G7BLE.connectionEventsToday")
     }
 
     func applyForegroundActiveEntry() {
@@ -699,8 +730,9 @@ final class G7DirectBLEObserver: NSObject {
         }
 
         sessionEGVCount += 1
-        egvsSinceLaunch += 1
-        let egvCount = egvsSinceLaunch
+        bleEGVsToday += 1
+        let egvCount = bleEGVsToday
+        persistDailyCounters()
         failedAttempts = 0
         stage = .receivingEGV
         noteStatus(.active)
@@ -729,7 +761,7 @@ final class G7DirectBLEObserver: NSObject {
         Task { @MainActor in
             TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
             WatchState.shared.applyG7DirectBleSnapshot(snapshot)
-            WatchState.shared.bleEGVsSinceLaunch = egvCount
+            WatchState.shared.bleEGVsToday = egvCount
             WatchState.shared.bleLastEGVValue = lastEgvV
             WatchState.shared.bleLastEGVDate = lastEgvD
             await WatchLogger.shared.log(
@@ -937,6 +969,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         didReceiveWillRestoreState = true
+        UserDefaults.standard.set(true, forKey: "G7BLE.wasRestored")
         Task { @MainActor in
             WatchState.shared.bleWasRestored = true
         }
@@ -972,13 +1005,14 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         if event == .peerConnected {
             lastConnectionEventAt = Date()
             log("event=g7_ble_connection_event_anchor dt=\(Int(Date().timeIntervalSince1970))")
-            connectionEventsSinceLaunch += 1
-            let m = connectionEventsSinceLaunch
+            bleConnectionEventsToday += 1
+            let m = bleConnectionEventsToday
+            persistDailyCounters()
             Task { @MainActor in
-                WatchState.shared.bleConnectionEventsSinceLaunch = m
+                WatchState.shared.bleConnectionEventsToday = m
             }
         }
-        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected") mode_e_total=\(connectionEventsSinceLaunch)")
+        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected") mode_e_total=\(bleConnectionEventsToday)")
         if event == .peerConnected, !isHardStopped {
             startOrResume(reason: "connection_event_peer_connected")
         }
@@ -987,11 +1021,12 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectTimeoutWorkItem?.cancel()
         connectInFlight = false
-        connectsSinceLaunch += 1
-        let c = connectsSinceLaunch
+        bleConnectsToday += 1
+        let c = bleConnectsToday
+        persistDailyCounters()
         let connectAt = Date()
         Task { @MainActor in
-            WatchState.shared.bleConnectsSinceLaunch = c
+            WatchState.shared.bleConnectsToday = c
             WatchState.shared.bleLastConnectAt = connectAt
         }
         failedAttempts = 0

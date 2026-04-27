@@ -456,19 +456,19 @@ private struct G7DirectBleDebugSection: View {
                 }
             }
             HStack {
-                Text("Connects / launch:")
+                Text("Connects / today:")
                 Spacer()
-                Text("\(WatchState.shared.bleConnectsSinceLaunch)")
+                Text("\(WatchState.shared.bleConnectsToday)")
             }
             HStack {
-                Text("EGVs / launch:")
+                Text("EGVs / today:")
                 Spacer()
-                Text("\(WatchState.shared.bleEGVsSinceLaunch)")
+                Text("\(WatchState.shared.bleEGVsToday)")
             }
             HStack {
-                Text("MOD-E events:")
+                Text("MOD-E / today:")
                 Spacer()
-                Text("\(WatchState.shared.bleConnectionEventsSinceLaunch)")
+                Text("\(WatchState.shared.bleConnectionEventsToday)")
             }
             HStack {
                 Text("Was restored:")

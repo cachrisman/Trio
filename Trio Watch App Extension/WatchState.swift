@@ -98,10 +98,10 @@ extension TrioComplicationDataSource {
         return "\(seconds / 3600)h"
     }
 
-    /// G7 direct BLE: process-lifetime counters and debug values (in-memory; set from observer on main actor).
-    var bleConnectsSinceLaunch: Int = 0
-    var bleEGVsSinceLaunch: Int = 0
-    var bleConnectionEventsSinceLaunch: Int = 0
+    /// G7 direct BLE: daily-persistent counters and debug (mirrored from observer; UserDefaults in observer).
+    var bleConnectsToday: Int = 0
+    var bleEGVsToday: Int = 0
+    var bleConnectionEventsToday: Int = 0
     var bleLastConnectAt: Date?
     var bleLastEGVDate: Date?
     var bleLastEGVValue: Int?
