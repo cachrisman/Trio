@@ -134,6 +134,8 @@ final class G7DirectBLEObserver: NSObject {
     /// `controlWriteRetryDelay` (synthesis MOD-A / blueprint “cap of 3” = three retry attempts, not three total failures).
     private let maxConsecutiveControlWriteFailuresBeforeReconnect = 4
     private let minimumSavedReadingSpacing: TimeInterval = 60
+    /// Set before each deliberate `cancelPeripheralConnection` so `didDisconnect` can ignore duplicate reschedules.
+    private var isSelfCancelling = false
 
     private override init() {
         super.init()
@@ -199,6 +201,10 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func beginAttachLadder(reason: String) {
+        guard activePeripheral?.state != .connecting else {
+            log("event=g7_ble_attach_skipped reason=connect_in_flight")
+            return
+        }
         stage = .retrieving
         noteStatus(.searching)
         log("event=g7_ble_lifecycle action=attach_ladder_start reason=\(reason)")
@@ -328,6 +334,7 @@ final class G7DirectBLEObserver: NSObject {
         // Defensive cleanup: if a stale CB pending connect is lingering, cancel it so the
         // fresh connect() below is the only in-flight attempt. Never cancel .connected.
         if peripheral.state == .connecting {
+            isSelfCancelling = true
             centralManager.cancelPeripheralConnection(peripheral)
             log("event=g7_ble_stale_connect_cancelled peripheral_id=\(peripheral.identifier.uuidString)")
         }
@@ -341,6 +348,7 @@ final class G7DirectBLEObserver: NSObject {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.stage == .discoveringServices else { return }
             self.log("event=g7_ble_stage_timeout stage=discoveringServices")
+            self.isSelfCancelling = true
             self.centralManager.cancelPeripheralConnection(peripheral)
         }
         stageTimeoutWorkItem = workItem
@@ -363,6 +371,7 @@ final class G7DirectBLEObserver: NSObject {
             self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString) consecutive_failures=\(self.consecutiveConnectFailures)")
             self.connectInFlight = false
             self.isDiscoveringServices = false
+            self.isSelfCancelling = true
             self.centralManager.cancelPeripheralConnection(peripheral)
             self.scheduleReconnect(reason: "connect_timeout")
         }
@@ -394,6 +403,11 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func discoverServicesIfNeeded(_ peripheral: CBPeripheral) {
+        guard peripheral.services == nil else {
+            log("event=g7_ble_discovery_skipped reason=already_discovered peripheral_id=\(peripheral.identifier.uuidString)")
+            configureObserverCharacteristics(peripheral)
+            return
+        }
         guard !isDiscoveringServices else {
             log("event=g7_ble_service_discovery_skipped reason=already_in_progress peripheral_id=\(peripheral.identifier.uuidString)")
             return
@@ -773,6 +787,7 @@ final class G7DirectBLEObserver: NSObject {
             log("event=g7_ble_scan_stopped reason=\(reason)")
         }
         if let peripheral = activePeripheral {
+            isSelfCancelling = true
             centralManager.cancelPeripheralConnection(peripheral)
         }
         emitSessionOutcome(outcome: "cancelled")
@@ -899,6 +914,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
             // didConnect callbacks and triple auth_notify_enabled events.
             // Never cancel a .connected peripheral — that tears down a live session.
             if peripheral.state != .connected {
+                isSelfCancelling = true
                 central.cancelPeripheralConnection(peripheral)
                 log("event=g7_ble_restore_cancelled peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") state=\(peripheral.state.rawValue)")
             } else {
@@ -973,6 +989,27 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         connectInFlight = false
         isDiscoveringServices = false
+        if isSelfCancelling {
+            isSelfCancelling = false
+            if let error {
+                logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) reason=self_cancelled")
+                emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
+            } else {
+                log("event=g7_ble_disconnect reason=self_cancelled peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil")
+                emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "incomplete")
+            }
+            activePeripheral = nil
+            characteristics.removeAll()
+            controlNotifyEnabled = false
+            authNotifyEnabled = false
+            hasAdvancedBeyondAuth = false
+            sessionActivationDate = nil
+            controlWriteConsecutiveFailures = 0
+            controlWriteRetryWorkItem?.cancel()
+            controlWriteRetryWorkItem = nil
+            noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
+            return
+        }
         if let error {
             logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
             emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
