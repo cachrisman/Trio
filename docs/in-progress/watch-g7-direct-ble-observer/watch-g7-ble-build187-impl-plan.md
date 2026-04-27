@@ -1,8 +1,8 @@
 # Implementation plan: Build 187 / 188
 
-**Version:** v1.9
+**Version:** v1.10
 **Created:** 2026-04-26
-**Last updated:** 2026-04-27 00:44 CEST
+**Last updated:** 2026-04-27 11:52 CEST
 **Branch:** `feature/watch-g7-direct-ble-observer-synthesis`
 
 ---
@@ -301,25 +301,32 @@ Check BetterStack in the morning for:
 
 ## Implementation log (Build 188)
 
-Execution followed **Trio-dev** `docs/prompts/04-execute-implementation-plan.md` on branch **`feature/watch-g7-direct-ble-observer-synthesis`** (Trio worktree). Verification: static re-read of each change; no `xcodebuild` / `ci/local-build.sh` per AGENTS.md rule 10.
+Execution followed **Trio-dev** `docs/prompts/04-execute-implementation-plan.md` on branch **`feature/watch-g7-direct-ble-observer-synthesis`** (Trio worktree). Verification: static re-read of each change; no `xcodebuild` / `ci/local-build.sh` per AGENTS.md rule 10. Post-ship, **code review** adjusted ladder `t0` semantics, debug `.id` targets, and connect-failure metric deduplication (see table rows below after Task H).
 
 | Commit / step | What was done | Files | Acceptance |
 |---------------|---------------|-------|------------|
 | Task A (1/3) | `authFallbackDelay = 30`; advance on `auth_notify_enabled_observer` in `handleNotificationState` | `G7DirectBLEObserver.swift` | Matches plan Option C; fallback remains watchdog-only. |
-| Task A (2/3) | Phase timestamps + extended `g7_ble_session_outcome` ladder fields; `sessionPhaseEgvAckAt` on control write ack | `G7DirectBLEObserver.swift` | Ladder uses `-1` for missing segments; `connect_to_egv_ack_total_ms` falls back to `duration_ms` when no ack. |
+| Task A (2/3) | Phase timestamps + extended `g7_ble_session_outcome` ladder; `sessionPhaseEgvAckAt` on control EGV write ack | `G7DirectBLEObserver.swift` | Ladder uses `-1` for missing segments; `connect_to_egv_ack_total_ms` falls back to `duration_ms` when no ack. **Review fix:** `sessionPhaseConnectAt = Date()` is taken **immediately before** `centralManager.connect(…)` so `connect_to_*_ms` is connect-**attempt** → phase, not `didConnect` → phase. |
 | Task A (3/3) | `g7_ble_auth_payload_post_advance` when `hasAdvancedBeyondAuth` and opcode 0x05 | `G7DirectBLEObserver.swift` | Diagnostic only; no control-flow change. |
-| Task B | 1s + 10s `.task` loops; `.id(refreshTrigger)` only on data store + reload sections; removed Refresh button | `ComplicationDebugView.swift` | Root `ScrollView` no longer `.id`’d; log stats refresh on 10s tick. |
+| Task B | 1s + 10s `.task` loops; scoped `.id(refreshTrigger)` on **data store** + **log files** sections; removed **Refresh** button; root `ScrollView` not `.id`’d | `ComplicationDebugView.swift` | 10s path bumps `refreshTrigger` for `@State` log counts; **reload status** has no `.id` (reads `TrioComplicationDataStore` directly). G7 block observes `WatchState` without forced identity. |
 | Task C | `TabView` order chart (0) → main (1) → debug (2); `.page`; default page 1; telemetry `newPage == 0` for chart | `TrioMainWatchView.swift` | Horizontal swipe; long-press still jumps to debug (2). |
 | Task D | Single recency line with `· BLE · egvs/conns` rules and `g7DirectBLE` edge case | `GlucoseTrendView.swift` | Removed phone/BLE detail line; font matches recency. |
 | Task E | `source` on `TrioWatchComplicationEntry`; `· BLE` on corner second line when `source == .g7DirectBLE`; timeline copies `source` | `TrioWatchComplication.swift` | Placeholder/fallback entries keep `source == nil` → unchanged. |
-| Task F | `consecutiveConnectFailures`; `mode_e_total` on connection event (after increment); `peripheral_id_persisted` log | `G7DirectBLEObserver.swift` | Counter reset on `didConnect`; timeout/`didFailToConnect` increment + log. |
-| Task G | `stageTimeoutWorkItem`: 30s discovering services, 10s observing auth; cancel in `cancelTransientTimers`, service/char errors, success paths, `advanceToControl` | `G7DirectBLEObserver.swift` | See red-team fix: cancel auth timeout only after control char guard passes. |
+| Task F | `consecutiveConnectFailures`; `mode_e_total` on connection event (after increment); `peripheral_id_persisted` log | `G7DirectBLEObserver.swift` | **Review fix:** `connectFailureMetricCountedThisAttempt` so timeout + `didFailToConnect` for the same attempt increment **once**; counter reset in `didConnect` **and** flag cleared in `didConnect` for clarity. |
+| Task G | `stageTimeoutWorkItem`: 30s discovering services, 10s observing auth; cancel in `cancelTransientTimers`, service/char errors, success paths, `advanceToControl` | `G7DirectBLEObserver.swift` | `advanceToControl` cancels auth stage timeout only **after** control characteristic guard (red-team). |
 | Task H | Removed `bleWasRestored` write from `centralManagerDidUpdateState`; removed scan-path `registerForConnectionEvents` | `G7DirectBLEObserver.swift` | Restoration still set in `willRestoreState`. |
-| Red-team | Moved `stageTimeoutWorkItem` cancel in `advanceToControl` to after control characteristic guard | `G7DirectBLEObserver.swift` | Avoids dropping auth timeout on early return. |
+| Red-team (G) | Moved `stageTimeoutWorkItem` cancel in `advanceToControl` to after control characteristic guard | `G7DirectBLEObserver.swift` | Avoids dropping auth timeout on early return. |
+| Plan doc | Implementation log (this section) + plan v1.9 in repo | `watch-g7-ble-build187-impl-plan.md` | Changelog and table capture Build 188 execution. |
+
+**Short SHAs (Build 188 + follow-ups, 7 hex):** 937b3c5, cfea7aa, fcd21f9, e9364da, 3033f06, 49c02aa, 38397d2, b74718d, 711570a, 169c6e7, 3e124f1, ced1888, 8d49aaa, cccc747
 
 ---
 
 ## Changelog
+
+### v1.10 (2026-04-27 11:52 CEST)
+- **Implementation log table** updated: Task B and Task A(2) rows match **as-built** (`.id` on data store + **log files**, not reload; `sessionPhaseConnectAt` at **`connect()`** for honest `connect_to_*` intervals); Task F row includes **deduped** connect-failure metric and **`didConnect`** flag reset; short SHA list; plan doc as its own row.
+- Pointers: pair doc **`watch-g7-ble-build187-impl-log.md`** (v1.2) for narrative Build 188 notes.
 
 ### v1.9 (2026-04-27 00:44 CEST)
 - **Build 188 executed:** ten plan commits + one red-team fix commit on `feature/watch-g7-direct-ble-observer-synthesis`; **Implementation log** section added above.
