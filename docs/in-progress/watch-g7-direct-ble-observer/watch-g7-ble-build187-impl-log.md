@@ -1,9 +1,9 @@
 # G7 direct BLE — implementation log (Build 187 & 188)
 
-**Version:** v1.2  
+**Version:** v1.3  
 **Created:** 2026-04-26 12:11 CET  
-**Last updated:** 2026-04-27 11:52 CEST  
-**Plan:** [watch-g7-ble-build187-impl-plan.md](watch-g7-ble-build187-impl-plan.md) (v1.10 — includes **Implementation log (Build 188)** table)  
+**Last updated:** 2026-04-27 13:25 CEST  
+**Plan:** [watch-g7-ble-build187-impl-plan.md](watch-g7-ble-build187-impl-plan.md) (v1.11 — **Build 188** shipped & live; **Implementation log (Build 188)** table)  
 **Branch:** `feature/watch-g7-direct-ble-observer-synthesis` (Trio worktree)
 
 ---
@@ -12,11 +12,11 @@
 
 **Build 187** implemented **Tasks A, B, E, and F** per the plan: load-bearing `registerForConnectionEvents` in `centralManagerDidUpdateState` `.poweredOn` before the foreground gate, `connect` with `options: nil`, process-lifetime counters and WatchState mirrors with `Task { @MainActor in … }` and capture-before-dispatch, main glanceable BLE EGV/conn line in `GlucoseTrendView`, and debug **G7 DIRECT BLE** section with the APP GROUP block removed plus 5s refresh (`.task` + `Task.sleep` loop; `onAppear` for first paint). **v1.1 (external review):** mirror `bleWasRestored` in `willRestoreState` immediately; `G7DirectBleDebugSection` for reliable `@Observable` reads; EGV line grammar; drop `import Combine` / `Timer.publish` pattern.
 
-**Build 188** (same branch; execution logged in the plan’s **Implementation log (Build 188)** table) shipped **Tasks A–H** plus a red-team fix: Option C auth timing, session timing ladder, debug 1s/10s + scoped `.id`, horizontal chart/main/debug tabs, main single-line status, complication `· BLE`, failure / MOD-E / peripheral logs, stage timeouts, removal of scan-path `registerForConnectionEvents` and redundant `bleWasRestored` in `didUpdateState`. **Post-implementation code review** adjusted ladder `t0` to **`centralManager.connect(…)`**, moved `.id(refreshTrigger)` to **data store** + **log files** (not RELOAD), and added **`connectFailureMetricCountedThisAttempt`** so a timeout and `didFailToConnect` do not double-count; `connectFailureMetricCountedThisAttempt` is also cleared in **`didConnect`**.
+**Build 188** is **built, shipped, and live in production** (same branch; table in the plan’s **Implementation log (Build 188)**). It delivered **Tasks A–H** plus a red-team fix: Option C auth timing, session timing ladder, debug 1s/10s + scoped `.id`, horizontal chart/main/debug tabs, main single-line status, complication `· BLE`, failure / MOD-E / peripheral logs, stage timeouts, removal of scan-path `registerForConnectionEvents` and redundant `bleWasRestored` in `didUpdateState`. **Post-implementation code review** adjusted ladder `t0` to **`centralManager.connect(…)`**, moved `.id(refreshTrigger)` to **data store** + **log files** (not RELOAD), and added **`connectFailureMetricCountedThisAttempt`** (dedupe + clear in **`didConnect`**).
 
 **Claude note (WatchState):** BLE session fields live on the **`@Observable class WatchState`**, not on the small `TrioComplicationDataSource` extension (badge text only).
 
-**Acceptance / verification (agent):** Static re-read of changed files; **no** `xcodebuild` / `ci/local-build.sh` (per **AGENTS.md**). Device / **BetterStack** = user follow-up.
+**Acceptance (agent, pre-release):** Static re-read; **no** `xcodebuild` / `ci/local-build.sh` (per **AGENTS.md**). **Ongoing:** success / regression checks in **production / BetterStack** per the plan’s validation list.
 
 ---
 
@@ -53,9 +53,9 @@
 
 ---
 
-## Build 188 — narrative (authoritative table in plan v1.10)
+## Build 188 — narrative (authoritative table in plan v1.11)
 
-See **[Implementation log (Build 188)](watch-g7-ble-build187-impl-plan.md#implementation-log-build-188)** in `watch-g7-ble-build187-impl-plan.md` for the commit-ordered table, file list, and short SHAs. Highlights:
+See **[Implementation log (Build 188)](watch-g7-ble-build187-impl-plan.md#implementation-log-build-188)** in `watch-g7-ble-build187-impl-plan.md` for the commit-ordered table, file list, and short SHAs. **Build 188 is live in production.** Highlights:
 
 - **Auth (Option C):** 30s auth watchdog; advance to control on `auth_notify_enabled_observer`; `session_outcome` phase ladder; `g7_ble_auth_payload_post_advance` for opcode 0x05 when already past auth.
 - **UI:** `ComplicationDebugView` 1s/10s, `.id` on snapshot + log-file **@State**; `TrioMainWatchView` horizontal `TabView` chart | main | debug; `GlucoseTrendView` single status line; `TrioWatchComplication` corner `· BLE` when `source == .g7DirectBLE`.
@@ -69,7 +69,7 @@ See **[Implementation log (Build 188)](watch-g7-ble-build187-impl-plan.md#implem
 1. **Worktree / stash:** If you use multiple branches, restore any stashed WIP with `git stash pop` as appropriate after switching back.  
 2. **BetterStack string:** Log line for registration is `g7_ble_connection_events_registered` (plan prose sometimes shortens the prefix).  
 3. **Build 188 (scan-path, bleWasRestored):** Shipped in **Task H**; see plan table. **No longer** deferred.  
-4. **Compile / device:** Proof via **`ci/local-build.sh`** and on-watch / **BetterStack** runs remain user follow-up.
+4. **Compile / device:** `ci/local-build.sh` and on-watch checks as needed; **BetterStack** for ongoing production validation of 188 (see plan).
 
 ---
 
@@ -80,7 +80,7 @@ See **[Implementation log (Build 188)](watch-g7-ble-build187-impl-plan.md#implem
 ### Pass 1 — Concurrency and plan alignment
 
 - **Threading:** New `WatchState` mutations from the observer use `Task { @MainActor in }` (or the existing `noteStatus` / snapshot `Task`). Counters use capture-before-`Task` where required.  
-- **dedup path in** `handleGlucose`:** EGV mirrors not updated on early return (correct).  
+- **dedup path in** `handleGlucose`: EGV mirrors not updated on early return (correct).  
 - **bleWasRestored:** 187: mirrored in `willRestoreState` and (pre-188) in `didUpdateState`.
 
 ### Pass 2 — UI / Observation (187)
@@ -91,15 +91,19 @@ See **[Implementation log (Build 188)](watch-g7-ble-build187-impl-plan.md#implem
 
 - **connect options `nil`:** Preserves in-app behavior expectations. **187:** dual `registerForConnectionEvents` (poweredOn + scan) — **188** removed scan path.
 
-**Verdict (187):** Clean for **Build 187** as shipped; **Build 188** tracked separately. Residual: local **`ci/local-build.sh`**; device / BetterStack per plan.
+**Verdict (187):** Clean for **Build 187** as shipped; **Build 188** is implemented and **live** (see plan and Build 188 narrative). Residual: ad-hoc **`ci/local-build.sh`** when needed; **BetterStack** for production monitoring per plan.
 
 ---
 
 ## Changelog
 
+### v1.3 (2026-04-27 13:25 CEST)
+
+- Header: plan **v1.11**; **Build 188** explicitly **built, shipped, and live in production**; ongoing validation via **production / BetterStack** (replaces one-line “user follow-up” for release verification).
+
 ### v1.2 (2026-04-27 11:52 CEST)
 
-- **Build 188** narrative section; links plan **v1.10** implementation table and short SHAs.  
+- **Build 188** narrative section; plan implementation table and short SHAs.  
 - Summary and deviations updated (188 shipped; scan-path removal no longer “deferred”).  
 - Red-team section retitled for **Build 187**; pointer to 188 review in plan.  
 - Title: **G7 direct BLE — implementation log (Build 187 & 188).**

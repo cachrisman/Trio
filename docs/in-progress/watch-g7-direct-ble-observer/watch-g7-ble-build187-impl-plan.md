@@ -1,9 +1,15 @@
 # Implementation plan: Build 187 / 188
 
-**Version:** v1.10
+**Version:** v1.11
 **Created:** 2026-04-26
-**Last updated:** 2026-04-27 11:52 CEST
+**Last updated:** 2026-04-27 13:25 CEST
 **Branch:** `feature/watch-g7-direct-ble-observer-synthesis`
+
+---
+
+## Build 188 — SHIPPED & LIVE (production) ✅
+
+Build 188 is **built, released, and live** in production. The spec sections below (Tasks A–H) are the **as-designed / as-implemented** record. **Production / BetterStack** is the locus for ongoing success-criteria and hypothesis checks (replaces ad-hoc “next morning” / overnight phrasing in older draft text).
 
 ---
 
@@ -14,39 +20,35 @@ All tasks complete. Key outcomes:
 - **Task B** confirmed: `options: nil` on connect. Notifications suppressed.
 - **Tasks E + F**: BLE counters, glanceable status line, debug screen section — all shipped.
 
-**Outstanding UI issues from build 187 (addressed in build 188):**
-- Debug screen scrolls to top on every 5s refresh tick — caused by `.id(refreshTrigger)` on the whole scroll view
-- Debug screen refreshes snapshot and log stats at the same 5s cadence — should be decoupled (1s / 10s)
-- "Refresh View" button exists — remove it
-- Main watch view BLE status is too small, on a separate line, and the existing `Phone · BLE:scan 0s` third line is confusing and hidden behind the action button
-- Horizontal tab layout not yet implemented (chart / main / debug)
-- Complication `· BLE` second line not implemented
+**Build 188 resolved the former 187 “outstanding” list (all shipped, live):** debug scroll/refresh (scoped identity + 1s/10s cadence; redundant Refresh removed); horizontal chart / main / debug; single main status line; corner complication `· BLE` for `g7DirectBLE` snapshots; plus full Tasks A–H including **removal** of scan-path `registerForConnectionEvents` and the redundant `bleWasRestored` write in `centralManagerDidUpdateState` (restoration still set in `willRestoreState`).
 
-**Validated in build 187:**
-- Build 188 can remove the scan-path `registerForConnectionEvents` call (redundant defense confirmed no longer needed)
-- Build 188 can remove the redundant `bleWasRestored` write from `centralManagerDidUpdateState`
+**From build 187 (pre-188):** confirmed MOD-E at `.poweredOn` stable enough to drop the scan re-registration; redundant `bleWasRestored` in `didUpdateState` was a safe 188 removal.
 
 ---
 
-## Build 188 scope
+## Build 188 scope (delivered — see Tasks A–H)
 
-### Priority order
+The following was the **delivery order / priority** for Build 188. All items **shipped and are live in production** (see [Implementation log (Build 188)](#implementation-log-build-188)).
 
-1. **Auth timing fix** — highest impact, every EGV is currently failing
-2. **Debug screen + tab layout** — needed for overnight validation visibility
-3. **Main watch view** — usability
-4. **Complication** — investigate and fix
-5. **Observability additions** — logging improvements
-6. **Stage timeouts** — safety net
-7. **Housekeeping** — cleanup
+1. **Auth timing fix (Option C)**  
+2. **Debug screen + tab layout**  
+3. **Main watch view** (single status line)  
+4. **Complication** (corner `· BLE` when `source == .g7DirectBLE`)  
+5. **Observability** (counters, ladder, `mode_e_total`, `peripheral_id_persisted`)  
+6. **Stage timeouts** (safety net)  
+7. **Housekeeping** (H1/H2)  
+
+**Post-implementation** (same branch): code-review tweaks to session ladder `t0`, debug `.id` placement, and `connectFailureMetricCountedThisAttempt` (see implementation log table).
 
 ---
 
 ## Task A — Auth timing fix (Option C)
 
-**Status of current problem:** Every G7 cycle in build 187 fails with `outcome=failure final_stage=requestingEGV`. The 6-second `authFallbackDelay` consumes most of the sensor's ~7-10 second session window. The EGV write lands at ~6-7s; the sensor closes at ~7-10s. Not enough margin for the response to arrive.
+*Below: problem statement and spec from design time (build 187 / pre-188). **Build 188 is live;** use production / BetterStack to assess Option C and success/falsification criteria.*
 
-**Primary hypothesis (high confidence):** Reducing the time from connect to EGV write will move the write inside the window. The 6s fallback is the leading suspect. Not proven until Option C ships and we observe success.
+**Status of current problem (historical, build 187):** G7 cycles were failing with `outcome=failure final_stage=requestingEGV` under the 6s auth fallback. The 6-second `authFallbackDelay` consumes most of the sensor's ~7-10 second session window. The EGV write lands at ~6-7s; the sensor closes at ~7-10s. Not enough margin for the response to arrive.
+
+**Primary hypothesis (high confidence):** Reducing the time from connect to EGV write will move the write inside the window. The 6s fallback was the leading suspect. **With build 188 live,** confirm or falsify in **production / BetterStack** (see success criteria below).
 
 **Why Option C and not A or B:**
 - Option A (reduce timer to 2s): simpler but still timer-driven. An arbitrary 2s constant is still arbitrary.
@@ -80,7 +82,7 @@ event=g7_ble_auth_payload_post_advance opcode=0x05 authenticated=<bool> bonded=<
 ````
 This tells us whether 0x05 ever arrives on the watch (key data for the "late subscriber misses auth payload" hypothesis).
 
-**Success criteria (ship/no-ship gate for this task):**
+**Success criteria (verify in production / BetterStack; build 188 is live):**
 - `control_notify_enable_requested reason=auth_notify_enabled_observer` appears at ~1s after connect (not ~6s)
 - `session_outcome outcome=success` with `connect_to_egv_write_ms` in the 1000-2500ms range
 - Repeated EGV delivery across multiple consecutive cycles — not just one
@@ -273,18 +275,18 @@ Task A from Build 187 is validated. The scan-path call with the "redundant defen
 
 ---
 
-## Build 188 overnight validation checklist
+## Build 188 production / BetterStack validation (ongoing)
 
-Check BetterStack in the morning for:
+*Draft checklist from pre-release; with **build 188 live,** use this as a recurring pass in **BetterStack** (or equivalent) rather than a one-time “next morning” window.*
 
-1. `connection_events_registered reason=powered_on` on every process start ✓ (Build 187 already confirmed — just verify it's still there)
+1. `connection_events_registered reason=powered_on` on every process start ✓ (Build 187; confirm it remains after 188)
 2. `control_notify_enable_requested reason=auth_notify_enabled_observer` at ~1s after connect (not ~6s)
 3. `session_outcome outcome=success` with `connect_to_egv_write_ms` in 1000-2500ms range
-4. `post_egv_backoff_scheduled` → `post_egv_backoff_cancelled reason=connection_event` — B2 sleep working
-5. `peripheral_id_persisted` fired once this process lifetime (D3)
-6. Whether any `auth_payload_post_advance` events appear (did 0x05 ever arrive after advance?)
-7. Consecutive EGV delivery across multiple cycles — not just one success
-8. Zero "accessory disconnected" system notifications (Build 187 fix still holding)
+4. `post_egv_backoff_scheduled` → `post_egv_backoff_cancelled reason=connection_event` (post-EGV backoff + MOD-E)
+5. `peripheral_id_persisted` (see observability / D3 intent)
+6. `auth_payload_post_advance` where relevant (0x05 after advance hypothesis)
+7. Consecutive EGV delivery across multiple cycles
+8. Zero "accessory disconnected" system notifications (regression check vs Build 187 connect options)
 
 ---
 
@@ -301,7 +303,7 @@ Check BetterStack in the morning for:
 
 ## Implementation log (Build 188)
 
-Execution followed **Trio-dev** `docs/prompts/04-execute-implementation-plan.md` on branch **`feature/watch-g7-direct-ble-observer-synthesis`** (Trio worktree). Verification: static re-read of each change; no `xcodebuild` / `ci/local-build.sh` per AGENTS.md rule 10. Post-ship, **code review** adjusted ladder `t0` semantics, debug `.id` targets, and connect-failure metric deduplication (see table rows below after Task H).
+**Build 188 is shipped and live in production;** the table is the as-built record. Execution followed **Trio-dev** `docs/prompts/04-execute-implementation-plan.md` on branch **`feature/watch-g7-direct-ble-observer-synthesis`** (Trio worktree). **Pre-release** verification: static re-read; no `xcodebuild` / `ci/local-build.sh` (AGENTS.md). **Post-merge code review** adjusted ladder `t0` semantics, debug `.id` targets, and connect-failure metric deduplication (table rows and SHAs below).
 
 | Commit / step | What was done | Files | Acceptance |
 |---------------|---------------|-------|------------|
@@ -324,6 +326,9 @@ Execution followed **Trio-dev** `docs/prompts/04-execute-implementation-plan.md`
 
 ## Changelog
 
+### v1.11 (2026-04-27 13:25 CEST)
+- **Build 188: built, shipped, and live in production** — banner section; 187 “outstanding” list reframed as **delivered**; “Build 188 scope” as **delivered** priority list; Task A / success / hypothesis / validation checklist reworded for **production / BetterStack** (no “tonight / next morning” draft framing); implementation log intro states **live** status. v1.8 changelog line “(tonight)” is historical **draft** wording; 188 is **released** (v1.9+ execution).
+
 ### v1.10 (2026-04-27 11:52 CEST)
 - **Implementation log table** updated: Task B and Task A(2) rows match **as-built** (`.id` on data store + **log files**, not reload; `sessionPhaseConnectAt` at **`connect()`** for honest `connect_to_*` intervals); Task F row includes **deduped** connect-failure metric and **`didConnect`** flag reset; short SHA list; plan doc as its own row.
 - Pointers: pair doc **`watch-g7-ble-build187-impl-log.md`** (v1.2) for narrative Build 188 notes.
@@ -332,7 +337,7 @@ Execution followed **Trio-dev** `docs/prompts/04-execute-implementation-plan.md`
 - **Build 188 executed:** ten plan commits + one red-team fix commit on `feature/watch-g7-direct-ble-observer-synthesis`; **Implementation log** section added above.
 
 ### v1.8 (2026-04-27)
-Consolidated into Build 187 (done) + Build 188 (tonight). Major additions:
+Consolidated into Build 187 (done) + Build 188 (planned; **now shipped** — see v1.9–v1.11). Major additions:
 - Auth timing fix (Option C) as highest-priority Build 188 task with full evidence, success/falsification criteria, confidence table
 - Phase timing ladder added to session_outcome log (ChatGPT suggestion — high value)
 - Auth payload post-advance logging (ChatGPT suggestion — key diagnostic)
