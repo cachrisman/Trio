@@ -94,12 +94,6 @@ final class G7DirectBLEObserver: NSObject {
     /// One-shot session gate — cleared only on full teardown, never on mid-session phase transition.
     /// CBPeripheral.services is unreliable as a guard (can be non-nil from cached prior-session state).
     private var isDiscoveringServices = false
-    /// Delayed kickAttach work item scheduled after a successful EGV session.
-    /// Cancelled immediately by a MOD-E peerConnected event, or on stop/hardStop.
-    private var postEGVBackoffWorkItem: DispatchWorkItem?
-    /// True when the completed session delivered at least one EGV. Reset to false at the start
-    /// of every connect() call. Set in didDisconnect to gate the post-EGV backoff branch.
-    private var lastSessionWasSuccess = false
     /// Set to true when willRestoreState fires; stays true for the manager lifetime.
     /// Per-manager-lifecycle flag — do NOT reset in per-session teardown paths.
     private var didReceiveWillRestoreState = false
@@ -136,6 +130,10 @@ final class G7DirectBLEObserver: NSObject {
     private let minimumSavedReadingSpacing: TimeInterval = 60
     /// Set before each deliberate `cancelPeripheralConnection` so `didDisconnect` can ignore duplicate reschedules.
     private var isSelfCancelling = false
+    private var lastConnectionEventAt: Date?
+    private var isInterWindowSleeping = false
+    private let windowCycleDuration: TimeInterval = 300
+    private let preWindowLeadTime: TimeInterval = 30
 
     private override init() {
         super.init()
@@ -154,6 +152,10 @@ final class G7DirectBLEObserver: NSObject {
             self.isForegroundActive = true
             self.hasReceivedForegroundEntry = true
             self.isHardStopped = false
+            if self.isInterWindowSleeping {
+                self.log("event=g7_ble_lifecycle action=foreground_active_sleep_preserved")
+                return
+            }
             self.failedAttempts = 0
             self.startOrResume(reason: "foreground_active")
         }
@@ -299,9 +301,6 @@ final class G7DirectBLEObserver: NSObject {
             return
         }
         connectInFlight = true
-        lastSessionWasSuccess = false
-        postEGVBackoffWorkItem?.cancel()
-        postEGVBackoffWorkItem = nil
 
         scanTimeoutWorkItem?.cancel()
         if centralManager.isScanning {
@@ -373,7 +372,6 @@ final class G7DirectBLEObserver: NSObject {
             self.isDiscoveringServices = false
             self.isSelfCancelling = true
             self.centralManager.cancelPeripheralConnection(peripheral)
-            self.scheduleReconnect(reason: "connect_timeout")
         }
         connectTimeoutWorkItem = workItem
         queue.asyncAfter(deadline: .now() + connectTimeout, execute: workItem)
@@ -753,7 +751,44 @@ final class G7DirectBLEObserver: NSObject {
         }
     }
 
+    private func scheduleInterWindowSleep(reason: String) {
+        guard !isHardStopped else { return }
+        cancelTransientTimers()
+        stage = .idle
+        if activePeripheral?.state == .connected {
+            log("event=g7_ble_inter_window_sleep_skipped reason=still_connected")
+            return
+        }
+        guard let anchor = lastConnectionEventAt else {
+            log("event=g7_ble_inter_window_sleep_fallback reason=no_anchor original_reason=\(reason)")
+            scheduleReconnectAfterBackoff(reason: reason)
+            return
+        }
+        let elapsed = Date().timeIntervalSince(anchor)
+        guard elapsed < windowCycleDuration else {
+            log("event=g7_ble_inter_window_sleep_fallback reason=stale_anchor elapsed_s=\(Int(elapsed)) original_reason=\(reason)")
+            scheduleReconnectAfterBackoff(reason: reason)
+            return
+        }
+        let sleepDuration = max(10, windowCycleDuration - elapsed - preWindowLeadTime)
+        isInterWindowSleeping = true
+        log("event=g7_ble_inter_window_sleep delay_s=\(Int(sleepDuration)) elapsed_s=\(Int(elapsed)) reason=\(reason)")
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.isInterWindowSleeping = false
+            self.startOrResume(reason: "inter_window_sleep_expired")
+        }
+        reconnectWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + sleepDuration, execute: workItem)
+    }
+
+    /// Exponential-backoff when `scheduleInterWindowSleep` has no valid anchor; also used for mid-session error paths.
     private func scheduleReconnect(reason: String) {
+        scheduleReconnectAfterBackoff(reason: reason)
+    }
+
+    /// Exponential-backoff reconnect when no MOD-E anchor (first launch) or anchor is stale.
+    private func scheduleReconnectAfterBackoff(reason: String) {
         guard !isHardStopped else { return }
         cancelTransientTimers()
         if activePeripheral?.state == .connected {
@@ -776,9 +811,7 @@ final class G7DirectBLEObserver: NSObject {
     private func hardStopOnQueue(reason: String) {
         connectInFlight = false
         isDiscoveringServices = false
-        lastSessionWasSuccess = false
-        postEGVBackoffWorkItem?.cancel()
-        postEGVBackoffWorkItem = nil
+        isInterWindowSleeping = false
         cancelTransientTimers()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -815,6 +848,7 @@ final class G7DirectBLEObserver: NSObject {
     private func cancelReconnect() {
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
+        isInterWindowSleeping = false
     }
 
     private func emitSessionOutcome(outcome: String) {
@@ -936,6 +970,8 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         for peripheral: CBPeripheral
     ) {
         if event == .peerConnected {
+            lastConnectionEventAt = Date()
+            log("event=g7_ble_connection_event_anchor dt=\(Int(Date().timeIntervalSince1970))")
             connectionEventsSinceLaunch += 1
             let m = connectionEventsSinceLaunch
             Task { @MainActor in
@@ -944,11 +980,6 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         }
         log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected") mode_e_total=\(connectionEventsSinceLaunch)")
         if event == .peerConnected, !isHardStopped {
-            if postEGVBackoffWorkItem != nil {
-                postEGVBackoffWorkItem?.cancel()
-                postEGVBackoffWorkItem = nil
-                log("event=g7_ble_post_egv_backoff_cancelled reason=connection_event")
-            }
             startOrResume(reason: "connection_event_peer_connected")
         }
     }
@@ -983,7 +1014,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         } else {
             log("event=g7_ble_connect_failed peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil consecutive_failures=\(consecutiveConnectFailures)")
         }
-        scheduleReconnect(reason: "connect_failed")
+        scheduleInterWindowSleep(reason: "connect_failed")
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -1008,6 +1039,9 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
             controlWriteRetryWorkItem?.cancel()
             controlWriteRetryWorkItem = nil
             noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
+            if !isHardStopped {
+                scheduleInterWindowSleep(reason: "self_cancelled")
+            }
             return
         }
         if let error {
@@ -1028,20 +1062,8 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         controlWriteRetryWorkItem?.cancel()
         controlWriteRetryWorkItem = nil
         noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
-        lastSessionWasSuccess = sessionEGVCount > 0
-        if lastSessionWasSuccess {
-            // G7 re-auth window is ~20-30s every ~300s. Sleep 290s to avoid hammering the sensor
-            // between windows. MOD-E (peerConnected) cancels this work item early when the window
-            // opens; the stage guard catches any teardown path (stop or hardStop both land on .stopped).
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self, self.stage != .stopped else { return }
-                self.startOrResume(reason: "post_egv_backoff")
-            }
-            postEGVBackoffWorkItem = workItem
-            queue.asyncAfter(deadline: .now() + 290, execute: workItem)
-            log("event=g7_ble_post_egv_backoff_scheduled delay_s=290")
-        } else {
-            scheduleReconnect(reason: "disconnect")
+        if !isHardStopped {
+            scheduleInterWindowSleep(reason: "disconnect")
         }
     }
 }
