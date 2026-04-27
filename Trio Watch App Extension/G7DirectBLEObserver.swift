@@ -134,6 +134,7 @@ final class G7DirectBLEObserver: NSObject {
 
     private override init() {
         super.init()
+        // `loadDailyCounters` touches only `UserDefaults` — safe before `CBCentralManager` init.
         loadDailyCounters()
         centralManager = CBCentralManager(
             delegate: self,
@@ -180,6 +181,7 @@ final class G7DirectBLEObserver: NSObject {
         log("event=g7_ble_lifecycle action=foreground_active central_state=\(centralManager.state.rawValue)")
         queue.async { [weak self] in
             guard let self else { return }
+            // TODO: when the process crosses midnight while alive, re-run `loadDailyCounters()` for true calendar-day counter reset and `G7BLE.wasRestored` (currently only in `init`).
             self.isForegroundActive = true
             self.hasReceivedForegroundEntry = true
             self.isHardStopped = false
@@ -1012,7 +1014,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
                 WatchState.shared.bleConnectionEventsToday = m
             }
         }
-        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected") mode_e_total=\(bleConnectionEventsToday)")
+        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected") ble_connection_events_today=\(bleConnectionEventsToday)")
         if event == .peerConnected, !isHardStopped {
             startOrResume(reason: "connection_event_peer_connected")
         }
