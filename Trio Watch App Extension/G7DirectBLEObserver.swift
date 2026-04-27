@@ -176,12 +176,22 @@ final class G7DirectBLEObserver: NSObject {
         UserDefaults.standard.set(bleConnectionEventsToday, forKey: "G7BLE.connectionEventsToday")
     }
 
+    /// If the app process outlives midnight, `loadDailyCounters()` in `init` alone is insufficient. Compare persisted `G7BLE.countsDate` to the current local day and re-run the full load when it changed (zeros counters, new-day `bleWasRestored` handling, `WatchState` sync).
+    private func loadDailyCountersIfNewCalendarDay() {
+        let today = Calendar.current.startOfDay(for: Date())
+        if let stored = UserDefaults.standard.object(forKey: "G7BLE.countsDate") as? Date,
+           Calendar.current.isDate(stored, inSameDayAs: today) {
+            return
+        }
+        loadDailyCounters()
+    }
+
     func applyForegroundActiveEntry() {
         WatchState.shared.applyG7DirectBleStatus(.searching)
         log("event=g7_ble_lifecycle action=foreground_active central_state=\(centralManager.state.rawValue)")
         queue.async { [weak self] in
             guard let self else { return }
-            // TODO: when the process crosses midnight while alive, re-run `loadDailyCounters()` for true calendar-day counter reset and `G7BLE.wasRestored` (currently only in `init`).
+            self.loadDailyCountersIfNewCalendarDay()
             self.isForegroundActive = true
             self.hasReceivedForegroundEntry = true
             self.isHardStopped = false
