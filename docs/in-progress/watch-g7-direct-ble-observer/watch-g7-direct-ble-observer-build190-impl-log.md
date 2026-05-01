@@ -1,10 +1,10 @@
 # Build 190 — Implementation log
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Status:** Complete (code landed; soak Tiers 1–3 pending)  
 **Branch:** `feature/watch-g7-direct-ble-observer-synthesis`  
 **Created:** 2026-05-01 20:37 CET  
-**Last updated:** 2026-05-01 20:52 CET  
+**Last updated:** 2026-05-01 20:57 CET  
 
 **Plan:** [watch-g7-direct-ble-observer-build190-impl-plan.md](watch-g7-direct-ble-observer-build190-impl-plan.md) (v1.0)  
 
@@ -19,6 +19,7 @@
 | 1 | `849d8d505` | `revert: reset G7DirectBLEObserver.swift to build 185 baseline` — Item 0 only |
 | 2 | `d6f9cce87` | `feat(watch-g7): build 190 — MOD-E hardening, session generation, discovery timeout` — Items 1–9 |
 | 3 | — | `fix(watch-g7): restore connect timeout from connect(), disconnect_failure terminal reason` — post-review corrections *(SHA: `git log -1 --oneline` on this branch)* |
+| 4 | — | `fix(watch-g7): red-team — resume_connected discovery timeout; skip disconnect emit after hardStop` |
 
 ---
 
@@ -59,7 +60,7 @@
 
 ### Item 5 — Discovery timeout (30s, generation-checked)
 
-- `discoveryTimeoutWorkItem`, `scheduleDiscoveryTimeout(for:)`, scheduled from `didConnect` and restore-connected path.
+- `discoveryTimeoutWorkItem`, `scheduleDiscoveryTimeout(for:)`, scheduled from `didConnect`, restore-connected path, and **`startOrResume` `resume_connected`** (commit 4 — red-team; closes gap when already-connected peripheral re-enters discovery without a fresh `didConnect`).
 - Cancelled on successful `didDiscoverServices` (success branch), `didDisconnectPeripheral`, and `cancelTransientTimers` / teardown.
 
 ### Item 6 — Persist sensor ID on `didConnect`
@@ -86,6 +87,7 @@
 
 - `connect()` clears `pendingTerminalReason` on new session attempt to avoid leakage across attempts.
 - `cancelTransientTimers` cancels discovery timeout and uses `cancelAuthFallback(reason: "transient_teardown")`.
+- **`didDisconnectPeripheral` when `isHardStopped`:** early return after cancelling discovery/connect-timeout work items — avoids duplicate `g7_ble_session_outcome` and `scheduleReconnect` after `hardStopOnQueue` already emitted teardown (commit 4 — red-team).
 
 ---
 
@@ -99,7 +101,7 @@ Executed from repo root:
 - `registerForConnectionEvents` — **3 sites** (`startScanning`, `.poweredOn`, `connect()`).
 - `authFallbackDelay = 6` — **present**.
 - `currentSessionGeneration`, bump sites, `scheduleDiscoveryTimeout`, tripwire — **present**.
-- **`scheduleConnectTimeout` called from `connect()`** (not `didConnect`); `scheduleDiscoveryTimeout` from `didConnect` + restore-connected — **verified** (commit 3 Tier 0).
+- **`scheduleConnectTimeout` called from `connect()`** (not `didConnect`); `scheduleDiscoveryTimeout` from `didConnect` + restore-connected + **`resume_connected`** — **verified** (commits 3–4).
 
 ---
 
@@ -144,9 +146,17 @@ Executed from repo root:
 
 *Historical note:* Iteration 1 (R1.1) and Iteration 2 (R2.1/R2.2) reflected an earlier connect-timeout placement; commit 3 supersedes that trajectory.
 
+### Iteration 5 — Prompt 05 pass (2026-05-01)
+
+| ID | Severity | Finding | Resolution |
+|----|----------|---------|------------|
+| RT1.1 | major | `resume_connected` called `discoverServicesIfNeeded` without `scheduleDiscoveryTimeout` — Item 5 watchdog bypassed when re-attaching without new `didConnect`. | **Fixed (commit 4):** `scheduleDiscoveryTimeout(for:)` before `discoverServicesIfNeeded` on that branch. |
+| RT1.2 | major | `didDisconnectPeripheral` ran after `hardStopOnQueue` → duplicate `emitSessionOutcome` + unnecessary `scheduleReconnect`. | **Fixed (commit 4):** if `isHardStopped`, cancel dangling timeout work items and return before emit/reconnect. |
+| RT2.1 | minor | `currentSessionGeneration` comment overstated “all deferred work items.” | **Fixed (commit 4):** comment narrowed to discovery-timeout, auth-fallback, reconnect (connect timeout has no gen guard by design). |
+
 ### Final status (red team)
 
-- **Verdict:** **Clean with minor nits** — E4.1/E4.2 addressed in commit 3; connect-timeout behavior matches external review.
+- **Verdict:** **Clean with minor nits** — E4.1/E4.2 addressed in commit 3; RT1.1/RT1.2/RT2.1 addressed in commit 4 (iteration 5).
 - **Residual risks:** `controlWriteRetryWorkItem` without gen guard (R3.1); `disconnect_failure` is an app-defined extension vs strict plan §7 enum (documented under deviations).
 
 ### Coverage check
@@ -178,6 +188,10 @@ Executed from repo root:
 ---
 
 ## Changelog
+
+### v1.2 (2026-05-01 20:57 CET)
+
+- Documented commit 4 (red-team iteration 5): `resume_connected` discovery timeout; `didDisconnect` early exit when `isHardStopped`; `currentSessionGeneration` comment correction. Commits table row 4; Item 5 / Supporting hygiene / Tier 0 / red-team sections updated.
 
 ### v1.1 (2026-05-01 20:52 CET)
 

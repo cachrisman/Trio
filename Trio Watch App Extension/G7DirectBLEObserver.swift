@@ -87,7 +87,7 @@ final class G7DirectBLEObserver: NSObject {
     private var sessionActivationDate: Date?
     private var controlWriteConsecutiveFailures = 0
     /// Incremented on every new session anchor (didConnect + willRestoreState connected path).
-    /// Captured at schedule time by all deferred work items; checked at execution time.
+    /// Captured at schedule time by discovery-timeout, auth-fallback, and reconnect work items (generation-checked).
     private var currentSessionGeneration: UInt64 = 0
     private var discoveryTimeoutWorkItem: DispatchWorkItem?
     /// Set before emitting session outcome when a specific terminal cause is known (timeouts, failures).
@@ -164,6 +164,7 @@ final class G7DirectBLEObserver: NSObject {
         if let peripheral = activePeripheral, peripheral.state == .connected {
             log("event=g7_ble_lifecycle action=resume_connected reason=\(reason) peripheral_id=\(peripheral.identifier.uuidString)")
             noteStatus(sessionEGVCount > 0 ? .active : .connecting)
+            scheduleDiscoveryTimeout(for: peripheral)
             discoverServicesIfNeeded(peripheral)
             return
         }
@@ -924,6 +925,11 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         discoveryTimeoutWorkItem?.cancel()
         discoveryTimeoutWorkItem = nil
+        if isHardStopped {
+            connectTimeoutWorkItem?.cancel()
+            connectTimeoutWorkItem = nil
+            return
+        }
         if let error {
             logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
             emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
