@@ -71,7 +71,6 @@ final class G7DirectBLEObserver: NSObject {
     private var isHardStopped = false
     private var scanTimeoutWorkItem: DispatchWorkItem?
     private var connectTimeoutWorkItem: DispatchWorkItem?
-    private var stageTimeoutWorkItem: DispatchWorkItem?
     private var egvRequestWorkItem: DispatchWorkItem?
     private var controlWriteRetryWorkItem: DispatchWorkItem?
     private var reconnectWorkItem: DispatchWorkItem?
@@ -87,33 +86,9 @@ final class G7DirectBLEObserver: NSObject {
     /// Anchored once per connect cycle so consecutive EGV parses share the same activation instant (sub-second drift fix).
     private var sessionActivationDate: Date?
     private var controlWriteConsecutiveFailures = 0
-    /// True while a centralManager.connect() call is in-flight. Guards against parallel connects
-    /// from rapid scene transitions. Per-session — reset on every connect completion or teardown.
-    private var connectInFlight = false
-    /// True once peripheral.discoverServices() has been called for the current connection.
-    /// One-shot session gate — cleared only on full teardown, never on mid-session phase transition.
-    /// CBPeripheral.services is unreliable as a guard (can be non-nil from cached prior-session state).
-    private var isDiscoveringServices = false
-    /// Set to true when willRestoreState fires; stays true for the manager lifetime.
-    /// Per-manager-lifecycle flag — do NOT reset in per-session teardown paths.
-    private var didReceiveWillRestoreState = false
-    private var bleConnectsToday = 0
-    private var bleEGVsToday = 0
-    private var bleConnectionEventsToday = 0
-    /// Connect attempts that ended in timeout or explicit connect failure (reset on `didConnect`).
-    private var consecutiveConnectFailures = 0
-    /// Ensures timeout + `didFailToConnect` for the same attempt do not double-increment the counter.
-    private var connectFailureMetricCountedThisAttempt = false
-    /// Phase timestamps for `session_outcome` ladder (reset each `connect()`).
-    private var sessionPhaseConnectAt: Date?
-    private var sessionPhaseAuthNotifyAt: Date?
-    private var sessionPhaseControlNotifyAt: Date?
-    private var sessionPhaseEgvWriteAt: Date?
-    private var sessionPhaseEgvAckAt: Date?
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
-    /// Passively wait for 0x05; fallback for missed window (build 185/189 contract).
     private let authFallbackDelay: TimeInterval = 6
     /// Fallback EGV request cadence when auth-transition triggers are sparse (~sensor EGV period).
     private let egvFallbackTimerSeconds: TimeInterval = 330
@@ -125,17 +100,9 @@ final class G7DirectBLEObserver: NSObject {
     /// `controlWriteRetryDelay` (synthesis MOD-A / blueprint “cap of 3” = three retry attempts, not three total failures).
     private let maxConsecutiveControlWriteFailuresBeforeReconnect = 4
     private let minimumSavedReadingSpacing: TimeInterval = 60
-    /// Set before each deliberate `cancelPeripheralConnection` so `didDisconnect` can ignore duplicate reschedules.
-    private var isSelfCancelling = false
-    private var lastConnectionEventAt: Date?
-    private var isInterWindowSleeping = false
-    private let windowCycleDuration: TimeInterval = 300
-    private let preWindowLeadTime: TimeInterval = 30
 
     private override init() {
         super.init()
-        // `loadDailyCounters` touches only `UserDefaults` — safe before `CBCentralManager` init.
-        loadDailyCounters()
         centralManager = CBCentralManager(
             delegate: self,
             queue: queue,
@@ -143,62 +110,14 @@ final class G7DirectBLEObserver: NSObject {
         )
     }
 
-    private func loadDailyCounters() {
-        let today = Calendar.current.startOfDay(for: Date())
-        let stored = UserDefaults.standard.object(forKey: "G7BLE.countsDate") as? Date
-        if let stored, Calendar.current.isDate(stored, inSameDayAs: today) {
-            bleConnectsToday = UserDefaults.standard.integer(forKey: "G7BLE.connectsToday")
-            bleEGVsToday = UserDefaults.standard.integer(forKey: "G7BLE.egvsToday")
-            bleConnectionEventsToday = UserDefaults.standard.integer(forKey: "G7BLE.connectionEventsToday")
-        } else {
-            bleConnectsToday = 0
-            bleEGVsToday = 0
-            bleConnectionEventsToday = 0
-            UserDefaults.standard.set(today, forKey: "G7BLE.countsDate")
-            UserDefaults.standard.set(false, forKey: "G7BLE.wasRestored")
-            persistDailyCounters()
-        }
-        let wasRestored = UserDefaults.standard.bool(forKey: "G7BLE.wasRestored")
-        let c = bleConnectsToday
-        let e = bleEGVsToday
-        let m = bleConnectionEventsToday
-        Task { @MainActor in
-            WatchState.shared.bleConnectsToday = c
-            WatchState.shared.bleEGVsToday = e
-            WatchState.shared.bleConnectionEventsToday = m
-            WatchState.shared.bleWasRestored = wasRestored
-        }
-    }
-
-    private func persistDailyCounters() {
-        UserDefaults.standard.set(bleConnectsToday, forKey: "G7BLE.connectsToday")
-        UserDefaults.standard.set(bleEGVsToday, forKey: "G7BLE.egvsToday")
-        UserDefaults.standard.set(bleConnectionEventsToday, forKey: "G7BLE.connectionEventsToday")
-    }
-
-    /// If the app process outlives midnight, `loadDailyCounters()` in `init` alone is insufficient. Compare persisted `G7BLE.countsDate` to the current local day and re-run the full load when it changed (zeros counters, new-day `bleWasRestored` handling, `WatchState` sync).
-    private func loadDailyCountersIfNewCalendarDay() {
-        let today = Calendar.current.startOfDay(for: Date())
-        if let stored = UserDefaults.standard.object(forKey: "G7BLE.countsDate") as? Date,
-           Calendar.current.isDate(stored, inSameDayAs: today) {
-            return
-        }
-        loadDailyCounters()
-    }
-
     func applyForegroundActiveEntry() {
         WatchState.shared.applyG7DirectBleStatus(.searching)
         log("event=g7_ble_lifecycle action=foreground_active central_state=\(centralManager.state.rawValue)")
         queue.async { [weak self] in
             guard let self else { return }
-            self.loadDailyCountersIfNewCalendarDay()
             self.isForegroundActive = true
             self.hasReceivedForegroundEntry = true
             self.isHardStopped = false
-            if self.isInterWindowSleeping {
-                self.log("event=g7_ble_lifecycle action=foreground_active_sleep_preserved")
-                return
-            }
             self.failedAttempts = 0
             self.startOrResume(reason: "foreground_active")
         }
@@ -246,10 +165,6 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func beginAttachLadder(reason: String) {
-        guard activePeripheral?.state != .connecting else {
-            log("event=g7_ble_attach_skipped reason=connect_in_flight")
-            return
-        }
         stage = .retrieving
         noteStatus(.searching)
         log("event=g7_ble_lifecycle action=attach_ladder_start reason=\(reason)")
@@ -318,6 +233,12 @@ final class G7DirectBLEObserver: NSObject {
         noteStatus(.searching)
         log("event=g7_ble_scan_start reason=\(reason) services=nil")
         centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        centralManager.registerForConnectionEvents(options: [
+            CBConnectionEventMatchingOption.serviceUUIDs: [
+                G7BLEUUID.advertisement,
+                G7BLEUUID.dataService
+            ]
+        ])
         scheduleScanTimeout()
     }
 
@@ -339,12 +260,6 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func connect(_ peripheral: CBPeripheral, source: String) {
-        guard !connectInFlight else {
-            log("event=g7_ble_connect_skipped reason=already_connecting source=\(source)")
-            return
-        }
-        connectInFlight = true
-
         scanTimeoutWorkItem?.cancel()
         if centralManager.isScanning {
             centralManager.stopScan()
@@ -357,12 +272,7 @@ final class G7DirectBLEObserver: NSObject {
         stage = .connecting
         sessionID = UUID()
         sessionStartDate = Date()
-        sessionPhaseAuthNotifyAt = nil
-        sessionPhaseControlNotifyAt = nil
-        sessionPhaseEgvWriteAt = nil
-        sessionPhaseEgvAckAt = nil
         sessionEGVCount = 0
-        connectFailureMetricCountedThisAttempt = false
         controlNotifyEnabled = false
         authNotifyEnabled = false
         hasAdvancedBeyondAuth = false
@@ -373,28 +283,11 @@ final class G7DirectBLEObserver: NSObject {
         characteristics.removeAll()
         noteStatus(.connecting)
         log("event=g7_ble_connect_attempt source=\(source) peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
-        // Defensive cleanup: if a stale CB pending connect is lingering, cancel it so the
-        // fresh connect() below is the only in-flight attempt. Never cancel .connected.
-        if peripheral.state == .connecting {
-            isSelfCancelling = true
-            centralManager.cancelPeripheralConnection(peripheral)
-            log("event=g7_ble_stale_connect_cancelled peripheral_id=\(peripheral.identifier.uuidString)")
-        }
-        sessionPhaseConnectAt = Date()
-        centralManager.connect(peripheral, options: nil)
+        centralManager.connect(
+            peripheral,
+            options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
+        )
         scheduleConnectTimeout(for: peripheral)
-    }
-
-    private func scheduleDiscoveringServicesStageTimeout(for peripheral: CBPeripheral) {
-        stageTimeoutWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, self.stage == .discoveringServices else { return }
-            self.log("event=g7_ble_stage_timeout stage=discoveringServices")
-            self.isSelfCancelling = true
-            self.centralManager.cancelPeripheralConnection(peripheral)
-        }
-        stageTimeoutWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + 30, execute: workItem)
     }
 
     private func scheduleConnectTimeout(for peripheral: CBPeripheral) {
@@ -406,15 +299,9 @@ final class G7DirectBLEObserver: NSObject {
                 self.log("event=g7_ble_connect_timeout_ignored reason=already_connected peripheral_id=\(id.uuidString)")
                 return
             }
-            if !self.connectFailureMetricCountedThisAttempt {
-                self.connectFailureMetricCountedThisAttempt = true
-                self.consecutiveConnectFailures += 1
-            }
-            self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString) consecutive_failures=\(self.consecutiveConnectFailures)")
-            self.connectInFlight = false
-            self.isDiscoveringServices = false
-            self.isSelfCancelling = true
+            self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString)")
             self.centralManager.cancelPeripheralConnection(peripheral)
+            self.scheduleReconnect(reason: "connect_timeout")
         }
         connectTimeoutWorkItem = workItem
         queue.asyncAfter(deadline: .now() + connectTimeout, execute: workItem)
@@ -444,33 +331,18 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func discoverServicesIfNeeded(_ peripheral: CBPeripheral) {
-        guard peripheral.services == nil else {
-            log("event=g7_ble_discovery_skipped reason=already_discovered peripheral_id=\(peripheral.identifier.uuidString)")
-            configureObserverCharacteristics(peripheral)
-            return
-        }
-        guard !isDiscoveringServices else {
-            log("event=g7_ble_service_discovery_skipped reason=already_in_progress peripheral_id=\(peripheral.identifier.uuidString)")
-            return
-        }
-        isDiscoveringServices = true
         stage = .discoveringServices
-        log("event=g7_ble_service_discovery_started peripheral_id=\(peripheral.identifier.uuidString)")
+        log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
         peripheral.discoverServices(nil)
-        scheduleDiscoveringServicesStageTimeout(for: peripheral)
     }
 
     private func handleServiceDiscovery(for peripheral: CBPeripheral, error: Error?) {
         if let error {
-            stageTimeoutWorkItem?.cancel()
-            stageTimeoutWorkItem = nil
             logError(event: "g7_ble_services_discovered", error: error, extra: "result=failure")
             scheduleReconnect(reason: "service_discovery_error")
             return
         }
 
-        stageTimeoutWorkItem?.cancel()
-        stageTimeoutWorkItem = nil
         let services = peripheral.services ?? []
         log("event=g7_ble_services_discovered result=success services=\(services.map { $0.uuid.uuidString }.joined(separator: ","))")
         stage = .discoveringCharacteristics
@@ -481,8 +353,6 @@ final class G7DirectBLEObserver: NSObject {
 
     private func handleCharacteristicDiscovery(for peripheral: CBPeripheral, service: CBService, error: Error?) {
         if let error {
-            stageTimeoutWorkItem?.cancel()
-            stageTimeoutWorkItem = nil
             logError(event: "g7_ble_characteristics_discovered", error: error, extra: "service=\(service.uuid.uuidString) result=failure")
             scheduleReconnect(reason: "characteristic_discovery_error")
             return
@@ -548,15 +418,10 @@ final class G7DirectBLEObserver: NSObject {
         case G7BLEUUID.authentication:
             authNotifyEnabled = characteristic.isNotifying
             log("event=g7_ble_auth_notify_enabled result=success notifying=\(characteristic.isNotifying)")
-            if characteristic.isNotifying {
-                sessionPhaseAuthNotifyAt = Date()
-            }
-            // Wait passively for sensor-emitted 0x05 0x01 0x01 (or auth fallback).
         case G7BLEUUID.control:
             controlNotifyEnabled = characteristic.isNotifying
             log("event=g7_ble_control_notify_enabled result=success notifying=\(characteristic.isNotifying)")
             if characteristic.isNotifying {
-                sessionPhaseControlNotifyAt = Date()
                 sendEGVRequest(reason: "control_notify_enabled")
             }
         case G7BLEUUID.backfill:
@@ -595,9 +460,6 @@ final class G7DirectBLEObserver: NSObject {
         let authenticated = data.count > 1 ? data[1] == 1 : false
         let bonded = data.count > 2 ? data[2] == 1 : false
         log("event=g7_ble_auth_payload_received opcode=0x\(opcode.hexByte) authenticated=\(authenticated) bonded=\(bonded) byte_count=\(data.count) preview=\(data.hexPreview)")
-        if hasAdvancedBeyondAuth, opcode == G7BLEOpcode.authStatusReply.byte {
-            log("event=g7_ble_auth_payload_post_advance opcode=0x\(opcode.hexByte) authenticated=\(authenticated) bonded=\(bonded)")
-        }
 
         guard opcode == G7BLEOpcode.authStatusReply.byte else { return }
         if authenticated && bonded {
@@ -625,8 +487,6 @@ final class G7DirectBLEObserver: NSObject {
             return
         }
 
-        stageTimeoutWorkItem?.cancel()
-        stageTimeoutWorkItem = nil
         hasAdvancedBeyondAuth = true
         authFallbackWorkItem?.cancel()
         stage = .enablingControl
@@ -658,7 +518,6 @@ final class G7DirectBLEObserver: NSObject {
 
         stage = .requestingEGV
         let payload = Data([G7BLEOpcode.egv.byte])
-        sessionPhaseEgvWriteAt = Date()
         peripheral.writeValue(payload, for: control, type: .withResponse)
         log("event=g7_ble_egv_request_sent reason=\(reason) write_type=withResponse payload=\(payload.hexString)")
         if reason == "control_not_ready" {
@@ -742,14 +601,10 @@ final class G7DirectBLEObserver: NSObject {
         }
 
         sessionEGVCount += 1
-        bleEGVsToday += 1
-        let egvCount = bleEGVsToday
-        persistDailyCounters()
         failedAttempts = 0
         stage = .receivingEGV
         noteStatus(.active)
         persistedPeripheralIdentifier = activePeripheral?.identifier
-        log("event=g7_ble_peripheral_id_persisted peripheral_id=\(activePeripheral?.identifier.uuidString ?? "nil") sequence=\(reading.sequence)")
 
         let previous = lastSavedGlucose
         lastSavedGlucose = (value, reading.readingDate)
@@ -768,14 +623,9 @@ final class G7DirectBLEObserver: NSObject {
 
         log("event=g7_ble_egv_received glucose=\(value) trend_rate=\(reading.trendRate.map { String($0) } ?? "nil") trend=\(trend) delta=\(delta) sequence=\(reading.sequence) message_timestamp=\(reading.messageTimestamp) age_s=\(reading.age) reading_epoch=\(Int(reading.readingDate.timeIntervalSince1970)) activation_epoch=\(Int(reading.activationDate.timeIntervalSince1970)) algorithm_state=\(reading.algorithmState) display_only=\(reading.glucoseIsDisplayOnly)")
 
-        let lastEgvV = value
-        let lastEgvD = reading.readingDate
         Task { @MainActor in
             TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
             WatchState.shared.applyG7DirectBleSnapshot(snapshot)
-            WatchState.shared.bleEGVsToday = egvCount
-            WatchState.shared.bleLastEGVValue = lastEgvV
-            WatchState.shared.bleLastEGVDate = lastEgvD
             await WatchLogger.shared.log(
                 "event=g7_ble_snapshot_saved glucose=\(snapshot.glucose) reading_epoch=\(Int(snapshot.readingDate.timeIntervalSince1970)) source=\(snapshot.source?.rawValue ?? "nil")"
             )
@@ -795,44 +645,7 @@ final class G7DirectBLEObserver: NSObject {
         }
     }
 
-    private func scheduleInterWindowSleep(reason: String) {
-        guard !isHardStopped else { return }
-        cancelTransientTimers()
-        stage = .idle
-        if activePeripheral?.state == .connected {
-            log("event=g7_ble_inter_window_sleep_skipped reason=still_connected")
-            return
-        }
-        guard let anchor = lastConnectionEventAt else {
-            log("event=g7_ble_inter_window_sleep_fallback reason=no_anchor original_reason=\(reason)")
-            scheduleReconnectAfterBackoff(reason: reason)
-            return
-        }
-        let elapsed = Date().timeIntervalSince(anchor)
-        guard elapsed < windowCycleDuration else {
-            log("event=g7_ble_inter_window_sleep_fallback reason=stale_anchor elapsed_s=\(Int(elapsed)) original_reason=\(reason)")
-            scheduleReconnectAfterBackoff(reason: reason)
-            return
-        }
-        let sleepDuration = max(10, windowCycleDuration - elapsed - preWindowLeadTime)
-        isInterWindowSleeping = true
-        log("event=g7_ble_inter_window_sleep delay_s=\(Int(sleepDuration)) elapsed_s=\(Int(elapsed)) reason=\(reason)")
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.isInterWindowSleeping = false
-            self.startOrResume(reason: "inter_window_sleep_expired")
-        }
-        reconnectWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + sleepDuration, execute: workItem)
-    }
-
-    /// Exponential-backoff when `scheduleInterWindowSleep` has no valid anchor; also used for mid-session error paths.
     private func scheduleReconnect(reason: String) {
-        scheduleReconnectAfterBackoff(reason: reason)
-    }
-
-    /// Exponential-backoff reconnect when no MOD-E anchor (first launch) or anchor is stale.
-    private func scheduleReconnectAfterBackoff(reason: String) {
         guard !isHardStopped else { return }
         cancelTransientTimers()
         if activePeripheral?.state == .connected {
@@ -853,9 +666,6 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func hardStopOnQueue(reason: String) {
-        connectInFlight = false
-        isDiscoveringServices = false
-        isInterWindowSleeping = false
         cancelTransientTimers()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -864,7 +674,6 @@ final class G7DirectBLEObserver: NSObject {
             log("event=g7_ble_scan_stopped reason=\(reason)")
         }
         if let peripheral = activePeripheral {
-            isSelfCancelling = true
             centralManager.cancelPeripheralConnection(peripheral)
         }
         emitSessionOutcome(outcome: "cancelled")
@@ -880,45 +689,22 @@ final class G7DirectBLEObserver: NSObject {
         authFallbackWorkItem?.cancel()
         egvRequestWorkItem?.cancel()
         controlWriteRetryWorkItem?.cancel()
-        stageTimeoutWorkItem?.cancel()
         scanTimeoutWorkItem = nil
         connectTimeoutWorkItem = nil
         authFallbackWorkItem = nil
         egvRequestWorkItem = nil
         controlWriteRetryWorkItem = nil
-        stageTimeoutWorkItem = nil
     }
 
     private func cancelReconnect() {
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
-        isInterWindowSleeping = false
     }
 
     private func emitSessionOutcome(outcome: String) {
         let duration = sessionStartDate.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
         let finalOutcome = sessionEGVCount > 0 && outcome != "cancelled" ? "success" : outcome
-        let ladder: (Int, Int, Int, Int, Int) = {
-            let c = sessionPhaseConnectAt
-            let a = sessionPhaseAuthNotifyAt
-            let ctrl = sessionPhaseControlNotifyAt
-            let w = sessionPhaseEgvWriteAt
-            let ack = sessionPhaseEgvAckAt
-            let ms: (Date?, Date?) -> Int = { from, to in
-                guard let from, let to else { return -1 }
-                return Int(to.timeIntervalSince(from) * 1000)
-            }
-            let connectToAuth = ms(c, a)
-            let authToControl = ms(a, ctrl)
-            let controlToEgv = ms(ctrl, w)
-            let egvToAck = ms(w, ack)
-            let totalLadder = ms(c, ack)
-            let totalMs = totalLadder >= 0 ? totalLadder : duration
-            return (connectToAuth, authToControl, controlToEgv, egvToAck, totalMs)
-        }()
-        log(
-            "event=g7_ble_session_outcome outcome=\(finalOutcome) final_stage=\(stage.rawValue) duration_ms=\(duration) connect_to_auth_notify_ms=\(ladder.0) auth_notify_to_control_ms=\(ladder.1) control_to_egv_write_ms=\(ladder.2) egv_write_to_ack_ms=\(ladder.3) connect_to_egv_ack_total_ms=\(ladder.4) g7_session=\(sessionID.uuidString) egv_count=\(sessionEGVCount)"
-        )
+        log("event=g7_ble_session_outcome outcome=\(finalOutcome) final_stage=\(stage.rawValue) duration_ms=\(duration) g7_session=\(sessionID.uuidString) egv_count=\(sessionEGVCount)")
     }
 
     private func noteStatus(_ status: G7DirectBLEStatus) {
@@ -946,20 +732,10 @@ final class G7DirectBLEObserver: NSObject {
 
 extension G7DirectBLEObserver: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        log("event=g7_ble_central_state state=\(central.state.rawValue) was_restored=\(didReceiveWillRestoreState)")
+        log("event=g7_ble_lifecycle action=central_state state=\(central.state.rawValue)")
         switch central.state {
         case .poweredOn:
             noteStatus(.searching)
-            // MUST be before hasReceivedForegroundEntry gate — registration is required
-            // on every process lifetime regardless of foreground state, including
-            // restoration relaunches where hasReceivedForegroundEntry is false.
-            central.registerForConnectionEvents(options: [
-                CBConnectionEventMatchingOption.serviceUUIDs: [
-                    G7BLEUUID.advertisement,
-                    G7BLEUUID.dataService
-                ]
-            ])
-            log("event=g7_ble_connection_events_registered reason=powered_on")
             if hasReceivedForegroundEntry {
                 startOrResume(reason: "central_powered_on")
             } else {
@@ -980,27 +756,18 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
-        didReceiveWillRestoreState = true
-        UserDefaults.standard.set(true, forKey: "G7BLE.wasRestored")
-        Task { @MainActor in
-            WatchState.shared.bleWasRestored = true
-        }
         let restored = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]) ?? []
-        log("event=g7_ble_will_restore_state restored_count=\(restored.count) peripherals=\(restored.map { $0.identifier.uuidString }.joined(separator: ","))")
+        log("event=g7_ble_lifecycle action=will_restore_state restored_peripherals=\(restored.map { $0.identifier.uuidString }.joined(separator: ","))")
         for peripheral in restored {
-            // Cancel CB's preserved pending connection before the attach ladder issues its own
-            // connect(). Without this, both paths can fire simultaneously producing duplicate
-            // didConnect callbacks and triple auth_notify_enabled events.
-            // Never cancel a .connected peripheral — that tears down a live session.
-            if peripheral.state != .connected {
-                isSelfCancelling = true
-                central.cancelPeripheralConnection(peripheral)
-                log("event=g7_ble_restore_cancelled peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") state=\(peripheral.state.rawValue)")
-            } else {
-                log("event=g7_ble_restore_skipped_cancel peripheral_id=\(peripheral.identifier.uuidString) reason=already_connected")
+            peripheral.delegate = self
+            if shouldConnect(peripheral: peripheral, advertisementData: nil, rssi: nil, source: "restored_state") {
+                activePeripheral = peripheral
+                sourceForPeripheral[peripheral.identifier] = "restored_state"
+                if peripheral.state == .connected {
+                    discoverServicesIfNeeded(peripheral)
+                }
             }
         }
-        // Do NOT issue connect() here — let centralManagerDidUpdateState drive the attach ladder.
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
@@ -1014,17 +781,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         connectionEventDidOccur event: CBConnectionEvent,
         for peripheral: CBPeripheral
     ) {
-        if event == .peerConnected {
-            lastConnectionEventAt = Date()
-            log("event=g7_ble_connection_event_anchor dt=\(Int(Date().timeIntervalSince1970))")
-            bleConnectionEventsToday += 1
-            let m = bleConnectionEventsToday
-            persistDailyCounters()
-            Task { @MainActor in
-                WatchState.shared.bleConnectionEventsToday = m
-            }
-        }
-        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected") ble_connection_events_today=\(bleConnectionEventsToday)")
+        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected")")
         if event == .peerConnected, !isHardStopped {
             startOrResume(reason: "connection_event_peer_connected")
         }
@@ -1032,65 +789,21 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectTimeoutWorkItem?.cancel()
-        connectInFlight = false
-        bleConnectsToday += 1
-        let c = bleConnectsToday
-        persistDailyCounters()
-        let connectAt = Date()
-        Task { @MainActor in
-            WatchState.shared.bleConnectsToday = c
-            WatchState.shared.bleLastConnectAt = connectAt
-        }
         failedAttempts = 0
-        consecutiveConnectFailures = 0
-        connectFailureMetricCountedThisAttempt = false
-        log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
         discoverServicesIfNeeded(peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         connectTimeoutWorkItem?.cancel()
-        connectInFlight = false
-        isDiscoveringServices = false
-        if !connectFailureMetricCountedThisAttempt {
-            connectFailureMetricCountedThisAttempt = true
-            consecutiveConnectFailures += 1
-        }
         if let error {
-            logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) consecutive_failures=\(consecutiveConnectFailures)")
+            logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
         } else {
-            log("event=g7_ble_connect_failed peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil consecutive_failures=\(consecutiveConnectFailures)")
+            log("event=g7_ble_connect_failed peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil")
         }
-        scheduleInterWindowSleep(reason: "connect_failed")
+        scheduleReconnect(reason: "connect_failed")
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        connectInFlight = false
-        isDiscoveringServices = false
-        if isSelfCancelling {
-            isSelfCancelling = false
-            if let error {
-                logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) reason=self_cancelled")
-                emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
-            } else {
-                log("event=g7_ble_disconnect reason=self_cancelled peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil")
-                emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "incomplete")
-            }
-            activePeripheral = nil
-            characteristics.removeAll()
-            controlNotifyEnabled = false
-            authNotifyEnabled = false
-            hasAdvancedBeyondAuth = false
-            sessionActivationDate = nil
-            controlWriteConsecutiveFailures = 0
-            controlWriteRetryWorkItem?.cancel()
-            controlWriteRetryWorkItem = nil
-            noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
-            if !isHardStopped {
-                scheduleInterWindowSleep(reason: "self_cancelled")
-            }
-            return
-        }
         if let error {
             logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
             emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
@@ -1109,9 +822,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         controlWriteRetryWorkItem?.cancel()
         controlWriteRetryWorkItem = nil
         noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
-        if !isHardStopped {
-            scheduleInterWindowSleep(reason: "disconnect")
-        }
+        scheduleReconnect(reason: "disconnect")
     }
 }
 
@@ -1167,7 +878,6 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
             controlWriteConsecutiveFailures = 0
             controlWriteRetryWorkItem?.cancel()
             controlWriteRetryWorkItem = nil
-            sessionPhaseEgvAckAt = Date()
             log("event=g7_ble_control_write_ack characteristic=\(characteristic.uuid.uuidString)")
             scheduleEGVRequest(reason: "fallback_timer_330s")
             return
