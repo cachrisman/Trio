@@ -301,18 +301,14 @@ final class G7DirectBLEObserver: NSObject {
         ])
         log("event=g7_ble_connection_events_registered reason=connect")
         centralManager.connect(peripheral, options: nil)
+        scheduleConnectTimeout(for: peripheral)
     }
 
     private func scheduleConnectTimeout(for peripheral: CBPeripheral) {
         connectTimeoutWorkItem?.cancel()
         let id = peripheral.identifier
-        let gen = currentSessionGeneration
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard self.currentSessionGeneration == gen else {
-                self.log("event=g7_ble_connect_timeout_skipped reason=stale_gen scheduled_gen=\(gen) current_gen=\(self.currentSessionGeneration)")
-                return
-            }
             guard self.activePeripheral?.identifier == id, peripheral.state != .connected else {
                 self.log("event=g7_ble_connect_timeout_ignored reason=already_connected peripheral_id=\(id.uuidString) gen=\(self.currentSessionGeneration)")
                 return
@@ -320,7 +316,6 @@ final class G7DirectBLEObserver: NSObject {
             self.pendingTerminalReason = "connect_timeout"
             self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString) gen=\(self.currentSessionGeneration)")
             self.centralManager.cancelPeripheralConnection(peripheral)
-            self.scheduleReconnect(reason: "connect_timeout")
         }
         connectTimeoutWorkItem = workItem
         queue.asyncAfter(deadline: .now() + connectTimeout, execute: workItem)
@@ -800,7 +795,7 @@ final class G7DirectBLEObserver: NSObject {
                 : "auth_payload_success"
         }
         if rawOutcome == "failure" {
-            return "failure"
+            return "disconnect_failure"
         }
         return "incomplete"
     }
@@ -911,7 +906,6 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         }
         log("event=g7_ble_peripheral_id_persisted peripheral_id=\(peripheral.identifier.uuidString) reason=did_connect gen=\(currentSessionGeneration)")
         scheduleDiscoveryTimeout(for: peripheral)
-        scheduleConnectTimeout(for: peripheral)
         discoverServicesIfNeeded(peripheral)
     }
 
