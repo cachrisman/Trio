@@ -86,6 +86,14 @@ final class G7DirectBLEObserver: NSObject {
     /// Anchored once per connect cycle so consecutive EGV parses share the same activation instant (sub-second drift fix).
     private var sessionActivationDate: Date?
     private var controlWriteConsecutiveFailures = 0
+    /// Incremented on every new session anchor (didConnect + willRestoreState connected path).
+    /// Captured at schedule time by all deferred work items; checked at execution time.
+    private var currentSessionGeneration: UInt64 = 0
+    private var discoveryTimeoutWorkItem: DispatchWorkItem?
+    /// Set before emitting session outcome when a specific terminal cause is known (timeouts, failures).
+    private var pendingTerminalReason: String?
+    /// Last `advanceToControl` reason — distinguishes auth_payload vs fallback outcomes without EGV.
+    private var lastAuthAdvanceReason: String?
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
@@ -281,30 +289,63 @@ final class G7DirectBLEObserver: NSObject {
         controlWriteRetryWorkItem?.cancel()
         controlWriteRetryWorkItem = nil
         characteristics.removeAll()
+        lastAuthAdvanceReason = nil
+        pendingTerminalReason = nil
         noteStatus(.connecting)
-        log("event=g7_ble_connect_attempt source=\(source) peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
-        centralManager.connect(
-            peripheral,
-            options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]
-        )
-        scheduleConnectTimeout(for: peripheral)
+        log("event=g7_ble_connect_attempt source=\(source) peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") gen=\(currentSessionGeneration)")
+        centralManager.registerForConnectionEvents(options: [
+            CBConnectionEventMatchingOption.serviceUUIDs: [
+                G7BLEUUID.advertisement,
+                G7BLEUUID.dataService
+            ]
+        ])
+        log("event=g7_ble_connection_events_registered reason=connect")
+        centralManager.connect(peripheral, options: nil)
     }
 
     private func scheduleConnectTimeout(for peripheral: CBPeripheral) {
         connectTimeoutWorkItem?.cancel()
         let id = peripheral.identifier
+        let gen = currentSessionGeneration
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard self.activePeripheral?.identifier == id, peripheral.state != .connected else {
-                self.log("event=g7_ble_connect_timeout_ignored reason=already_connected peripheral_id=\(id.uuidString)")
+            guard self.currentSessionGeneration == gen else {
+                self.log("event=g7_ble_connect_timeout_skipped reason=stale_gen scheduled_gen=\(gen) current_gen=\(self.currentSessionGeneration)")
                 return
             }
-            self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString)")
+            guard self.activePeripheral?.identifier == id, peripheral.state != .connected else {
+                self.log("event=g7_ble_connect_timeout_ignored reason=already_connected peripheral_id=\(id.uuidString) gen=\(self.currentSessionGeneration)")
+                return
+            }
+            self.pendingTerminalReason = "connect_timeout"
+            self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString) gen=\(self.currentSessionGeneration)")
             self.centralManager.cancelPeripheralConnection(peripheral)
             self.scheduleReconnect(reason: "connect_timeout")
         }
         connectTimeoutWorkItem = workItem
         queue.asyncAfter(deadline: .now() + connectTimeout, execute: workItem)
+    }
+
+    private func scheduleDiscoveryTimeout(for peripheral: CBPeripheral) {
+        discoveryTimeoutWorkItem?.cancel()
+        let gen = currentSessionGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.currentSessionGeneration == gen else {
+                self.log("event=g7_ble_discovery_timeout_skipped reason=stale_gen gen=\(gen) current_gen=\(self.currentSessionGeneration)")
+                return
+            }
+            guard self.stage == .discoveringServices || self.stage == .discoveringCharacteristics else {
+                self.log("event=g7_ble_discovery_timeout_skipped reason=wrong_stage stage=\(self.stage.rawValue) gen=\(gen)")
+                return
+            }
+            self.pendingTerminalReason = "discovery_timeout"
+            self.log("event=g7_ble_discovery_timeout_fired gen=\(gen) peripheral_id=\(peripheral.identifier.uuidString)")
+            self.centralManager.cancelPeripheralConnection(peripheral)
+        }
+        discoveryTimeoutWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + 30, execute: workItem)
+        log("event=g7_ble_discovery_timeout_scheduled delay_s=30 gen=\(gen)")
     }
 
     private func shouldConnect(
@@ -332,19 +373,22 @@ final class G7DirectBLEObserver: NSObject {
 
     private func discoverServicesIfNeeded(_ peripheral: CBPeripheral) {
         stage = .discoveringServices
-        log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil")")
+        log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") gen=\(currentSessionGeneration)")
         peripheral.discoverServices(nil)
     }
 
     private func handleServiceDiscovery(for peripheral: CBPeripheral, error: Error?) {
         if let error {
-            logError(event: "g7_ble_services_discovered", error: error, extra: "result=failure")
+            pendingTerminalReason = "discovery_failed"
+            logError(event: "g7_ble_services_discovered", error: error, extra: "result=failure gen=\(currentSessionGeneration)")
             scheduleReconnect(reason: "service_discovery_error")
             return
         }
 
+        discoveryTimeoutWorkItem?.cancel()
+        discoveryTimeoutWorkItem = nil
         let services = peripheral.services ?? []
-        log("event=g7_ble_services_discovered result=success services=\(services.map { $0.uuid.uuidString }.joined(separator: ","))")
+        log("event=g7_ble_services_discovered result=success services=\(services.map { $0.uuid.uuidString }.joined(separator: ",")) gen=\(currentSessionGeneration)")
         stage = .discoveringCharacteristics
         for service in services {
             peripheral.discoverCharacteristics(nil, for: service)
@@ -353,7 +397,8 @@ final class G7DirectBLEObserver: NSObject {
 
     private func handleCharacteristicDiscovery(for peripheral: CBPeripheral, service: CBService, error: Error?) {
         if let error {
-            logError(event: "g7_ble_characteristics_discovered", error: error, extra: "service=\(service.uuid.uuidString) result=failure")
+            pendingTerminalReason = "discovery_failed"
+            logError(event: "g7_ble_characteristics_discovered", error: error, extra: "service=\(service.uuid.uuidString) result=failure gen=\(currentSessionGeneration)")
             scheduleReconnect(reason: "characteristic_discovery_error")
             return
         }
@@ -363,7 +408,7 @@ final class G7DirectBLEObserver: NSObject {
             characteristics[characteristic.uuid] = characteristic
         }
 
-        log("event=g7_ble_characteristics_discovered service=\(service.uuid.uuidString) characteristics=\(discovered.map { "\($0.uuid.uuidString):\($0.properties.rawValue)" }.joined(separator: ","))")
+        log("event=g7_ble_characteristics_discovered service=\(service.uuid.uuidString) characteristics=\(discovered.map { "\($0.uuid.uuidString):\($0.properties.rawValue)" }.joined(separator: ",")) gen=\(currentSessionGeneration)")
 
         if discovered.contains(where: { $0.uuid == G7BLEUUID.jPake }) {
             log("event=g7_ble_jpake_skipped reason=observer_auth_posture")
@@ -387,17 +432,32 @@ final class G7DirectBLEObserver: NSObject {
 
         stage = .observingAuth
         peripheral.setNotifyValue(true, for: auth)
-        log("event=g7_ble_auth_notify_enable_requested characteristic=\(auth.uuid.uuidString)")
+        log("event=g7_ble_auth_notify_enable_requested characteristic=\(auth.uuid.uuidString) gen=\(currentSessionGeneration)")
         scheduleAuthFallback(peripheral)
     }
 
-    private func scheduleAuthFallback(_ peripheral: CBPeripheral) {
+    private func cancelAuthFallback(reason: String) {
+        guard authFallbackWorkItem != nil else { return }
+        log("event=g7_ble_auth_fallback_cancelled reason=\(reason) gen=\(currentSessionGeneration)")
         authFallbackWorkItem?.cancel()
+        authFallbackWorkItem = nil
+    }
+
+    private func scheduleAuthFallback(_ peripheral: CBPeripheral) {
+        cancelAuthFallback(reason: "auth_fallback_reschedule")
         let id = peripheral.identifier
+        let gen = currentSessionGeneration
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            guard self.activePeripheral?.identifier == id, !self.hasAdvancedBeyondAuth else { return }
-            self.log("event=g7_ble_auth_fallback reason=no_status_reply delay_s=\(Int(self.authFallbackDelay))")
+            guard self.currentSessionGeneration == gen else {
+                self.log("event=g7_ble_auth_fallback_skipped reason=stale_gen scheduled_gen=\(gen) current_gen=\(self.currentSessionGeneration)")
+                return
+            }
+            guard self.activePeripheral?.identifier == id, !self.hasAdvancedBeyondAuth else {
+                self.log("event=g7_ble_auth_fallback_skipped reason=already_advanced gen=\(gen)")
+                return
+            }
+            self.log("event=g7_ble_auth_fallback reason=no_status_reply delay_s=\(Int(self.authFallbackDelay)) gen=\(gen)")
             self.advanceToControl(reason: "auth_fallback_no_status_reply")
         }
         authFallbackWorkItem = workItem
@@ -407,7 +467,7 @@ final class G7DirectBLEObserver: NSObject {
     private func handleNotificationState(_ characteristic: CBCharacteristic, error: Error?) {
         if let error {
             let event = characteristic.uuid == G7BLEUUID.control ? "g7_ble_control_notify_enabled" : "g7_ble_auth_notify_enabled"
-            logError(event: event, error: error, extra: "result=failure characteristic=\(characteristic.uuid.uuidString)")
+            logError(event: event, error: error, extra: "result=failure characteristic=\(characteristic.uuid.uuidString) gen=\(currentSessionGeneration)")
             if characteristic.uuid == G7BLEUUID.control {
                 scheduleReconnect(reason: "control_notify_error")
             }
@@ -417,27 +477,27 @@ final class G7DirectBLEObserver: NSObject {
         switch characteristic.uuid {
         case G7BLEUUID.authentication:
             authNotifyEnabled = characteristic.isNotifying
-            log("event=g7_ble_auth_notify_enabled result=success notifying=\(characteristic.isNotifying)")
+            log("event=g7_ble_auth_notify_enabled result=success notifying=\(characteristic.isNotifying) gen=\(currentSessionGeneration)")
         case G7BLEUUID.control:
             controlNotifyEnabled = characteristic.isNotifying
-            log("event=g7_ble_control_notify_enabled result=success notifying=\(characteristic.isNotifying)")
+            log("event=g7_ble_control_notify_enabled result=success notifying=\(characteristic.isNotifying) gen=\(currentSessionGeneration)")
             if characteristic.isNotifying {
                 sendEGVRequest(reason: "control_notify_enabled")
             }
         case G7BLEUUID.backfill:
-            log("event=g7_ble_backfill_notify_enabled result=success notifying=\(characteristic.isNotifying)")
+            log("event=g7_ble_backfill_notify_enabled result=success notifying=\(characteristic.isNotifying) gen=\(currentSessionGeneration)")
         default:
-            log("event=g7_ble_notification_state characteristic=\(characteristic.uuid.uuidString) notifying=\(characteristic.isNotifying)")
+            log("event=g7_ble_notification_state characteristic=\(characteristic.uuid.uuidString) notifying=\(characteristic.isNotifying) gen=\(currentSessionGeneration)")
         }
     }
 
     private func handleValueUpdate(_ characteristic: CBCharacteristic, error: Error?) {
         if let error {
-            logError(event: "g7_ble_value_update", error: error, extra: "characteristic=\(characteristic.uuid.uuidString)")
+            logError(event: "g7_ble_value_update", error: error, extra: "characteristic=\(characteristic.uuid.uuidString) gen=\(currentSessionGeneration)")
             return
         }
         guard let data = characteristic.value, !data.isEmpty else {
-            log("event=g7_ble_value_update_empty characteristic=\(characteristic.uuid.uuidString)")
+            log("event=g7_ble_value_update_empty characteristic=\(characteristic.uuid.uuidString) gen=\(currentSessionGeneration)")
             return
         }
 
@@ -459,9 +519,12 @@ final class G7DirectBLEObserver: NSObject {
         let opcode = data.first ?? 0
         let authenticated = data.count > 1 ? data[1] == 1 : false
         let bonded = data.count > 2 ? data[2] == 1 : false
-        log("event=g7_ble_auth_payload_received opcode=0x\(opcode.hexByte) authenticated=\(authenticated) bonded=\(bonded) byte_count=\(data.count) preview=\(data.hexPreview)")
+        log("event=g7_ble_auth_payload_received opcode=0x\(opcode.hexByte) authenticated=\(authenticated) bonded=\(bonded) byte_count=\(data.count) preview=\(data.hexPreview) gen=\(currentSessionGeneration)")
 
         guard opcode == G7BLEOpcode.authStatusReply.byte else { return }
+        if hasAdvancedBeyondAuth {
+            log("event=g7_ble_auth_payload_post_advance opcode=0x\(opcode.hexByte) authenticated=\(authenticated) bonded=\(bonded) gen=\(currentSessionGeneration)")
+        }
         if authenticated && bonded {
             if hasAdvancedBeyondAuth {
                 sendEGVRequest(reason: "auth_transition")
@@ -488,9 +551,10 @@ final class G7DirectBLEObserver: NSObject {
         }
 
         hasAdvancedBeyondAuth = true
-        authFallbackWorkItem?.cancel()
+        lastAuthAdvanceReason = reason
+        cancelAuthFallback(reason: "advanced_to_control")
         stage = .enablingControl
-        log("event=g7_ble_control_notify_enable_requested reason=\(reason) characteristic=\(control.uuid.uuidString)")
+        log("event=g7_ble_control_notify_enable_requested reason=\(reason) characteristic=\(control.uuid.uuidString) gen=\(currentSessionGeneration)")
         peripheral.setNotifyValue(true, for: control)
 
         if let backfill = characteristics[G7BLEUUID.backfill] {
@@ -519,7 +583,7 @@ final class G7DirectBLEObserver: NSObject {
         stage = .requestingEGV
         let payload = Data([G7BLEOpcode.egv.byte])
         peripheral.writeValue(payload, for: control, type: .withResponse)
-        log("event=g7_ble_egv_request_sent reason=\(reason) write_type=withResponse payload=\(payload.hexString)")
+        log("event=g7_ble_egv_request_sent reason=\(reason) write_type=withResponse payload=\(payload.hexString) gen=\(currentSessionGeneration)")
         if reason == "control_not_ready" {
             scheduleEGVRequest(reason: "control_not_ready")
         }
@@ -621,7 +685,7 @@ final class G7DirectBLEObserver: NSObject {
             source: .g7DirectBLE
         )
 
-        log("event=g7_ble_egv_received glucose=\(value) trend_rate=\(reading.trendRate.map { String($0) } ?? "nil") trend=\(trend) delta=\(delta) sequence=\(reading.sequence) message_timestamp=\(reading.messageTimestamp) age_s=\(reading.age) reading_epoch=\(Int(reading.readingDate.timeIntervalSince1970)) activation_epoch=\(Int(reading.activationDate.timeIntervalSince1970)) algorithm_state=\(reading.algorithmState) display_only=\(reading.glucoseIsDisplayOnly)")
+        log("event=g7_ble_egv_received glucose=\(value) trend_rate=\(reading.trendRate.map { String($0) } ?? "nil") trend=\(trend) delta=\(delta) sequence=\(reading.sequence) message_timestamp=\(reading.messageTimestamp) age_s=\(reading.age) reading_epoch=\(Int(reading.readingDate.timeIntervalSince1970)) activation_epoch=\(Int(reading.activationDate.timeIntervalSince1970)) algorithm_state=\(reading.algorithmState) display_only=\(reading.glucoseIsDisplayOnly) gen=\(currentSessionGeneration)")
 
         Task { @MainActor in
             TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
@@ -649,7 +713,7 @@ final class G7DirectBLEObserver: NSObject {
         guard !isHardStopped else { return }
         cancelTransientTimers()
         if activePeripheral?.state == .connected {
-            log("event=g7_ble_reconnect_skipped reason=already_connected trigger=\(reason)")
+            log("event=g7_ble_reconnect_skipped reason=already_connected trigger=\(reason) gen=\(currentSessionGeneration)")
             return
         }
 
@@ -657,15 +721,22 @@ final class G7DirectBLEObserver: NSObject {
         let delay = min(30.0, Double(2 << min(failedAttempts, 4)))
         stage = .idle
         noteStatus(.searching)
-        log("event=g7_ble_reconnect_scheduled reason=\(reason) attempts=\(failedAttempts) delay_s=\(Int(delay)) foreground_active=\(isForegroundActive)")
+        log("event=g7_ble_reconnect_scheduled reason=\(reason) attempts=\(failedAttempts) delay_s=\(Int(delay)) foreground_active=\(isForegroundActive) gen=\(currentSessionGeneration)")
+        let gen = currentSessionGeneration
         let workItem = DispatchWorkItem { [weak self] in
-            self?.startOrResume(reason: "reconnect_\(reason)")
+            guard let self else { return }
+            guard self.currentSessionGeneration == gen else {
+                self.log("event=g7_ble_reconnect_skipped reason=stale_gen scheduled_gen=\(gen) current_gen=\(self.currentSessionGeneration) trigger=\(reason)")
+                return
+            }
+            self.startOrResume(reason: "reconnect_\(reason)")
         }
         reconnectWorkItem = workItem
         queue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private func hardStopOnQueue(reason: String) {
+        pendingTerminalReason = "hard_stopped"
         cancelTransientTimers()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -684,14 +755,15 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func cancelTransientTimers() {
+        cancelAuthFallback(reason: "transient_teardown")
+        discoveryTimeoutWorkItem?.cancel()
+        discoveryTimeoutWorkItem = nil
         scanTimeoutWorkItem?.cancel()
         connectTimeoutWorkItem?.cancel()
-        authFallbackWorkItem?.cancel()
         egvRequestWorkItem?.cancel()
         controlWriteRetryWorkItem?.cancel()
         scanTimeoutWorkItem = nil
         connectTimeoutWorkItem = nil
-        authFallbackWorkItem = nil
         egvRequestWorkItem = nil
         controlWriteRetryWorkItem = nil
     }
@@ -704,7 +776,33 @@ final class G7DirectBLEObserver: NSObject {
     private func emitSessionOutcome(outcome: String) {
         let duration = sessionStartDate.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
         let finalOutcome = sessionEGVCount > 0 && outcome != "cancelled" ? "success" : outcome
-        log("event=g7_ble_session_outcome outcome=\(finalOutcome) final_stage=\(stage.rawValue) duration_ms=\(duration) g7_session=\(sessionID.uuidString) egv_count=\(sessionEGVCount)")
+        let terminalReason = resolveTerminalReason(finalOutcome: finalOutcome, rawOutcome: outcome)
+        log("event=g7_ble_session_outcome outcome=\(finalOutcome) final_stage=\(stage.rawValue) terminal_reason=\(terminalReason) duration_ms=\(duration) gen=\(currentSessionGeneration) g7_session=\(sessionID.uuidString) egv_count=\(sessionEGVCount)")
+        pendingTerminalReason = nil
+    }
+
+    private func resolveTerminalReason(finalOutcome: String, rawOutcome: String) -> String {
+        if sessionEGVCount > 0 {
+            return "egv_received"
+        }
+        if let pending = pendingTerminalReason {
+            return pending
+        }
+        if rawOutcome == "cancelled" {
+            return "hard_stopped"
+        }
+        if stage == .observingAuth, !hasAdvancedBeyondAuth {
+            return "auth_stall"
+        }
+        if hasAdvancedBeyondAuth {
+            return lastAuthAdvanceReason == "auth_fallback_no_status_reply"
+                ? "auth_fallback_no_egv"
+                : "auth_payload_success"
+        }
+        if rawOutcome == "failure" {
+            return "failure"
+        }
+        return "incomplete"
     }
 
     private func noteStatus(_ status: G7DirectBLEStatus) {
@@ -735,6 +833,13 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         log("event=g7_ble_lifecycle action=central_state state=\(central.state.rawValue)")
         switch central.state {
         case .poweredOn:
+            central.registerForConnectionEvents(options: [
+                CBConnectionEventMatchingOption.serviceUUIDs: [
+                    G7BLEUUID.advertisement,
+                    G7BLEUUID.dataService
+                ]
+            ])
+            log("event=g7_ble_connection_events_registered reason=powered_on")
             noteStatus(.searching)
             if hasReceivedForegroundEntry {
                 startOrResume(reason: "central_powered_on")
@@ -764,6 +869,9 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
                 activePeripheral = peripheral
                 sourceForPeripheral[peripheral.identifier] = "restored_state"
                 if peripheral.state == .connected {
+                    currentSessionGeneration &+= 1
+                    log("event=g7_ble_session_generation_bumped new_gen=\(currentSessionGeneration) reason=restore_state peripheral_id=\(peripheral.identifier.uuidString)")
+                    scheduleDiscoveryTimeout(for: peripheral)
                     discoverServicesIfNeeded(peripheral)
                 }
             }
@@ -781,34 +889,52 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         connectionEventDidOccur event: CBConnectionEvent,
         for peripheral: CBPeripheral
     ) {
-        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") event=\(event == .peerConnected ? "peer_connected" : "peer_disconnected")")
-        if event == .peerConnected, !isHardStopped {
-            startOrResume(reason: "connection_event_peer_connected")
+        if event == .peerConnected {
+            if let active = activePeripheral, active.identifier == peripheral.identifier {
+                log("event=g7_ble_connection_event_self_ignored peripheral_id=\(peripheral.identifier.uuidString) state=\(active.state.rawValue) gen=\(currentSessionGeneration)")
+            } else if !isHardStopped {
+                startOrResume(reason: "connection_event_peer_connected")
+            }
         }
+        let typeStr = event == .peerConnected ? "peer_connected" : "peer_disconnected"
+        log("event=g7_ble_connection_event peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") type=\(typeStr) gen=\(currentSessionGeneration)")
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         connectTimeoutWorkItem?.cancel()
         failedAttempts = 0
+        currentSessionGeneration &+= 1
+        log("event=g7_ble_session_generation_bumped new_gen=\(currentSessionGeneration) reason=did_connect peripheral_id=\(peripheral.identifier.uuidString)")
+        if persistedPeripheralIdentifier != peripheral.identifier {
+            log("event=g7_ble_sensor_changed old=\(persistedPeripheralIdentifier?.uuidString ?? "nil") new=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") gen=\(currentSessionGeneration)")
+            persistedPeripheralIdentifier = peripheral.identifier
+        }
+        log("event=g7_ble_peripheral_id_persisted peripheral_id=\(peripheral.identifier.uuidString) reason=did_connect gen=\(currentSessionGeneration)")
+        scheduleDiscoveryTimeout(for: peripheral)
+        scheduleConnectTimeout(for: peripheral)
         discoverServicesIfNeeded(peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         connectTimeoutWorkItem?.cancel()
+        pendingTerminalReason = "connect_failed"
         if let error {
-            logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
+            logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
         } else {
-            log("event=g7_ble_connect_failed peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil")
+            log("event=g7_ble_connect_failed peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil gen=\(currentSessionGeneration)")
         }
+        emitSessionOutcome(outcome: "failure")
         scheduleReconnect(reason: "connect_failed")
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        discoveryTimeoutWorkItem?.cancel()
+        discoveryTimeoutWorkItem = nil
         if let error {
-            logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString)")
+            logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
             emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
         } else {
-            log("event=g7_ble_disconnect peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil")
+            log("event=g7_ble_disconnect peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil gen=\(currentSessionGeneration)")
             emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "incomplete")
         }
 
@@ -869,7 +995,7 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
                     self.stage = .requestingEGV
                     let payload = Data([G7BLEOpcode.egv.byte])
                     peripheral.writeValue(payload, for: control, type: .withResponse)
-                    self.log("event=g7_ble_egv_request_sent reason=control_write_retry attempt=\(self.controlWriteConsecutiveFailures) write_type=withResponse payload=\(payload.hexString)")
+                    self.log("event=g7_ble_egv_request_sent reason=control_write_retry attempt=\(self.controlWriteConsecutiveFailures) write_type=withResponse payload=\(payload.hexString) gen=\(self.currentSessionGeneration)")
                 }
                 controlWriteRetryWorkItem = workItem
                 queue.asyncAfter(deadline: .now() + controlWriteRetryDelay, execute: workItem)
