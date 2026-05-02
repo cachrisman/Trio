@@ -94,6 +94,7 @@ final class G7DirectBLEObserver: NSObject {
     private var pendingTerminalReason: String?
     /// Last `advanceToControl` reason — distinguishes auth_payload vs fallback outcomes without EGV.
     private var lastAuthAdvanceReason: String?
+    private var connectInFlight = false
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
@@ -269,6 +270,12 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func connect(_ peripheral: CBPeripheral, source: String) {
+        guard !connectInFlight else {
+            log("event=g7_ble_connect_skipped reason=already_connecting source=\(source) gen=\(currentSessionGeneration)")
+            return
+        }
+        connectInFlight = true
+
         scanTimeoutWorkItem?.cancel()
         if centralManager.isScanning {
             centralManager.stopScan()
@@ -314,6 +321,7 @@ final class G7DirectBLEObserver: NSObject {
                 self.log("event=g7_ble_connect_timeout_ignored reason=already_connected peripheral_id=\(id.uuidString) gen=\(self.currentSessionGeneration)")
                 return
             }
+            self.connectInFlight = false
             self.pendingTerminalReason = "connect_timeout"
             self.log("event=g7_ble_connect_failed reason=timeout peripheral_id=\(id.uuidString) gen=\(self.currentSessionGeneration)")
             self.centralManager.cancelPeripheralConnection(peripheral)
@@ -733,6 +741,7 @@ final class G7DirectBLEObserver: NSObject {
 
     private func hardStopOnQueue(reason: String) {
         pendingTerminalReason = "hard_stopped"
+        connectInFlight = false
         cancelTransientTimers()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -903,6 +912,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         }
 
         connectTimeoutWorkItem?.cancel()
+        connectInFlight = false
         failedAttempts = 0
         currentSessionGeneration &+= 1
         log("event=g7_ble_session_generation_bumped new_gen=\(currentSessionGeneration) reason=did_connect peripheral_id=\(peripheral.identifier.uuidString)")
@@ -922,6 +932,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         }
 
         connectTimeoutWorkItem?.cancel()
+        connectInFlight = false
         pendingTerminalReason = "connect_failed"
         if let error {
             logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
@@ -940,6 +951,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
 
         discoveryTimeoutWorkItem?.cancel()
         discoveryTimeoutWorkItem = nil
+        connectInFlight = false
         if isHardStopped {
             connectTimeoutWorkItem?.cancel()
             connectTimeoutWorkItem = nil
