@@ -95,6 +95,7 @@ final class G7DirectBLEObserver: NSObject {
     /// Last `advanceToControl` reason — distinguishes auth_payload vs fallback outcomes without EGV.
     private var lastAuthAdvanceReason: String?
     private var connectInFlight = false
+    private var isDiscoveringServices = false
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 20
@@ -376,6 +377,11 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func discoverServicesIfNeeded(_ peripheral: CBPeripheral) {
+        guard !isDiscoveringServices else {
+            log("event=g7_ble_discovery_skipped reason=already_in_progress peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
+            return
+        }
+        isDiscoveringServices = true
         stage = .discoveringServices
         log("event=g7_ble_did_connect peripheral_id=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") gen=\(currentSessionGeneration)")
         peripheral.discoverServices(nil)
@@ -742,6 +748,7 @@ final class G7DirectBLEObserver: NSObject {
     private func hardStopOnQueue(reason: String) {
         pendingTerminalReason = "hard_stopped"
         connectInFlight = false
+        isDiscoveringServices = false
         cancelTransientTimers()
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -933,6 +940,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
 
         connectTimeoutWorkItem?.cancel()
         connectInFlight = false
+        isDiscoveringServices = false
         pendingTerminalReason = "connect_failed"
         if let error {
             logError(event: "g7_ble_connect_failed", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
@@ -952,6 +960,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         discoveryTimeoutWorkItem?.cancel()
         discoveryTimeoutWorkItem = nil
         connectInFlight = false
+        isDiscoveringServices = false
         if isHardStopped {
             connectTimeoutWorkItem?.cancel()
             connectTimeoutWorkItem = nil
