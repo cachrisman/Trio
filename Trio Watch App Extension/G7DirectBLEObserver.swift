@@ -897,6 +897,11 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        guard peripheral.identifier == activePeripheral?.identifier else {
+            log("event=g7_ble_did_connect_ignored reason=peripheral_mismatch peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
+            return
+        }
+
         connectTimeoutWorkItem?.cancel()
         failedAttempts = 0
         currentSessionGeneration &+= 1
@@ -911,6 +916,11 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        guard peripheral.identifier == activePeripheral?.identifier else {
+            log("event=g7_ble_did_fail_to_connect_ignored reason=peripheral_mismatch peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
+            return
+        }
+
         connectTimeoutWorkItem?.cancel()
         pendingTerminalReason = "connect_failed"
         if let error {
@@ -923,6 +933,11 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        guard peripheral.identifier == activePeripheral?.identifier else {
+            log("event=g7_ble_disconnect_ignored reason=peripheral_mismatch peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
+            return
+        }
+
         discoveryTimeoutWorkItem?.cancel()
         discoveryTimeoutWorkItem = nil
         if isHardStopped {
