@@ -39,6 +39,13 @@ private enum G7BLESchedulerMode: String {
     case moderateWait = "moderate_wait"
 }
 
+private enum G7DailyCounterKeys {
+    static let calendarDay = "G7DirectBLEObserver.bleCountersCalendarDay"
+    static let connects = "G7DirectBLEObserver.bleConnectsToday"
+    static let egvs = "G7DirectBLEObserver.bleEGVsToday"
+    static let connectionEvents = "G7DirectBLEObserver.bleConnectionEventsToday"
+}
+
 private struct G7ObservedGlucose {
     let glucose: UInt16
     let predicted: UInt16?
@@ -105,6 +112,9 @@ final class G7DirectBLEObserver: NSObject {
     private var lastCBEventAt: Date?
     private var lastSuccessfulEGVAt: Date?
     private var schedulerMode: G7BLESchedulerMode = .fastRetry
+    private var bleConnectsToday: Int = 0
+    private var bleEGVsToday: Int = 0
+    private var bleConnectionEventsToday: Int = 0
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 8
@@ -128,6 +138,7 @@ final class G7DirectBLEObserver: NSObject {
             queue: queue,
             options: [CBCentralManagerOptionRestoreIdentifierKey: "org.nightscout.trio.watch.g7DirectBLEObserver"]
         )
+        loadDailyCounters()
     }
 
     func applyForegroundActiveEntry() {
@@ -139,6 +150,7 @@ final class G7DirectBLEObserver: NSObject {
             self.hasReceivedForegroundEntry = true
             self.isHardStopped = false
             self.failedAttempts = 0
+            self.loadDailyCountersIfNewCalendarDay()
             if self.centralManager.state == .poweredOn {
                 self.centralManager.registerForConnectionEvents(options: [
                     CBConnectionEventMatchingOption.serviceUUIDs: [
@@ -665,6 +677,9 @@ final class G7DirectBLEObserver: NSObject {
         lastSuccessfulEGVAt = reading.readingDate
         fastRetryCount = 0
         failedAttempts = 0
+        bleEGVsToday += 1
+        persistDailyCounters()
+        mirrorDailyCountersToWatchState()
         stage = .receivingEGV
         noteStatus(.active)
         persistedPeripheralIdentifier = activePeripheral?.identifier
@@ -827,6 +842,49 @@ final class G7DirectBLEObserver: NSObject {
         }
     }
 
+    private func loadDailyCounters() {
+        let dayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        let storedDay = UserDefaults.standard.double(forKey: G7DailyCounterKeys.calendarDay)
+        if storedDay != dayStart {
+            bleConnectsToday = 0
+            bleEGVsToday = 0
+            bleConnectionEventsToday = 0
+            UserDefaults.standard.set(dayStart, forKey: G7DailyCounterKeys.calendarDay)
+            persistDailyCounters()
+        } else {
+            bleConnectsToday = UserDefaults.standard.integer(forKey: G7DailyCounterKeys.connects)
+            bleEGVsToday = UserDefaults.standard.integer(forKey: G7DailyCounterKeys.egvs)
+            bleConnectionEventsToday = UserDefaults.standard.integer(forKey: G7DailyCounterKeys.connectionEvents)
+        }
+        mirrorDailyCountersToWatchState()
+    }
+
+    private func persistDailyCounters() {
+        UserDefaults.standard.set(bleConnectsToday, forKey: G7DailyCounterKeys.connects)
+        UserDefaults.standard.set(bleEGVsToday, forKey: G7DailyCounterKeys.egvs)
+        UserDefaults.standard.set(bleConnectionEventsToday, forKey: G7DailyCounterKeys.connectionEvents)
+    }
+
+    private func loadDailyCountersIfNewCalendarDay() {
+        let dayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        let storedDay = UserDefaults.standard.double(forKey: G7DailyCounterKeys.calendarDay)
+        guard storedDay != dayStart else { return }
+        bleConnectsToday = 0
+        bleEGVsToday = 0
+        bleConnectionEventsToday = 0
+        UserDefaults.standard.set(dayStart, forKey: G7DailyCounterKeys.calendarDay)
+        persistDailyCounters()
+        mirrorDailyCountersToWatchState()
+    }
+
+    private func mirrorDailyCountersToWatchState() {
+        Task { @MainActor in
+            WatchState.shared.bleConnectsToday = bleConnectsToday
+            WatchState.shared.bleEGVsToday = bleEGVsToday
+            WatchState.shared.bleConnectionEventsToday = bleConnectionEventsToday
+        }
+    }
+
     private func logError(event: String, error: Error, extra: String = "") {
         let nsError = error as NSError
         log("event=\(event) \(extra) error_domain=\(nsError.domain) error_code=\(nsError.code) error_desc=\(nsError.localizedDescription)")
@@ -907,6 +965,9 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     ) {
         if event == .peerConnected {
             lastCBEventAt = Date()
+            bleConnectionEventsToday += 1
+            persistDailyCounters()
+            mirrorDailyCountersToWatchState()
             if let active = activePeripheral, active.identifier == peripheral.identifier {
                 log("event=g7_ble_connection_event_self_ignored peripheral_id=\(peripheral.identifier.uuidString) state=\(active.state.rawValue) gen=\(currentSessionGeneration)")
             } else if !isHardStopped {
@@ -928,6 +989,9 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         failedAttempts = 0
         currentSessionGeneration &+= 1
         log("event=g7_ble_session_generation_bumped new_gen=\(currentSessionGeneration) reason=did_connect peripheral_id=\(peripheral.identifier.uuidString)")
+        bleConnectsToday += 1
+        persistDailyCounters()
+        mirrorDailyCountersToWatchState()
         if persistedPeripheralIdentifier != peripheral.identifier {
             log("event=g7_ble_sensor_changed old=\(persistedPeripheralIdentifier?.uuidString ?? "nil") new=\(peripheral.identifier.uuidString) name=\(peripheral.name ?? "nil") gen=\(currentSessionGeneration)")
             persistedPeripheralIdentifier = peripheral.identifier
