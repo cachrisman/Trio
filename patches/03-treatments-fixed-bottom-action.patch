@@ -1,17 +1,36 @@
-From b198189904e3da546389aacaac65ec1120b2159a Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 18 Apr 2026 16:34:15 +0200
-Subject: [PATCH] feat: feature-treatments-fixed-bottom-action
+From df439f00dc28b6c08640a6aea69128a6c2a61f3f Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Sun, 26 Apr 2026 12:05:34 +0200
+Subject: [PATCH] feat: treatments-fixed-bottom-action
 
 ---
- .../Treatments/View/TreatmentsRootView.swift  | 119 ++++++++++--------
- 1 file changed, 68 insertions(+), 51 deletions(-)
+ .../Treatments/View/TreatmentsRootView.swift  | 240 ++++++++++++++----
+ 1 file changed, 192 insertions(+), 48 deletions(-)
 
 diff --git a/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift b/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift
-index 2c0675053..dcbe4d98f 100644
+index 2c0675053..b5df1b2f7 100644
 --- a/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift
 +++ b/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift
-@@ -365,8 +365,6 @@ extension Treatments {
+@@ -13,6 +13,10 @@ extension Treatments {
+             case bolus
+         }
+ 
++        private enum CycleField: Equatable {
++            case carbs, fat, protein, bolus, externalInsulin
++        }
++
+         @FocusState private var focusedField: FocusedField?
+ 
+         let resolver: Resolver
+@@ -29,6 +33,7 @@ extension Treatments {
+         private enum Config {
+             static let dividerHeight: CGFloat = 2
+             static let spacing: CGFloat = 3
++            static let actionBarButtonHeight: CGFloat = 44
+         }
+ 
+         @Environment(\.colorScheme) var colorScheme
+@@ -365,8 +370,6 @@ extension Treatments {
                                  Toggle("", isOn: $state.externalInsulin).toggleStyle(CheckboxToggleStyle())
                              }
                          }.listRowBackground(Color.chart)
@@ -20,7 +39,7 @@ index 2c0675053..dcbe4d98f 100644
                      }
                      .listSectionSpacing(sectionSpacing)
                  }
-@@ -379,6 +377,10 @@ extension Treatments {
+@@ -379,7 +382,17 @@ extension Treatments {
              .padding(.top)
              .ignoresSafeArea(edges: .top)
              .scrollContentBackground(.hidden).background(appState.trioBackgroundColor(for: colorScheme))
@@ -29,9 +48,24 @@ index 2c0675053..dcbe4d98f 100644
 +                    .blur(radius: state.isAwaitingDeterminationResult ? 5 : 0)
 +            }
              .blur(radius: state.showInfo ? 3 : 0)
++            .onChange(of: state.useFPUconversion) { _, newValue in
++                if !newValue, (activeCycleField == .fat || activeCycleField == .protein) {
++                    activeCycleField = .carbs
++                    focusedField = .carbs
++                }
++            }
              .navigationTitle("Treatments")
              .navigationBarTitleDisplayMode(.inline)
-@@ -474,60 +476,65 @@ extension Treatments {
+             .toolbar(content: {
+@@ -453,6 +466,7 @@ extension Treatments {
+         }
+ 
+         @State private var showConfirmDialogForBolusing = false
++        @State private var activeCycleField: CycleField = .carbs
+ 
+         private var bolusWarning: (shouldConfirm: Bool, warningMessage: String, color: Color) {
+             let isGlucoseVeryLow = state.currentBG < 54
+@@ -474,62 +488,178 @@ extension Treatments {
              return (shouldConfirm, warningMessage, warningColor)
          }
  
@@ -41,8 +75,29 @@ index 2c0675053..dcbe4d98f 100644
 -                treatmentButtonBackground = Color(.systemRed)
 -            } else if disableTaskButton {
 -                treatmentButtonBackground = Color(.systemGray)
--            }
--
++        var treatmentActionBar: some View {
++            VStack(spacing: 10) {
++                if !bolusWarning.warningMessage.isEmpty {
++                    Text(bolusWarning.warningMessage)
++                        .font(.subheadline)
++                        .foregroundColor(bolusWarning.color)
++                        .frame(maxWidth: .infinity, alignment: .center)
++                }
++
++                treatmentButton
++            }
++            .padding(.horizontal, 16)
++            .padding(.top, bolusWarning.warningMessage.isEmpty ? 10 : 14)
++            .padding(.bottom, 10)
++            .background {
++                VStack(spacing: 0) {
++                    Divider()
++                    appState.trioBackgroundColor(for: colorScheme)
++                }
++                .ignoresSafeArea(edges: .bottom)
+             }
++        }
+ 
 -            return Section {
 -                Button {
 -                    if bolusWarning.shouldConfirm {
@@ -59,79 +114,18 @@ index 2c0675053..dcbe4d98f 100644
 -                        }
 -                        taskButtonLabel
 -                    }
--                    .font(.headline)
--                    .foregroundStyle(Color.white)
--                    .frame(maxWidth: .infinity, alignment: .center)
--                    .frame(height: 35)
--                }
--                .disabled(disableTaskButton)
--                .listRowBackground(treatmentButtonBackground)
--                .shadow(radius: 3)
--                .clipShape(RoundedRectangle(cornerRadius: 8))
--                .confirmationDialog(
--                    bolusWarning.warningMessage + " Bolus \(state.amount.description) U?",
--                    isPresented: $showConfirmDialogForBolusing,
--                    titleVisibility: .visible
--                ) {
--                    Button("Cancel", role: .cancel) {}
--                    Button(
--                        bolusWarning.warningMessage.isEmpty ? "Enact Bolus" : "Ignore Warning and Enact Bolus",
--                        role: bolusWarning.warningMessage.isEmpty ? nil : .destructive
--                    ) {
--                        state.invokeTreatmentsTask()
--                    }
--                }
--            } header: {
-+        var treatmentActionBar: some View {
-+            VStack(spacing: 10) {
-                 if !bolusWarning.warningMessage.isEmpty {
-                     Text(bolusWarning.warningMessage)
--                        .textCase(nil)
-                         .font(.subheadline)
-                         .foregroundColor(bolusWarning.color)
-                         .frame(maxWidth: .infinity, alignment: .center)
--                        .padding(.top, -22)
-+                }
-+
-+                treatmentButton
-+            }
-+            .padding(.horizontal, 16)
-+            .padding(.top, bolusWarning.warningMessage.isEmpty ? 10 : 14)
-+            .padding(.bottom, 10)
-+            .background {
-+                VStack(spacing: 0) {
-+                    Divider()
-+                    appState.trioBackgroundColor(for: colorScheme)
-+                }
-+                .ignoresSafeArea(edges: .bottom)
-+            }
-+        }
-+
 +        private var treatmentButton: some View {
-+            Button {
-+                if bolusWarning.shouldConfirm {
-+                    showConfirmDialogForBolusing = true
-+                } else {
-+                    state.invokeTreatmentsTask()
++            HStack(spacing: 10) {
++                cycleArrowButton(systemName: "chevron.left") {
++                    advanceCycle(by: -1)
 +                }
-+            } label: {
-+                HStack {
-+                    if state.isBolusInProgress && state.amount > 0 &&
-+                        !state.externalInsulin && (state.carbs == 0 || state.fat == 0 || state.protein == 0)
-+                    {
-+                        ProgressView()
-+                    }
-+                    taskButtonLabel
++                treatmentCenterButton
++                    .frame(maxWidth: .infinity)
++                    .frame(height: Config.actionBarButtonHeight)
++                cycleArrowButton(systemName: "chevron.right") {
++                    advanceCycle(by: 1)
 +                }
-+                .font(.headline)
-+                .foregroundStyle(Color.white)
-+                .frame(maxWidth: .infinity, alignment: .center)
-+                .frame(height: 35)
 +            }
-+            .disabled(disableTaskButton)
-+            .background(treatmentButtonBackground)
-+            .clipShape(RoundedRectangle(cornerRadius: 8))
-+            .shadow(radius: 3)
 +            .confirmationDialog(
 +                bolusWarning.warningMessage + " Bolus \(state.amount.description) U?",
 +                isPresented: $showConfirmDialogForBolusing,
@@ -143,10 +137,160 @@ index 2c0675053..dcbe4d98f 100644
 +                    role: bolusWarning.warningMessage.isEmpty ? nil : .destructive
 +                ) {
 +                    state.invokeTreatmentsTask()
++                }
++            }
++        }
++
++        private func cycleArrowButton(systemName: String, action: @escaping () -> Void) -> some View {
++            Button(action: action) {
++                Image(systemName: systemName)
+                     .font(.headline)
+-                    .foregroundStyle(Color.white)
+-                    .frame(maxWidth: .infinity, alignment: .center)
+-                    .frame(height: 35)
++                    .foregroundStyle(.primary)
++                    .frame(width: 44, height: Config.actionBarButtonHeight)
++                    .background(Color(.secondarySystemFill))
++                    .clipShape(RoundedRectangle(cornerRadius: 8))
++            }
++            .buttonStyle(.plain)
++        }
++
++        private func invokePrimaryTreatmentAction() {
++            if bolusWarning.shouldConfirm {
++                showConfirmDialogForBolusing = true
++            } else {
++                state.invokeTreatmentsTask()
++            }
++        }
++
++        private var orderedCycleFields: [CycleField] {
++            if state.useFPUconversion {
++                [.carbs, .fat, .protein, .bolus, .externalInsulin]
++            } else {
++                [.carbs, .bolus, .externalInsulin]
++            }
++        }
++
++        private func applyCycleFocus(for field: CycleField) {
++            switch field {
++            case .carbs: focusedField = .carbs
++            case .fat: focusedField = .fat
++            case .protein: focusedField = .protein
++            case .bolus: focusedField = .bolus
++            case .externalInsulin: focusedField = nil
++            }
++        }
++
++        private func advanceCycle(by delta: Int) {
++            let fields = orderedCycleFields
++            guard !fields.isEmpty else { return }
++            guard let i = fields.firstIndex(of: activeCycleField) else {
++                activeCycleField = fields[0]
++                applyCycleFocus(for: activeCycleField)
++                return
++            }
++            let n = fields.count
++            let j = ((i + delta) % n + n) % n
++            activeCycleField = fields[j]
++            applyCycleFocus(for: activeCycleField)
++        }
++
++        @ViewBuilder
++        private var treatmentCenterButton: some View {
++            switch activeCycleField {
++            case .carbs, .fat, .protein:
++                Button(action: invokePrimaryTreatmentAction) {
++                    treatmentInvokeCenterLabel()
                  }
+                 .disabled(disableTaskButton)
+-                .listRowBackground(treatmentButtonBackground)
+-                .shadow(radius: 3)
++                .background(treatmentButtonBackground)
+                 .clipShape(RoundedRectangle(cornerRadius: 8))
+-                .confirmationDialog(
+-                    bolusWarning.warningMessage + " Bolus \(state.amount.description) U?",
+-                    isPresented: $showConfirmDialogForBolusing,
+-                    titleVisibility: .visible
+-                ) {
+-                    Button("Cancel", role: .cancel) {}
+-                    Button(
+-                        bolusWarning.warningMessage.isEmpty ? "Enact Bolus" : "Ignore Warning and Enact Bolus",
+-                        role: bolusWarning.warningMessage.isEmpty ? nil : .destructive
+-                    ) {
+-                        state.invokeTreatmentsTask()
++                .shadow(radius: 3)
++
++            case .bolus:
++                if state.amount == 0 {
++                    Button {
++                        state.amount = state.insulinCalculated
++                    } label: {
++                        Text("Use Recommendation", comment: "Treatments action bar when bolus amount is zero")
++                            .font(.headline)
++                            .foregroundStyle(Color.white)
++                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                     }
++                    .disabled(disableTaskButton || state.insulinCalculated == 0 || state.amount == state.insulinCalculated)
++                    .background(treatmentButtonBackground)
++                    .clipShape(RoundedRectangle(cornerRadius: 8))
++                    .shadow(radius: 3)
++                } else {
++                    Button(action: invokePrimaryTreatmentAction) {
++                        treatmentInvokeCenterLabel()
++                    }
++                    .disabled(disableTaskButton)
++                    .background(treatmentButtonBackground)
++                    .clipShape(RoundedRectangle(cornerRadius: 8))
++                    .shadow(radius: 3)
+                 }
+-            } header: {
+-                if !bolusWarning.warningMessage.isEmpty {
+-                    Text(bolusWarning.warningMessage)
+-                        .textCase(nil)
+-                        .font(.subheadline)
+-                        .foregroundColor(bolusWarning.color)
+-                        .frame(maxWidth: .infinity, alignment: .center)
+-                        .padding(.top, -22)
++
++            case .externalInsulin:
++                Button {
++                    state.externalInsulin.toggle()
++                } label: {
++                    Text(
++                        state.externalInsulin
++                            ? String(localized: "Disable External Insulin", comment: "Treatments action bar turn off external insulin")
++                            : String(localized: "Enable External Insulin", comment: "Treatments action bar turn on external insulin")
++                    )
++                    .font(.headline)
++                    .foregroundStyle(Color.white)
++                    .frame(maxWidth: .infinity, maxHeight: .infinity)
++                }
++                .disabled(disableExternalInsulinToggle)
++                .background(Color(.systemBlue))
++                .clipShape(RoundedRectangle(cornerRadius: 8))
++                .shadow(radius: 3)
++            }
++        }
++
++        @ViewBuilder
++        private func treatmentInvokeCenterLabel() -> some View {
++            HStack {
++                if state.isBolusInProgress && state.amount > 0,
++                   !state.externalInsulin,
++                   (state.carbs == 0 || state.fat == 0 || state.protein == 0)
++                {
++                    ProgressView()
+                 }
++                taskButtonLabel
              }
++            .font(.headline)
++            .foregroundStyle(Color.white)
++            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
          }
-@@ -598,6 +605,16 @@ extension Treatments {
+ 
+         private var taskButtonLabel: some View {
+@@ -598,6 +728,16 @@ extension Treatments {
              pumpBolusLimitExceeded || externalBolusLimitExceeded || carbLimitExceeded || fatLimitExceeded || proteinLimitExceeded
          }
  
@@ -163,6 +307,17 @@ index 2c0675053..dcbe4d98f 100644
          private var disableTaskButton: Bool {
              (
                  state.isBolusInProgress && state
+@@ -605,6 +745,10 @@ extension Treatments {
+             ) || state
+                 .addButtonPressed || limitExceeded
+         }
++
++        private var disableExternalInsulinToggle: Bool {
++            state.addButtonPressed || state.isBolusInProgress
++        }
+     }
+ 
+     struct DividerDouble: View {
 -- 
 2.50.1 (Apple Git-155)
 
