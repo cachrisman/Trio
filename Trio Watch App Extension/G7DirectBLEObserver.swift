@@ -89,7 +89,6 @@ final class G7DirectBLEObserver: NSObject {
     private var sessionStartDate: Date?
     private var sessionID = UUID()
     private var sessionEGVCount = 0
-    private var failedAttempts = 0
     private var controlNotifyEnabled = false
     private var authNotifyEnabled = false
     private var authFallbackWorkItem: DispatchWorkItem?
@@ -149,7 +148,6 @@ final class G7DirectBLEObserver: NSObject {
             self.isForegroundActive = true
             self.hasReceivedForegroundEntry = true
             self.isHardStopped = false
-            self.failedAttempts = 0
             self.loadDailyCountersIfNewCalendarDay()
             if self.centralManager.state == .poweredOn {
                 self.centralManager.registerForConnectionEvents(options: [
@@ -676,7 +674,6 @@ final class G7DirectBLEObserver: NSObject {
         sessionEGVCount += 1
         lastSuccessfulEGVAt = reading.readingDate
         fastRetryCount = 0
-        failedAttempts = 0
         bleEGVsToday += 1
         persistDailyCounters()
         mirrorDailyCountersToWatchState()
@@ -986,7 +983,6 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
 
         connectTimeoutWorkItem?.cancel()
         connectInFlight = false
-        failedAttempts = 0
         currentSessionGeneration &+= 1
         log("event=g7_ble_session_generation_bumped new_gen=\(currentSessionGeneration) reason=did_connect peripheral_id=\(peripheral.identifier.uuidString)")
         bleConnectsToday += 1
@@ -1037,7 +1033,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         }
 
         let schedulerReason: String
-        if sessionEGVCount > 0, error == nil {
+        if sessionEGVCount > 0 {
             schedulerReason = "post_egv_disconnect"
         } else {
             schedulerReason = pendingTerminalReason ?? "disconnect"
