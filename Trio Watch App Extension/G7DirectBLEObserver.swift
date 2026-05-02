@@ -34,6 +34,11 @@ private enum G7ObserverStage: String {
     case stopped
 }
 
+private enum G7BLESchedulerMode: String {
+    case fastRetry = "fast_retry"
+    case moderateWait = "moderate_wait"
+}
+
 private struct G7ObservedGlucose {
     let glucose: UInt16
     let predicted: UInt16?
@@ -96,6 +101,10 @@ final class G7DirectBLEObserver: NSObject {
     private var lastAuthAdvanceReason: String?
     private var connectInFlight = false
     private var isDiscoveringServices = false
+    private var fastRetryCount: Int = 0
+    private var lastCBEventAt: Date?
+    private var lastSuccessfulEGVAt: Date?
+    private var schedulerMode: G7BLESchedulerMode = .fastRetry
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 8
@@ -233,7 +242,7 @@ final class G7DirectBLEObserver: NSObject {
             self.log("event=g7_ble_scan_stopped reason=timeout timeout_s=\(Int(self.scanTimeout))")
             self.centralManager.stopScan()
             self.stage = .idle
-            self.scheduleReconnect(reason: "scan_timeout")
+            self.scheduleNextAttempt(reason: "scan_timeout")
         }
         scanTimeoutWorkItem = workItem
         queue.asyncAfter(deadline: .now() + scanTimeout, execute: workItem)
@@ -360,7 +369,7 @@ final class G7DirectBLEObserver: NSObject {
         if let error {
             pendingTerminalReason = "discovery_failed"
             logError(event: "g7_ble_services_discovered", error: error, extra: "result=failure gen=\(currentSessionGeneration)")
-            scheduleReconnect(reason: "service_discovery_error")
+            scheduleNextAttempt(reason: "service_discovery_error")
             return
         }
 
@@ -378,7 +387,7 @@ final class G7DirectBLEObserver: NSObject {
         if let error {
             pendingTerminalReason = "discovery_failed"
             logError(event: "g7_ble_characteristics_discovered", error: error, extra: "service=\(service.uuid.uuidString) result=failure gen=\(currentSessionGeneration)")
-            scheduleReconnect(reason: "characteristic_discovery_error")
+            scheduleNextAttempt(reason: "characteristic_discovery_error")
             return
         }
 
@@ -405,7 +414,7 @@ final class G7DirectBLEObserver: NSObject {
     private func configureObserverCharacteristics(_ peripheral: CBPeripheral) {
         guard let auth = characteristics[G7BLEUUID.authentication] else {
             log("event=g7_ble_blocked_auth_missing")
-            scheduleReconnect(reason: "auth_characteristic_missing")
+            scheduleNextAttempt(reason: "auth_characteristic_missing")
             return
         }
 
@@ -448,7 +457,7 @@ final class G7DirectBLEObserver: NSObject {
             let event = characteristic.uuid == G7BLEUUID.control ? "g7_ble_control_notify_enabled" : "g7_ble_auth_notify_enabled"
             logError(event: event, error: error, extra: "result=failure characteristic=\(characteristic.uuid.uuidString) gen=\(currentSessionGeneration)")
             if characteristic.uuid == G7BLEUUID.control {
-                scheduleReconnect(reason: "control_notify_error")
+                scheduleNextAttempt(reason: "control_notify_error")
             }
             return
         }
@@ -525,7 +534,7 @@ final class G7DirectBLEObserver: NSObject {
         }
         guard let control = characteristics[G7BLEUUID.control] else {
             log("event=g7_ble_blocked_control_missing reason=\(reason)")
-            scheduleReconnect(reason: "control_characteristic_missing")
+            scheduleNextAttempt(reason: "control_characteristic_missing")
             return
         }
 
@@ -550,7 +559,7 @@ final class G7DirectBLEObserver: NSObject {
         controlWriteRetryWorkItem = nil
         guard let peripheral = activePeripheral, peripheral.state == .connected else {
             log("event=g7_ble_blocked_egv_request reason=no_connected_peripheral trigger=\(reason)")
-            scheduleReconnect(reason: "egv_request_no_peripheral")
+            scheduleNextAttempt(reason: "egv_request_no_peripheral")
             return
         }
         guard controlNotifyEnabled, let control = characteristics[G7BLEUUID.control] else {
@@ -644,6 +653,8 @@ final class G7DirectBLEObserver: NSObject {
         }
 
         sessionEGVCount += 1
+        lastSuccessfulEGVAt = reading.readingDate
+        fastRetryCount = 0
         failedAttempts = 0
         stage = .receivingEGV
         noteStatus(.active)
@@ -688,27 +699,42 @@ final class G7DirectBLEObserver: NSObject {
         }
     }
 
-    private func scheduleReconnect(reason: String) {
+    private func scheduleNextAttempt(reason: String) {
         guard !isHardStopped else { return }
         cancelTransientTimers()
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+
         if activePeripheral?.state == .connected {
             log("event=g7_ble_reconnect_skipped reason=already_connected trigger=\(reason) gen=\(currentSessionGeneration)")
             return
         }
 
-        failedAttempts += 1
-        let delay = min(30.0, Double(2 << min(failedAttempts, 4)))
+        fastRetryCount += 1
+        let countAtDecision = fastRetryCount
+
+        let (delay, mode): (TimeInterval, G7BLESchedulerMode) = {
+            if fastRetryCount >= 5 {
+                fastRetryCount = 0
+                return (15.0, .moderateWait)
+            }
+            return (2.0, .fastRetry)
+        }()
+
+        schedulerMode = mode
         stage = .idle
         noteStatus(.searching)
-        log("event=g7_ble_reconnect_scheduled reason=\(reason) attempts=\(failedAttempts) delay_s=\(Int(delay)) foreground_active=\(isForegroundActive) gen=\(currentSessionGeneration)")
+        log("event=g7_ble_scheduler mode=\(mode.rawValue) delay_s=\(Int(delay)) fast_retry_count=\(countAtDecision) reason=\(reason) gen=\(currentSessionGeneration)")
+
         let gen = currentSessionGeneration
+        let modeRaw = mode.rawValue
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             guard self.currentSessionGeneration == gen else {
                 self.log("event=g7_ble_reconnect_skipped reason=stale_gen scheduled_gen=\(gen) current_gen=\(self.currentSessionGeneration) trigger=\(reason)")
                 return
             }
-            self.startOrResume(reason: "reconnect_\(reason)")
+            self.startOrResume(reason: "scheduler_\(modeRaw)_\(reason)")
         }
         reconnectWorkItem = workItem
         queue.asyncAfter(deadline: .now() + delay, execute: workItem)
@@ -871,6 +897,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         for peripheral: CBPeripheral
     ) {
         if event == .peerConnected {
+            lastCBEventAt = Date()
             if let active = activePeripheral, active.identifier == peripheral.identifier {
                 log("event=g7_ble_connection_event_self_ignored peripheral_id=\(peripheral.identifier.uuidString) state=\(active.state.rawValue) gen=\(currentSessionGeneration)")
             } else if !isHardStopped {
@@ -917,7 +944,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
             log("event=g7_ble_connect_failed peripheral_id=\(peripheral.identifier.uuidString) error_desc=nil gen=\(currentSessionGeneration)")
         }
         emitSessionOutcome(outcome: "failure")
-        scheduleReconnect(reason: "connect_failed")
+        scheduleNextAttempt(reason: "connect_failed")
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -935,6 +962,14 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
             connectTimeoutWorkItem = nil
             return
         }
+
+        let schedulerReason: String
+        if sessionEGVCount > 0, error == nil {
+            schedulerReason = "post_egv_disconnect"
+        } else {
+            schedulerReason = pendingTerminalReason ?? "disconnect"
+        }
+
         if let error {
             logError(event: "g7_ble_disconnect", error: error, extra: "peripheral_id=\(peripheral.identifier.uuidString) gen=\(currentSessionGeneration)")
             emitSessionOutcome(outcome: sessionEGVCount > 0 ? "success" : "failure")
@@ -953,7 +988,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
         controlWriteRetryWorkItem?.cancel()
         controlWriteRetryWorkItem = nil
         noteStatus(sessionEGVCount > 0 ? .stalled : .searching)
-        scheduleReconnect(reason: "disconnect")
+        scheduleNextAttempt(reason: schedulerReason)
     }
 }
 
@@ -984,7 +1019,7 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
                 if controlWriteConsecutiveFailures >= maxConsecutiveControlWriteFailuresBeforeReconnect {
                     controlWriteRetryWorkItem?.cancel()
                     controlWriteRetryWorkItem = nil
-                    scheduleReconnect(reason: "control_write_retries_exhausted")
+                    scheduleNextAttempt(reason: "control_write_retries_exhausted")
                     return
                 }
                 log("event=g7_ble_control_write_retry_scheduled attempt=\(controlWriteConsecutiveFailures) delay_s=\(Int(controlWriteRetryDelay))")
@@ -994,7 +1029,7 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
                           peripheral.state == .connected,
                           self.controlNotifyEnabled,
                           let control = self.characteristics[G7BLEUUID.control] else {
-                        self.scheduleReconnect(reason: "control_write_retry_aborted")
+                        self.scheduleNextAttempt(reason: "control_write_retry_aborted")
                         return
                     }
                     self.stage = .requestingEGV
@@ -1015,7 +1050,7 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
         }
         if let error {
             logError(event: "g7_ble_control_write_failed", error: error, extra: "characteristic=\(characteristic.uuid.uuidString)")
-            scheduleReconnect(reason: "control_write_failed")
+            scheduleNextAttempt(reason: "control_write_failed")
         } else {
             log("event=g7_ble_control_write_ack characteristic=\(characteristic.uuid.uuidString)")
         }
