@@ -98,8 +98,9 @@ final class G7DirectBLEObserver: NSObject {
     private var isDiscoveringServices = false
 
     private let scanTimeout: TimeInterval = 15
-    private let connectTimeout: TimeInterval = 20
+    private let connectTimeout: TimeInterval = 8
     private let authFallbackDelay: TimeInterval = 6
+    private let discoveryTimeoutInterval: TimeInterval = 30
     /// Fallback EGV request cadence when auth-transition triggers are sparse (~sensor EGV period).
     private let egvFallbackTimerSeconds: TimeInterval = 330
     /// Shorter reschedule when control notify is not yet enabled (preserves responsiveness vs 330s fallback).
@@ -317,8 +318,8 @@ final class G7DirectBLEObserver: NSObject {
             self.centralManager.cancelPeripheralConnection(peripheral)
         }
         discoveryTimeoutWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + 30, execute: workItem)
-        log("event=g7_ble_discovery_timeout_scheduled delay_s=30 gen=\(gen)")
+        queue.asyncAfter(deadline: .now() + discoveryTimeoutInterval, execute: workItem)
+        log("event=g7_ble_discovery_timeout_scheduled delay_s=\(Int(discoveryTimeoutInterval)) gen=\(gen)")
     }
 
     private func shouldConnect(
