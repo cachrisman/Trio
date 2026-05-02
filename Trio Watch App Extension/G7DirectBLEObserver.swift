@@ -99,7 +99,7 @@ final class G7DirectBLEObserver: NSObject {
 
     private let scanTimeout: TimeInterval = 15
     private let connectTimeout: TimeInterval = 8
-    private let authFallbackDelay: TimeInterval = 6
+    private let authFallbackDelay: TimeInterval = 2
     private let discoveryTimeoutInterval: TimeInterval = 30
     /// Fallback EGV request cadence when auth-transition triggers are sparse (~sensor EGV period).
     private let egvFallbackTimerSeconds: TimeInterval = 330
