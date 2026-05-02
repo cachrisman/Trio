@@ -139,6 +139,15 @@ final class G7DirectBLEObserver: NSObject {
             self.hasReceivedForegroundEntry = true
             self.isHardStopped = false
             self.failedAttempts = 0
+            if self.centralManager.state == .poweredOn {
+                self.centralManager.registerForConnectionEvents(options: [
+                    CBConnectionEventMatchingOption.serviceUUIDs: [
+                        G7BLEUUID.advertisement,
+                        G7BLEUUID.dataService
+                    ]
+                ])
+                self.log("event=g7_ble_connection_events_registered reason=foreground_active gen=\(self.currentSessionGeneration)")
+            }
             self.startOrResume(reason: "foreground_active")
         }
     }
