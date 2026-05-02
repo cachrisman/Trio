@@ -178,7 +178,14 @@ final class G7DirectBLEObserver: NSObject {
     private func beginAttachLadder(reason: String) {
         stage = .retrieving
         noteStatus(.searching)
-        log("event=g7_ble_lifecycle action=attach_ladder_start reason=\(reason)")
+        log("event=g7_ble_lifecycle action=attach_ladder_start reason=\(reason) gen=\(currentSessionGeneration)")
+
+        for peripheral in centralManager.retrieveConnectedPeripherals(withServices: [G7BLEUUID.dataService]) {
+            if shouldConnect(peripheral: peripheral, advertisementData: nil, rssi: nil, source: "retrieved_data_service") {
+                connect(peripheral, source: "retrieved_data_service")
+                return
+            }
+        }
 
         if let identifier = persistedPeripheralIdentifier,
            let peripheral = centralManager.retrievePeripherals(withIdentifiers: [identifier]).first,
@@ -187,46 +194,7 @@ final class G7DirectBLEObserver: NSObject {
             return
         }
 
-        var retrievedAny = false
-        var seenIdentifiers = Set<UUID>()
-        for (service, source) in [
-            (G7BLEUUID.dataService, "retrieved_data_service"),
-            (G7BLEUUID.advertisement, "retrieved_febc")
-        ] {
-            for peripheral in centralManager.retrieveConnectedPeripherals(withServices: [service]) {
-                guard !seenIdentifiers.contains(peripheral.identifier) else { continue }
-                seenIdentifiers.insert(peripheral.identifier)
-                retrievedAny = true
-                if shouldConnect(peripheral: peripheral, advertisementData: nil, rssi: nil, source: source) {
-                    connect(peripheral, source: source)
-                    return
-                }
-            }
-        }
-
-        if !retrievedAny {
-            let combinedServices = [G7BLEUUID.dataService, G7BLEUUID.advertisement]
-            for peripheral in centralManager.retrieveConnectedPeripherals(withServices: combinedServices) {
-                guard !seenIdentifiers.contains(peripheral.identifier) else { continue }
-                seenIdentifiers.insert(peripheral.identifier)
-                retrievedAny = true
-                let source = sourceForRetrievedService(peripheral)
-                if shouldConnect(peripheral: peripheral, advertisementData: nil, rssi: nil, source: source) {
-                    connect(peripheral, source: source)
-                    return
-                }
-            }
-        }
-
-        log("event=g7_ble_blocked_no_retrieved_candidate retrieved_any=\(retrievedAny)")
-        startScanning(reason: "attach_ladder_no_retrieved_candidate")
-    }
-
-    private func sourceForRetrievedService(_ peripheral: CBPeripheral) -> String {
-        if let services = peripheral.services?.map(\.uuid), services.contains(G7BLEUUID.dataService) {
-            return "retrieved_data_service"
-        }
-        return "retrieved_febc"
+        startScanning(reason: reason)
     }
 
     private func startScanning(reason: String) {
