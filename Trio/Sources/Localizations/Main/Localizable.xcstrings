@@ -149378,6 +149378,7 @@
       }
     },
     "Log Glucose" : {
+      "extractionState" : "stale",
       "localizations" : {
         "bg" : {
           "stringUnit" : {
