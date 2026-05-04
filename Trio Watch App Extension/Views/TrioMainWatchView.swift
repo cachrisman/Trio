@@ -6,7 +6,8 @@ struct TrioMainWatchView: View {
     @State private var state = WatchState.shared
 
     // misc
-    @State private var currentPage: Int = 0
+    /// Tab order: 0 = chart (left), 1 = main glucose (center), 2 = debug (right).
+    @State private var currentPage: Int = 1
     @State private var rotationDegrees: Double = 0.0
     @State private var showingTempTargetSheet = false
 
@@ -62,7 +63,21 @@ struct TrioMainWatchView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             TabView(selection: $currentPage) {
-                // Page 1: Current glucose trend in "BG bobble"
+                // Page 0: Glucose chart (swipe right from main)
+                Group {
+                    if currentPage == 0 {
+                        GlucoseChartView(
+                            glucoseValues: state.glucoseValues,
+                            minYAxisValue: state.minYAxisValue,
+                            maxYAxisValue: state.maxYAxisValue
+                        )
+                    } else {
+                        Color.clear
+                    }
+                }
+                .tag(0)
+
+                // Page 1: Current glucose trend in "BG bobble" (default)
                 ZStack {
                     GlucoseTrendView(
                         state: state,
@@ -91,23 +106,10 @@ struct TrioMainWatchView: View {
                                     7 // Font .body == 14, so half of default size for the SF Symbol image
                             )
                     }
-                }.tag(0)
-
-                // Page 2: Glucose chart
-                Group {
-                    if currentPage == 1 {
-                        GlucoseChartView(
-                            glucoseValues: state.glucoseValues,
-                            minYAxisValue: state.minYAxisValue,
-                            maxYAxisValue: state.maxYAxisValue
-                        )
-                    } else {
-                        Color.clear
-                    }
                 }
                 .tag(1)
 
-                // Page 3: Complication Debug View (only constructed when visible)
+                // Page 2: Complication Debug View (only constructed when visible)
                 Group {
                     if currentPage == 2 {
                         ComplicationDebugView()
@@ -128,6 +130,7 @@ struct TrioMainWatchView: View {
                     state.currentGlucose = snapshot.glucose
                     state.trend = snapshot.trend
                     state.delta = snapshot.delta
+                    state.displayedReadingSource = snapshot.source ?? .unknown
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
@@ -140,6 +143,7 @@ struct TrioMainWatchView: View {
                     state.currentGlucose = snapshot.glucose
                     state.trend = snapshot.trend
                     state.delta = snapshot.delta
+                    state.displayedReadingSource = snapshot.source ?? .unknown
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
@@ -153,12 +157,12 @@ struct TrioMainWatchView: View {
                 state.noteMainWatchRootViewAppearedForResidentTelemetry()
             }
             .onChange(of: currentPage) { _, newPage in
-                if newPage == 1 {
+                if newPage == 0 {
                     state.noteChartTabBecameVisibleForResidentTelemetry()
                 }
             }
             .background(trioBackgroundColor)
-            .tabViewStyle(.verticalPage)
+            .tabViewStyle(.page)
             .digitalCrownRotation($currentPage.doubleBinding(), from: 0, through: 2, by: 1)
             .onChange(of: state.trend) { _, newTrend in
                 withAnimation {
@@ -178,6 +182,16 @@ struct TrioMainWatchView: View {
                     }.font(.caption2)
                 }
 
+                // watchOS: `.principal` is unavailable; `.automatic` is the supported top-area placement.
+                ToolbarItem(placement: .automatic) {
+                    TimelineView(.periodic(from: Date(), by: 1.0)) { context in
+                        Text(context.date, format: .dateTime.hour().minute().second())
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     VStack {
                         Image(systemName: "fork.knife")
@@ -190,34 +204,36 @@ struct TrioMainWatchView: View {
                     }.font(.caption2)
                 }
 
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button {
-                        showingOverrideSheet = true
-                    } label: {
-                        Image(systemName: "clock.arrow.2.circlepath")
-                            .foregroundStyle(Color.primary, isOverrideActive ? Color.primary : Color.purple)
-                    }
-                    .tint(isOverrideActive ? Color.purple : nil)
-                    .disabled(isWatchStateDated || isSessionUnreachable)
+                if currentPage != 2 {
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        Button {
+                            showingOverrideSheet = true
+                        } label: {
+                            Image(systemName: "clock.arrow.2.circlepath")
+                                .foregroundStyle(Color.primary, isOverrideActive ? Color.primary : Color.purple)
+                        }
+                        .tint(isOverrideActive ? Color.purple : nil)
+                        .disabled(isWatchStateDated || isSessionUnreachable)
 
-                    Button {
-                        showingTreatmentMenuSheet = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .foregroundStyle(Color.bgDarkerDarkBlue)
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(WatchOSButtonStyle(deviceType: state.deviceType))
-                    .disabled(isWatchStateDated || isSessionUnreachable)
+                        Button {
+                            showingTreatmentMenuSheet = true
+                        } label: {
+                            Image(systemName: "plus")
+                                .foregroundStyle(Color.bgDarkerDarkBlue)
+                        }
+                        .controlSize(.large)
+                        .buttonStyle(WatchOSButtonStyle(deviceType: state.deviceType))
+                        .disabled(isWatchStateDated || isSessionUnreachable)
 
-                    Button {
-                        showingTempTargetSheet = true
-                    } label: {
-                        Image(systemName: "target")
-                            .foregroundStyle(isTempTargetActive ? Color.primary : Color.loopGreen.opacity(0.75))
+                        Button {
+                            showingTempTargetSheet = true
+                        } label: {
+                            Image(systemName: "target")
+                                .foregroundStyle(isTempTargetActive ? Color.primary : Color.loopGreen.opacity(0.75))
+                        }
+                        .tint(isTempTargetActive ? Color.loopGreen.opacity(0.75) : nil)
+                        .disabled(isWatchStateDated || isSessionUnreachable)
                     }
-                    .tint(isTempTargetActive ? Color.loopGreen.opacity(0.75) : nil)
-                    .disabled(isWatchStateDated || isSessionUnreachable)
                 }
             }
             .fullScreenCover(isPresented: $showingTreatmentMenuSheet) {
