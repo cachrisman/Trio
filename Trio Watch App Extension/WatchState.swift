@@ -32,22 +32,29 @@ enum BackgroundTaskWindowCounter {
     }
 }
 
+// Aligned with build 191 state machine (item 12).
+// .stalled removed (was never called). .searching renamed .scanning.
+// .fastRetry / .moderateWait added for scheduler states (wired in future build).
 enum G7DirectBLEStatus: String, Equatable {
-    case off
-    case searching
-    case connecting
-    case active
-    case stalled
-    case unavailable
+    case off           // IDLE: no active session or timer
+    case retrieving    // RETRIEVING: checking OS peripheral cache
+    case scanning      // SCANNING: active BLE scan; no cached peripheral found
+    case connecting    // CONNECTING: centralManager.connect() in flight
+    case active        // WINDOW_ACTIVE: inside a live sensor session
+    case fastRetry     // FAST_RETRY: 2s fixed delay after failure/post-success disconnect
+    case moderateWait  // MODERATE_WAIT: 15s delay after 5 consecutive scheduler retries
+    case unavailable   // Bluetooth off / unauthorized
 
     var badgeText: String {
         switch self {
-        case .off: return "off"
-        case .searching: return "scan"
-        case .connecting: return "conn"
-        case .active: return "ok"
-        case .stalled: return "stall"
-        case .unavailable: return "n/a"
+        case .off:          return "off"
+        case .retrieving:   return "retr"
+        case .scanning:     return "scan"
+        case .connecting:   return "conn"
+        case .active:       return "ok"
+        case .fastRetry:    return "retry"
+        case .moderateWait: return "wait"
+        case .unavailable:  return "n/a"
         }
     }
 
@@ -931,7 +938,11 @@ extension TrioComplicationDataSource {
         }
         lastWatchStateUpdate = snapshot.readingDate
         displayedReadingSource = snapshot.source ?? .g7DirectBLE
-        g7DirectBleStatus = .active
+        // Only update BLE scheduler status when the snapshot actually came from BLE.
+        // Phone/WC/HK snapshots must not overwrite the observer's reported state.
+        if snapshot.source == .g7DirectBLE {
+            g7DirectBleStatus = .active
+        }
         g7DirectBleLastEventAt = Date()
         g7DirectBleLastReadingAt = snapshot.readingDate
         showSyncingAnimation = false

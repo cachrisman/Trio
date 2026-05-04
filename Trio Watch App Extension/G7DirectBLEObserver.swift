@@ -188,10 +188,13 @@ final class G7DirectBLEObserver: NSObject {
     }
 
     private func mirrorDailyCountersToWatchState() {
+        let connects = bleConnectsToday
+        let egvs = bleEGVsToday
+        let events = bleConnectionEventsToday
         Task { @MainActor in
-            WatchState.shared.bleConnectsToday = bleConnectsToday
-            WatchState.shared.bleEGVsToday = bleEGVsToday
-            WatchState.shared.bleConnectionEventsToday = bleConnectionEventsToday
+            WatchState.shared.bleConnectsToday = connects
+            WatchState.shared.bleEGVsToday = egvs
+            WatchState.shared.bleConnectionEventsToday = events
         }
     }
 
@@ -205,6 +208,7 @@ final class G7DirectBLEObserver: NSObject {
 
     private func scanForPeripheral() {
         guard !isStopped, central.state == .poweredOn, active == nil else { return }
+        noteStatus(.retrieving) // RETRIEVING: checking OS peripheral cache (item 12)
 
         // 1. Stored identifier (validated via attachIntent)
         if let id = persistedID,
@@ -223,7 +227,7 @@ final class G7DirectBLEObserver: NSObject {
         ])
         central.scanForPeripherals(withServices: [G7UUID.advertisement], options: nil)
         log("scan_started known_sensor=\(knownSensorName ?? "nil")")
-        noteStatus(.searching)
+        noteStatus(.scanning) // SCANNING: active BLE scan (item 12)
     }
 
     /// 2-second settle delay before re-entering listen state. Mirrors G7SensorKit's scanAfterDelay.
@@ -259,6 +263,7 @@ final class G7DirectBLEObserver: NSObject {
         backfillBuffer.removeAll()
         if central.isScanning { central.stopScan() }
         central.connect(p, options: nil) // No connect timeout. Let CB do its thing.
+        noteStatus(.connecting) // CONNECTING: connect() in flight (item 12)
         bumpSessionWatchdog(progress: "connect_called")
         log("connect_called intent=\(intent) peripheral=\(p.identifier.uuidString) name=\(p.name ?? "nil")")
     }
@@ -309,8 +314,9 @@ final class G7DirectBLEObserver: NSObject {
             return
         }
         lastReadingSequence = sequence
-
-        noteStatus(.active)
+        // Status is already .active from didConnect (WINDOW_ACTIVE entry).
+        // applyG7DirectBleSnapshot below bumps g7DirectBleLastEventAt — no additional
+        // noteStatus dispatch needed here.
 
         bleEGVsToday += 1
         persistDailyCounters()
@@ -358,6 +364,9 @@ final class G7DirectBLEObserver: NSObject {
         Task { @MainActor in
             TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
             WatchState.shared.applyG7DirectBleSnapshot(snapshot)
+            // item 14: wire bleLastEGVDate / bleLastEGVValue
+            WatchState.shared.bleLastEGVDate = readingDate
+            WatchState.shared.bleLastEGVValue = glucose
         }
     }
 
@@ -453,13 +462,16 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
             log("did_connect_ignored peripheral=\(p.identifier.uuidString) active=\(active?.identifier.uuidString ?? "nil")")
             return
         }
-        noteStatus(.connecting)
+        noteStatus(.active) // WINDOW_ACTIVE: connection established, service discovery starting (item 12)
         persistedID = p.identifier
         if c.isScanning { c.stopScan() }
         bumpSessionWatchdog(progress: "did_connect")
         bleConnectsToday += 1
         persistDailyCounters()
         mirrorDailyCountersToWatchState()
+        // item 13: wire bleLastConnectAt
+        let connectAt = Date()
+        Task { @MainActor in WatchState.shared.bleLastConnectAt = connectAt }
         log("discover_services_started services=[\(G7UUID.dataService)]")
         p.discoverServices([G7UUID.dataService])
     }
