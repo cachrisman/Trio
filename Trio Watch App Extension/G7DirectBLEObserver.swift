@@ -2,7 +2,16 @@ import CoreBluetooth
 import Foundation
 
 // G7 BLE observer for watchOS, mirroring G7SensorKit's passive listening pattern.
-// State machine: LISTEN -> CB delivers peripheral -> CONNECT (no timeout) -> CONNECTED -> SETTLE 2s -> LISTEN
+//
+// Connect phase (mirrors G7SensorKit exactly):
+//   call connect() -> CB holds pending request indefinitely -> didConnect fires when G7 opens its
+//   ~5-min session window. No watchdog on this phase. A 7-min deadlock detector fires only if CB
+//   never delivers any callback at all (lost peripheral, sensor ended, CB daemon fault).
+//
+// GATT/auth/EGV phase (after didConnect):
+//   Stall-style session watchdog bumped on every meaningful CB callback. 20s of silence here
+//   genuinely indicates a stall -- healthy sessions show progress every <2s in practice.
+//
 // Auth: enable notify on .authentication, wait for 0x05 (no fallback timer).
 // Glucose: enable notify on .control after 0x05, then JUST LISTEN. Sensor pushes 0x4E unsolicited.
 // Backfill: enable notify on .backfill after first glucose, parse 9-byte messages, buffer, flush on
@@ -10,8 +19,6 @@ import Foundation
 // Dedup: sequence-number equality.
 // Sensor identity: stores full name; matches via suffix(2) (matches G7SensorKit byte-for-byte).
 //   Identity locked on first reliable glucose, mirroring G7SensorKit's didDiscoverNewSensor flow.
-// Safety: stall-style session watchdog (bumped on every meaningful CB callback). Discovery, value-update,
-//   and auth/control notify failures cancel immediately for fast recovery.
 
 private enum G7DailyCounterKeys {
     static let calendarDay = "G7DirectBLEObserver.bleCountersCalendarDay"
@@ -67,6 +74,7 @@ final class G7DirectBLEObserver: NSObject {
     private var lastReadingSequence: UInt16?
     private var lastSavedGlucoseValue: Int?
     private var sessionWatchdog: DispatchWorkItem?
+    private var connectDeadlock: DispatchWorkItem?
     private var backfillBuffer: [G7BackfillEntry] = []
 
     private var bleConnectsToday: Int = 0
@@ -80,13 +88,16 @@ final class G7DirectBLEObserver: NSObject {
 
     private var isStopped = false
 
-    /// Stall-style watchdog: bumped on every meaningful CB callback, fires on silence.
-    /// Substitute for G7SensorKit's per-GATT-op 2s timeouts. 20s of silence with no progress
-    /// indicates a real stall (successful sessions show progress every <2s in practice).
-    /// Note: post-EGV backfill silence can trip this if no backfill payloads arrive within
-    /// the window; this is acceptable since we already have the EGV and recovery is just a
-    /// disconnect+re-attach.
+    /// Session watchdog: applies ONLY to the GATT/auth/EGV phase (didConnect onward).
+    /// Bumped on every meaningful CB callback; fires on 20s of silence, which genuinely
+    /// indicates a stall — healthy sessions show progress every <2s in practice.
+    /// NOT used during the connect phase (see connectDeadlockTimeout below).
     private let sessionWatchdogTimeout: TimeInterval = 20
+
+    /// Connect deadlock detector: last-resort cleanup if CB never delivers didConnect or
+    /// didFailToConnect after connect() is called. 7 minutes covers one full G7 reading
+    /// cycle plus margin. Fires only when CB is completely unresponsive — not a retry timer.
+    private let connectDeadlockTimeout: TimeInterval = 7 * 60
 
     /// Full sensor name (e.g. "DXCMQU"). Mirrors G7SensorKit's `state.sensorID`.
     /// Matched against incoming peripheral names via suffix(2) to bridge advertisement-form
@@ -262,13 +273,36 @@ final class G7DirectBLEObserver: NSObject {
         // Defensive cleanup of any leftover buffered backfill from prior abnormal teardown.
         backfillBuffer.removeAll()
         if central.isScanning { central.stopScan() }
-        central.connect(p, options: nil) // No connect timeout. Let CB do its thing.
+        central.connect(p, options: nil) // No connect timeout — CB holds the request until G7 opens its session window.
         noteStatus(.connecting) // CONNECTING: connect() in flight (item 12)
-        bumpSessionWatchdog(progress: "connect_called")
+        armConnectDeadlock(peripheral: p)
         log("connect_called intent=\(intent) peripheral=\(p.identifier.uuidString) name=\(p.name ?? "nil")")
     }
 
-    // MARK: - Stall-style session watchdog
+    // MARK: - Connect-phase deadlock detector
+
+    /// Arms a last-resort timer that fires if CB never delivers didConnect or didFailToConnect.
+    /// 7 minutes = one full G7 reading cycle plus margin. This is NOT a retry timer — it only
+    /// fires when CB is completely unresponsive. Mirrors G7SensorKit's zero-timeout connect
+    /// philosophy: let CB wait, but don't wait forever if something is fundamentally broken.
+    private func armConnectDeadlock(peripheral: CBPeripheral) {
+        connectDeadlock?.cancel()
+        let id = peripheral.identifier.uuidString
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.active?.identifier == peripheral.identifier else { return }
+            self.log("connect_deadlock_fired peripheral=\(id) timeout_s=\(Int(self.connectDeadlockTimeout))")
+            self.central.cancelPeripheralConnection(peripheral)
+        }
+        connectDeadlock = work
+        queue.asyncAfter(deadline: .now() + connectDeadlockTimeout, execute: work)
+    }
+
+    private func cancelConnectDeadlock() {
+        connectDeadlock?.cancel()
+        connectDeadlock = nil
+    }
+
+    // MARK: - GATT/auth/EGV phase watchdog
 
     /// Re-arms the watchdog with a fresh deadline. Called after every meaningful CB callback
     /// so a healthy long-lived session never trips the timer; only true silence does.
@@ -462,6 +496,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
             log("did_connect_ignored peripheral=\(p.identifier.uuidString) active=\(active?.identifier.uuidString ?? "nil")")
             return
         }
+        cancelConnectDeadlock() // CB delivered didConnect — deadlock detector no longer needed
         noteStatus(.active) // WINDOW_ACTIVE: connection established, service discovery starting (item 12)
         persistedID = p.identifier
         if c.isScanning { c.stopScan() }
@@ -499,6 +534,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
     /// attach can adopt a new sensor.
     private func teardownAndRescan(error: Error?, peripheral: CBPeripheral) {
         cancelSessionWatchdog()
+        cancelConnectDeadlock()
         flushBackfillBuffer(reason: "disconnect")
 
         let isRemoteDisconnect: Bool

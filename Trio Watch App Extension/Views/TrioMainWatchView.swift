@@ -182,6 +182,15 @@ struct TrioMainWatchView: View {
                     }.font(.caption2)
                 }
 
+                ToolbarItem(placement: .principal) {
+                    TimelineView(.periodic(from: Date(), by: 1.0)) { context in
+                        Text(context.date, format: .dateTime.hour().minute().second())
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     VStack {
                         Image(systemName: "fork.knife")
@@ -194,34 +203,36 @@ struct TrioMainWatchView: View {
                     }.font(.caption2)
                 }
 
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button {
-                        showingOverrideSheet = true
-                    } label: {
-                        Image(systemName: "clock.arrow.2.circlepath")
-                            .foregroundStyle(Color.primary, isOverrideActive ? Color.primary : Color.purple)
-                    }
-                    .tint(isOverrideActive ? Color.purple : nil)
-                    .disabled(isWatchStateDated || isSessionUnreachable)
+                if currentPage != 2 {
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        Button {
+                            showingOverrideSheet = true
+                        } label: {
+                            Image(systemName: "clock.arrow.2.circlepath")
+                                .foregroundStyle(Color.primary, isOverrideActive ? Color.primary : Color.purple)
+                        }
+                        .tint(isOverrideActive ? Color.purple : nil)
+                        .disabled(isWatchStateDated || isSessionUnreachable)
 
-                    Button {
-                        showingTreatmentMenuSheet = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .foregroundStyle(Color.bgDarkerDarkBlue)
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(WatchOSButtonStyle(deviceType: state.deviceType))
-                    .disabled(isWatchStateDated || isSessionUnreachable)
+                        Button {
+                            showingTreatmentMenuSheet = true
+                        } label: {
+                            Image(systemName: "plus")
+                                .foregroundStyle(Color.bgDarkerDarkBlue)
+                        }
+                        .controlSize(.large)
+                        .buttonStyle(WatchOSButtonStyle(deviceType: state.deviceType))
+                        .disabled(isWatchStateDated || isSessionUnreachable)
 
-                    Button {
-                        showingTempTargetSheet = true
-                    } label: {
-                        Image(systemName: "target")
-                            .foregroundStyle(isTempTargetActive ? Color.primary : Color.loopGreen.opacity(0.75))
+                        Button {
+                            showingTempTargetSheet = true
+                        } label: {
+                            Image(systemName: "target")
+                                .foregroundStyle(isTempTargetActive ? Color.primary : Color.loopGreen.opacity(0.75))
+                        }
+                        .tint(isTempTargetActive ? Color.loopGreen.opacity(0.75) : nil)
+                        .disabled(isWatchStateDated || isSessionUnreachable)
                     }
-                    .tint(isTempTargetActive ? Color.loopGreen.opacity(0.75) : nil)
-                    .disabled(isWatchStateDated || isSessionUnreachable)
                 }
             }
             .fullScreenCover(isPresented: $showingTreatmentMenuSheet) {

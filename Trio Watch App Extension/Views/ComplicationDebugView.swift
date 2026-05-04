@@ -64,8 +64,7 @@ struct ComplicationDebugView: View {
                 // SECTION 4: Actions
                 sectionHeader("ACTIONS")
                 actionsView
-                    // item 17 interim: bottom padding until parent view hides persistent toolbar
-                    .padding(.bottom, 64)
+                    .padding(.bottom, 8)
             }
             .padding(.horizontal, 8)
         }
