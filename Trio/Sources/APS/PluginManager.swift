@@ -44,6 +44,9 @@ class BasePluginManager: Injectable, PluginManager {
     ]
 
     init(resolver: Resolver) {
+        G7Telemetry.emit = { event in
+            debug(.deviceManager, event)
+        }
         injectServices(resolver)
     }
 
