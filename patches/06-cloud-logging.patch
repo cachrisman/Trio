@@ -1,6 +1,6 @@
-From aa2a617199879509016f80ce6ed03179fd5aba99 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 31 Mar 2026 23:43:27 +0200
+From 22aeec6ae4083e7e7e1ac1e981d55b199a3c42ea Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Sat, 2 May 2026 18:25:49 +0200
 Subject: [PATCH] feat: cloud-logging
 
 ---
@@ -15,14 +15,14 @@ Subject: [PATCH] feat: cloud-logging
  .../CloudLogging/CloudLogLineParsing.swift    |  298 ++++
  .../CloudLogging/CloudLogProvider.swift       |  127 ++
  .../CloudLogging/CloudLogUploadService.swift  |  194 +++
- .../CloudLogging/CloudLogUploader.swift       |  430 ++++++
+ .../CloudLogging/CloudLogUploader.swift       |  438 ++++++
  .../IssueReporter/SimpleLogReporter.swift     |   13 +-
  .../Modules/Settings/SettingItems.swift       |   11 +
  .../View/CloudLoggingSettingsView.swift       |  150 ++
  .../Settings/View/Subviews/ServicesView.swift |    1 +
  Trio/Sources/Router/Screen.swift              |    3 +
  TrioTests/CloudLogEntryAggregatorTests.swift  |   42 +
- 18 files changed, 2830 insertions(+), 194 deletions(-)
+ 18 files changed, 2838 insertions(+), 194 deletions(-)
  create mode 100644 Trio Watch App Extension/WatchConnectivityPayloadIds.swift
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
@@ -2672,10 +2672,10 @@ index 000000000..abce87784
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
-index 000000000..231dcec84
+index 000000000..0c23fc7b3
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,430 @@
+@@ -0,0 +1,438 @@
 +import Foundation
 +
 +/// iPhone-only log tailer/uploader.
@@ -2746,8 +2746,16 @@ index 000000000..231dcec84
 +
 +        // Reset offsets if file shrank (rotation or truncation).
 +        if let currentSize = fileSize(currentURL), currentSize < currentState.offset {
++            let offsetBeforeReset = currentState.offset
 +            currentState.offset = 0
 +            saveState(currentState, for: pair.currentPath)
++
++            // Daily rotation moves `current` → `previous`; those bytes were already tailed under
++            // `currentPath`. Seed `previousPath` offset so we do not re-upload the same range.
++            if let prevSize = fileSize(prevURL) {
++                prevState.offset = min(offsetBeforeReset, prevSize)
++                saveState(prevState, for: pair.previousPath)
++            }
 +        }
 +        if let prevSize = fileSize(prevURL), prevSize < prevState.offset {
 +            prevState.offset = 0
