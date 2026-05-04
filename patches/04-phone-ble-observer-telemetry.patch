@@ -1,0 +1,26 @@
+From 46f8cbad7d1e516bbeb5082bc0efc8d39ca168cd Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Mon, 4 May 2026 17:00:18 +0200
+Subject: [PATCH] feat: phone-ble-observer-telemetry
+
+---
+ Trio/Sources/APS/PluginManager.swift | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Trio/Sources/APS/PluginManager.swift b/Trio/Sources/APS/PluginManager.swift
+index dae133f38..7d3807c44 100644
+--- a/Trio/Sources/APS/PluginManager.swift
++++ b/Trio/Sources/APS/PluginManager.swift
+@@ -44,6 +44,9 @@ class BasePluginManager: Injectable, PluginManager {
+     ]
+ 
+     init(resolver: Resolver) {
++        G7Telemetry.emit = { event in
++            debug(.deviceManager, event)
++        }
+         injectServices(resolver)
+     }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
