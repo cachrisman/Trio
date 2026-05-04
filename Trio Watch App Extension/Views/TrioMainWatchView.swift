@@ -182,7 +182,8 @@ struct TrioMainWatchView: View {
                     }.font(.caption2)
                 }
 
-                ToolbarItem(placement: .principal) {
+                // watchOS: `.principal` is unavailable; `.automatic` is the supported top-area placement.
+                ToolbarItem(placement: .automatic) {
                     TimelineView(.periodic(from: Date(), by: 1.0)) { context in
                         Text(context.date, format: .dateTime.hour().minute().second())
                             .font(.caption2)
