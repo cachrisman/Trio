@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.8)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.9)
 #
 # CHANGELOG:
+#   v1.9  - After applying baseline patches, run `submodule sync` + `submodule update`
+#           so gitlink commits match checked-out submodule SHAs (avoids spurious
+#           submodule reversals when using --from-feature-branch with `git add -A`).
+#         - --from-feature-branch: stage only PATCH_SCOPE_FILES instead of `git add -A`
+#           so unrelated dirty submodule working trees cannot be committed.
+#         - Detect paths on feature branch with `git ls-tree` (not `git show ref:path`),
+#           which fails for submodule gitlinks ("bad object") and incorrectly deleted them.
 #   v1.8  - --extra-files: trim leading/trailing whitespace only when
 #           normalizing paths. Previously `tr -d '[:space:]'` removed ALL
 #           spaces, breaking paths like `Trio Watch App Extension/Foo.swift`.
@@ -190,6 +197,13 @@ is_infra_path() {
         *)
             return 1 ;;
     esac
+}
+
+# True if path exists at ref (submodules included). `git show ref:path` fails for
+# gitlink paths ("bad object") on many Git versions; use ls-tree instead.
+path_exists_in_tree() {
+    local ref="$1" path="$2"
+    [ -n "$(git ls-tree "$ref" -- "$path" 2>/dev/null)" ]
 }
 
 # Leading/trailing whitespace only — paths may contain internal spaces.
@@ -711,6 +725,17 @@ else
     print_success "No baseline patches to apply (updating the first patch)"
 fi
 
+# Baseline patches may update submodule gitlinks; ensure checkouts match the
+# index so later `git add` cannot record a stale submodule HEAD (common when
+# --from-feature-branch uses a narrow file list but `git add -A` was used).
+if [ -f .gitmodules ]; then
+    print_info "Syncing submodule checkouts after baseline patches..."
+    git submodule sync --recursive 2>&1 | sed 's/^/    /' || true
+    if ! git submodule update --init --recursive 2>&1 | sed 's/^/    /'; then
+        print_warning "Submodule update after baseline failed; verify submodule SHAs before committing."
+    fi
+fi
+
 # Clean up dirty baseline patches from the working tree now that git am has
 # consumed their content. If left dirty, they leak into the baseline→update
 # diff and get included in the generated patch as spurious changed files.
@@ -743,7 +768,7 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
     print_info "Syncing ${#PATCH_SCOPE_FILES[@]} file(s) from $FEATURE_BRANCH (checkout or delete)"
     for f in ${PATCH_SCOPE_FILES[@]+"${PATCH_SCOPE_FILES[@]}"}; do
         [ -n "$f" ] || continue
-        if git show "$FEATURE_BRANCH:$f" >/dev/null 2>&1; then
+        if path_exists_in_tree "$FEATURE_BRANCH" "$f"; then
             git checkout "$FEATURE_BRANCH" -- "$f" 2>/dev/null || die "Failed to checkout $FEATURE_BRANCH -- $f"
             echo "    ✓ $f (checkout)"
         else
@@ -760,7 +785,15 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
     if git diff --staged --quiet 2>/dev/null && git diff --quiet 2>/dev/null; then
         die "No changes: patch-scope files already match $FEATURE_BRANCH. Nothing to regenerate."
     else
-        git add -A 2>/dev/null || die "Failed to stage from-feature-branch changes"
+        # Stage only patch-scope paths (do not use `git add -A`: a submodule whose
+        # working tree was never `submodule update`d can look "modified" vs the
+        # new gitlink and would incorrectly be committed.)
+        for f in ${PATCH_SCOPE_FILES[@]+"${PATCH_SCOPE_FILES[@]}"}; do
+            [ -n "$f" ] || continue
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+                git add -f -- "$f" 2>/dev/null || die "Failed to stage: $f"
+            fi
+        done
         git commit -m "feat: $PATCH_DESC" || die "Failed to commit from-feature-branch state"
         print_success "Committed current state of patch-scope files from $FEATURE_BRANCH"
     fi
@@ -1064,10 +1097,7 @@ if [ -n "$FEATURE_BRANCH" ]; then
         print_info "This likely means a feature branch commit was not cherry-picked into the patch."
         for f in "${CONTENT_DRIFT_FILES[@]}"; do
             echo "    ⚠ $f"
-            diff_summary=$(diff \
-                <(git show "$UPDATE_BRANCH:$f" 2>/dev/null) \
-                <(git show "$FEATURE_BRANCH:$f" 2>/dev/null) \
-                2>/dev/null | head -5 || true)
+            diff_summary=$(git diff "$UPDATE_BRANCH" "$FEATURE_BRANCH" -- "$f" 2>/dev/null | head -5 || true)
             if [ -n "$diff_summary" ]; then
                 echo "$diff_summary" | sed 's/^/        /'
             fi
