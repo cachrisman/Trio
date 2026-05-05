@@ -32,9 +32,7 @@ struct ComplicationDebugView: View {
         guard let s = snapshot, s.readingDate != .distantPast else { return "Debug" }
         let t = trendSymbol(s.trend)
         var parts = [s.glucose, t, s.delta].filter { !$0.isEmpty }
-        if s.source == .g7DirectBLE {
-            parts.append(nextReadingCountdown(s.readingDate, relativeTo: now))
-        }
+        parts.append(nextReadingCountdown(s.readingDate, relativeTo: now))
         return parts.joined(separator: " ")
     }
 
@@ -95,25 +93,14 @@ struct ComplicationDebugView: View {
     private var dataStoreStateView: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let s = snapshot {
-                HStack {
-                    Text("Glucose:")
-                    Spacer()
+                HStack(spacing: 8) {
                     Text(s.glucose)
                         .foregroundColor(glucoseColor(for: s.glucose))
                         .fontWeight(.bold)
-                }
-
-                HStack {
-                    Text("Trend:")
-                    Spacer()
-                    Text(s.trend.isEmpty ? "--" : s.trend)
-                }
-
-                HStack {
-                    Text("Delta:")
-                    Spacer()
+                    Text(s.trend.isEmpty ? "—" : trendSymbol(s.trend))
                     Text(s.delta)
                 }
+                .font(.title3)
 
                 // item 3: source row
                 HStack {
@@ -128,7 +115,8 @@ struct ComplicationDebugView: View {
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(formatTime(s.readingDate))
-                        Text("(\(formatAge(s.readingDate, relativeTo: now)))")
+                        Text("(\(Int(now.timeIntervalSince(s.readingDate)))s ago)")
+                   
                             .font(.caption2)
                             .foregroundColor(ageColor(s.readingDate, relativeTo: now))
                     }
@@ -511,19 +499,14 @@ private struct G7DirectBleDebugSection: View {
                 }
             }
             HStack {
-                Text("Connects / today:")
+                Text("Connects:")
                 Spacer()
                 Text("\(WatchState.shared.bleConnectsToday)")
             }
             HStack {
-                Text("EGVs / today:")
+                Text("EGVs:")
                 Spacer()
                 Text("\(WatchState.shared.bleEGVsToday)")
-            }
-            HStack {
-                Text("MOD-E / today:")
-                Spacer()
-                Text("\(WatchState.shared.bleConnectionEventsToday)")
             }
             // item 16: live WatchState source vs persisted snapshot — mismatches are diagnostic
             HStack {

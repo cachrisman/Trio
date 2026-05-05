@@ -84,12 +84,6 @@ struct TrioMainWatchView: View {
                         rotationDegrees: rotationDegrees,
                         isWatchStateDated: isWatchStateDated || isSessionUnreachable
                     )
-                    .onLongPressGesture(minimumDuration: 1.0) {
-                        // Long press to quickly access debug view
-                        withAnimation {
-                            currentPage = 2
-                        }
-                    }
 
                     if state.showSyncingAnimation {
                         Image(systemName: "iphone.radiowaves.left.and.right")
@@ -119,6 +113,22 @@ struct TrioMainWatchView: View {
                 }
                 .tag(2)
             }
+            .overlay(alignment: .top) {
+                TimelineView(.periodic(from: .now, by: 1.0)) { context in
+                    Group {
+                        if context.cadence <= .seconds {
+                            Text(context.date, format: .dateTime.hour().minute().second())
+                        } else {
+                            Text(context.date, format: .dateTime.hour().minute())
+                        }
+                    }
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                }
+                .allowsHitTesting(false)
+            }
             .onAppear {
                 Task {
                     await WatchLogger.shared.log("Watch main view appeared")
@@ -130,7 +140,7 @@ struct TrioMainWatchView: View {
                     state.currentGlucose = snapshot.glucose
                     state.trend = snapshot.trend
                     state.delta = snapshot.delta
-                    state.displayedReadingSource = snapshot.source ?? .unknown
+                    state.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
@@ -143,7 +153,7 @@ struct TrioMainWatchView: View {
                     state.currentGlucose = snapshot.glucose
                     state.trend = snapshot.trend
                     state.delta = snapshot.delta
-                    state.displayedReadingSource = snapshot.source ?? .unknown
+                    state.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
@@ -170,38 +180,32 @@ struct TrioMainWatchView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    VStack {
-                        Image(systemName: "syringe.fill")
-                            .foregroundStyle(Color.insulin)
+                if currentPage != 2 {
+                    ToolbarItem(placement: .topBarLeading) {
+                        VStack {
+                            Image(systemName: "syringe.fill")
+                                .foregroundStyle(Color.insulin)
 
-                        Text(isWatchStateDated || isSessionUnreachable ? "--" : state.iob ?? "--")
-                            .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
-                            .frame(alignment: .leading)
-                            .minimumScaleFactor(0.5)
-                    }.font(.caption2)
-                }
-
-                // watchOS: `.principal` is unavailable; `.automatic` is the supported top-area placement.
-                ToolbarItem(placement: .automatic) {
-                    TimelineView(.periodic(from: Date(), by: 1.0)) { context in
-                        Text(context.date, format: .dateTime.hour().minute().second())
-                            .font(.caption2)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                            Text(isWatchStateDated || isSessionUnreachable ? "--" : state.iob ?? "--")
+                                .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
+                                .frame(alignment: .leading)
+                                .minimumScaleFactor(0.5)
+                        }.font(.caption2)
                     }
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    VStack {
-                        Image(systemName: "fork.knife")
-                            .foregroundStyle(Color.orange)
+                if currentPage != 2 {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        VStack {
+                            Image(systemName: "fork.knife")
+                                .foregroundStyle(Color.orange)
 
-                        Text(isWatchStateDated || isSessionUnreachable ? "--" : state.cob ?? "--")
-                            .foregroundStyle(isWatchStateDated || isSessionUnreachable ? Color.secondary : Color.white)
-                            .frame(alignment: .trailing)
-                            .minimumScaleFactor(0.5)
-                    }.font(.caption2)
+                            Text(isWatchStateDated || isSessionUnreachable ? "--" : state.cob ?? "--")
+                                .foregroundStyle(isWatchStateDated || isSessionUnreachable ? Color.secondary : Color.white)
+                                    .frame(alignment: .trailing)
+                                    .minimumScaleFactor(0.5)
+                        }.font(.caption2)
+                    }
                 }
 
                 if currentPage != 2 {

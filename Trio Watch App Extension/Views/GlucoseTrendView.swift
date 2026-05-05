@@ -48,7 +48,7 @@ struct GlucoseTrendView: View {
         } else if fromBle {
             Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
         } else {
-            Text(recency)
+            Text(recency) + Text(" · Phone").foregroundStyle(.secondary)
         }
     }
 

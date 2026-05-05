@@ -108,7 +108,6 @@ extension TrioComplicationDataSource {
     /// G7 direct BLE: daily-persistent counters and debug (mirrored from observer; UserDefaults in observer).
     var bleConnectsToday: Int = 0
     var bleEGVsToday: Int = 0
-    var bleConnectionEventsToday: Int = 0
     var bleLastConnectAt: Date?
     var bleLastEGVDate: Date?
     var bleLastEGVValue: Int?
@@ -173,6 +172,11 @@ extension TrioComplicationDataSource {
     /// R5c — set in didReceiveUserInfo and passed through to saveComplicationSnapshot for decode_ms (reading_epoch there is derived from the payload being saved to avoid misattribution).
     private var lastUserInfoReceiveTimestamp: Date?
     private var quietWindowWorkItem: DispatchWorkItem?
+
+    /// Effective CGM reading date for which `displayedReadingSource` was last set. In-memory only; nil on cold start.
+    private var displayedReadingAttributedForDate: Date?
+    /// G7 sequence for the attributed reading when known; nil when the winning channel did not carry sequence (e.g. HK).
+    private var displayedReadingAttributedSequence: Int?
 
     private var activationTimestamp: Date?
     private var forcedSinceActivation = false
@@ -739,8 +743,9 @@ extension TrioComplicationDataSource {
             source: .healthKit
         )
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
             TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+            self?.applyHKSnapshot(snapshot)
             completionHandler()
         }
     }
@@ -928,8 +933,36 @@ extension TrioComplicationDataSource {
         }
     }
 
+    /// Aligns attribution watermarks from a complication snapshot unless that would regress a newer in-memory reading (e.g. store lagging BLE).
+    /// Also call when hydrating the main watch UI from `latestSnapshot()` (`onAppear`) so `tryAttributeDisplayedReadingSource` gates match the screen.
+    func alignDisplayedReadingAttributionWithComplicationSnapshot(_ snapshot: TrioComplicationSnapshot) {
+        assert(Thread.isMainThread, "alignDisplayedReadingAttributionWithComplicationSnapshot must be called on main thread")
+        if let attributed = displayedReadingAttributedForDate,
+           snapshot.readingDate <= attributed
+        {
+            return
+        }
+        displayedReadingSource = snapshot.source ?? .unknown
+        displayedReadingAttributedForDate = snapshot.readingDate
+        displayedReadingAttributedSequence = snapshot.sequence
+    }
+
     func applyG7DirectBleSnapshot(_ snapshot: TrioComplicationSnapshot) {
         assert(Thread.isMainThread, "applyG7DirectBleSnapshot must be called on main thread")
+        g7DirectBleLastEventAt = Date()
+        g7DirectBleLastReadingAt = snapshot.readingDate
+        if snapshot.source == .g7DirectBLE {
+            g7DirectBleStatus = .active
+        }
+        showSyncingAnimation = false
+        syncTimeoutWorkItem?.cancel()
+
+        guard tryAttributeDisplayedReadingSource(
+            snapshot.source ?? .g7DirectBLE,
+            forReadingDate: snapshot.readingDate,
+            sequence: snapshot.sequence
+        ) else { return }
+
         currentGlucose = snapshot.glucose
         trend = snapshot.trend
         delta = snapshot.delta
@@ -937,15 +970,47 @@ extension TrioComplicationDataSource {
             currentGlucoseColorString = glucoseColor
         }
         lastWatchStateUpdate = snapshot.readingDate
-        displayedReadingSource = snapshot.source ?? .g7DirectBLE
-        // Only update BLE scheduler status when the snapshot actually came from BLE.
-        // Phone/WC/HK snapshots must not overwrite the observer's reported state.
-        if snapshot.source == .g7DirectBLE {
-            g7DirectBleStatus = .active
+    }
+
+    func applyHKSnapshot(_ snapshot: TrioComplicationSnapshot) {
+        assert(Thread.isMainThread, "applyHKSnapshot must be called on main thread")
+        guard tryAttributeDisplayedReadingSource(
+            .healthKit,
+            forReadingDate: snapshot.readingDate,
+            sequence: snapshot.sequence
+        ) else { return }
+        currentGlucose = snapshot.glucose
+        trend = snapshot.trend
+        delta = snapshot.delta
+        lastWatchStateUpdate = snapshot.readingDate
+    }
+
+    /// Must be called on main thread. Sequence matches same reading across channels; date orders readings globally.
+    @discardableResult
+    private func tryAttributeDisplayedReadingSource(
+        _ source: TrioComplicationDataSource,
+        forReadingDate date: Date,
+        sequence: Int? = nil
+    ) -> Bool {
+        assert(Thread.isMainThread)
+        if let seq = sequence,
+           let attributedSeq = displayedReadingAttributedSequence,
+           seq == attributedSeq
+        {
+            return false
         }
-        g7DirectBleLastEventAt = Date()
-        g7DirectBleLastReadingAt = snapshot.readingDate
-        showSyncingAnimation = false
+        if let attributed = displayedReadingAttributedForDate, date <= attributed {
+            return false
+        }
+        displayedReadingSource = source
+        displayedReadingAttributedForDate = date
+        displayedReadingAttributedSequence = sequence
+        return true
+    }
+
+    private func intForWatchMessageKey(_ key: String, in message: [String: Any]) -> Int? {
+        if let n = message[key] as? NSNumber { return n.intValue }
+        return message[key] as? Int
     }
 
     /// Path B1 — Summarize inbound WC messages without stringifying nested `glucoseValues` (avoids large transient `String` allocations).
@@ -1204,7 +1269,8 @@ extension TrioComplicationDataSource {
             delta: payload[WatchMessageKeys.delta] as? String ?? "",
             readingDate: readingDate,
             date: Date(),
-            source: .watchConnectivity
+            source: .watchConnectivity,
+            sequence: intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: payload)
         )
         if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
             DispatchQueue.main.async { [weak self] in
@@ -1784,28 +1850,46 @@ extension TrioComplicationDataSource {
 
         startupFirstRefreshInFlight = false
 
-        if let date = dateValue(from: message[WatchMessageKeys.date]) {
-            lastWatchStateUpdate = date
-            forcedSinceActivation = false
-        }
-
         syncTimeoutWorkItem?.cancel()
         syncTimeoutWorkItem = nil
 
-        if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
-            self.currentGlucose = currentGlucose
+        let effectiveReading = resolveEffectiveCGMReadingDate(from: message)
+        let sequence = intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
+
+        let shouldApplyCGMFields: Bool
+        if case let .found(readingDate) = effectiveReading {
+            shouldApplyCGMFields = tryAttributeDisplayedReadingSource(
+                .watchConnectivity,
+                forReadingDate: readingDate,
+                sequence: sequence
+            )
+        } else {
+            shouldApplyCGMFields = (displayedReadingAttributedForDate == nil)
         }
 
-        if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
-            self.currentGlucoseColorString = currentGlucoseColorString
+        if shouldApplyCGMFields {
+            if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
+                self.currentGlucose = currentGlucose
+            }
+
+            if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
+                self.currentGlucoseColorString = currentGlucoseColorString
+            }
+
+            if let trend = message[WatchMessageKeys.trend] as? String {
+                self.trend = trend
+            }
+
+            if let delta = message[WatchMessageKeys.delta] as? String {
+                self.delta = delta
+            }
         }
 
-        if let trend = message[WatchMessageKeys.trend] as? String {
-            self.trend = trend
-        }
-
-        if let delta = message[WatchMessageKeys.delta] as? String {
-            self.delta = delta
+        // lastWatchStateUpdate uses WatchMessageKeys.date (delivery/snapshot time), not CGM reading time.
+        // BLE/HK paths set it from readingDate. The 15s fallback guard uses this field — semantics differ per channel.
+        if let date = dateValue(from: message[WatchMessageKeys.date]) {
+            lastWatchStateUpdate = date
+            forcedSinceActivation = false
         }
 
         if let iob = message[WatchMessageKeys.iob] as? String {
@@ -1818,13 +1902,6 @@ extension TrioComplicationDataSource {
 
         if let lastLoopTime = message[WatchMessageKeys.lastLoopTime] as? String {
             self.lastLoopTime = lastLoopTime
-        }
-
-        if message[WatchMessageKeys.currentGlucose] != nil
-            || message[WatchMessageKeys.trend] != nil
-            || message[WatchMessageKeys.delta] != nil
-        {
-            displayedReadingSource = .watchConnectivity
         }
 
         if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
@@ -1958,7 +2035,8 @@ extension TrioComplicationDataSource {
             readingDate: readingDate,
             date: Date(),
             glucoseColor: glucoseColorValue,
-            source: .watchConnectivity
+            source: .watchConnectivity,
+            sequence: intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
         )
 
         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -2020,7 +2098,8 @@ extension TrioComplicationDataSource {
             readingDate: effectiveReadingDate,
             date: Date(),
             glucoseColor: currentGlucoseColorString,
-            source: displayedReadingSource
+            source: displayedReadingSource,
+            sequence: displayedReadingAttributedSequence
         )
 
         Task {
@@ -2176,6 +2255,16 @@ extension TrioComplicationDataSource {
             return
         }
 
+        // Don't regress watermark / UI from store if in-memory reading is already newer (matches alignDisplayedReadingAttributionWithComplicationSnapshot).
+        if let attributed = displayedReadingAttributedForDate,
+           snapshot.readingDate <= attributed
+        {
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
+            }
+            return
+        }
+
         if let lastUpdate = lastWatchStateUpdate,
            Date().timeIntervalSince(lastUpdate) <= 15
         {
@@ -2186,6 +2275,13 @@ extension TrioComplicationDataSource {
         }
 
         DispatchQueue.main.async {
+            // Re-check after deferral: BLE may have advanced the watermark before this block runs.
+            if let attributed = self.displayedReadingAttributedForDate,
+               snapshot.readingDate <= attributed
+            {
+                self.showSyncingAnimation = false
+                return
+            }
             self.currentGlucose = snapshot.glucose
             self.trend = snapshot.trend
             self.delta = snapshot.delta
@@ -2193,7 +2289,7 @@ extension TrioComplicationDataSource {
                 self.currentGlucoseColorString = glucoseColor
             }
             self.lastWatchStateUpdate = snapshot.readingDate
-            self.displayedReadingSource = snapshot.source ?? .unknown
+            self.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
             self.showSyncingAnimation = false
             self.syncTimeoutWorkItem?.cancel()
         }

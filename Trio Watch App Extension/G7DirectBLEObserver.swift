@@ -1,5 +1,6 @@
 import CoreBluetooth
 import Foundation
+import WatchKit
 
 // G7 BLE observer for watchOS, mirroring G7SensorKit's passive listening pattern.
 //
@@ -24,7 +25,6 @@ private enum G7DailyCounterKeys {
     static let calendarDay = "G7DirectBLEObserver.bleCountersCalendarDay"
     static let connects = "G7DirectBLEObserver.bleConnectsToday"
     static let egvs = "G7DirectBLEObserver.bleEGVsToday"
-    static let connectionEvents = "G7DirectBLEObserver.bleConnectionEventsToday"
 }
 
 private enum G7UUID {
@@ -41,9 +41,27 @@ private enum G7Opcode {
     static let backfillFinished: UInt8 = 0x59
 }
 
-private enum G7AlgorithmState {
-    /// Mirrors G7SensorKit's AlgorithmState.State.ok = 6, the only state where hasReliableGlucose is true.
+/// Algorithm-state raw bytes aligned with G7SensorKit `AlgorithmState.State` (`AlgorithmState.swift`).
+private enum G7AlgorithmStateBytes {
+    /// `.ok` — only state where `hasReliableGlucose` is true.
     static let ok: UInt8 = 6
+    /// `.sessionEnded`
+    static let sessionEnded: UInt8 = 26
+
+    /// Mirrors `AlgorithmState.sensorFailed` — matches `G7CGMManager.sensor(_:didRead:)` EOS checks.
+    static func indicatesSensorFailed(_ raw: UInt8) -> Bool {
+        switch raw {
+        case 11, 12, 16, 17, 19, 20, 21, 22, 25:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+/// `G7Sensor.defaultLifetime` + `G7Sensor.gracePeriod` (`G7SensorKit/G7CGMManager/G7Sensor.swift`).
+private enum G7SensorLifetimeConstants {
+    static let maxSensorAgeSeconds: Double = 864_000 + 43_200 // 10 d + 12 h
 }
 
 /// Mirrors G7SensorKit's PeripheralConnectionCommand. Distinguishes "this is my known sensor"
@@ -74,19 +92,20 @@ final class G7DirectBLEObserver: NSObject {
     private var lastReadingSequence: UInt16?
     private var lastSavedGlucoseValue: Int?
     private var sessionWatchdog: DispatchWorkItem?
+    private var sessionWatchdogGeneration: Int = 0
+    private var heartbeatTimer: DispatchSourceTimer?
     private var connectDeadlock: DispatchWorkItem?
     private var backfillBuffer: [G7BackfillEntry] = []
 
     private var bleConnectsToday: Int = 0
     private var bleEGVsToday: Int = 0
-    private var bleConnectionEventsToday: Int = 0
 
-    /// True between successful auth notify enable and receipt of bonded+authenticated 0x05.
-    /// On remote disconnect of the active known sensor while pendingAuth, treat as suspected
-    /// end-of-session and clear sensor identity (mirrors G7SensorKit).
-    private var pendingAuth = false
+    /// Identifies one `connect()` … `disconnect` cycle for telemetry (EOS logs, correlation).
+    private var g7BleSessionID: String?
 
     private var isStopped = false
+
+    private var extendedSession: WKExtendedRuntimeSession?
 
     /// Session watchdog: applies ONLY to the GATT/auth/EGV phase (didConnect onward).
     /// Bumped on every meaningful CB callback; fires on 20s of silence, which genuinely
@@ -125,6 +144,9 @@ final class G7DirectBLEObserver: NSObject {
 
     func applyForegroundActiveEntry() {
         start()
+        queue.async { [weak self] in
+            self?.renewExtendedRuntimeSessionIfNeeded()
+        }
     }
 
     func noteForegroundInactiveOrBackground(_ phase: String) {
@@ -137,6 +159,7 @@ final class G7DirectBLEObserver: NSObject {
         }
         queue.async { [weak self] in
             guard let self else { return }
+            self.invalidateExtendedRuntimeSession(reason: "teardown")
             self.isStopped = true
             self.cancelSessionWatchdog()
             self.flushBackfillBuffer(reason: "stop")
@@ -145,9 +168,10 @@ final class G7DirectBLEObserver: NSObject {
             self.active = nil
             self.chars.removeAll()
             self.sessionActivationDate = nil
-            self.pendingAuth = false
             self.lastSavedGlucoseValue = nil
             self.lastReadingSequence = nil
+            self.g7BleSessionID = nil
+            self.stopHeartbeatTimer()
             self.log("stop_completed")
         }
     }
@@ -157,7 +181,94 @@ final class G7DirectBLEObserver: NSObject {
             guard let self else { return }
             self.isStopped = false
             self.loadDailyCountersIfNewCalendarDay()
+            self.startHeartbeatTimer()
             self.scanForPeripheral()
+        }
+    }
+
+    private static let heartbeatInterval: TimeInterval = 5 * 60
+
+    private func startHeartbeatTimer() {
+        heartbeatTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(
+            deadline: .now() + Self.heartbeatInterval,
+            repeating: Self.heartbeatInterval,
+            leeway: .seconds(2)
+        )
+        timer.setEventHandler { [weak self] in self?.emitBleHeartbeat() }
+        timer.resume()
+        heartbeatTimer = timer
+    }
+
+    private func stopHeartbeatTimer() {
+        heartbeatTimer?.cancel()
+        heartbeatTimer = nil
+    }
+
+    private func emitBleHeartbeat() {
+        let peripheralState = active?.state.rawValue ?? -1
+        Task { [weak self] in
+            guard let self else { return }
+            let (statusRaw, lastEgvAgeS, battery) = await MainActor.run {
+                let statusRaw = WatchState.shared.g7DirectBleStatus.rawValue
+                let lastEgvAgeS: Int = {
+                    guard let d = WatchState.shared.bleLastEGVDate else { return -1 }
+                    return Int(Date().timeIntervalSince(d))
+                }()
+                let battery = watchBatteryPercentForTelemetry()
+                return (statusRaw, lastEgvAgeS, battery)
+            }
+            log(
+                "status=\(statusRaw) peripheral_state=\(peripheralState) last_egv_age_s=\(lastEgvAgeS) battery_level_percent=\(battery)",
+                event: "g7_ble_heartbeat"
+            )
+        }
+    }
+
+    /// `extendedSession` is main-queue-only; BLE queue calls these wrappers.
+    private func startExtendedRuntimeSession() {
+        DispatchQueue.main.async { [weak self] in
+            self?.startExtendedRuntimeSessionOnMainIfNeeded(logRenewalPreface: false)
+        }
+    }
+
+    /// Must run on the main queue.
+    private func startExtendedRuntimeSessionOnMainIfNeeded(logRenewalPreface: Bool) {
+        assert(Thread.isMainThread)
+        guard extendedSession == nil || extendedSession?.state == .invalid else {
+            log("g7_ble_ext_session_start_skipped reason=already_active")
+            return
+        }
+        if logRenewalPreface {
+            log("g7_ble_ext_session_renewal")
+        }
+        let session = WKExtendedRuntimeSession()
+        session.delegate = self
+        extendedSession = session
+        session.start()
+        log("g7_ble_ext_session_started")
+    }
+
+    private func invalidateExtendedRuntimeSession(reason: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard let session = self.extendedSession else { return }
+            self.extendedSession = nil
+            session.invalidate()
+            self.log("g7_ble_ext_session_invalidated reason=\(reason)")
+        }
+    }
+
+    private func renewExtendedRuntimeSessionIfNeeded() {
+        let poweredOn = central.state == .poweredOn
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard poweredOn else {
+                self.log("g7_ble_ext_session_renewal_skipped reason=central_not_powered_on")
+                return
+            }
+            self.startExtendedRuntimeSessionOnMainIfNeeded(logRenewalPreface: true)
         }
     }
 
@@ -169,13 +280,11 @@ final class G7DirectBLEObserver: NSObject {
         if storedDay != dayStart {
             bleConnectsToday = 0
             bleEGVsToday = 0
-            bleConnectionEventsToday = 0
             UserDefaults.standard.set(dayStart, forKey: G7DailyCounterKeys.calendarDay)
             persistDailyCounters()
         } else {
             bleConnectsToday = UserDefaults.standard.integer(forKey: G7DailyCounterKeys.connects)
             bleEGVsToday = UserDefaults.standard.integer(forKey: G7DailyCounterKeys.egvs)
-            bleConnectionEventsToday = UserDefaults.standard.integer(forKey: G7DailyCounterKeys.connectionEvents)
         }
         mirrorDailyCountersToWatchState()
     }
@@ -183,7 +292,6 @@ final class G7DirectBLEObserver: NSObject {
     private func persistDailyCounters() {
         UserDefaults.standard.set(bleConnectsToday, forKey: G7DailyCounterKeys.connects)
         UserDefaults.standard.set(bleEGVsToday, forKey: G7DailyCounterKeys.egvs)
-        UserDefaults.standard.set(bleConnectionEventsToday, forKey: G7DailyCounterKeys.connectionEvents)
     }
 
     private func loadDailyCountersIfNewCalendarDay() {
@@ -192,7 +300,6 @@ final class G7DirectBLEObserver: NSObject {
         guard storedDay != dayStart else { return }
         bleConnectsToday = 0
         bleEGVsToday = 0
-        bleConnectionEventsToday = 0
         UserDefaults.standard.set(dayStart, forKey: G7DailyCounterKeys.calendarDay)
         persistDailyCounters()
         mirrorDailyCountersToWatchState()
@@ -201,11 +308,9 @@ final class G7DirectBLEObserver: NSObject {
     private func mirrorDailyCountersToWatchState() {
         let connects = bleConnectsToday
         let egvs = bleEGVsToday
-        let events = bleConnectionEventsToday
         Task { @MainActor in
             WatchState.shared.bleConnectsToday = connects
             WatchState.shared.bleEGVsToday = egvs
-            WatchState.shared.bleConnectionEventsToday = events
         }
     }
 
@@ -269,11 +374,13 @@ final class G7DirectBLEObserver: NSObject {
         let intent = attachIntent(for: p)
         guard intent != .ignore, active == nil else { return }
         active = p
+        g7BleSessionID = UUID().uuidString
         p.delegate = self
         // Defensive cleanup of any leftover buffered backfill from prior abnormal teardown.
         backfillBuffer.removeAll()
         if central.isScanning { central.stopScan() }
         central.connect(p, options: nil) // No connect timeout — CB holds the request until G7 opens its session window.
+        startExtendedRuntimeSession()
         noteStatus(.connecting) // CONNECTING: connect() in flight (item 12)
         armConnectDeadlock(peripheral: p)
         log("connect_called intent=\(intent) peripheral=\(p.identifier.uuidString) name=\(p.name ?? "nil")")
@@ -310,8 +417,12 @@ final class G7DirectBLEObserver: NSObject {
     /// log identifies the LAST successful step before silence (not the cause of the stall).
     private func bumpSessionWatchdog(progress: String) {
         sessionWatchdog?.cancel()
+        sessionWatchdogGeneration += 1
+        let capturedGeneration = sessionWatchdogGeneration
         let work = DispatchWorkItem { [weak self] in
-            guard let self, let p = self.active else { return }
+            guard let self else { return }
+            guard self.sessionWatchdogGeneration == capturedGeneration else { return }
+            guard let p = self.active else { return }
             self.log("session_watchdog_fired last_progress=\(progress) peripheral=\(p.identifier.uuidString)")
             self.central.cancelPeripheralConnection(p)
         }
@@ -322,6 +433,44 @@ final class G7DirectBLEObserver: NSObject {
     private func cancelSessionWatchdog() {
         sessionWatchdog?.cancel()
         sessionWatchdog = nil
+        sessionWatchdogGeneration += 1
+    }
+
+    // MARK: - End of session (EGV-only; matches G7CGMManager glucose path)
+
+    /// Clears stored sensor identity and disconnects so `scanForPeripheral` can adopt a new sensor.
+    /// Call only after a successfully parsed 0x4E glucose payload (`G7GlucoseMessage` layout).
+    private func triggerEndOfSessionFromEGV(reason: String, algorithmState: UInt8?, sensorAgeSeconds: Double?) {
+        let sessionId = g7BleSessionID ?? "nil"
+        Task { [weak self] in
+            guard let self else { return }
+            let battery = await MainActor.run { self.watchBatteryPercentForTelemetry() }
+            var parts: [String] = [
+                "event=g7_ble_eos_detected",
+                "reason=\(reason)",
+                "g7_session=\(sessionId)",
+                "battery_level_percent=\(battery)"
+            ]
+            if let algorithmState {
+                parts.append("state=\(algorithmState)")
+            }
+            if let sensorAgeSeconds {
+                parts.append("sensor_age_s=\(Int(sensorAgeSeconds))")
+            }
+            await WatchLogger.shared.log(parts.joined(separator: " "))
+        }
+
+        knownSensorName = nil
+        persistedID = nil
+        lastReadingSequence = nil
+        lastSavedGlucoseValue = nil
+        sessionActivationDate = nil
+
+        if let p = active {
+            central.cancelPeripheralConnection(p)
+        } else if !isStopped {
+            scanAfterDelay()
+        }
     }
 
     // MARK: - Glucose parsing & save
@@ -333,11 +482,30 @@ final class G7DirectBLEObserver: NSObject {
         let age = UInt16(littleEndian: data.integer(at: 10))
         let glucoseBytes = UInt16(littleEndian: data.integer(at: 12))
         let algorithmState = data[14]
+
+        let sensorAgeSeconds = Double(messageTimestamp) - Double(age)
+
+        // Path A — `G7CGMManager.sensor(_:didRead:)`: EOS only after a successful read (parsed fields).
+        if G7AlgorithmStateBytes.indicatesSensorFailed(algorithmState) {
+            triggerEndOfSessionFromEGV(reason: "algorithm_state", algorithmState: algorithmState, sensorAgeSeconds: nil)
+            return
+        }
+        if algorithmState == G7AlgorithmStateBytes.sessionEnded {
+            triggerEndOfSessionFromEGV(reason: "algorithm_state", algorithmState: algorithmState, sensorAgeSeconds: nil)
+            return
+        }
+
+        // Path B — lifetime + grace ceiling (`defaultLifetime` + `gracePeriod` on `G7Sensor`).
+        if sensorAgeSeconds > G7SensorLifetimeConstants.maxSensorAgeSeconds {
+            triggerEndOfSessionFromEGV(reason: "sensor_age_ceiling", algorithmState: nil, sensorAgeSeconds: sensorAgeSeconds)
+            return
+        }
+
         guard glucoseBytes != 0xffff else { return }
         let glucose = Int(glucoseBytes & 0x0fff)
 
         // Algorithm-state filtering: only state 6 (.ok) is "hasReliableGlucose".
-        guard algorithmState == G7AlgorithmState.ok else {
+        guard algorithmState == G7AlgorithmStateBytes.ok else {
             log("egv_unreliable algorithm_state=\(algorithmState) glucose=\(glucose) sequence=\(sequence)")
             return
         }
@@ -391,7 +559,8 @@ final class G7DirectBLEObserver: NSObject {
         let snapshot = TrioComplicationSnapshot(
             glucose: "\(glucose)", trend: trend, delta: delta,
             readingDate: readingDate, date: Date(),
-            state: "g7_direct_ble", glucoseColor: nil, source: .g7DirectBLE
+            state: "g7_direct_ble", glucoseColor: nil, source: .g7DirectBLE,
+            sequence: Int(sequence)
         )
         log("egv_received glucose=\(glucose) delta=\(delta) sequence=\(sequence) trend=\(trend) algorithm_state=\(algorithmState) age_s=\(age) message_timestamp=\(messageTimestamp) reading_epoch=\(Int(readingDate.timeIntervalSince1970))")
 
@@ -451,9 +620,20 @@ final class G7DirectBLEObserver: NSObject {
         backfillBuffer.removeAll()
     }
 
-    private func log(_ msg: String) {
-        Task { await WatchLogger.shared.log("event=g7_ble \(msg)") }
+    private func log(_ msg: String, event: String = "g7_ble") {
+        Task { await WatchLogger.shared.log("event=\(event) \(msg)") }
     }
+
+    /// Watch battery for Better Stack correlation; `-1` when monitoring is off or level unknown.
+    /// Call from the main actor only (`WKInterfaceDevice`).
+    private func watchBatteryPercentForTelemetry() -> Int {
+        let device = WKInterfaceDevice.current()
+        guard device.isBatteryMonitoringEnabled else { return -1 }
+        let level = device.batteryLevel
+        guard level >= 0 else { return -1 }
+        return Int(round(level * 100))
+    }
+
 }
 
 // MARK: - Central delegate
@@ -482,11 +662,7 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
 
     func centralManager(_ c: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent,
                         for p: CBPeripheral) {
-        if event == .peerConnected {
-            bleConnectionEventsToday += 1
-            persistDailyCounters()
-            mirrorDailyCountersToWatchState()
-        }
+        // `.peerConnected` can fire multiple times per cycle; attach only when not already connecting.
         if event == .peerConnected, active == nil, attachIntent(for: p) != .ignore { handle(p) }
     }
 
@@ -525,46 +701,21 @@ extension G7DirectBLEObserver: CBCentralManagerDelegate {
             log("disconnect_ignored peripheral=\(p.identifier.uuidString)")
             return
         }
-        log("disconnect error=\(error?.localizedDescription ?? "nil") pendingAuth=\(pendingAuth)")
+        log("disconnect error=\(error?.localizedDescription ?? "nil")")
         teardownAndRescan(error: error, peripheral: p)
     }
 
-    /// Mirrors G7SensorKit's peripheralDidDisconnect: if the known sensor disconnected remotely
-    /// while pendingAuth, the Dexcom app likely stopped the session. Clear identity so the next
-    /// attach can adopt a new sensor.
+    /// Cleanup after disconnect or local cancel. Does **not** clear sensor identity — EOS is only from
+    /// `parseGlucose` (G7SensorKit’s `pendingAuth && remoteDisconnect` → `scanForNewSensor` path is not mirrored).
     private func teardownAndRescan(error: Error?, peripheral: CBPeripheral) {
         cancelSessionWatchdog()
         cancelConnectDeadlock()
         flushBackfillBuffer(reason: "disconnect")
 
-        let isRemoteDisconnect: Bool
-        if let nsError = error as NSError?,
-           nsError.domain == CBErrorDomain,
-           nsError.code == CBError.peripheralDisconnected.rawValue {
-            isRemoteDisconnect = true
-        } else {
-            isRemoteDisconnect = false
-        }
-
-        let disconnectedMatchedKnown: Bool = {
-            guard let known = knownSensorName, let name = peripheral.name else { return false }
-            return name.suffix(2) == known.suffix(2)
-        }()
-
-        if pendingAuth, isRemoteDisconnect, disconnectedMatchedKnown {
-            log("suspected_end_of_session clearing_sensor_identity prior_name=\(knownSensorName ?? "nil")")
-            knownSensorName = nil
-            persistedID = nil
-            // New sensor's sequence space is unrelated to the previous sensor's;
-            // reset to avoid spurious dedup against a stale value.
-            lastReadingSequence = nil
-            lastSavedGlucoseValue = nil
-        }
-
         active = nil
         chars.removeAll()
         sessionActivationDate = nil
-        pendingAuth = false
+        g7BleSessionID = nil
         if !isStopped {
             scanAfterDelay()
         }
@@ -617,11 +768,6 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
         log("notify_state_ok char=\(c.uuid) notifying=\(c.isNotifying)")
         // Char-specific bump label so a watchdog firing in post-EGV backfill silence is identifiable.
         bumpSessionWatchdog(progress: "notify_state_ok_\(c.uuid)")
-
-        // Mirror G7SensorKit: set pendingAuth only AFTER auth notify is actually enabled.
-        if c.uuid == G7UUID.authentication, c.isNotifying {
-            pendingAuth = true
-        }
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
@@ -641,7 +787,6 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
             if data.first == G7Opcode.authChallengeRx,
                data.count > 2, data[1] == 1, data[2] == 1,
                let control = chars[G7UUID.control], !control.isNotifying {
-                pendingAuth = false
                 log("auth_authenticated_bonded control_notify_requested")
                 p.setNotifyValue(true, for: control)
             }
@@ -663,6 +808,41 @@ extension G7DirectBLEObserver: CBPeripheralDelegate {
                 log("backfill_parse_failed bytes=\(data.count)")
             }
         default: break
+        }
+    }
+}
+
+extension G7DirectBLEObserver: WKExtendedRuntimeSessionDelegate {
+    func extendedRuntimeSessionDidStart(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
+        log("g7_ble_ext_session_did_start")
+    }
+
+    func extendedRuntimeSessionWillExpire(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.log("g7_ble_ext_session_will_expire")
+            if extendedRuntimeSession === self.extendedSession {
+                self.extendedSession = nil
+            }
+        }
+    }
+
+    func extendedRuntimeSession(
+        _ extendedRuntimeSession: WKExtendedRuntimeSession,
+        didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason,
+        error: Error?
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let wasCurrent = extendedRuntimeSession === self.extendedSession
+            if wasCurrent {
+                self.extendedSession = nil
+            }
+            self.log("g7_ble_ext_session_did_invalidate reason=\(reason.rawValue) has_error=\(error != nil)")
+            if error != nil, wasCurrent {
+                self.log("g7_ble_ext_session_unexpected_invalidation triggering_teardown=true")
+                self.stop()
+            }
         }
     }
 }

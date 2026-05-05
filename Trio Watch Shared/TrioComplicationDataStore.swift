@@ -35,6 +35,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let state: String?
     let glucoseColor: String?
     let source: TrioComplicationDataSource?
+    /// G7 EGV sequence when known; optional same-reading identity alongside `readingDate`.
+    let sequence: Int?
 
     // INVARIANT (Phase 3.4): All display-field sanitization here.
     // Dedup always compares sanitized values.
@@ -46,7 +48,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         date: Date,
         state: String? = nil,
         glucoseColor: String? = nil,
-        source: TrioComplicationDataSource? = nil
+        source: TrioComplicationDataSource? = nil,
+        sequence: Int? = nil
     ) {
         glucose = Self.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -56,6 +59,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         self.state = state
         self.glucoseColor = glucoseColor
         self.source = source
+        self.sequence = sequence
     }
 
     private static func sanitizedGlucose(from value: String) -> String {

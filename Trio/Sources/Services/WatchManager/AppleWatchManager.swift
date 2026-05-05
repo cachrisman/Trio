@@ -2,6 +2,7 @@ import Combine
 import CoreData
 import FirebaseCrashlytics
 import Foundation
+import G7SensorKit
 import Swinject
 import UIKit
 import WatchConnectivity
@@ -20,6 +21,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     @Injected() var broadcaster: Broadcaster!
     @Injected() private var apsManager: APSManager!
+    @Injected() private var deviceManager: DeviceDataManager!
     @Injected() private var settingsManager: SettingsManager!
     @Injected() private var fileStorage: FileStorage!
     @Injected() private var glucoseStorage: GlucoseStorage!
@@ -260,6 +262,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             debug(.watchManager, "⌚️❌ Skipping setupWatchState - Watch session not activated")
             return WatchState(date: Date())
         }
+        let g7SeqContext = await MainActor.run { () -> (sequence: Int, timestamp: Date)? in
+            guard let base = deviceManager as? BaseDeviceDataManager,
+                  let g7 = base.cgmManager as? G7CGMManager,
+                  let msg = g7.latestReading,
+                  let ts = g7.latestReadingTimestamp else { return nil }
+            return (Int(msg.sequence), ts)
+        }
+
         do {
             // Get NSManagedObjectIDs
             let glucoseIds = try await fetchGlucose()
@@ -309,6 +319,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
                 guard let latestGlucose = glucoseObjects.first else {
                     return watchState
+                }
+
+                if let ctx = g7SeqContext,
+                   let gd = latestGlucose.date,
+                   abs(ctx.timestamp.timeIntervalSince(gd)) <= 120
+                {
+                    watchState.g7Sequence = ctx.sequence
                 }
 
                 // Assign currentGlucose and its color
@@ -554,6 +571,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             dict[WatchMessageKeys.readingEpoch] = newestReading.date.timeIntervalSince1970
         }
 
+        if let seq = state.g7Sequence {
+            dict[WatchMessageKeys.g7Sequence] = seq
+        }
+
         return dict
     }
 
@@ -781,6 +802,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             (WatchMessageKeys.trend, "trend"),
             (WatchMessageKeys.delta, "delta"),
             (WatchMessageKeys.readingEpoch, "readingEpoch"),
+            (WatchMessageKeys.g7Sequence, "g7Sequence"),
             (WatchMessageKeys.transferEnqueuedAt, "transferEnqueuedAt"),
             (WatchMessageKeys.date, "date"),
         ]
