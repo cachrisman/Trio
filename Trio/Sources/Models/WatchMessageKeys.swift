@@ -46,6 +46,8 @@ enum WatchMessageKeys {
 
     // Transfer Metadata Keys
     static let readingEpoch = "reading_epoch"
+    /// G7 EGV sequence (same-reading identity with watch direct BLE); optional.
+    static let g7Sequence = "g7_sequence"
     static let transferEnqueuedAt = "transfer_enqueued_at"
 
     // Limits and Settings Keys
