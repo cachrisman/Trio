@@ -48,6 +48,8 @@ enum WatchMessageKeys {
     static let readingEpoch = "reading_epoch"
     /// G7 EGV sequence (same-reading identity with watch direct BLE); optional.
     static let g7Sequence = "g7_sequence"
+    /// G7 peripheral/sensor name for `G7WatchSensorAdapter`; empty string means clear (sent whenever key is present).
+    static let g7ActiveSensorName = "g7_active_sensor_name"
     static let transferEnqueuedAt = "transfer_enqueued_at"
 
     // Limits and Settings Keys

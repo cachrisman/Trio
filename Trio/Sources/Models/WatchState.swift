@@ -30,6 +30,9 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
     /// G7 EGV sequence when the active CGM is G7 and it matches `latestGlucose`; watch attribution only.
     var g7Sequence: Int?
 
+    /// G7 peripheral name from the active `G7CGMManager` when applicable; `nil` encodes as empty over WC.
+    var g7ActiveSensorName: String?
+
     static func == (lhs: WatchState, rhs: WatchState) -> Bool {
         lhs.date == rhs.date &&
             lhs.currentGlucose == rhs.currentGlucose &&
@@ -53,7 +56,8 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
             lhs.maxProtein == rhs.maxProtein &&
             lhs.bolusIncrement == rhs.bolusIncrement &&
             lhs.confirmBolusFaster == rhs.confirmBolusFaster &&
-            lhs.g7Sequence == rhs.g7Sequence
+            lhs.g7Sequence == rhs.g7Sequence &&
+            lhs.g7ActiveSensorName == rhs.g7ActiveSensorName
     }
 
     func hash(into hasher: inout Hasher) {
@@ -81,5 +85,6 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
         hasher.combine(bolusIncrement)
         hasher.combine(confirmBolusFaster)
         hasher.combine(g7Sequence)
+        hasher.combine(g7ActiveSensorName)
     }
 }

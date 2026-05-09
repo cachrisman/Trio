@@ -262,12 +262,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             debug(.watchManager, "⌚️❌ Skipping setupWatchState - Watch session not activated")
             return WatchState(date: Date())
         }
-        let g7SeqContext = await MainActor.run { () -> (sequence: Int, timestamp: Date)? in
+        let g7PhoneContext = await MainActor.run { () -> (seqCtx: (sequence: Int, timestamp: Date)?, sensorName: String?) in
             guard let base = deviceManager as? BaseDeviceDataManager,
-                  let g7 = base.cgmManager as? G7CGMManager,
-                  let msg = g7.latestReading,
-                  let ts = g7.latestReadingTimestamp else { return nil }
-            return (Int(msg.sequence), ts)
+                  let g7 = base.cgmManager as? G7CGMManager else { return (nil, nil) }
+            let seqCtx: (sequence: Int, timestamp: Date)?
+            if let msg = g7.latestReading, let ts = g7.latestReadingTimestamp {
+                seqCtx = (Int(msg.sequence), ts)
+            } else {
+                seqCtx = nil
+            }
+            return (seqCtx, g7.sensorName)
         }
 
         do {
@@ -291,6 +295,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
             return await backgroundContext.perform {
                 var watchState = WatchState(date: Date())
+                watchState.g7ActiveSensorName = g7PhoneContext.sensorName
 
                 // Set lastLoopDate
                 let lastLoopMinutes = Int((Date().timeIntervalSince(self.apsManager.lastLoopDate) - 30) / 60) + 1
@@ -321,7 +326,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     return watchState
                 }
 
-                if let ctx = g7SeqContext,
+                if let ctx = g7PhoneContext.seqCtx,
                    let gd = latestGlucose.date,
                    abs(ctx.timestamp.timeIntervalSince(gd)) <= 120
                 {
@@ -574,6 +579,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         if let seq = state.g7Sequence {
             dict[WatchMessageKeys.g7Sequence] = seq
         }
+
+        dict[WatchMessageKeys.g7ActiveSensorName] = state.g7ActiveSensorName ?? ""
 
         return dict
     }

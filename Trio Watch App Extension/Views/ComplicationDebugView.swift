@@ -481,8 +481,7 @@ private struct G7DirectBleDebugSection: View {
                 Spacer()
                 Text(WatchState.shared.g7DirectBleStatus.rawValue)
             }
-            // items 13–14: bleLastConnectAt / bleLastEGVDate / bleLastEGVValue
-            // wired in G7DirectBLEObserver (same batch — will show real values after next connect/EGV)
+            // items 13–14: bleLastConnectAt / bleLastEGVDate / bleLastEGVValue (updated by `G7WatchSensorAdapter`)
             HStack {
                 Text("Last connect:")
                 Spacer()

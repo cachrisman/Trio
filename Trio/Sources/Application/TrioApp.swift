@@ -1,6 +1,7 @@
 import BackgroundTasks
 import CoreData
 import Foundation
+import G7SensorKit
 import SwiftUI
 import Swinject
 
@@ -68,7 +69,8 @@ extension Notification.Name {
         if let appearance = resolveOrLog(AppearanceManager.self) {
             appearance.setupGlobalAppearance()
         }
-        resolveOrLog(DeviceDataManager.self)
+        let deviceDataManager = resolveOrLog(DeviceDataManager.self)
+        configureG7ForkTelemetry(deviceDataManager: deviceDataManager)
         resolveOrLog(APSManager.self)
         resolveOrLog(FetchGlucoseManager.self)
         resolveOrLog(FetchTreatmentsManager.self)
@@ -86,6 +88,19 @@ extension Notification.Name {
             resolveOrLog(LiveActivityManager.self)
         }
         resolveOrLog(IOBService.self)
+    }
+
+    /// Routes G7SensorKit fork telemetry (`emitG7Telemetry`) into the iOS log file / cloud upload pipeline.
+    private func configureG7ForkTelemetry(deviceDataManager: DeviceDataManager?) {
+        G7Telemetry.emit = { [deviceDataManager] line in
+            let sensorName: String
+            if let g7 = deviceDataManager?.cgmManager as? G7CGMManager {
+                sensorName = g7.sensorName ?? "nil"
+            } else {
+                sensorName = "nil"
+            }
+            debug(.service, "sensor_name=\(sensorName) \(line)")
+        }
     }
 
     @discardableResult

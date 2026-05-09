@@ -299,7 +299,7 @@ extension TrioComplicationDataSource {
         WatchErrorReporter.markBecameActiveImmediately()
         scheduleStartupSequenceOnMain(activationSequence: activationSequence)
         applyG7DirectBleScenePhase("active")
-        G7DirectBLEObserver.shared.applyForegroundActiveEntry()
+        G7WatchSensorAdapter.shared.applyForegroundActiveEntry()
 
         Task {
             await WatchLogger.shared.log(
@@ -327,7 +327,7 @@ extension TrioComplicationDataSource {
         startupCurrentActivationSequence = nil
         WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
         applyG7DirectBleScenePhase("inactive_or_background")
-        G7DirectBLEObserver.shared.noteForegroundInactiveOrBackground("inactive_or_background")
+        G7WatchSensorAdapter.shared.noteForegroundInactiveOrBackground("inactive_or_background")
 
         if let activationSequence {
             WatchStartupTransportGate.disarm(activationSequence: activationSequence)
@@ -1658,6 +1658,19 @@ extension TrioComplicationDataSource {
         return pendingCount
     }
 
+    /// Phase C — sync G7 sensor identity from iPhone watch payload into `G7WatchSensorAdapter`.
+    private func applyG7ActiveSensorNameFromWatchPayloadIfPresent(_ payload: [String: Any]) {
+        guard payload[WatchMessageKeys.g7ActiveSensorName] != nil else { return }
+        let raw = payload[WatchMessageKeys.g7ActiveSensorName]
+        let name: String?
+        if let s = raw as? String {
+            name = s.isEmpty ? nil : s
+        } else {
+            name = nil
+        }
+        G7WatchSensorAdapter.shared.applyNewSensorName(name)
+    }
+
     private func processWatchMessage(_ message: [String: Any]) {
         DispatchQueue.main.async {
             if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
@@ -1749,6 +1762,8 @@ extension TrioComplicationDataSource {
             }
             return
         }
+
+        applyG7ActiveSensorNameFromWatchPayloadIfPresent(newData)
 
         DispatchQueue.main.async {
             self.showSyncingAnimation = true
