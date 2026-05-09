@@ -1,7 +1,16 @@
+import G7SensorKit
 import WatchKit
 
 final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     func applicationDidFinishLaunching() {
+        // Fork-level G7SensorKit telemetry (emitG7Telemetry) → WatchLogger → BetterStack (same pipeline as BLE logs).
+        let adapter = G7WatchSensorAdapter.shared
+        G7Telemetry.emit = { line in
+            let sid = adapter.adapterSessionID ?? "nil"
+            let sensorName = adapter.telemetrySensorName
+            Task { await WatchLogger.shared.log("g7_session=\(sid) sensor_name=\(sensorName) \(line)") }
+        }
+
         // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
         TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
         WatchState.shared.scheduleBackgroundLaunchDisarmIfNeeded()

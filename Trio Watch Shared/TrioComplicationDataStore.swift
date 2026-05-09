@@ -5,6 +5,22 @@ import WatchConnectivity
 #endif
 import WidgetKit
 
+enum TrioComplicationDataSource: String, Codable, Equatable {
+    case watchConnectivity = "watch_connectivity"
+    case healthKit = "healthkit"
+    case g7DirectBLE = "g7_direct_ble"
+    case unknown = "unknown"
+
+    var shortLabel: String {
+        switch self {
+        case .watchConnectivity: return "Phone"
+        case .healthKit: return "HK"
+        case .g7DirectBLE: return "BLE"
+        case .unknown: return "?"
+        }
+    }
+}
+
 struct TrioComplicationSnapshot: Equatable, Codable {
     private enum Constants {
         static let fallbackGlucose = "--"
@@ -18,6 +34,9 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let readingDate: Date
     let state: String?
     let glucoseColor: String?
+    let source: TrioComplicationDataSource?
+    /// G7 EGV sequence when known; optional same-reading identity alongside `readingDate`.
+    let sequence: Int?
 
     // INVARIANT (Phase 3.4): All display-field sanitization here.
     // Dedup always compares sanitized values.
@@ -28,7 +47,9 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         readingDate: Date,
         date: Date,
         state: String? = nil,
-        glucoseColor: String? = nil
+        glucoseColor: String? = nil,
+        source: TrioComplicationDataSource? = nil,
+        sequence: Int? = nil
     ) {
         glucose = Self.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,6 +58,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         self.date = date
         self.state = state
         self.glucoseColor = glucoseColor
+        self.source = source
+        self.sequence = sequence
     }
 
     private static func sanitizedGlucose(from value: String) -> String {
@@ -89,6 +112,7 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
     let trend: String
     let delta: String
     let state: String
+    let source: String
 }
 
 extension ComplicationSnapshotFingerprint {
@@ -100,6 +124,7 @@ extension ComplicationSnapshotFingerprint {
         // Sentinel for nil: state is always optional in the model; sentinel ensures
         // nil and non-nil are always distinguishable in Equatable comparison.
         state = snapshot.state ?? "<nil>"
+        source = snapshot.source?.rawValue ?? "<nil>"
     }
 }
 
@@ -569,14 +594,34 @@ final class TrioComplicationDataStore {
     //   Same timestamp, different glucose → true
     //   Newer timestamp (>1s)            → true
     //   Older timestamp (<-1s)           → false
+    //   Within ±1s, same glucose+trend, higher-priority source → true (MOD-D synthesis)
     func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
         let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
         if timeDiff > 1.0  { return true }
         if timeDiff < -1.0 { return false }
+        let sameCore = new.glucose == current.glucose && new.trend == current.trend
+        if sameCore {
+            let newP = Self.sourcePriority(new.source)
+            let curP = Self.sourcePriority(current.source)
+            if newP > curP { return true }
+            if newP < curP { return false }
+        }
         return new.glucose != current.glucose
             || new.trend   != current.trend
             || new.delta   != current.delta
             || new.state   != current.state
+            || new.source  != current.source
+    }
+
+    /// Tie-break when two channels race within the ±1s dedup window (direct BLE preferred).
+    private static func sourcePriority(_ source: TrioComplicationDataSource?) -> Int {
+        guard let source else { return 0 }
+        switch source {
+        case .g7DirectBLE: return 3
+        case .watchConnectivity: return 2
+        case .healthKit: return 1
+        case .unknown: return 0
+        }
     }
 
     // MARK: - Phase 3.0 Pre-dispatch Dedup
