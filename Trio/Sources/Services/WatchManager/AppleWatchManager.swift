@@ -39,6 +39,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     private var currentGlucoseTarget: Decimal = 100.0
     private var activeBolusAmount: Double = 0.0
 
+    /// Last non-empty G7 peripheral name — same string as `G7CGMManager.state.sensorID` (`sensorName`).
+    /// Persisted because that identity can be missing at snapshot time while glucose pipeline still runs.
+    /// Valid only with `lastKnownG7SensorActivatedAtEpoch` for the same session (`state.activatedAt`).
+    @Persisted(key: "BaseWatchManager.lastKnownG7ActiveSensorName") private var lastKnownG7ActiveSensorName: String = ""
+
+    /// Session anchor: `G7CGMManager.state.activatedAt.timeIntervalSince1970` when the cached name was stored; `0` = none.
+    /// EOS / scan-for-new clears both `sensorID` and `activatedAt` in `G7CGMManager.scanForNewSensor()` — verified in fork source.
+    @Persisted(key: "BaseWatchManager.lastKnownG7SensorActivatedAtEpoch") private var lastKnownG7SensorActivatedAtEpoch: TimeInterval = 0
+
     // Queue for handling Core Data change notifications
     private let queue = DispatchQueue(label: "BaseWatchManagerManager.queue", qos: .utility)
     private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
@@ -233,6 +242,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     /// Prepares the current state data to be sent to the Watch
     /// - Returns: WatchState containing current glucose readings and trends and determination infos for displaying cob and iob in the view
+    ///
+    /// **G7 filter name:** On a fresh install, `g7_active_sensor_name` may be absent until the first snapshot where
+    /// `G7CGMManager` exposes a non-empty `sensorID` — then the UserDefaults-backed cache survives later gaps. Expected.
     func setupWatchState() async -> WatchState {
         // Check if a watch is paired and reachable before doing expensive calculations
         guard let session else {
@@ -262,7 +274,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             debug(.watchManager, "⌚️❌ Skipping setupWatchState - Watch session not activated")
             return WatchState(date: Date())
         }
-        let g7PhoneContext = await MainActor.run { () -> (seqCtx: (sequence: Int, timestamp: Date)?, sensorName: String?) in
+        let g7PhoneContext = await MainActor.run { () -> (seqCtx: (sequence: Int, timestamp: Date)?, resolvedSensorName: String?) in
             guard let base = deviceManager as? BaseDeviceDataManager,
                   let g7 = base.cgmManager as? G7CGMManager else { return (nil, nil) }
             let seqCtx: (sequence: Int, timestamp: Date)?
@@ -271,7 +283,34 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             } else {
                 seqCtx = nil
             }
-            return (seqCtx, g7.sensorName)
+            // `sensorName` is `state.sensorID`; `sessionEpoch` uses `state.activatedAt` (equivalent to `G7CGMManager.sensorActivatedAt`).
+            let sessionEpoch = g7.state.activatedAt?.timeIntervalSince1970 ?? 0
+            let liveTrimmed = g7.sensorName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            // EOS / scan-for-new: `G7CGMManager.scanForNewSensor()` clears `sensorID` and `activatedAt` together (fork source).
+            // Do not treat `liveTrimmed.isEmpty && activatedAt != nil` as an error — that pairing is exactly when we may need the cache.
+            if sessionEpoch == 0 {
+                lastKnownG7ActiveSensorName = ""
+                lastKnownG7SensorActivatedAtEpoch = 0
+            }
+
+            if !liveTrimmed.isEmpty {
+                lastKnownG7ActiveSensorName = liveTrimmed
+                lastKnownG7SensorActivatedAtEpoch = sessionEpoch
+            }
+
+            let cachedTrimmed = lastKnownG7ActiveSensorName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cachedEpoch = lastKnownG7SensorActivatedAtEpoch
+
+            let resolved: String?
+            if !liveTrimmed.isEmpty {
+                resolved = liveTrimmed
+            } else if !cachedTrimmed.isEmpty, sessionEpoch > 0, sessionEpoch == cachedEpoch {
+                resolved = cachedTrimmed
+            } else {
+                resolved = nil
+            }
+            return (seqCtx, resolved)
         }
 
         do {
@@ -295,7 +334,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
             return await backgroundContext.perform {
                 var watchState = WatchState(date: Date())
-                watchState.g7ActiveSensorName = g7PhoneContext.sensorName
+                watchState.g7ActiveSensorName = g7PhoneContext.resolvedSensorName
 
                 // Set lastLoopDate
                 let lastLoopMinutes = Int((Date().timeIntervalSince(self.apsManager.lastLoopDate) - 30) / 60) + 1

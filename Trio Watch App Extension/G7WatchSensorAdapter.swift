@@ -5,6 +5,14 @@ import WatchKit
 
 /// Thin watch-specific wrapper around `G7Sensor` (build 195). Replaces `G7DirectBLEObserver` BLE stack;
 /// sensor identity and daily counters remain compatible with existing App Group / WatchState keys.
+///
+/// **Peripheral match / `suffix(2)`:** There is no `attachIntent` symbol in G7SensorKit. Dexcom advertising names are
+/// accepted in `G7Sensor.bluetoothManager(_:shouldConnectPeripheral:)` (`G7SensorKit/.../G7Sensor.swift`): when
+/// `sensorID` is set, connection uses `name.suffix(2) == sensorName.suffix(2)`; when nil, `.connect` for DXCM/DX02.
+/// Watch adapter supplies identity via `G7Sensor(sensorID:)` / UserDefaults — keep phone WC name aligned with that logic.
+///
+/// **Discovery:** `didDiscoverNewSensor` returns `false` — peripheral identity comes from phone/WC or persisted defaults only.
+/// If WC is broken and storage is cleared, BLE discovery cannot bind without the phone (narrow but real failure mode).
 final class G7WatchSensorAdapter: NSObject {
     static let shared = G7WatchSensorAdapter()
 
@@ -26,10 +34,26 @@ final class G7WatchSensorAdapter: NSObject {
     private var bleEGVsToday: Int = 0
     private var sessionConnectAt: Date?
 
-    /// Set on `sensorDidConnect`, cleared on `sensorDisconnected`; read from `G7Telemetry.queue`.
-    nonisolated(unsafe) var adapterSessionID: String?
+    /// BLE delegate vs lifecycle / ExtensionDelegate — protect with one lock (avoid `nonisolated(unsafe)` drift).
+    private let crossThreadTelemetryLock = NSLock()
+    private var lockedAdapterSessionID: String?
+    private var lockedLastKnownScenePhase: String = "unknown"
+    private var lockedLastKnownExtSessionActive: Bool = false
 
-    nonisolated(unsafe) var telemetrySensorName: String {
+    private func syncTelemetry<T>(_ body: () -> T) -> T {
+        crossThreadTelemetryLock.lock()
+        defer { crossThreadTelemetryLock.unlock() }
+        return body()
+    }
+
+    /// Set on `sensorDidConnect`, cleared on `sensorDisconnected`; read from telemetry / ExtensionDelegate.
+    var adapterSessionID: String? {
+        get { syncTelemetry { lockedAdapterSessionID } }
+        set { syncTelemetry { lockedAdapterSessionID = newValue } }
+    }
+
+    /// UserDefaults is thread-safe; exposed for debug UI without `nonisolated(unsafe)`.
+    var telemetrySensorName: String {
         UserDefaults.standard.string(forKey: Keys.sensorName) ?? "nil"
     }
 
@@ -38,8 +62,15 @@ final class G7WatchSensorAdapter: NSObject {
     private var hadEGVThisSession = false
     private var loggedTimeToFirstEGVForSession = false
 
-    private nonisolated(unsafe) var lastKnownScenePhase: String = "unknown"
-    private nonisolated(unsafe) var lastKnownExtSessionActive: Bool = false
+    private var lastKnownScenePhase: String {
+        get { syncTelemetry { lockedLastKnownScenePhase } }
+        set { syncTelemetry { lockedLastKnownScenePhase = newValue } }
+    }
+
+    private var lastKnownExtSessionActive: Bool {
+        get { syncTelemetry { lockedLastKnownExtSessionActive } }
+        set { syncTelemetry { lockedLastKnownExtSessionActive = newValue } }
+    }
 
     private var lastReadingSequence: UInt16?
     private var lastSavedGlucoseValue: Int?
@@ -329,16 +360,15 @@ final class G7WatchSensorAdapter: NSObject {
     }
 
     private func triggerEndOfSessionFromEGV(reason: String, message: G7GlucoseMessage) {
+        // WKInterfaceDevice.current() must run on the main thread; never use main.sync here — CoreBluetooth can deliver
+        // on the main queue and would deadlock. Omit battery when off-main (-1 in log).
         let battery: Int = {
-            func read() -> Int {
-                let device = WKInterfaceDevice.current()
-                guard device.isBatteryMonitoringEnabled else { return -1 }
-                let level = device.batteryLevel
-                guard level >= 0 else { return -1 }
-                return Int(round(level * 100))
-            }
-            if Thread.isMainThread { return read() }
-            return DispatchQueue.main.sync(execute: read)
+            guard Thread.isMainThread else { return -1 }
+            let device = WKInterfaceDevice.current()
+            guard device.isBatteryMonitoringEnabled else { return -1 }
+            let level = device.batteryLevel
+            guard level >= 0 else { return -1 }
+            return Int(round(level * 100))
         }()
         let sensorAgeSeconds = Int(Double(message.messageTimestamp) - Double(message.age))
         log(
