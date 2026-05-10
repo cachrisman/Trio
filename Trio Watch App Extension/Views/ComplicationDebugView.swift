@@ -507,6 +507,13 @@ private struct G7DirectBleDebugSection: View {
                 Spacer()
                 Text("\(WatchState.shared.bleEGVsToday)")
             }
+            // Phone-relay sensor name (UserDefaults via adapter) — must match WC `g7_active_sensor_name` sync.
+            HStack {
+                Text("Phone sensor filter:")
+                Spacer()
+                Text(G7WatchSensorAdapter.shared.telemetrySensorName)
+                    .foregroundColor(.secondary)
+            }
             // item 16: live WatchState source vs persisted snapshot — mismatches are diagnostic
             HStack {
                 Text("Live source:")

@@ -130,6 +130,14 @@ final class G7WatchSensorAdapter: NSObject {
         log("ext_session_renewed_on_foreground")
     }
 
+    /// Phone relay (WatchConnectivity): persist peripheral name and rescan. Logs **`sensor_name_set_from_phone`** when the stored name changes (dedupes overlapping WC paths).
+    func setActiveSensorName(_ name: String?) {
+        let willMutate = name != knownSensorName
+        applyNewSensorName(name)
+        guard willMutate else { return }
+        log("sensor_name_set_from_phone", "name=\(name ?? "nil")")
+    }
+
     /// Called when WatchConnectivity (or another owner) pushes a new Dexcom peripheral name.
     func applyNewSensorName(_ name: String?) {
         guard name != knownSensorName else { return }

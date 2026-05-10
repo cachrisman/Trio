@@ -1130,7 +1130,15 @@ extension TrioComplicationDataSource {
         }
 
         // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
-        if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
+        // G7 sensor identity must sync whenever watchState is present, even when this method later skips UI (stale `date`, monotonic guard in scheduleUIUpdate, missing/invalid `date` — downstream branches must still run).
+        let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any]
+        if let ws = watchStateDict {
+            DispatchQueue.main.async {
+                self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(ws)
+            }
+        }
+
+        if let watchStateDict,
            let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
         {
             if date >= Date().addingTimeInterval(-15 * 60) {
@@ -1217,6 +1225,10 @@ extension TrioComplicationDataSource {
         }
 
         let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
+
+        DispatchQueue.main.async { [weak self] in
+            self?.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
+        }
 
         let readingDate: Date
         switch resolveEffectiveCGMReadingDate(from: payload) {
@@ -1392,6 +1404,7 @@ extension TrioComplicationDataSource {
         let readingResolution = resolveEffectiveCGMReadingDate(from: payload)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
             let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             self.saveComplicationSnapshot(from: payload)
             if case .found = readingResolution {
@@ -1668,7 +1681,7 @@ extension TrioComplicationDataSource {
         } else {
             name = nil
         }
-        G7WatchSensorAdapter.shared.applyNewSensorName(name)
+        G7WatchSensorAdapter.shared.setActiveSensorName(name)
     }
 
     private func processWatchMessage(_ message: [String: Any]) {
@@ -1735,6 +1748,8 @@ extension TrioComplicationDataSource {
             return
         }
 
+        applyG7ActiveSensorNameFromWatchPayloadIfPresent(newData)
+
         guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
             Task {
                 await WatchLogger.shared.log("Invalid date format in WatchState data")
@@ -1762,8 +1777,6 @@ extension TrioComplicationDataSource {
             }
             return
         }
-
-        applyG7ActiveSensorNameFromWatchPayloadIfPresent(newData)
 
         DispatchQueue.main.async {
             self.showSyncingAnimation = true
