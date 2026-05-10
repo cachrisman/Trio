@@ -32,6 +32,46 @@ enum BackgroundTaskWindowCounter {
     }
 }
 
+// Aligned with build 191 state machine (item 12).
+// .stalled removed (was never called). .searching renamed .scanning.
+// .fastRetry / .moderateWait added for scheduler states (wired in future build).
+enum G7DirectBLEStatus: String, Equatable {
+    case off           // IDLE: no active session or timer
+    case retrieving    // RETRIEVING: checking OS peripheral cache
+    case scanning      // SCANNING: active BLE scan; no cached peripheral found
+    case connecting    // CONNECTING: centralManager.connect() in flight
+    case active        // WINDOW_ACTIVE: inside a live sensor session
+    case fastRetry     // FAST_RETRY: 2s fixed delay after failure/post-success disconnect
+    case moderateWait  // MODERATE_WAIT: 15s delay after 5 consecutive scheduler retries
+    case unavailable   // Bluetooth off / unauthorized
+
+    var badgeText: String {
+        switch self {
+        case .off:          return "off"
+        case .retrieving:   return "retr"
+        case .scanning:     return "scan"
+        case .connecting:   return "conn"
+        case .active:       return "ok"
+        case .fastRetry:    return "retry"
+        case .moderateWait: return "wait"
+        case .unavailable:  return "n/a"
+        }
+    }
+
+    var shortLabel: String { badgeText }
+}
+
+extension TrioComplicationDataSource {
+    var watchBadgeText: String {
+        switch self {
+        case .watchConnectivity: return "Phone"
+        case .healthKit: return "HK"
+        case .g7DirectBLE: return "BLE"
+        case .unknown: return "?"
+        }
+    }
+}
+
 @Observable final class WatchState: NSObject, WCSessionDelegate {
     static let shared = WatchState()
 
@@ -53,6 +93,26 @@ enum BackgroundTaskWindowCounter {
     var cob: String? = "--"
     var iob: String? = "--"
     var lastLoopTime: String? = "--"
+    var displayedReadingSource: TrioComplicationDataSource = .unknown
+    var g7DirectBleStatus: G7DirectBLEStatus = .off
+    var g7DirectBleLastEventAt: Date?
+    var g7DirectBleLastReadingAt: Date?
+    var g7DirectBleLastEventAgeText: String {
+        guard let g7DirectBleLastEventAt else { return "--" }
+        let seconds = max(0, Int(Date().timeIntervalSince(g7DirectBleLastEventAt)))
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        return "\(seconds / 3600)h"
+    }
+
+    /// G7 direct BLE: daily-persistent counters and debug (mirrored from observer; UserDefaults in observer).
+    var bleConnectsToday: Int = 0
+    var bleEGVsToday: Int = 0
+    var bleLastConnectAt: Date?
+    var bleLastEGVDate: Date?
+    var bleLastEGVValue: Int?
+    /// True when `CBCentralManager` had state restored this process (willRestoreState).
+    var bleWasRestored: Bool = false
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
@@ -112,6 +172,11 @@ enum BackgroundTaskWindowCounter {
     /// R5c — set in didReceiveUserInfo and passed through to saveComplicationSnapshot for decode_ms (reading_epoch there is derived from the payload being saved to avoid misattribution).
     private var lastUserInfoReceiveTimestamp: Date?
     private var quietWindowWorkItem: DispatchWorkItem?
+
+    /// Effective CGM reading date for which `displayedReadingSource` was last set. In-memory only; nil on cold start.
+    private var displayedReadingAttributedForDate: Date?
+    /// G7 sequence for the attributed reading when known; nil when the winning channel did not carry sequence (e.g. HK).
+    private var displayedReadingAttributedSequence: Int?
 
     private var activationTimestamp: Date?
     private var forcedSinceActivation = false
@@ -233,6 +298,8 @@ enum BackgroundTaskWindowCounter {
         noteAppBecameActive()
         WatchErrorReporter.markBecameActiveImmediately()
         scheduleStartupSequenceOnMain(activationSequence: activationSequence)
+        applyG7DirectBleScenePhase("active")
+        G7WatchSensorAdapter.shared.applyForegroundActiveEntry()
 
         Task {
             await WatchLogger.shared.log(
@@ -259,6 +326,8 @@ enum BackgroundTaskWindowCounter {
         cancelStartupSequenceOnMain()
         startupCurrentActivationSequence = nil
         WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
+        applyG7DirectBleScenePhase("inactive_or_background")
+        G7WatchSensorAdapter.shared.noteForegroundInactiveOrBackground("inactive_or_background")
 
         if let activationSequence {
             WatchStartupTransportGate.disarm(activationSequence: activationSequence)
@@ -670,11 +739,13 @@ enum BackgroundTaskWindowCounter {
             delta: deltaString,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: nil
+            glucoseColor: nil,
+            source: .healthKit
         )
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
             TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+            self?.applyHKSnapshot(snapshot)
             completionHandler()
         }
     }
@@ -842,6 +913,106 @@ enum BackgroundTaskWindowCounter {
         }
     }
 
+    static func trendString(fromDirectBleRate trendRate: Double?) -> String {
+        guard let trendRate else { return "" }
+        let fiveMinuteDelta = Int((trendRate * 5.0).rounded())
+        return hkTrendString(fromDeltaMgDl: fiveMinuteDelta)
+    }
+
+    func applyG7DirectBleStatus(_ status: G7DirectBLEStatus) {
+        assert(Thread.isMainThread, "applyG7DirectBleStatus must be called on main thread")
+        g7DirectBleStatus = status
+        g7DirectBleLastEventAt = Date()
+    }
+
+    func applyG7DirectBleScenePhase(_ phase: String) {
+        assert(Thread.isMainThread, "applyG7DirectBleScenePhase must be called on main thread")
+        g7DirectBleLastEventAt = Date()
+        Task {
+            await WatchLogger.shared.log("event=g7_ble_lifecycle scene_phase=\(phase) status=\(self.g7DirectBleStatus.rawValue)")
+        }
+    }
+
+    /// Aligns attribution watermarks from a complication snapshot unless that would regress a newer in-memory reading (e.g. store lagging BLE).
+    /// Also call when hydrating the main watch UI from `latestSnapshot()` (`onAppear`) so `tryAttributeDisplayedReadingSource` gates match the screen.
+    func alignDisplayedReadingAttributionWithComplicationSnapshot(_ snapshot: TrioComplicationSnapshot) {
+        assert(Thread.isMainThread, "alignDisplayedReadingAttributionWithComplicationSnapshot must be called on main thread")
+        if let attributed = displayedReadingAttributedForDate,
+           snapshot.readingDate <= attributed
+        {
+            return
+        }
+        displayedReadingSource = snapshot.source ?? .unknown
+        displayedReadingAttributedForDate = snapshot.readingDate
+        displayedReadingAttributedSequence = snapshot.sequence
+    }
+
+    func applyG7DirectBleSnapshot(_ snapshot: TrioComplicationSnapshot) {
+        assert(Thread.isMainThread, "applyG7DirectBleSnapshot must be called on main thread")
+        g7DirectBleLastEventAt = Date()
+        g7DirectBleLastReadingAt = snapshot.readingDate
+        if snapshot.source == .g7DirectBLE {
+            g7DirectBleStatus = .active
+        }
+        showSyncingAnimation = false
+        syncTimeoutWorkItem?.cancel()
+
+        guard tryAttributeDisplayedReadingSource(
+            snapshot.source ?? .g7DirectBLE,
+            forReadingDate: snapshot.readingDate,
+            sequence: snapshot.sequence
+        ) else { return }
+
+        currentGlucose = snapshot.glucose
+        trend = snapshot.trend
+        delta = snapshot.delta
+        if let glucoseColor = snapshot.glucoseColor {
+            currentGlucoseColorString = glucoseColor
+        }
+        lastWatchStateUpdate = snapshot.readingDate
+    }
+
+    func applyHKSnapshot(_ snapshot: TrioComplicationSnapshot) {
+        assert(Thread.isMainThread, "applyHKSnapshot must be called on main thread")
+        guard tryAttributeDisplayedReadingSource(
+            .healthKit,
+            forReadingDate: snapshot.readingDate,
+            sequence: snapshot.sequence
+        ) else { return }
+        currentGlucose = snapshot.glucose
+        trend = snapshot.trend
+        delta = snapshot.delta
+        lastWatchStateUpdate = snapshot.readingDate
+    }
+
+    /// Must be called on main thread. Sequence matches same reading across channels; date orders readings globally.
+    @discardableResult
+    private func tryAttributeDisplayedReadingSource(
+        _ source: TrioComplicationDataSource,
+        forReadingDate date: Date,
+        sequence: Int? = nil
+    ) -> Bool {
+        assert(Thread.isMainThread)
+        if let seq = sequence,
+           let attributedSeq = displayedReadingAttributedSequence,
+           seq == attributedSeq
+        {
+            return false
+        }
+        if let attributed = displayedReadingAttributedForDate, date <= attributed {
+            return false
+        }
+        displayedReadingSource = source
+        displayedReadingAttributedForDate = date
+        displayedReadingAttributedSequence = sequence
+        return true
+    }
+
+    private func intForWatchMessageKey(_ key: String, in message: [String: Any]) -> Int? {
+        if let n = message[key] as? NSNumber { return n.intValue }
+        return message[key] as? Int
+    }
+
     /// Path B1 — Summarize inbound WC messages without stringifying nested `glucoseValues` (avoids large transient `String` allocations).
     private static func watchConnectivityInboundSummary(_ message: [String: Any]) -> String {
         let topKeys = message.keys.sorted().joined(separator: ",")
@@ -959,7 +1130,15 @@ enum BackgroundTaskWindowCounter {
         }
 
         // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
-        if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
+        // G7 sensor identity must sync whenever watchState is present, even when this method later skips UI (stale `date`, monotonic guard in scheduleUIUpdate, missing/invalid `date` — downstream branches must still run).
+        let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any]
+        if let ws = watchStateDict {
+            DispatchQueue.main.async {
+                self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(ws)
+            }
+        }
+
+        if let watchStateDict,
            let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
         {
             if date >= Date().addingTimeInterval(-15 * 60) {
@@ -1047,6 +1226,10 @@ enum BackgroundTaskWindowCounter {
 
         let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
 
+        DispatchQueue.main.async { [weak self] in
+            self?.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
+        }
+
         let readingDate: Date
         switch resolveEffectiveCGMReadingDate(from: payload) {
         case let .found(date):
@@ -1097,7 +1280,9 @@ enum BackgroundTaskWindowCounter {
             trend: payload[WatchMessageKeys.trend] as? String ?? "",
             delta: payload[WatchMessageKeys.delta] as? String ?? "",
             readingDate: readingDate,
-            date: Date()
+            date: Date(),
+            source: .watchConnectivity,
+            sequence: intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: payload)
         )
         if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
             DispatchQueue.main.async { [weak self] in
@@ -1219,6 +1404,7 @@ enum BackgroundTaskWindowCounter {
         let readingResolution = resolveEffectiveCGMReadingDate(from: payload)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
             let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             self.saveComplicationSnapshot(from: payload)
             if case .found = readingResolution {
@@ -1485,6 +1671,19 @@ enum BackgroundTaskWindowCounter {
         return pendingCount
     }
 
+    /// Phase C — sync G7 sensor identity from iPhone watch payload into `G7WatchSensorAdapter`.
+    private func applyG7ActiveSensorNameFromWatchPayloadIfPresent(_ payload: [String: Any]) {
+        guard payload[WatchMessageKeys.g7ActiveSensorName] != nil else { return }
+        let raw = payload[WatchMessageKeys.g7ActiveSensorName]
+        let name: String?
+        if let s = raw as? String {
+            name = s.isEmpty ? nil : s
+        } else {
+            name = nil
+        }
+        G7WatchSensorAdapter.shared.setActiveSensorName(name)
+    }
+
     private func processWatchMessage(_ message: [String: Any]) {
         DispatchQueue.main.async {
             if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
@@ -1548,6 +1747,8 @@ enum BackgroundTaskWindowCounter {
             }
             return
         }
+
+        applyG7ActiveSensorNameFromWatchPayloadIfPresent(newData)
 
         guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
             Task {
@@ -1677,28 +1878,46 @@ enum BackgroundTaskWindowCounter {
 
         startupFirstRefreshInFlight = false
 
-        if let date = dateValue(from: message[WatchMessageKeys.date]) {
-            lastWatchStateUpdate = date
-            forcedSinceActivation = false
-        }
-
         syncTimeoutWorkItem?.cancel()
         syncTimeoutWorkItem = nil
 
-        if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
-            self.currentGlucose = currentGlucose
+        let effectiveReading = resolveEffectiveCGMReadingDate(from: message)
+        let sequence = intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
+
+        let shouldApplyCGMFields: Bool
+        if case let .found(readingDate) = effectiveReading {
+            shouldApplyCGMFields = tryAttributeDisplayedReadingSource(
+                .watchConnectivity,
+                forReadingDate: readingDate,
+                sequence: sequence
+            )
+        } else {
+            shouldApplyCGMFields = (displayedReadingAttributedForDate == nil)
         }
 
-        if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
-            self.currentGlucoseColorString = currentGlucoseColorString
+        if shouldApplyCGMFields {
+            if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
+                self.currentGlucose = currentGlucose
+            }
+
+            if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
+                self.currentGlucoseColorString = currentGlucoseColorString
+            }
+
+            if let trend = message[WatchMessageKeys.trend] as? String {
+                self.trend = trend
+            }
+
+            if let delta = message[WatchMessageKeys.delta] as? String {
+                self.delta = delta
+            }
         }
 
-        if let trend = message[WatchMessageKeys.trend] as? String {
-            self.trend = trend
-        }
-
-        if let delta = message[WatchMessageKeys.delta] as? String {
-            self.delta = delta
+        // lastWatchStateUpdate uses WatchMessageKeys.date (delivery/snapshot time), not CGM reading time.
+        // BLE/HK paths set it from readingDate. The 15s fallback guard uses this field — semantics differ per channel.
+        if let date = dateValue(from: message[WatchMessageKeys.date]) {
+            lastWatchStateUpdate = date
+            forcedSinceActivation = false
         }
 
         if let iob = message[WatchMessageKeys.iob] as? String {
@@ -1843,7 +2062,9 @@ enum BackgroundTaskWindowCounter {
             delta: deltaValue,
             readingDate: readingDate,
             date: Date(),
-            glucoseColor: glucoseColorValue
+            glucoseColor: glucoseColorValue,
+            source: .watchConnectivity,
+            sequence: intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
         )
 
         // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -1904,7 +2125,9 @@ enum BackgroundTaskWindowCounter {
             delta: delta ?? "",
             readingDate: effectiveReadingDate,
             date: Date(),
-            glucoseColor: currentGlucoseColorString
+            glucoseColor: currentGlucoseColorString,
+            source: displayedReadingSource,
+            sequence: displayedReadingAttributedSequence
         )
 
         Task {
@@ -2060,6 +2283,16 @@ enum BackgroundTaskWindowCounter {
             return
         }
 
+        // Don't regress watermark / UI from store if in-memory reading is already newer (matches alignDisplayedReadingAttributionWithComplicationSnapshot).
+        if let attributed = displayedReadingAttributedForDate,
+           snapshot.readingDate <= attributed
+        {
+            DispatchQueue.main.async {
+                self.showSyncingAnimation = false
+            }
+            return
+        }
+
         if let lastUpdate = lastWatchStateUpdate,
            Date().timeIntervalSince(lastUpdate) <= 15
         {
@@ -2070,6 +2303,13 @@ enum BackgroundTaskWindowCounter {
         }
 
         DispatchQueue.main.async {
+            // Re-check after deferral: BLE may have advanced the watermark before this block runs.
+            if let attributed = self.displayedReadingAttributedForDate,
+               snapshot.readingDate <= attributed
+            {
+                self.showSyncingAnimation = false
+                return
+            }
             self.currentGlucose = snapshot.glucose
             self.trend = snapshot.trend
             self.delta = snapshot.delta
@@ -2077,6 +2317,7 @@ enum BackgroundTaskWindowCounter {
                 self.currentGlucoseColorString = glucoseColor
             }
             self.lastWatchStateUpdate = snapshot.readingDate
+            self.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
             self.showSyncingAnimation = false
             self.syncTimeoutWorkItem?.cancel()
         }
