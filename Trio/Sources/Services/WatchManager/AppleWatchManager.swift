@@ -22,6 +22,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     @Injected() var broadcaster: Broadcaster!
     @Injected() private var apsManager: APSManager!
     @Injected() private var deviceManager: DeviceDataManager!
+    @Injected() private var fetchGlucoseManager: FetchGlucoseManager!
     @Injected() private var settingsManager: SettingsManager!
     @Injected() private var fileStorage: FileStorage!
     @Injected() private var glucoseStorage: GlucoseStorage!
@@ -275,8 +276,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             return WatchState(date: Date())
         }
         let g7PhoneContext = await MainActor.run { () -> (seqCtx: (sequence: Int, timestamp: Date)?, resolvedSensorName: String?) in
-            guard let base = deviceManager as? BaseDeviceDataManager,
-                  let g7 = base.cgmManager as? G7CGMManager else { return (nil, nil) }
+            let g7 = (fetchGlucoseManager.cgmManager as? G7CGMManager)
+                ?? (deviceManager.cgmManager as? G7CGMManager)
+            guard let g7 else { return (nil, nil) }
             let seqCtx: (sequence: Int, timestamp: Date)?
             if let msg = g7.latestReading, let ts = g7.latestReadingTimestamp {
                 seqCtx = (Int(msg.sequence), ts)

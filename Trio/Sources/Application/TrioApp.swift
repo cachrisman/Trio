@@ -70,9 +70,9 @@ extension Notification.Name {
             appearance.setupGlobalAppearance()
         }
         let deviceDataManager = resolveOrLog(DeviceDataManager.self)
-        configureG7ForkTelemetry(deviceDataManager: deviceDataManager)
         resolveOrLog(APSManager.self)
-        resolveOrLog(FetchGlucoseManager.self)
+        let fetchGlucoseManager = resolveOrLog(FetchGlucoseManager.self)
+        configureG7ForkTelemetry(deviceDataManager: deviceDataManager, fetchGlucoseManager: fetchGlucoseManager)
         resolveOrLog(FetchTreatmentsManager.self)
         resolveOrLog(CalendarManager.self)
         resolveOrLog(UserNotificationsManager.self)
@@ -91,10 +91,13 @@ extension Notification.Name {
     }
 
     /// Routes G7SensorKit fork telemetry (`emitG7Telemetry`) into the iOS log file / cloud upload pipeline.
-    private func configureG7ForkTelemetry(deviceDataManager: DeviceDataManager?) {
-        G7Telemetry.emit = { [deviceDataManager] line in
+    /// Uses `FetchGlucoseManager.cgmManager` first (plugin CGM), then `DeviceDataManager.cgmManager` — matches `BaseWatchManager` G7 resolution.
+    private func configureG7ForkTelemetry(deviceDataManager: DeviceDataManager?, fetchGlucoseManager: FetchGlucoseManager?) {
+        G7Telemetry.emit = { [deviceDataManager, fetchGlucoseManager] line in
             let sensorName: String
-            if let g7 = deviceDataManager?.cgmManager as? G7CGMManager {
+            let g7 = (fetchGlucoseManager?.cgmManager as? G7CGMManager)
+                ?? (deviceDataManager?.cgmManager as? G7CGMManager)
+            if let g7 {
                 sensorName = g7.sensorName ?? "nil"
             } else {
                 sensorName = "nil"
