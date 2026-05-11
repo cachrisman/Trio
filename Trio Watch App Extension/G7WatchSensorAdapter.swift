@@ -23,6 +23,23 @@ final class G7WatchSensorAdapter: NSObject {
     @MainActor private var extendedSession: WKExtendedRuntimeSession?
     @MainActor private var pendingChainSession: WKExtendedRuntimeSession?
 
+    /// Read-only accessor for the currently started extended runtime session.
+    ///
+    /// The adapter may replace this reference from several paths (`stop()`,
+    /// `renewSessionIfNeeded()`, chain inside `extendedRuntimeSessionWillExpire`), so callers
+    /// must re-query on every use — never cache the returned reference.
+    @MainActor var currentExtendedSession: WKExtendedRuntimeSession? { extendedSession }
+
+    /// Read-only mirror of the adapter's authoritative `isStopped` flag.
+    ///
+    /// Use this instead of `WatchState.shared.g7DirectBleStatus == .off` when an external
+    /// subsystem needs to know whether the adapter was intentionally stopped. The published
+    /// status mirror defaults to `.off` at cold start (until `publishConnectionStatus()` runs)
+    /// and would falsely report "stopped" before the first BLE event. `isStopped` is mutated
+    /// only by `start()` (false) and `stop()` (true), so this accessor reflects intentional
+    /// lifecycle exactly.
+    var isIntentionallyStopped: Bool { isStopped }
+
     private let timerQueue = DispatchQueue(label: "org.nightscout.trio.watch.g7WatchAdapter.timers", qos: .utility)
     private var heartbeatTimer: DispatchSourceTimer?
     private var expectedWindowTimer: DispatchSourceTimer?
@@ -557,6 +574,9 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
             WatchState.shared.applyG7DirectBleSnapshot(snapshot)
             WatchState.shared.bleLastEGVDate = readingDate
             WatchState.shared.bleLastEGVValue = glucoseValue
+        }
+        Task { @MainActor in
+            HapticBeacon.shared.noteEGVReceived(at: Date(), source: .g7DirectBLE)
         }
 
         publishConnectionStatus()

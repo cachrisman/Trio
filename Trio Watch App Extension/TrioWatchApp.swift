@@ -24,6 +24,7 @@ import WatchKit
 
             if newPhase == .active {
                 WatchState.shared.handleForegroundActiveEntry()
+                HapticBeacon.shared.start()
             } else if newPhase == .background || newPhase == .inactive {
                 WatchState.shared.handleForegroundInactiveOrBackground(phase: watchScenePhaseToken(newPhase))
             }

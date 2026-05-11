@@ -17,6 +17,11 @@ struct ComplicationDebugView: View {
     /// readings produce no-op @State assignments and no re-render without this).
     @State private var now: Date = Date()
 
+    /// Mirror of `HapticBeacon.shared.isEnabled` so the toggle button label re-renders after a
+    /// tap. Initialized in `.onAppear` to avoid touching `@MainActor` singleton state from a
+    /// non-isolated property initializer.
+    @State private var hapticBeaconEnabled: Bool = false
+
     private let dataStore = TrioComplicationDataStore.shared
 
     // Static formatter — allocated once, reused every 1s tick (item 21)
@@ -70,6 +75,7 @@ struct ComplicationDebugView: View {
         .onAppear {
             loadSnapshot()
             loadLogFileStats()
+            hapticBeaconEnabled = HapticBeacon.shared.isEnabled
         }
         // Unified 1s task — snapshot every tick, file stats every 5s (items 18, 20)
         // `now` updated unconditionally to drive countdown/age even when snapshot is unchanged.
@@ -345,6 +351,21 @@ struct ComplicationDebugView: View {
             }
             .buttonStyle(.bordered)
             .tint(.purple)
+
+            Button {
+                let newValue = !hapticBeaconEnabled
+                HapticBeacon.shared.setEnabled(newValue)
+                hapticBeaconEnabled = newValue
+                triggerConfirmation(message: newValue ? "🔔 Haptic Beacon ON" : "🔕 Haptic Beacon OFF")
+            } label: {
+                HStack {
+                    Image(systemName: hapticBeaconEnabled ? "bell.fill" : "bell.slash")
+                    Text("Haptic Beacon: \(hapticBeaconEnabled ? "ON" : "OFF")")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.pink)
         }
     }
 
