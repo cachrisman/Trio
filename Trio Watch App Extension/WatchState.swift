@@ -111,6 +111,10 @@ extension TrioComplicationDataSource {
     var bleLastConnectAt: Date?
     var bleLastEGVDate: Date?
     var bleLastEGVValue: Int?
+    /// Latest G7 EGV sequence number observed on the BLE direct path; mirrored from `G7WatchSensorAdapter`. nil until first EGV today.
+    var bleLastEGVSequence: Int?
+    /// G7 EGV sequence anchor for "expected readings today" calculation. Set on first EGV of the calendar day; reset on day rollover or sensor swap (sequence regression). Mirrored from `G7WatchSensorAdapter`.
+    var bleFirstSequenceToday: Int?
     /// True when `CBCentralManager` had state restored this process (willRestoreState).
     var bleWasRestored: Bool = false
     var overridePresets: [OverridePresetWatch] = []
@@ -218,6 +222,23 @@ extension TrioComplicationDataSource {
 
     private var backgroundRefreshCount = 0
     private var lastBackgroundRefreshDate: Date?
+
+    /// Set when a `WKApplicationRefreshBackgroundTask` triggers `requestWatchStateUpdate()` and the
+    /// resulting fresh data application should trigger `forceComplicationUpdate()`. Consumed (fired
+    /// and cleared) in `finalizePendingData` once the WC reply has been processed and applied to
+    /// UI state.
+    ///
+    /// **Two clearing paths exist**, both gated by `bgTaskComplicationUpdateWindow`:
+    /// 1. `finalizePendingData` (fresh data arrived): fires `forceComplicationUpdate()` when
+    ///    within window, or logs `"🔄 bgtask complication update flag expired"` if past it.
+    /// 2. `DispatchQueue.main.asyncAfter` scheduled alongside the flag in the bgtask handler:
+    ///    if the flag is still set with the **same timestamp** after the window elapses (no
+    ///    data ever arrived), clears the flag and logs `"⌚️ bgTask complication update skipped:
+    ///    flag stale"`. The timestamp match ensures a later bgtask's flag is not stolen.
+    private var pendingBgTaskComplicationUpdateAt: Date?
+    /// Staleness bound for `pendingBgTaskComplicationUpdateAt`. Matches the WC sync timeout in
+    /// `requestWatchStateUpdate(retryCount:)` so any flag older than this is treated as expired.
+    private let bgTaskComplicationUpdateWindow: TimeInterval = 30.0
     private var lastConnectivityTerminalAt: Date?
     private var lastConnectivityTerminalPath: String?
     private var deferredConnectivityCompletionWorkItem: DispatchWorkItem?

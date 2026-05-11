@@ -135,7 +135,11 @@ struct ComplicationDebugView: View {
                     Text(s.trend.isEmpty ? "—" : trendSymbol(s.trend))
                     Text(s.delta)
                 }
-                .font(.title3)
+                .font(.title)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 2)
 
                 // item 3: source row
                 HStack {
@@ -148,13 +152,8 @@ struct ComplicationDebugView: View {
                 HStack {
                     Text("Reading:")
                     Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(formatTime(s.readingDate))
-                        Text("(\(Int(now.timeIntervalSince(s.readingDate)))s ago)")
-                   
-                            .font(.caption2)
-                            .foregroundColor(ageColor(s.readingDate, relativeTo: now))
-                    }
+                    Text(formatTime(s.readingDate))
+                        .foregroundColor(ageColor(s.readingDate, relativeTo: now))
                 }
 
                 // item 4: next reading countdown — only meaningful for BLE source where
@@ -186,7 +185,7 @@ struct ComplicationDebugView: View {
             HStack {
                 Text("Last reload:")
                 Spacer()
-                Text("\(formatTime(dataStore.lastReloadTimestamp)) (\(Int(dataStore.secondsSinceLastReload))s ago)")
+                Text(formatTime(dataStore.lastReloadTimestamp))
             }
 
             HStack {
@@ -459,14 +458,6 @@ struct ComplicationDebugView: View {
         return Self.timeFormatter.string(from: date)
     }
 
-    private func formatAge(_ date: Date, relativeTo now: Date = Date()) -> String {
-        if date == .distantPast { return "--" }
-        let seconds = Int(now.timeIntervalSince(date))
-        if seconds < 60 { return "\(seconds)s ago" }
-        if seconds < 3600 { return "\(seconds / 60)m ago" }
-        return "\(seconds / 3600)h ago"
-    }
-
     private func ageColor(_ date: Date, relativeTo now: Date = Date()) -> Color {
         if date == .distantPast { return .secondary }
         let age = now.timeIntervalSince(date)
@@ -516,6 +507,12 @@ struct ComplicationDebugView: View {
 /// G7 debug rows: read `WatchState` from this type's `body` so updates observe reliably (vs. a
 /// `private var` on the parent). DATA STORE / log stats still use the unified 1s task poll.
 private struct G7DirectBleDebugSection: View {
+    /// Driven by parent's 1s tick so countdown rows re-render even when underlying state is unchanged.
+    let now: Date
+
+    /// G7 nominal cadence (matches `ComplicationDebugView.expectedReadingCadence`).
+    private static let expectedCadence: TimeInterval = 300
+
     // item 21: static formatter
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -537,6 +534,13 @@ private struct G7DirectBleDebugSection: View {
                 Spacer()
                 Text(formatG7Time(WatchState.shared.bleLastConnectAt))
             }
+            // Countdown to next anticipated connect (last connect + 5 min cadence).
+            HStack {
+                Text("Next connect:")
+                Spacer()
+                Text(nextConnectCountdown(WatchState.shared.bleLastConnectAt))
+                    .monospacedDigit()
+            }
             HStack {
                 Text("Last BLE EGV:")
                 Spacer()
@@ -550,16 +554,18 @@ private struct G7DirectBleDebugSection: View {
             HStack {
                 Text("Connects:")
                 Spacer()
-                Text("\(WatchState.shared.bleConnectsToday)")
+                Text(countWithDenominator(WatchState.shared.bleConnectsToday))
+                    .monospacedDigit()
             }
             HStack {
                 Text("EGVs:")
                 Spacer()
-                Text("\(WatchState.shared.bleEGVsToday)")
+                Text(countWithDenominator(WatchState.shared.bleEGVsToday))
+                    .monospacedDigit()
             }
             // Phone-relay sensor name (UserDefaults via adapter) — must match WC `g7_active_sensor_name` sync.
             HStack {
-                Text("Phone sensor filter:")
+                Text("Phone sensor:")
                 Spacer()
                 Text(G7WatchSensorAdapter.shared.telemetrySensorName)
                     .foregroundColor(.secondary)
@@ -580,6 +586,33 @@ private struct G7DirectBleDebugSection: View {
     private func formatG7Time(_ date: Date?) -> String {
         guard let date, date != .distantPast else { return "--" }
         return Self.timeFormatter.string(from: date)
+    }
+
+    /// Mirrors `ComplicationDebugView.nextReadingCountdown` semantics: "Ns" when in the future,
+    /// "⚠️+Ns" when overdue (last connect + cadence has already passed). "--" if no connect yet.
+    private func nextConnectCountdown(_ lastConnect: Date?) -> String {
+        guard let lastConnect, lastConnect != .distantPast else { return "--" }
+        let remaining = Int(lastConnect.addingTimeInterval(Self.expectedCadence).timeIntervalSince(now))
+        if remaining < 0 { return "⚠️+\(abs(remaining))s" }
+        return "\(remaining)s"
+    }
+
+    /// Format a daily counter as "X / Y" where Y is the number of EGVs the G7 sensor has
+    /// produced since the first one observed today (sequence-anchored, not wall-clock anchored).
+    /// Falls back to "X" alone when no EGV has been received today (denominator unknown) or
+    /// when the latest sequence is somehow older than the anchor.
+    private func countWithDenominator(_ count: Int) -> String {
+        guard let first = WatchState.shared.bleFirstSequenceToday,
+              let last = WatchState.shared.bleLastEGVSequence,
+              last >= first else {
+            return "\(count)"
+        }
+        let expected = last - first + 1
+        // 5-min cadence caps a single calendar day at 288 readings. Anything larger means
+        // the anchor and last sequence transiently disagreed (e.g. mid-update read between
+        // anchor reset and lastSequence write); show count alone instead of a misleading huge ratio.
+        guard expected <= 288 else { return "\(count)" }
+        return "\(count) / \(expected)"
     }
 }
 

@@ -112,22 +112,6 @@ struct TrioMainWatchView: View {
                 }
                 .tag(2)
             }
-            .overlay(alignment: .top) {
-                TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                    Group {
-                        if context.cadence <= .seconds {
-                            Text(context.date, format: .dateTime.hour().minute().second())
-                        } else {
-                            Text(context.date, format: .dateTime.hour().minute())
-                        }
-                    }
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-                }
-                .allowsHitTesting(false)
-            }
             .onAppear {
                 Task {
                     await WatchLogger.shared.log("Watch main view appeared")
