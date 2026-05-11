@@ -944,6 +944,10 @@ cleanup() {
   if [[ -n "$EXPLICIT_SYNC_FILE" && -f "$EXPLICIT_SYNC_FILE" ]]; then
     rm -f "$EXPLICIT_SYNC_FILE"
   fi
+  if [[ -n "${BUILD_KC:-}" ]]; then
+    echo "[cleanup] Removing ephemeral build keychain: $BUILD_KC"
+    security delete-keychain "$BUILD_KC" 2>/dev/null || true
+  fi
 
   echo "=== cleanup complete ==="
   exit "$exit_code"
@@ -1354,6 +1358,22 @@ if [[ -z "${SYNC_EXPLICIT_ONLY:-}" ]]; then
   fi
 fi
 export SYNC_EXPLICIT_ONLY
+
+# --- Ephemeral build keychain (for non-CI / non-login-session builds) ---
+if [[ "${GITHUB_ACTIONS:-}" != "true" && -z "${MATCH_KEYCHAIN_NAME:-}" ]]; then
+  BUILD_KC="trio-build-$$.keychain-db"
+  BUILD_KC_PASS="$(uuidgen)"
+  echo "[build] Creating ephemeral build keychain: $BUILD_KC"
+  security create-keychain -p "$BUILD_KC_PASS" "$BUILD_KC"
+  security set-keychain-settings -lut 21600 "$BUILD_KC"
+  security unlock-keychain -p "$BUILD_KC_PASS" "$BUILD_KC"
+  # Prepend to user keychain list without removing existing keychains
+  EXISTING_KCS=$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+  security list-keychains -d user -s "$BUILD_KC" $EXISTING_KCS
+  export MATCH_KEYCHAIN_NAME="$BUILD_KC"
+  export MATCH_KEYCHAIN_PASSWORD="$BUILD_KC_PASS"
+  # Cleanup handled by cleanup() function via existing 'trap cleanup EXIT'
+fi
 
 stage_start "Build IPA"
 
