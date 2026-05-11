@@ -90,10 +90,10 @@ extension Notification.Name {
         resolveOrLog(IOBService.self)
     }
 
-    /// Routes G7SensorKit fork telemetry (`emitG7Telemetry`) into the iOS log file / cloud upload pipeline.
+    /// Routes G7SensorKit fork telemetry (`G7TelemetryPayload`) into the iOS log file / cloud upload pipeline.
     /// Uses `FetchGlucoseManager.cgmManager` first (plugin CGM), then `DeviceDataManager.cgmManager` — matches `BaseWatchManager` G7 resolution.
     private func configureG7ForkTelemetry(deviceDataManager: DeviceDataManager?, fetchGlucoseManager: FetchGlucoseManager?) {
-        G7Telemetry.emit = { [deviceDataManager, fetchGlucoseManager] line in
+        G7Telemetry.emit = { [deviceDataManager, fetchGlucoseManager] payload in
             let sensorName: String
             let g7 = (fetchGlucoseManager?.cgmManager as? G7CGMManager)
                 ?? (deviceDataManager?.cgmManager as? G7CGMManager)
@@ -102,7 +102,12 @@ extension Notification.Name {
             } else {
                 sensorName = "nil"
             }
-            debug(.service, "sensor_name=\(sensorName) \(line)")
+            let line = G7StructuredTelemetryLogLine.formatCoreTelemetry(
+                sensorName: sensorName,
+                payload: payload,
+                g7Session: "na"
+            )
+            debug(.service, line)
         }
     }
 

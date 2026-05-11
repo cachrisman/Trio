@@ -3,12 +3,19 @@ import WatchKit
 
 final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     func applicationDidFinishLaunching() {
-        // Fork-level G7SensorKit telemetry (emitG7Telemetry) → WatchLogger → BetterStack (same pipeline as BLE logs).
-        let adapter = G7WatchSensorAdapter.shared
-        G7Telemetry.emit = { line in
-            let sid = adapter.adapterSessionID ?? "nil"
-            let sensorName = adapter.telemetrySensorName
-            Task { await WatchLogger.shared.log("g7_session=\(sid) sensor_name=\(sensorName) \(line)") }
+        // Fork-level G7SensorKit telemetry (`G7TelemetryPayload`) → WatchLogger → BetterStack
+        // (same pipeline as BLE logs).
+        G7Telemetry.emit = { payload in
+            Task { @MainActor in
+                let sid = G7WatchSensorAdapter.shared.adapterSessionID ?? "nil"
+                let sensorName = G7WatchSensorAdapter.shared.telemetrySensorName
+                let line = G7StructuredTelemetryLogLine.formatCoreTelemetry(
+                    sensorName: sensorName,
+                    payload: payload,
+                    g7Session: sid
+                )
+                await WatchLogger.shared.log(line)
+            }
         }
 
         // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
@@ -21,7 +28,9 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
                 force: false
             )
             // Emit App Group diagnostics early, before any snapshot reads/writes.
-            let diagnostics = TrioComplicationDataStore.shared.diagnosticsSummary(context: "applicationDidFinishLaunching")
+            let diagnostics = TrioComplicationDataStore.shared.diagnosticsSummary(
+                context: "applicationDidFinishLaunching"
+            )
             await WatchLogger.shared.log(diagnostics, force: false)
         }
         WatchState.shared.scheduleBackgroundRefresh()
@@ -41,7 +50,8 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func applicationWillResignActive() {
-        WatchState.shared.handleForegroundInactiveOrBackground()
+        // Semantically `.inactive` — losing active status (often before SwiftUI reports `.background`).
+        WatchState.shared.handleForegroundInactiveOrBackground(phase: "inactive")
         Task {
             await WatchLogger.shared.log(
                 "event=watch_app_resigning_active source=wk_application_delegate "

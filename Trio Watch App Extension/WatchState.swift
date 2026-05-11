@@ -313,8 +313,18 @@ extension TrioComplicationDataSource {
         }
     }
 
-    func handleForegroundInactiveOrBackground() {
+    /// Leaving the active foreground. **Dual path:** `TrioWatchApp`’s `scenePhase` `.onChange` passes
+    /// `active` / `inactive` / `background` via `watchScenePhaseToken`; `ExtensionDelegate.applicationWillResignActive`
+    /// passes `inactive` (resign-active precedes true background). Both can fire close together—duplicate
+    /// `scene_phase=inactive` lines in logs are a known artifact, not necessarily duplicate work.
+    @MainActor
+    func handleForegroundInactiveOrBackground(phase: String) {
         assert(Thread.isMainThread, "handleForegroundInactiveOrBackground must be called on main thread")
+        // Scene phase + adapter snapshot must update on every SwiftUI transition (`inactive` then `background`).
+        // Startup teardown below runs at most once per activation, so phase notify stays **above** the guard.
+        applyG7DirectBleScenePhase(phase)
+        G7WatchSensorAdapter.shared.noteForegroundInactiveOrBackground(phase)
+
         guard startupIsForegroundActive else { return }
 
         pendingResidentSampleFirstMainView = false
@@ -326,8 +336,6 @@ extension TrioComplicationDataSource {
         cancelStartupSequenceOnMain()
         startupCurrentActivationSequence = nil
         WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
-        applyG7DirectBleScenePhase("inactive_or_background")
-        G7WatchSensorAdapter.shared.noteForegroundInactiveOrBackground("inactive_or_background")
 
         if let activationSequence {
             WatchStartupTransportGate.disarm(activationSequence: activationSequence)
@@ -929,7 +937,15 @@ extension TrioComplicationDataSource {
         assert(Thread.isMainThread, "applyG7DirectBleScenePhase must be called on main thread")
         g7DirectBleLastEventAt = Date()
         Task {
-            await WatchLogger.shared.log("event=g7_ble_lifecycle scene_phase=\(phase) status=\(self.g7DirectBleStatus.rawValue)")
+            let sid = G7WatchSensorAdapter.shared.adapterSessionID ?? "nil"
+            let sensorName = G7WatchSensorAdapter.shared.telemetrySensorName
+            let line = G7StructuredTelemetryLogLine.formatBleModule(
+                sensorName: sensorName,
+                event: "lifecycle",
+                fields: "scene_phase=\(phase) status=\(self.g7DirectBleStatus.rawValue)",
+                g7Session: sid
+            )
+            await WatchLogger.shared.log(line)
         }
     }
 
