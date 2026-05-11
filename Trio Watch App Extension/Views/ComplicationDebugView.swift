@@ -17,6 +17,20 @@ struct ComplicationDebugView: View {
     /// readings produce no-op @State assignments and no re-render without this).
     @State private var now: Date = Date()
 
+    /// Scene phase, used **only** to drive the `isActive` `@State` flag via `.onChange`.
+    /// **Do not read directly from inside the `.task` polling loop** — the task closure captures
+    /// `self` (a value-type view struct) at task creation, so a captured `scenePhase` would be
+    /// frozen at its initial value and would never reflect later scene-phase transitions.
+    /// `isActive` (below) is the actual gate the loop reads, because `@State`-backed values are
+    /// observed through SwiftUI's storage and are safe to read from a long-lived concurrent Task.
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// `true` while the watch app is in `.active` scene phase. Mirror of `scenePhase` written via
+    /// `.onChange(of: scenePhase)` and read from the 1Hz polling task to gate per-second work.
+    /// Defaults to `true` so the very first ticks after `.onAppear` (before any scene-phase
+    /// transition is observed) are not unnecessarily suppressed.
+    @State private var isActive: Bool = true
+
     /// Mirror of `HapticBeacon.shared.isEnabled` so the toggle button label re-renders after a
     /// tap. Initialized in `.onAppear` to avoid touching `@MainActor` singleton state from a
     /// non-isolated property initializer.
@@ -60,7 +74,7 @@ struct ComplicationDebugView: View {
 
                 // SECTION 3: G7 Direct BLE
                 sectionHeader("G7 DIRECT BLE")
-                G7DirectBleDebugSection()
+                G7DirectBleDebugSection(now: now)
 
                 Divider().padding(.vertical, 4)
 
@@ -77,12 +91,27 @@ struct ComplicationDebugView: View {
             loadLogFileStats()
             hapticBeaconEnabled = HapticBeacon.shared.isEnabled
         }
-        // Unified 1s task — snapshot every tick, file stats every 5s (items 18, 20)
+        .onChange(of: scenePhase) { _, newPhase in
+            isActive = (newPhase == .active)
+        }
+        // Unified 1s task — snapshot every tick, file stats every 5s (items 18, 20).
         // `now` updated unconditionally to drive countdown/age even when snapshot is unchanged.
+        //
+        // **Invariant:** the loop continues running while the view exists, but skips work
+        // (no `now` tick, no `loadSnapshot()`, no `loadLogFileStats()`) whenever the watch app
+        // is not in `.active` scene phase. This eliminates 1Hz log-store reads (and the
+        // `latestSnapshot()` cascade) while the user is on the watch face or in another app.
+        //
+        // **Correctness note:** the gate reads `isActive` (a `@State`-backed mirror of
+        // `scenePhase`) instead of `scenePhase` directly. The `.task` closure captures `self`
+        // by value at task creation, so a directly-captured `@Environment(\.scenePhase)` would
+        // be **frozen** at the value present at view first-appear and would never observe later
+        // background ↔ active transitions, defeating the suspension entirely.
         .task {
             var tick = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard isActive else { continue }
                 now = Date()
                 loadSnapshot()
                 tick += 1

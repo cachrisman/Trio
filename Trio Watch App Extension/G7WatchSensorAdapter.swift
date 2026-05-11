@@ -1,4 +1,3 @@
-import CoreBluetooth
 import Foundation
 import G7SensorKit
 import WatchKit
@@ -13,6 +12,7 @@ import WatchKit
 ///
 /// **Discovery:** `didDiscoverNewSensor` returns `false` — peripheral identity comes from phone/WC or persisted defaults only.
 /// If WC is broken and storage is cleared, BLE discovery cannot bind without the phone (narrow but real failure mode).
+@MainActor
 final class G7WatchSensorAdapter: NSObject {
     static let shared = G7WatchSensorAdapter()
 
@@ -20,15 +20,18 @@ final class G7WatchSensorAdapter: NSObject {
     /// Identity of the `G7Sensor` instance; kept in sync with `knownSensorName` so `start()` cannot resume scanning on a stale sensor after WC/UserDefaults updates.
     private var currentSensorName: String?
 
-    @MainActor private var extendedSession: WKExtendedRuntimeSession?
-    @MainActor private var pendingChainSession: WKExtendedRuntimeSession?
+    private var extendedSession: WKExtendedRuntimeSession?
+    private var pendingChainSession: WKExtendedRuntimeSession?
+    /// Session for which `start()` was called but `extendedRuntimeSessionDidStart` has not yet run.
+    /// `extendedSession` is assigned **only** in `extendedRuntimeSessionDidStart` so it always refers to a started session.
+    private var sessionPendingDidStart: WKExtendedRuntimeSession?
 
     /// Read-only accessor for the currently started extended runtime session.
     ///
     /// The adapter may replace this reference from several paths (`stop()`,
     /// `renewSessionIfNeeded()`, chain inside `extendedRuntimeSessionWillExpire`), so callers
     /// must re-query on every use — never cache the returned reference.
-    @MainActor var currentExtendedSession: WKExtendedRuntimeSession? { extendedSession }
+    var currentExtendedSession: WKExtendedRuntimeSession? { extendedSession }
 
     /// Read-only mirror of the adapter's authoritative `isStopped` flag.
     ///
@@ -47,27 +50,20 @@ final class G7WatchSensorAdapter: NSObject {
 
     private var isStopped = false
     private var recoveryScheduled = false
+    /// `start()` idempotency flag. Gates the retroactive `expected_window` tick replay
+    /// in `reanchorExpectedWindowTimer(coldStart: true)` so it runs **once** per process /
+    /// stop-recovery cycle, not on every foreground active entry. Reset to `false` in `stop()`.
+    private var hasAnchored = false
     private var bleConnectsToday: Int = 0
     private var bleEGVsToday: Int = 0
+    /// G7 sequence of the first EGV observed today; nil until the first EGV of the calendar day.
+    /// Used to derive `expected readings since first observed today` as the denominator for the
+    /// `Connects:` / `EGVs:` debug rows. Reset on day rollover and on sensor swap (sequence regression).
+    private var bleFirstSequenceToday: Int?
     private var sessionConnectAt: Date?
 
-    /// BLE delegate vs lifecycle / ExtensionDelegate — protect with one lock (avoid `nonisolated(unsafe)` drift).
-    private let crossThreadTelemetryLock = NSLock()
-    private var lockedAdapterSessionID: String?
-    private var lockedLastKnownScenePhase: String = "unknown"
-    private var lockedLastKnownExtSessionActive: Bool = false
-
-    private func syncTelemetry<T>(_ body: () -> T) -> T {
-        crossThreadTelemetryLock.lock()
-        defer { crossThreadTelemetryLock.unlock() }
-        return body()
-    }
-
     /// Set on `sensorDidConnect`, cleared on `sensorDisconnected`; read from telemetry / ExtensionDelegate.
-    var adapterSessionID: String? {
-        get { syncTelemetry { lockedAdapterSessionID } }
-        set { syncTelemetry { lockedAdapterSessionID = newValue } }
-    }
+    var adapterSessionID: String?
 
     /// UserDefaults is thread-safe; exposed for debug UI without `nonisolated(unsafe)`.
     var telemetrySensorName: String {
@@ -79,15 +75,9 @@ final class G7WatchSensorAdapter: NSObject {
     private var hadEGVThisSession = false
     private var loggedTimeToFirstEGVForSession = false
 
-    private var lastKnownScenePhase: String {
-        get { syncTelemetry { lockedLastKnownScenePhase } }
-        set { syncTelemetry { lockedLastKnownScenePhase = newValue } }
-    }
+    private var lastKnownScenePhase: String = "unknown"
 
-    private var lastKnownExtSessionActive: Bool {
-        get { syncTelemetry { lockedLastKnownExtSessionActive } }
-        set { syncTelemetry { lockedLastKnownExtSessionActive = newValue } }
-    }
+    private var lastKnownExtSessionActive = false
 
     private var lastReadingSequence: UInt16?
     private var lastSavedGlucoseValue: Int?
@@ -99,6 +89,7 @@ final class G7WatchSensorAdapter: NSObject {
         static let calendarDay = "G7DirectBLEObserver.bleCountersCalendarDay"
         static let connects = "G7DirectBLEObserver.bleConnectsToday"
         static let egvs = "G7DirectBLEObserver.bleEGVsToday"
+        static let firstSequenceToday = "G7WatchAdapter.bleFirstSequenceToday"
     }
 
     private enum AdapterSessionPhase: String {
@@ -120,6 +111,14 @@ final class G7WatchSensorAdapter: NSObject {
         loadDailyCounters()
     }
 
+    /// Begin (or no-op resume) the G7 BLE pipeline.
+    ///
+    /// **Idempotency invariant:** when the sensor is already connected and we are not stopped,
+    /// `start()` returns early without re-scanning, replaying retroactive `expected_window`
+    /// ticks, or rebinding the sensor. This prevents single-cycle scene-phase flicker
+    /// (active→inactive→active) from producing redundant `resumeScanning()` calls and tick
+    /// log floods. The retroactive replay is further gated by `hasAnchored` so it runs only
+    /// once per process / stop-recovery cycle.
     func start() {
         stopTimers()
         isStopped = false
@@ -131,51 +130,62 @@ final class G7WatchSensorAdapter: NSObject {
             log("start_skipped_no_sensor")
             return
         }
+        if !isStopped && sensor.isConnected {
+            publishConnectionStatus()
+            return
+        }
         if currentSensorName != name {
             sensor.stopScanning()
             sensor = G7Sensor(sensorID: name)
             sensor.delegate = self
             currentSensorName = name
         }
-        if let epoch = UserDefaults.standard.object(forKey: Keys.lastEGVEpoch) as? Int {
+        if !hasAnchored, let epoch = UserDefaults.standard.object(forKey: Keys.lastEGVEpoch) as? Int {
             reanchorExpectedWindowTimer(fromEpoch: epoch, coldStart: true)
+            hasAnchored = true
         }
         sensor.resumeScanning()
         publishConnectionStatus()
     }
 
+    /// Tear down the G7 BLE pipeline.
+    ///
+    /// **Invariant:** clearing `hasAnchored` here ensures the next `start()` after a real stop
+    /// re-runs the retroactive `expected_window` tick replay (e.g., post-recovery from an
+    /// extended-runtime invalidation error). Foreground re-entries that did **not** go through
+    /// `stop()` continue to skip the replay.
     func stop() {
         isStopped = true
         lastKnownExtSessionActive = false
-        Task { @MainActor in
-            extendedSession?.invalidate()
-            pendingChainSession?.invalidate()
-            extendedSession = nil
-            pendingChainSession = nil
-        }
+        hasAnchored = false
+        extendedSession?.invalidate()
+        pendingChainSession?.invalidate()
+        sessionPendingDidStart?.invalidate()
+        extendedSession = nil
+        pendingChainSession = nil
+        sessionPendingDidStart = nil
         stopTimers()
         sensor.stopScanning()
-        Task { @MainActor in WatchState.shared.applyG7DirectBleStatus(.off) }
+        WatchState.shared.applyG7DirectBleStatus(.off)
     }
 
     func applyForegroundActiveEntry() {
         lastKnownScenePhase = "active"
         start()
-        Task { @MainActor in renewSessionIfNeeded() }
+        renewSessionIfNeeded()
     }
 
     func noteForegroundInactiveOrBackground(_ phase: String) {
         lastKnownScenePhase = phase
     }
 
-    @MainActor
     private func renewSessionIfNeeded() {
-        guard extendedSession?.state != .running else { return }
+        guard extendedSession?.state != .running, sessionPendingDidStart == nil else { return }
         let session = WKExtendedRuntimeSession()
         session.delegate = self
+        sessionPendingDidStart = session
         session.start()
-        extendedSession = session
-        log("ext_session_renewed_on_foreground")
+        log("ext_session_start_requested_foreground")
     }
 
     /// Phone relay (WatchConnectivity): persist peripheral name and rescan. Logs **`sensor_name_set_from_phone`** when the stored name changes (dedupes overlapping WC paths).
@@ -210,10 +220,14 @@ final class G7WatchSensorAdapter: NSObject {
     private func log(_ eventName: String, _ fields: String = "") {
         let sid = adapterSessionID ?? "nil"
         let sensorName = knownSensorName ?? "nil"
-        let suffix = fields.isEmpty ? "" : " \(fields)"
         Task {
             await WatchLogger.shared.log(
-                "module=g7_ble event=\(eventName) g7_session=\(sid) sensor_name=\(sensorName)\(suffix)"
+                G7StructuredTelemetryLogLine.formatBleModule(
+                    sensorName: sensorName,
+                    event: eventName,
+                    fields: fields,
+                    g7Session: sid
+                )
             )
         }
     }
@@ -233,47 +247,54 @@ final class G7WatchSensorAdapter: NSObject {
         let interval: TimeInterval = 5 * 60
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(2))
-        timer.setEventHandler { [weak self] in self?.emitHeartbeat() }
+        timer.setEventHandler { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.emitHeartbeat()
+            }
+        }
         timer.resume()
         heartbeatTimer = timer
     }
 
     private func emitHeartbeat() {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let extStateRaw: String
-            if let s = self.extendedSession {
-                extStateRaw = String(describing: s.state)
-            } else {
-                extStateRaw = "nil"
-            }
-            let active = self.lastKnownExtSessionActive
-            self.log("heartbeat", "ext_session_active=\(active) ext_session_state=\(extStateRaw)")
+        let extStateRaw: String
+        if let s = extendedSession {
+            extStateRaw = String(describing: s.state)
+        } else {
+            extStateRaw = "nil"
         }
+        let active = lastKnownExtSessionActive
+        log("heartbeat", "ext_session_active=\(active) ext_session_state=\(extStateRaw)")
     }
 
     private func reanchorExpectedWindowTimer(fromEpoch lastEpoch: Int, coldStart: Bool) {
         let nowEpoch = Int(Date().timeIntervalSince1970)
-        var missed: [Int] = []
+        var missedCount = 0
+        var lastMissed: Int?
         var e = lastEpoch + 300
         while e < nowEpoch {
-            missed.append(e)
+            missedCount += 1
+            lastMissed = e
             e += 300
         }
 
         let retro: [Int]
-        if coldStart, missed.count > 50 {
-            retro = Array(missed.suffix(50))
+        if coldStart, missedCount > 50 {
+            let skip = missedCount - 50
+            let startEpoch = lastEpoch + 300 + skip * 300
+            retro = Array(stride(from: startEpoch, to: nowEpoch, by: 300))
+        } else if missedCount > 0 {
+            retro = Array(stride(from: lastEpoch + 300, to: nowEpoch, by: 300))
         } else {
-            retro = missed
+            retro = []
         }
         for epoch in retro {
             emitExpectedWindowTick(epoch: epoch, retroactive: true)
         }
 
         var nextEpoch: Int
-        if let lastMissed = missed.last {
-            nextEpoch = lastMissed + 300
+        if let lm = lastMissed {
+            nextEpoch = lm + 300
         } else {
             nextEpoch = lastEpoch + 300
         }
@@ -289,7 +310,11 @@ final class G7WatchSensorAdapter: NSObject {
         expectedWindowNextEpoch = nextEpoch
         let timer = DispatchSource.makeTimerSource(queue: timerQueue)
         timer.schedule(deadline: deadline, leeway: .seconds(2))
-        timer.setEventHandler { [weak self] in self?.fireExpectedWindowTick() }
+        timer.setEventHandler { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.fireExpectedWindowTick()
+            }
+        }
         timer.resume()
         expectedWindowTimer = timer
     }
@@ -307,7 +332,7 @@ final class G7WatchSensorAdapter: NSObject {
 
         log(
             "expected_window",
-            "tick_epoch=\(epoch) last_success_epoch=\(lastSuccess) eligible=\(eligible) reason=\(reason) retroactive=\(retroactive)"
+            "tick_epoch=\(epoch) last_success_epoch=\(lastSuccess) eligible=\(eligible) reason=\(reason) retroactive=\(retroactive) ext_session_active=\(lastKnownExtSessionActive)"
         )
     }
 
@@ -319,11 +344,14 @@ final class G7WatchSensorAdapter: NSObject {
         if storedDay != dayStart {
             bleConnectsToday = 0
             bleEGVsToday = 0
+            bleFirstSequenceToday = nil
             UserDefaults.standard.set(dayStart, forKey: Keys.calendarDay)
+            UserDefaults.standard.removeObject(forKey: Keys.firstSequenceToday)
             persistDailyCounters()
         } else {
             bleConnectsToday = UserDefaults.standard.integer(forKey: Keys.connects)
             bleEGVsToday = UserDefaults.standard.integer(forKey: Keys.egvs)
+            bleFirstSequenceToday = UserDefaults.standard.object(forKey: Keys.firstSequenceToday) as? Int
         }
         mirrorDailyCountersToWatchState()
     }
@@ -339,18 +367,17 @@ final class G7WatchSensorAdapter: NSObject {
         guard storedDay != dayStart else { return }
         bleConnectsToday = 0
         bleEGVsToday = 0
+        bleFirstSequenceToday = nil
         UserDefaults.standard.set(dayStart, forKey: Keys.calendarDay)
+        UserDefaults.standard.removeObject(forKey: Keys.firstSequenceToday)
         persistDailyCounters()
         mirrorDailyCountersToWatchState()
     }
 
     private func mirrorDailyCountersToWatchState() {
-        let connects = bleConnectsToday
-        let egvs = bleEGVsToday
-        Task { @MainActor in
-            WatchState.shared.bleConnectsToday = connects
-            WatchState.shared.bleEGVsToday = egvs
-        }
+        WatchState.shared.bleConnectsToday = bleConnectsToday
+        WatchState.shared.bleEGVsToday = bleEGVsToday
+        WatchState.shared.bleFirstSequenceToday = bleFirstSequenceToday
     }
 
     private func minutesSinceLastEGV() -> Int {
@@ -373,14 +400,12 @@ final class G7WatchSensorAdapter: NSObject {
         } else {
             status = .retrieving
         }
-        Task { @MainActor in WatchState.shared.applyG7DirectBleStatus(status) }
+        WatchState.shared.applyG7DirectBleStatus(status)
     }
 
     private func triggerEndOfSessionFromEGV(reason: String, message: G7GlucoseMessage) {
-        // WKInterfaceDevice.current() must run on the main thread; never use main.sync here — CoreBluetooth can deliver
-        // on the main queue and would deadlock. Omit battery when off-main (-1 in log).
+        // Adapter is `@MainActor`; this path runs only after delegate hop — safe to read battery on-device.
         let battery: Int = {
-            guard Thread.isMainThread else { return -1 }
             let device = WKInterfaceDevice.current()
             guard device.isBatteryMonitoringEnabled else { return -1 }
             let level = device.batteryLevel
@@ -394,6 +419,8 @@ final class G7WatchSensorAdapter: NSObject {
         )
 
         knownSensorName = nil
+        currentSensorName = nil
+        consecutivePreEGVDisconnects = 0
         lastReadingSequence = nil
         lastSavedGlucoseValue = nil
         sessionActivationDate = nil
@@ -405,12 +432,61 @@ final class G7WatchSensorAdapter: NSObject {
     }
 }
 
-// MARK: - G7SensorDelegate
+// MARK: - G7SensorDelegate (G7SensorKit invokes these on `delegateQueue`; nonisolated stubs hop to `@MainActor` adapter.)
 
 extension G7WatchSensorAdapter: G7SensorDelegate {
-    func sensorDidConnect(_ sensor: G7Sensor, name: String) {
+    nonisolated func sensorDidConnect(_ sensor: G7Sensor, name: String) {
+        Task { @MainActor in
+            G7WatchSensorAdapter.shared.handleSensorDidConnect(name: name)
+        }
+    }
+
+    nonisolated func sensorDisconnected(_ sensor: G7Sensor, suspectedEndOfSession: Bool) {
+        Task { @MainActor in
+            G7WatchSensorAdapter.shared.handleSensorDisconnected(suspectedEndOfSession: suspectedEndOfSession)
+        }
+    }
+
+    nonisolated func sensor(_ sensor: G7Sensor, didError error: Error) {
+        Task { @MainActor in
+            G7WatchSensorAdapter.shared.log("sensor_error", "error=\(String(describing: error))")
+        }
+    }
+
+    nonisolated func sensor(_ sensor: G7Sensor, logComms comms: String) {
+        _ = comms
+    }
+
+    nonisolated func sensor(_ sensor: G7Sensor, didRead glucose: G7GlucoseMessage) {
+        Task { @MainActor in
+            G7WatchSensorAdapter.shared.handleSensorDidRead(glucose: glucose)
+        }
+    }
+
+    nonisolated func sensor(_ sensor: G7Sensor, didReadBackfill backfill: [G7BackfillMessage]) {
+        Task { @MainActor in
+            G7WatchSensorAdapter.shared.handleSensorDidReadBackfill(backfill: backfill)
+        }
+    }
+
+    nonisolated func sensor(_ sensor: G7Sensor, didDiscoverNewSensor name: String, activatedAt: Date) -> Bool {
+        _ = activatedAt
+        return false
+    }
+
+    nonisolated func sensor(_ sensor: G7Sensor, didReceive extendedVersion: ExtendedVersionMessage) {
+        _ = extendedVersion
+    }
+
+    nonisolated func sensorConnectionStatusDidUpdate(_ sensor: G7Sensor) {
+        Task { @MainActor in
+            G7WatchSensorAdapter.shared.publishConnectionStatus()
+        }
+    }
+
+    private func handleSensorDidConnect(name: String) {
         sessionPhase = .preEGV
-        adapterSessionID = UUID().uuidString
+        adapterSessionID = String(UUID().uuidString.prefix(8))
         sessionConnectAt = Date()
         hadEGVThisSession = false
         loggedTimeToFirstEGVForSession = false
@@ -418,13 +494,16 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         persistDailyCounters()
         mirrorDailyCountersToWatchState()
         let connectAt = Date()
-        Task { @MainActor in WatchState.shared.bleLastConnectAt = connectAt }
-        log("did_connect", "name=\(name)")
-        Task { @MainActor in self.renewSessionIfNeeded() }
+        WatchState.shared.bleLastConnectAt = connectAt
+        log(
+            "did_connect",
+            "scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive)"
+        )
+        renewSessionIfNeeded()
         publishConnectionStatus()
     }
 
-    func sensorDisconnected(_ sensor: G7Sensor, suspectedEndOfSession: Bool) {
+    private func handleSensorDisconnected(suspectedEndOfSession: Bool) {
         let sinceConnectS: Int = {
             guard let t = sessionConnectAt else { return -1 }
             return Int(Date().timeIntervalSince(t))
@@ -435,14 +514,14 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         }()
         log(
             "disconnect",
-            "phase=\(sessionPhase.rawValue) since_did_connect_s=\(sinceConnectS) had_egv=\(hadEGVThisSession) session_duration_s=\(durationS) suspected_eos=\(suspectedEndOfSession)"
+            "phase=\(sessionPhase.rawValue) since_did_connect_s=\(sinceConnectS) had_egv=\(hadEGVThisSession) session_duration_s=\(durationS) suspected_eos=\(suspectedEndOfSession) scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive)"
         )
 
         if sessionPhase == .preEGV {
             consecutivePreEGVDisconnects += 1
             log(
                 "auth_failed_inferred",
-                "since_connect_s=\(sinceConnectS) consecutive_count=\(consecutivePreEGVDisconnects)"
+                "since_connect_s=\(sinceConnectS) consecutive_count=\(consecutivePreEGVDisconnects) ext_session_active=\(lastKnownExtSessionActive)"
             )
             if consecutivePreEGVDisconnects >= 3 {
                 log(
@@ -454,10 +533,10 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
                 log("stale_sensor_reinit", "count=\(consecutivePreEGVDisconnects)")
                 consecutivePreEGVDisconnects = 0
                 let name = knownSensorName
-                self.sensor.stopScanning()
-                self.sensor = G7Sensor(sensorID: name)
-                self.sensor.delegate = self
-                if !isStopped { self.sensor.resumeScanning() }
+                sensor.stopScanning()
+                sensor = G7Sensor(sensorID: name)
+                sensor.delegate = self
+                if !isStopped { sensor.resumeScanning() }
                 publishConnectionStatus()
             }
         } else {
@@ -472,15 +551,7 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         publishConnectionStatus()
     }
 
-    func sensor(_ sensor: G7Sensor, didError error: Error) {
-        log("sensor_error", "error=\(String(describing: error))")
-    }
-
-    func sensor(_ sensor: G7Sensor, logComms comms: String) {
-        _ = comms
-    }
-
-    func sensor(_ sensor: G7Sensor, didRead glucose: G7GlucoseMessage) {
+    private func handleSensorDidRead(glucose: G7GlucoseMessage) {
         if glucose.algorithmState.sensorFailed {
             triggerEndOfSessionFromEGV(reason: "algorithm_state", message: glucose)
             return
@@ -531,8 +602,19 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         UserDefaults.standard.set(readingEpoch, forKey: Keys.lastEGVEpoch)
         reanchorExpectedWindowTimer(fromEpoch: readingEpoch, coldStart: false)
 
-        // Task B2 — mirrors `G7DirectBLEObserver.parseGlucose`: reliable + dedup + valid glucose bytes, then EGV counter.
+        loadDailyCountersIfNewCalendarDay()
+
         bleEGVsToday += 1
+        let currentSequence = Int(glucose.sequence)
+        if let anchor = bleFirstSequenceToday {
+            if currentSequence < anchor {
+                bleFirstSequenceToday = currentSequence
+                UserDefaults.standard.set(currentSequence, forKey: Keys.firstSequenceToday)
+            }
+        } else {
+            bleFirstSequenceToday = currentSequence
+            UserDefaults.standard.set(currentSequence, forKey: Keys.firstSequenceToday)
+        }
         persistDailyCounters()
         mirrorDailyCountersToWatchState()
         let delta: String = {
@@ -569,20 +651,17 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
             sequence: Int(glucose.sequence)
         )
 
-        Task { @MainActor in
-            TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
-            WatchState.shared.applyG7DirectBleSnapshot(snapshot)
-            WatchState.shared.bleLastEGVDate = readingDate
-            WatchState.shared.bleLastEGVValue = glucoseValue
-        }
-        Task { @MainActor in
-            HapticBeacon.shared.noteEGVReceived(at: Date(), source: .g7DirectBLE)
-        }
+        TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
+        WatchState.shared.applyG7DirectBleSnapshot(snapshot)
+        WatchState.shared.bleLastEGVDate = readingDate
+        WatchState.shared.bleLastEGVValue = glucoseValue
+        WatchState.shared.bleLastEGVSequence = currentSequence
+        HapticBeacon.shared.noteEGVReceived(at: Date(), source: .g7DirectBLE)
 
         publishConnectionStatus()
     }
 
-    func sensor(_ sensor: G7Sensor, didReadBackfill backfill: [G7BackfillMessage]) {
+    private func handleSensorDidReadBackfill(backfill: [G7BackfillMessage]) {
         for msg in backfill {
             log(
                 "backfill_entry",
@@ -590,24 +669,10 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
             )
         }
     }
-
-    func sensor(_ sensor: G7Sensor, didDiscoverNewSensor name: String, activatedAt: Date) -> Bool {
-        _ = activatedAt
-        return false
-    }
-
-    func sensor(_ sensor: G7Sensor, didReceive extendedVersion: ExtendedVersionMessage) {
-        _ = extendedVersion
-    }
-
-    func sensorConnectionStatusDidUpdate(_ sensor: G7Sensor) {
-        publishConnectionStatus()
-    }
 }
 
 // MARK: - WKExtendedRuntimeSessionDelegate
 
-@MainActor
 extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
     func extendedRuntimeSessionWillExpire(_ session: WKExtendedRuntimeSession) {
         lastKnownExtSessionActive = false
@@ -615,7 +680,7 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
         let newSession = WKExtendedRuntimeSession()
         newSession.delegate = self
         pendingChainSession = newSession
-        extendedSession = newSession
+        sessionPendingDidStart = newSession
         newSession.start()
         log("ext_session_chain_attempted")
         Task { @MainActor [weak self, weak newSession] in
@@ -623,6 +688,9 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
             guard let self, let newSession else { return }
             if self.pendingChainSession === newSession {
                 self.pendingChainSession = nil
+                if self.sessionPendingDidStart === newSession {
+                    self.sessionPendingDidStart = nil
+                }
                 self.log("ext_session_chain_timeout")
             }
         }
@@ -630,11 +698,15 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
 
     func extendedRuntimeSessionDidStart(_ session: WKExtendedRuntimeSession) {
         lastKnownExtSessionActive = true
+        extendedSession = session
         if session === pendingChainSession {
             pendingChainSession = nil
             log("ext_session_chain_started")
         } else {
             log("ext_session_started")
+        }
+        if session === sessionPendingDidStart {
+            sessionPendingDidStart = nil
         }
     }
 
@@ -649,7 +721,17 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
 
         if session === pendingChainSession {
             pendingChainSession = nil
+            if session === sessionPendingDidStart {
+                sessionPendingDidStart = nil
+            }
             log("ext_session_chain_denied", "has_error=\(hasError)")
+            return
+        }
+
+        // Renew / foreground session that never reached didStart — do not tear down BLE.
+        if session === sessionPendingDidStart {
+            sessionPendingDidStart = nil
+            log("ext_session_pending_start_invalidated", "has_error=\(hasError)")
             return
         }
 

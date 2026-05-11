@@ -229,7 +229,27 @@ extension WatchState {
         }
     }
 
+    /// Public entry point for requesting a fresh `WatchState` payload from the paired phone.
+    ///
+    /// **Invariant:** every fresh external call starts the retry counter at `0`. Internal
+    /// retry paths (driven by `sendMessage` error handler) must call the labeled overload
+    /// `requestWatchStateUpdate(retryCount:)` with an incremented count so retries terminate
+    /// after the cap defined there.
     func requestWatchStateUpdate() {
+        requestWatchStateUpdate(retryCount: 0)
+    }
+
+    /// Worker for `requestWatchStateUpdate()` that implements bounded retry with exponential backoff.
+    ///
+    /// **Retry invariant:** at most **3** retries total. On WC send error, the next retry is
+    /// scheduled after `5.0 * pow(2.0, retryCount - 1)` seconds (yields **5s, 10s, 20s**).
+    /// After three failures the worker logs `"⌚️ requestWatchStateUpdate giving up after max retries"`
+    /// and returns without rescheduling — replacing the previous unbounded 5-second retry loop
+    /// that could burn battery / WC bandwidth indefinitely while the phone was unreachable.
+    ///
+    /// `retryCount` is the **attempt index that just completed**: `0` means this is the original
+    /// request, `1` means we are running the first retry, etc.
+    private func requestWatchStateUpdate(retryCount: Int) {
         guard let session = session else {
             Task {
                 await WatchLogger.shared.log("⌚️ No session available for state update")
@@ -263,10 +283,20 @@ extension WatchState {
                     await WatchLogger.shared.flushPersistedLogs()
                 }
                 DispatchQueue.main.async {
+                    self.syncTimeoutWorkItem?.cancel()
+                    self.syncTimeoutWorkItem = nil
                     self.clearStartupFirstRefreshInFlightOnMain()
                     self.loadFallbackDataFromComplication()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                        self.requestWatchStateUpdate()
+                    let nextRetry = retryCount + 1
+                    if nextRetry > 3 {
+                        Task {
+                            await WatchLogger.shared.log("⌚️ requestWatchStateUpdate giving up after max retries")
+                        }
+                        return
+                    }
+                    let delay = 5.0 * pow(2.0, Double(nextRetry - 1))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        self.requestWatchStateUpdate(retryCount: nextRetry)
                     }
                 }
             }

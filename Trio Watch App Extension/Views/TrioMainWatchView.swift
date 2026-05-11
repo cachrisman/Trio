@@ -36,8 +36,7 @@ struct TrioMainWatchView: View {
         guard let session = state.session else {
             return true // No session at all => unreachable
         }
-        // Return true if not .activated OR not reachable
-        return session.activationState != .activated
+        return session.activationState != .activated || !session.isReachable
     }
 
     // Active adjustment indicator

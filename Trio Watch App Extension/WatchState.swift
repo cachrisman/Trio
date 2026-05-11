@@ -280,6 +280,7 @@ extension TrioComplicationDataSource {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
     }
 
+    @MainActor
     func handleForegroundActiveEntry() {
         assert(Thread.isMainThread, "handleForegroundActiveEntry must be called on main thread")
         guard !startupIsForegroundActive else { return }
@@ -1149,7 +1150,7 @@ extension TrioComplicationDataSource {
         // G7 sensor identity must sync whenever watchState is present, even when this method later skips UI (stale `date`, monotonic guard in scheduleUIUpdate, missing/invalid `date` — downstream branches must still run).
         let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any]
         if let ws = watchStateDict {
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { @MainActor in
                 self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(ws)
             }
         }
@@ -1242,7 +1243,7 @@ extension TrioComplicationDataSource {
 
         let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
 
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.async { @MainActor [weak self] in
             self?.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
         }
 
@@ -1310,7 +1311,7 @@ extension TrioComplicationDataSource {
             return
         }
 
-        DispatchQueue.main.async { [self] in
+        DispatchQueue.main.async { @MainActor [self] in
             // R5d: compute gap BEFORE updating timestamp
             let gap = lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             let isSleepGap = gap > 600
@@ -1418,7 +1419,7 @@ extension TrioComplicationDataSource {
             return
         }
         let readingResolution = resolveEffectiveCGMReadingDate(from: payload)
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.async { @MainActor [weak self] in
             guard let self else { return }
             self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
             let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
@@ -1688,6 +1689,7 @@ extension TrioComplicationDataSource {
     }
 
     /// Phase C — sync G7 sensor identity from iPhone watch payload into `G7WatchSensorAdapter`.
+    @MainActor
     private func applyG7ActiveSensorNameFromWatchPayloadIfPresent(_ payload: [String: Any]) {
         guard payload[WatchMessageKeys.g7ActiveSensorName] != nil else { return }
         let raw = payload[WatchMessageKeys.g7ActiveSensorName]
@@ -1701,7 +1703,7 @@ extension TrioComplicationDataSource {
     }
 
     private func processWatchMessage(_ message: [String: Any]) {
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { @MainActor in
             if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                let ackMessage = message[WatchMessageKeys.message] as? String,
                let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
@@ -1746,6 +1748,7 @@ extension TrioComplicationDataSource {
         }
     }
 
+    @MainActor
     private func scheduleUIUpdate(
         with newData: [String: Any],
         fromUserInfo: Bool = false,
@@ -1753,7 +1756,7 @@ extension TrioComplicationDataSource {
         pendingConnectivityCompletionPath: String? = nil
     ) {
         guard Thread.isMainThread else {
-            DispatchQueue.main.async { [self] in
+            DispatchQueue.main.async { @MainActor [self] in
                 scheduleUIUpdate(
                     with: newData,
                     fromUserInfo: fromUserInfo,
@@ -1824,6 +1827,14 @@ extension TrioComplicationDataSource {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
+    /// Apply any buffered WC payload to UI state, then fire the **conditional** complication
+    /// refresh that a background-task-driven `requestWatchStateUpdate()` is waiting on.
+    ///
+    /// **Invariant (Bug #6):** `forceComplicationUpdate()` runs at most **once** per pending bgtask,
+    /// and only when *fresh* data has actually been applied (we entered this method with a
+    /// non-empty `pendingData`). Empty-payload finalizes do **not** trigger the complication
+    /// refresh — they simply hide the syncing animation and let the existing complication state
+    /// remain. The flag is also auto-cleared when stale (older than `bgTaskComplicationUpdateWindow`).
     private func finalizePendingData(
         fromUserInfo: Bool = false,
         userInfoReceiveTimestamp: Date? = nil,
@@ -1859,6 +1870,21 @@ extension TrioComplicationDataSource {
 
         Task {
             await WatchLogger.shared.log("Watch UI update complete")
+        }
+
+        // Consume the bgtask-driven complication-update flag once fresh data has been applied.
+        // Stale flags (older than `bgTaskComplicationUpdateWindow`) are dropped silently so a
+        // foreground refresh long after a failed bgtask cannot trigger a spurious complication
+        // update.
+        if let bgTaskRequestedAt = pendingBgTaskComplicationUpdateAt {
+            pendingBgTaskComplicationUpdateAt = nil
+            if Date().timeIntervalSince(bgTaskRequestedAt) <= bgTaskComplicationUpdateWindow {
+                forceComplicationUpdate()
+            } else {
+                Task {
+                    await WatchLogger.shared.log("🔄 bgtask complication update flag expired; skipping forceComplicationUpdate")
+                }
+            }
         }
 
         guard let pendingConnectivityCompletionPath else { return }
@@ -2235,9 +2261,27 @@ extension TrioComplicationDataSource {
                     lastBackgroundRefreshDate = Date()
 
                     if isReachable {
+                        // Defer `forceComplicationUpdate()` to the data-application success path
+                        // (`finalizePendingData`) instead of firing unconditionally after 2s. Avoids
+                        // refreshing the complication with stale `currentGlucose` when the WC reply
+                        // is slow or never arrives — see Bug #6 / `pendingBgTaskComplicationUpdateAt`.
+                        let requestedAt = Date()
+                        pendingBgTaskComplicationUpdateAt = requestedAt
                         requestWatchStateUpdate()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                            self.forceComplicationUpdate()
+                        // Stale-flag detector: if `finalizePendingData` never fires within the
+                        // window (WC unreachable, dropped reply, retries exhausted), the deferred
+                        // complication update is silently skipped. Emit one log line so the
+                        // bgtask → complication-update path is observable in telemetry.
+                        // The timestamp check ensures we only clear / log our **own** flag —
+                        // a later bgtask that re-set the flag with a fresh timestamp is untouched.
+                        let window = bgTaskComplicationUpdateWindow
+                        DispatchQueue.main.asyncAfter(deadline: .now() + window) { [weak self] in
+                            guard let self = self else { return }
+                            guard self.pendingBgTaskComplicationUpdateAt == requestedAt else { return }
+                            self.pendingBgTaskComplicationUpdateAt = nil
+                            Task {
+                                await WatchLogger.shared.log("⌚️ bgTask complication update skipped: flag stale (no data within \(Int(window))s)")
+                            }
                         }
                     } else {
                         loadFallbackDataFromComplication()

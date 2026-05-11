@@ -727,8 +727,14 @@ final class TrioComplicationDataStore {
                 return
             }
         } else if let lastTS = Self.lastValidTimestamp {
-            if snapshot.readingDate.timeIntervalSince(lastTS) < 0.0 {
-                log("⏭️ saveOnMain: rejected older snapshot via lastValidTimestamp fallback (readingDate=\(snapshot.readingDate), lastValid=\(lastTS))")
+            // Monotonic write guard (Bug #5): authoritative monotonic check lives on the write
+            // path. `<` is a genuine backward-in-time write — log it. `==` is a normal duplicate
+            // (same reading seen twice) and is silenced so it doesn't masquerade as an anomaly
+            // in telemetry / log streams. The read path (`latestSnapshot`) no longer logs this.
+            if snapshot.readingDate < lastTS {
+                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(snapshot.readingDate) < \(lastTS))")
+                return
+            } else if snapshot.readingDate == lastTS {
                 return
             }
         }
@@ -827,8 +833,15 @@ final class TrioComplicationDataStore {
     }
 
     /// Loads the latest complication snapshot from disk.
-    /// May be called from any thread. Updates `lastValidTimestamp` as a side-effect (serialized on main
-    /// when App Group defaults are unavailable to protect in-memory fallback).
+    ///
+    /// May be called from any thread.
+    ///
+    /// **Invariant (Bug #5):** the monotonic write guard lives on `saveOnMain`, **not** here.
+    /// This read path no longer logs `lastValidTimestamp: skipped non-monotonic write` — that
+    /// message previously fired on every poll of an unchanged snapshot (e.g., the 1Hz debug-view
+    /// task) and on every legitimate dedup, masquerading as an anomaly. The only timestamp
+    /// side-effect retained here is **cold-start hydration** when `lastValidTimestamp` has not
+    /// yet been seeded in this process / App Group; that path is silent unless it actually fires.
     func latestSnapshot() -> TrioComplicationSnapshot? {
         guard let fileURL = snapshotFileURL else {
             log("❌ Snapshot load FAILED: no App Group container URL")
@@ -848,16 +861,16 @@ final class TrioComplicationDataStore {
             guard !data.isEmpty else { throw NSError(domain: "EmptySnapshot", code: -1) }
             let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
             let readingDate = snapshot.readingDate
-            if let currentTS = Self.lastValidTimestamp, readingDate.timeIntervalSince(currentTS) <= 0 {
-                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(readingDate) <= \(currentTS))")
-            } else if appGroupDefaults == nil {
-                onMain {
+            if Self.lastValidTimestamp == nil {
+                if appGroupDefaults == nil {
+                    onMain {
+                        Self.lastValidTimestamp = readingDate
+                        self.log("✅ lastValidTimestamp hydrated from disk (main): \(readingDate)")
+                    }
+                } else {
                     Self.lastValidTimestamp = readingDate
-                    self.log("✅ lastValidTimestamp updated (main): \(readingDate)")
+                    log("✅ lastValidTimestamp hydrated from disk: \(readingDate)")
                 }
-            } else {
-                Self.lastValidTimestamp = readingDate
-                log("✅ lastValidTimestamp updated: \(readingDate)")
             }
             return snapshot
         }
