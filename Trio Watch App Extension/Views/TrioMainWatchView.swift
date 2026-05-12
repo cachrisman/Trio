@@ -6,7 +6,8 @@ struct TrioMainWatchView: View {
     @State private var state = WatchState.shared
 
     // misc
-    @State private var currentPage: Int = 0
+    /// Tab order: 0 = chart (left), 1 = main glucose (center), 2 = debug (right).
+    @State private var currentPage: Int = 1
     @State private var rotationDegrees: Double = 0.0
     @State private var showingTempTargetSheet = false
 
@@ -35,8 +36,7 @@ struct TrioMainWatchView: View {
         guard let session = state.session else {
             return true // No session at all => unreachable
         }
-        // Return true if not .activated OR not reachable
-        return session.activationState != .activated
+        return session.activationState != .activated || !session.isReachable
     }
 
     // Active adjustment indicator
@@ -62,19 +62,27 @@ struct TrioMainWatchView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             TabView(selection: $currentPage) {
-                // Page 1: Current glucose trend in "BG bobble"
+                // Page 0: Glucose chart (swipe right from main)
+                Group {
+                    if currentPage == 0 {
+                        GlucoseChartView(
+                            glucoseValues: state.glucoseValues,
+                            minYAxisValue: state.minYAxisValue,
+                            maxYAxisValue: state.maxYAxisValue
+                        )
+                    } else {
+                        Color.clear
+                    }
+                }
+                .tag(0)
+
+                // Page 1: Current glucose trend in "BG bobble" (default)
                 ZStack {
                     GlucoseTrendView(
                         state: state,
                         rotationDegrees: rotationDegrees,
                         isWatchStateDated: isWatchStateDated || isSessionUnreachable
                     )
-                    .onLongPressGesture(minimumDuration: 1.0) {
-                        // Long press to quickly access debug view
-                        withAnimation {
-                            currentPage = 2
-                        }
-                    }
 
                     if state.showSyncingAnimation {
                         Image(systemName: "iphone.radiowaves.left.and.right")
@@ -91,23 +99,10 @@ struct TrioMainWatchView: View {
                                     7 // Font .body == 14, so half of default size for the SF Symbol image
                             )
                     }
-                }.tag(0)
-
-                // Page 2: Glucose chart
-                Group {
-                    if currentPage == 1 {
-                        GlucoseChartView(
-                            glucoseValues: state.glucoseValues,
-                            minYAxisValue: state.minYAxisValue,
-                            maxYAxisValue: state.maxYAxisValue
-                        )
-                    } else {
-                        Color.clear
-                    }
                 }
                 .tag(1)
 
-                // Page 3: Complication Debug View (only constructed when visible)
+                // Page 2: Complication Debug View (only constructed when visible)
                 Group {
                     if currentPage == 2 {
                         ComplicationDebugView()
@@ -128,6 +123,7 @@ struct TrioMainWatchView: View {
                     state.currentGlucose = snapshot.glucose
                     state.trend = snapshot.trend
                     state.delta = snapshot.delta
+                    state.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
@@ -140,6 +136,7 @@ struct TrioMainWatchView: View {
                     state.currentGlucose = snapshot.glucose
                     state.trend = snapshot.trend
                     state.delta = snapshot.delta
+                    state.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
                     if let glucoseColor = snapshot.glucoseColor {
                         state.currentGlucoseColorString = glucoseColor
                     }
@@ -153,12 +150,12 @@ struct TrioMainWatchView: View {
                 state.noteMainWatchRootViewAppearedForResidentTelemetry()
             }
             .onChange(of: currentPage) { _, newPage in
-                if newPage == 1 {
+                if newPage == 0 {
                     state.noteChartTabBecameVisibleForResidentTelemetry()
                 }
             }
             .background(trioBackgroundColor)
-            .tabViewStyle(.verticalPage)
+            .tabViewStyle(.page)
             .digitalCrownRotation($currentPage.doubleBinding(), from: 0, through: 2, by: 1)
             .onChange(of: state.trend) { _, newTrend in
                 withAnimation {
@@ -166,58 +163,64 @@ struct TrioMainWatchView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    VStack {
-                        Image(systemName: "syringe.fill")
-                            .foregroundStyle(Color.insulin)
+                if currentPage != 2 {
+                    ToolbarItem(placement: .topBarLeading) {
+                        VStack {
+                            Image(systemName: "syringe.fill")
+                                .foregroundStyle(Color.insulin)
 
-                        Text(isWatchStateDated || isSessionUnreachable ? "--" : state.iob ?? "--")
-                            .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
-                            .frame(alignment: .leading)
-                            .minimumScaleFactor(0.5)
-                    }.font(.caption2)
+                            Text(isWatchStateDated || isSessionUnreachable ? "--" : state.iob ?? "--")
+                                .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
+                                .frame(alignment: .leading)
+                                .minimumScaleFactor(0.5)
+                        }.font(.caption2)
+                    }
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    VStack {
-                        Image(systemName: "fork.knife")
-                            .foregroundStyle(Color.orange)
+                if currentPage != 2 {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        VStack {
+                            Image(systemName: "fork.knife")
+                                .foregroundStyle(Color.orange)
 
-                        Text(isWatchStateDated || isSessionUnreachable ? "--" : state.cob ?? "--")
-                            .foregroundStyle(isWatchStateDated || isSessionUnreachable ? Color.secondary : Color.white)
-                            .frame(alignment: .trailing)
-                            .minimumScaleFactor(0.5)
-                    }.font(.caption2)
+                            Text(isWatchStateDated || isSessionUnreachable ? "--" : state.cob ?? "--")
+                                .foregroundStyle(isWatchStateDated || isSessionUnreachable ? Color.secondary : Color.white)
+                                    .frame(alignment: .trailing)
+                                    .minimumScaleFactor(0.5)
+                        }.font(.caption2)
+                    }
                 }
 
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button {
-                        showingOverrideSheet = true
-                    } label: {
-                        Image(systemName: "clock.arrow.2.circlepath")
-                            .foregroundStyle(Color.primary, isOverrideActive ? Color.primary : Color.purple)
-                    }
-                    .tint(isOverrideActive ? Color.purple : nil)
-                    .disabled(isWatchStateDated || isSessionUnreachable)
+                if currentPage != 2 {
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        Button {
+                            showingOverrideSheet = true
+                        } label: {
+                            Image(systemName: "clock.arrow.2.circlepath")
+                                .foregroundStyle(Color.primary, isOverrideActive ? Color.primary : Color.purple)
+                        }
+                        .tint(isOverrideActive ? Color.purple : nil)
+                        .disabled(isWatchStateDated || isSessionUnreachable)
 
-                    Button {
-                        showingTreatmentMenuSheet = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .foregroundStyle(Color.bgDarkerDarkBlue)
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(WatchOSButtonStyle(deviceType: state.deviceType))
-                    .disabled(isWatchStateDated || isSessionUnreachable)
+                        Button {
+                            showingTreatmentMenuSheet = true
+                        } label: {
+                            Image(systemName: "plus")
+                                .foregroundStyle(Color.bgDarkerDarkBlue)
+                        }
+                        .controlSize(.large)
+                        .buttonStyle(WatchOSButtonStyle(deviceType: state.deviceType))
+                        .disabled(isWatchStateDated || isSessionUnreachable)
 
-                    Button {
-                        showingTempTargetSheet = true
-                    } label: {
-                        Image(systemName: "target")
-                            .foregroundStyle(isTempTargetActive ? Color.primary : Color.loopGreen.opacity(0.75))
+                        Button {
+                            showingTempTargetSheet = true
+                        } label: {
+                            Image(systemName: "target")
+                                .foregroundStyle(isTempTargetActive ? Color.primary : Color.loopGreen.opacity(0.75))
+                        }
+                        .tint(isTempTargetActive ? Color.loopGreen.opacity(0.75) : nil)
+                        .disabled(isWatchStateDated || isSessionUnreachable)
                     }
-                    .tint(isTempTargetActive ? Color.loopGreen.opacity(0.75) : nil)
-                    .disabled(isWatchStateDated || isSessionUnreachable)
                 }
             }
             .fullScreenCover(isPresented: $showingTreatmentMenuSheet) {

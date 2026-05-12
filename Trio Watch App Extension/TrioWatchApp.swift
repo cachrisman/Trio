@@ -24,8 +24,9 @@ import WatchKit
 
             if newPhase == .active {
                 WatchState.shared.handleForegroundActiveEntry()
+                HapticBeacon.shared.start()
             } else if newPhase == .background || newPhase == .inactive {
-                WatchState.shared.handleForegroundInactiveOrBackground()
+                WatchState.shared.handleForegroundInactiveOrBackground(phase: watchScenePhaseToken(newPhase))
             }
 
             let forceFlush = newPhase != .active
