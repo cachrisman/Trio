@@ -1,701 +1,1168 @@
-From e120574f6cc5dcc8a34e98f1717bb4c8bf2a6671 Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sun, 3 May 2026 11:44:08 +0200
+From 0d8c092d55bd977dd26a67e16a331b659053a070 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sat, 23 May 2026 15:43:06 +0200
 Subject: [PATCH] feat: direct-ble-observer
 
 ---
- .../G7DirectBLEObserver.swift                 | 629 ++++++++++++++++++
- .../Views/ComplicationDebugView.swift         | 181 +++--
+ .../G7WatchSensorAdapter.swift                | 935 ++++++++++++++++++
+ .../Views/ComplicationDebugView.swift         | 555 +++++++----
  .../Views/GlucoseTrendView.swift              |  41 +-
- .../Views/TrioMainWatchView.swift             |  40 +-
- Trio Watch App Extension/WatchState.swift     | 114 +++-
+ .../Views/TrioMainWatchView.swift             | 150 +--
+ Trio Watch App Extension/WatchState.swift     | 428 +++++++-
  .../TrioWatchComplication.swift               |  37 +-
- .../TrioComplicationDataStore.swift           |  43 +-
- ...7-direct-ble-observer-build190-impl-log.md | 202 ++++++
- 8 files changed, 1144 insertions(+), 143 deletions(-)
- create mode 100644 Trio Watch App Extension/G7DirectBLEObserver.swift
- create mode 100644 docs/in-progress/watch-g7-direct-ble-observer/watch-g7-direct-ble-observer-build190-impl-log.md
+ .../TrioComplicationDataStore.swift           | 111 ++-
+ Trio/Sources/Models/WatchMessageKeys.swift    |   4 +
+ Trio/Sources/Models/WatchState.swift          |  12 +-
+ 9 files changed, 1942 insertions(+), 331 deletions(-)
+ create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
 
-diff --git a/Trio Watch App Extension/G7DirectBLEObserver.swift b/Trio Watch App Extension/G7DirectBLEObserver.swift
+diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..9402fd0f8
+index 000000000..9378d4556
 --- /dev/null
-+++ b/Trio Watch App Extension/G7DirectBLEObserver.swift	
-@@ -0,0 +1,629 @@
-+import CoreBluetooth
++++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
+@@ -0,0 +1,935 @@
 +import Foundation
++import G7SensorKit
++import WatchKit
 +
-+// G7 BLE observer for watchOS, mirroring G7SensorKit's passive listening pattern.
-+// State machine: LISTEN -> CB delivers peripheral -> CONNECT (no timeout) -> CONNECTED -> SETTLE 2s -> LISTEN
-+// Auth: enable notify on .authentication, wait for 0x05 (no fallback timer).
-+// Glucose: enable notify on .control after 0x05, then JUST LISTEN. Sensor pushes 0x4E unsolicited.
-+// Backfill: enable notify on .backfill after first glucose, parse 9-byte messages, buffer, flush on
-+//   backfillFinished (0x59) or disconnect. Application of buffered backfill data deferred to build 193.
-+// Dedup: sequence-number equality.
-+// Sensor identity: stores full name; matches via suffix(2) (matches G7SensorKit byte-for-byte).
-+//   Identity locked on first reliable glucose, mirroring G7SensorKit's didDiscoverNewSensor flow.
-+// Safety: stall-style session watchdog (bumped on every meaningful CB callback). Discovery, value-update,
-+//   and auth/control notify failures cancel immediately for fast recovery.
++/// Thin watch-specific wrapper around `G7Sensor` (build 195). Replaces `G7DirectBLEObserver` BLE stack;
++/// sensor identity and daily counters remain compatible with existing App Group / WatchState keys.
++///
++/// **Peripheral match / `suffix(2)`:** There is no `attachIntent` symbol in G7SensorKit. Dexcom advertising names are
++/// accepted in `G7Sensor.bluetoothManager(_:shouldConnectPeripheral:)` (`G7SensorKit/.../G7Sensor.swift`): when
++/// `sensorID` is set, connection uses `name.suffix(2) == sensorName.suffix(2)`; when nil, `.connect` for DXCM/DX02.
++/// Watch adapter mirrors the phone (`G7CGMManager`): one `G7Sensor` per process; identity changes go through
++/// `sensor.scanForNewSensor()` and `didDiscoverNewSensor` (name-gated) instead of reconstructing the sensor.
++///
++/// **Discovery:** `didDiscoverNewSensor` returns `true` only when the discovered peripheral's name suffix matches
++/// `expectedSensorName` (phone-pushed via WC). With no expected name, all discoveries are rejected.
++@MainActor
++final class G7WatchSensorAdapter: NSObject {
++    static let shared = G7WatchSensorAdapter()
 +
-+private enum G7DailyCounterKeys {
-+    static let calendarDay = "G7DirectBLEObserver.bleCountersCalendarDay"
-+    static let connects = "G7DirectBLEObserver.bleConnectsToday"
-+    static let egvs = "G7DirectBLEObserver.bleEGVsToday"
-+    static let connectionEvents = "G7DirectBLEObserver.bleConnectionEventsToday"
-+}
++    /// One `G7Sensor` instance per process. Mirrors `G7CGMManager` on the phone: identity changes
++    /// happen via `sensor.scanForNewSensor()` (clears the sensor's internal `sensorID` and starts a
++    /// new scan), not by reconstructing this reference. Reconstructing leaked CBCentralManager state.
++    private let sensor: G7Sensor
 +
-+private enum G7UUID {
-+    static let advertisement = CBUUID(string: "FEBC")
-+    static let dataService = CBUUID(string: "F8083532-849E-531C-C594-30F1F86A4EA5")
-+    static let control = CBUUID(string: "F8083534-849E-531C-C594-30F1F86A4EA5")
-+    static let authentication = CBUUID(string: "F8083535-849E-531C-C594-30F1F86A4EA5")
-+    static let backfill = CBUUID(string: "F8083536-849E-531C-C594-30F1F86A4EA5")
-+}
++    /// Name of the peripheral the live `G7Sensor` is currently bound to. Tracks the sensor's
++    /// internal `sensorID` (which is `private` on `G7Sensor`) by being set in `sensorDidConnect`
++    /// and cleared whenever we call `sensor.scanForNewSensor()`. Exposed for debug UI.
++    private(set) var boundSensorName: String?
 +
-+private enum G7Opcode {
-+    static let authChallengeRx: UInt8 = 0x05
-+    static let glucoseTx: UInt8 = 0x4E
-+    static let backfillFinished: UInt8 = 0x59
-+}
++    /// Transient flag set by `initiateScanForNewSensor()`; cleared either by the next
++    /// `handleSensorDisconnected` (when the rescan triggers a downstream disconnect) or by a
++    /// 2s auto-clear (when no downstream disconnect comes — e.g., we weren't connected). The
++    /// disconnect handler reads this to skip the pre-EGV counter increment for self-inflicted
++    /// disconnects (sensor swap, EOS teardown, stale-binding rebind).
++    private var isScanningForNewSensor = false
 +
-+private enum G7AlgorithmState {
-+    /// Mirrors G7SensorKit's AlgorithmState.State.ok = 6, the only state where hasReliableGlucose is true.
-+    static let ok: UInt8 = 6
-+}
++    private var extendedSession: WKExtendedRuntimeSession?
++    private var pendingChainSession: WKExtendedRuntimeSession?
++    /// Session for which `start()` was called but `extendedRuntimeSessionDidStart` has not yet run.
++    /// `extendedSession` is assigned **only** in `extendedRuntimeSessionDidStart` so it always refers to a started session.
++    private var sessionPendingDidStart: WKExtendedRuntimeSession?
 +
-+/// Mirrors G7SensorKit's PeripheralConnectionCommand. Distinguishes "this is my known sensor"
-+/// from "I have no known sensor yet, this is a new-sensor candidate."
-+private enum AttachIntent {
-+    case makeActive // suffix matches knownSensorName
-+    case connect // no knownSensorName, this candidate qualifies for new-sensor adoption
-+    case ignore
-+}
++    /// Read-only accessor for the currently started extended runtime session.
++    ///
++    /// The adapter may replace this reference from several paths (`stop()`,
++    /// `renewSessionIfNeeded()`, chain inside `extendedRuntimeSessionWillExpire`), so callers
++    /// must re-query on every use — never cache the returned reference.
++    var currentExtendedSession: WKExtendedRuntimeSession? { extendedSession }
 +
-+/// Backfill entry from G7SensorKit's 9-byte G7BackfillMessage layout.
-+private struct G7BackfillEntry {
-+    let timestamp: UInt32 // seconds since pairing
-+    let glucose: UInt16?
-+    let algorithmState: UInt8
-+    let displayOnly: Bool
-+    let trendRate: Double?
-+}
++    /// Read-only mirror of the adapter's authoritative `isStopped` flag.
++    ///
++    /// Use this instead of `WatchState.shared.g7DirectBleStatus == .off` when an external
++    /// subsystem needs to know whether the adapter was intentionally stopped. The published
++    /// status mirror defaults to `.off` at cold start (until `publishConnectionStatus()` runs)
++    /// and would falsely report "stopped" before the first BLE event. `isStopped` is mutated
++    /// only by `start()` (false) and `stop()` (true), so this accessor reflects intentional
++    /// lifecycle exactly.
++    var isIntentionallyStopped: Bool { isStopped }
 +
-+final class G7DirectBLEObserver: NSObject {
-+    static let shared = G7DirectBLEObserver()
++    // MARK: - Debug-UI accessors
 +
-+    private let queue = DispatchQueue(label: "org.nightscout.trio.watch.g7DirectBLE", qos: .utility)
-+    private var central: CBCentralManager!
-+    private var active: CBPeripheral?
-+    private var chars: [CBUUID: CBCharacteristic] = [:]
-+    private var sessionActivationDate: Date?
-+    private var lastReadingSequence: UInt16?
-+    private var lastSavedGlucoseValue: Int?
-+    private var sessionWatchdog: DispatchWorkItem?
-+    private var backfillBuffer: [G7BackfillEntry] = []
++    /// Current pre-EGV disconnect streak count (for `ComplicationDebugView`).
++    var consecutivePreEGVDisconnectsCount: Int { consecutivePreEGVDisconnects }
 +
-+    private var bleConnectsToday: Int = 0
-+    private var bleEGVsToday: Int = 0
-+    private var bleConnectionEventsToday: Int = 0
-+
-+    /// True between successful auth notify enable and receipt of bonded+authenticated 0x05.
-+    /// On remote disconnect of the active known sensor while pendingAuth, treat as suspected
-+    /// end-of-session and clear sensor identity (mirrors G7SensorKit).
-+    private var pendingAuth = false
-+
-+    private var isStopped = false
-+
-+    /// Stall-style watchdog: bumped on every meaningful CB callback, fires on silence.
-+    /// Substitute for G7SensorKit's per-GATT-op 2s timeouts. 20s of silence with no progress
-+    /// indicates a real stall (successful sessions show progress every <2s in practice).
-+    /// Note: post-EGV backfill silence can trip this if no backfill payloads arrive within
-+    /// the window; this is acceptable since we already have the EGV and recovery is just a
-+    /// disconnect+re-attach.
-+    private let sessionWatchdogTimeout: TimeInterval = 20
-+
-+    /// Full sensor name (e.g. "DXCMQU"). Mirrors G7SensorKit's `state.sensorID`.
-+    /// Matched against incoming peripheral names via suffix(2) to bridge advertisement-form
-+    /// (DXCMxx) vs full-name-form (Dexcomxx) of the same physical sensor.
-+    private var knownSensorName: String? {
-+        get { UserDefaults.standard.string(forKey: "G7DirectBLEObserver.sensorName") }
-+        set { UserDefaults.standard.set(newValue, forKey: "G7DirectBLEObserver.sensorName") }
++    /// Human-readable description of `extendedSession.state` ("notStarted", "running", "invalid")
++    /// or "nil" when no session is held. Use alongside `extSessionLastKnownActive` for diagnosis.
++    var extSessionState: String {
++        if let s = extendedSession {
++            return String(describing: s.state)
++        }
++        return "nil"
 +    }
 +
-+    /// CB peripheral identifier from the most recent successful connect.
-+    /// Always re-validated through attachIntent before reuse.
-+    private var persistedID: UUID? {
-+        get { UserDefaults.standard.string(forKey: "G7DirectBLEObserver.peripheralIdentifier").flatMap(UUID.init) }
-+        set { UserDefaults.standard.set(newValue?.uuidString, forKey: "G7DirectBLEObserver.peripheralIdentifier") }
++    /// Whether the adapter last observed an active extended runtime session. Fallback signal for
++    /// debug UI when `extendedSession.state` is not informative (e.g. session reference cleared
++    /// during teardown).
++    var extSessionLastKnownActive: Bool { lastKnownExtSessionActive }
++
++    /// Whether a chain-renewal `WKExtendedRuntimeSession` is currently awaiting `didStart`.
++    var hasPendingChainSession: Bool { pendingChainSession != nil }
++
++    private let timerQueue = DispatchQueue(label: "org.nightscout.trio.watch.g7WatchAdapter.timers", qos: .utility)
++    private var heartbeatTimer: DispatchSourceTimer?
++    private var expectedWindowTimer: DispatchSourceTimer?
++    private var expectedWindowNextEpoch: Int?
++
++    private var isStopped = false
++    /// `start()` re-entry gate. Set true on entry to `start()`, cleared in `stop()`. Replaces the
++    /// previous `sensor.isConnected` check (which crossed `bluetoothManager.managerQueue.sync`).
++    /// Multiple foreground re-entries collapse into a single setup pass per stop/start cycle.
++    private var isStarted = false
++    private var recoveryScheduled = false
++    /// `start()` idempotency flag. Gates the retroactive `expected_window` tick replay
++    /// in `reanchorExpectedWindowTimer(coldStart: true)` so it runs **once** per process /
++    /// stop-recovery cycle, not on every foreground active entry. Reset to `false` in `stop()`.
++    private var hasAnchored = false
++    private var bleConnectsToday: Int = 0
++    private var bleEGVsToday: Int = 0
++    /// G7 sequence of the first EGV observed today; nil until the first EGV of the calendar day.
++    /// Used to derive `expected readings since first observed today` as the denominator for the
++    /// `Connects:` / `EGVs:` debug rows. Reset on day rollover and on sensor swap (sequence regression).
++    private var bleFirstSequenceToday: Int?
++    private var sessionConnectAt: Date?
++
++    /// Set on `sensorDidConnect`, cleared on `sensorDisconnected`; read from telemetry / ExtensionDelegate.
++    var adapterSessionID: String?
++
++    /// UserDefaults is thread-safe; exposed for debug UI without `nonisolated(unsafe)`.
++    var telemetrySensorName: String {
++        UserDefaults.standard.string(forKey: Keys.sensorName) ?? "nil"
++    }
++
++    private var sessionPhase: AdapterSessionPhase = .preEGV
++    private var consecutivePreEGVDisconnects = 0
++    private var hadEGVThisSession = false
++    private var loggedTimeToFirstEGVForSession = false
++
++    private var lastKnownScenePhase: String = "unknown"
++
++    private var lastKnownExtSessionActive = false
++
++    private var lastReadingSequence: UInt16?
++    private var lastSavedGlucoseValue: Int?
++    private var sessionActivationDate: Date?
++
++    private enum Keys {
++        static let sensorName = "G7DirectBLEObserver.sensorName"
++        static let lastEGVEpoch = "G7WatchAdapter.lastEGVEpoch"
++        static let calendarDay = "G7DirectBLEObserver.bleCountersCalendarDay"
++        static let connects = "G7DirectBLEObserver.bleConnectsToday"
++        static let egvs = "G7DirectBLEObserver.bleEGVsToday"
++        static let firstSequenceToday = "G7WatchAdapter.bleFirstSequenceToday"
++    }
++
++    private enum AdapterSessionPhase: String {
++        case preEGV = "pre_egv"
++        case postEGV = "post_egv"
++    }
++
++    /// Phone-pushed sensor identity used to gate `didDiscoverNewSensor`. `nil` means idle (no
++    /// expected sensor) or post-EOS (we deliberately reject all discoveries until the phone
++    /// pushes a new name). UserDefaults-backed so it persists across launches and so the
++    /// `nonisolated` discovery callback can read it synchronously from G7Sensor's `delegateQueue`.
++    nonisolated var expectedSensorName: String? {
++        get { UserDefaults.standard.string(forKey: Keys.sensorName) }
++        set { UserDefaults.standard.set(newValue, forKey: Keys.sensorName) }
 +    }
 +
 +    private override init() {
++        // Always construct in scan mode; identity is established via `didDiscoverNewSensor` once
++        // the phone has pushed an `expectedSensorName` (or, on cold start, from UserDefaults).
++        sensor = G7Sensor(sensorID: nil)
 +        super.init()
-+        central = CBCentralManager(
-+            delegate: self, queue: queue,
-+            options: [CBCentralManagerOptionRestoreIdentifierKey: "org.nightscout.trio.watch.g7DirectBLEObserver"]
-+        )
++        sensor.delegate = self
 +        loadDailyCounters()
++        if expectedSensorName != nil {
++            sensor.resumeScanning()
++        }
++    }
++
++    /// Begin (or no-op resume) the G7 BLE pipeline.
++    ///
++    /// **Re-entry invariant:** `isStarted` guards the body so multiple foreground re-entries
++    /// (scene-phase flicker, redundant `applyForegroundActiveEntry` calls) collapse into a single
++    /// setup pass per stop/start cycle. The retroactive `expected_window` replay is further
++    /// gated by `hasAnchored` so it runs once per process / stop-recovery cycle.
++    func start() {
++        guard !isStarted else { return }
++        isStarted = true
++        stopTimers()
++        isStopped = false
++        recoveryScheduled = false
++        loadDailyCountersIfNewCalendarDay()
++        startHeartbeatTimer()
++        guard let name = expectedSensorName else {
++            log("start_skipped_no_sensor")
++            return
++        }
++        // If the live sensor isn't bound to our expected name (cold start, post-EOS, or sensor
++        // swap), forget any cached peripheral and start a fresh scan. `didDiscoverNewSensor`
++        // gates the rebind by `expectedSensorName` suffix.
++        if boundSensorName != name {
++            boundSensorName = nil
++            initiateScanForNewSensor()
++        }
++        if !hasAnchored, let epoch = UserDefaults.standard.object(forKey: Keys.lastEGVEpoch) as? Int {
++            reanchorExpectedWindowTimer(fromEpoch: epoch, coldStart: true)
++            hasAnchored = true
++        }
++        sensor.resumeScanning()
++        publishConnectionStatus()
++    }
++
++    /// Tear down the G7 BLE pipeline.
++    ///
++    /// **Invariant:** clearing `hasAnchored` here ensures the next `start()` after a real stop
++    /// re-runs the retroactive `expected_window` tick replay (e.g., post-recovery from an
++    /// extended-runtime invalidation error). Foreground re-entries that did **not** go through
++    /// `stop()` continue to skip the replay.
++    func stop() {
++        isStopped = true
++        isStarted = false
++        lastKnownExtSessionActive = false
++        hasAnchored = false
++        extendedSession?.invalidate()
++        pendingChainSession?.invalidate()
++        sessionPendingDidStart?.invalidate()
++        extendedSession = nil
++        pendingChainSession = nil
++        sessionPendingDidStart = nil
++        stopTimers()
++        sensor.stopScanning()
++        WatchState.shared.applyG7DirectBleStatus(.off)
 +    }
 +
 +    func applyForegroundActiveEntry() {
++        lastKnownScenePhase = "active"
 +        start()
++        renewSessionIfNeeded()
 +    }
 +
 +    func noteForegroundInactiveOrBackground(_ phase: String) {
-+        log("foreground_inactive_or_background phase=\(phase) policy=no_teardown_stub")
++        lastKnownScenePhase = phase
 +    }
 +
-+    func stop() {
-+        Task { @MainActor in
-+            WatchState.shared.applyG7DirectBleStatus(.off)
++    private func renewSessionIfNeeded() {
++        guard extendedSession?.state != .running, sessionPendingDidStart == nil else { return }
++        let session = WKExtendedRuntimeSession()
++        session.delegate = self
++        sessionPendingDidStart = session
++        session.start()
++        log("ext_session_start_requested_foreground")
++    }
++
++    /// Phone relay (WatchConnectivity): persist peripheral name and rescan. Logs **`sensor_name_set_from_phone`** when the stored name changes (dedupes overlapping WC paths).
++    func setActiveSensorName(_ name: String?) {
++        let willMutate = name != expectedSensorName
++        applyNewSensorName(name)
++        guard willMutate else { return }
++        log("sensor_name_set_from_phone", "name=\(name ?? "nil")")
++    }
++
++    /// Called when WatchConnectivity (or another owner) pushes a new Dexcom peripheral name.
++    /// Updates `expectedSensorName`; if the name changed and the adapter is not stopped, drops
++    /// any current binding and starts a fresh scan via `sensor.scanForNewSensor()`. The single
++    /// `G7Sensor` instance is preserved across name changes (mirrors phone `G7CGMManager`).
++    func applyNewSensorName(_ name: String?) {
++        let oldName = expectedSensorName
++        guard name != oldName else { return }
++        loadDailyCountersIfNewCalendarDay()
++        let wasNil = (oldName == nil)
++        expectedSensorName = name
++        consecutivePreEGVDisconnects = 0
++        // Clear session-scoped EGV state so the first reading from the new sensor is not
++        // deduped against the previous sensor's last sequence, does not compute delta
++        // against the previous sensor's glucose value, and does not reuse the previous
++        // sensor's activation date for the reading timestamp. `handleSensorDisconnected`
++        // (which fires when `initiateScanForNewSensor()` cancels the active peripheral)
++        // does not clear these fields — only `performEndOfSessionTeardown` does, and a
++        // phone-pushed sensor swap can happen without an EOS-marked EGV arriving first.
++        lastReadingSequence = nil
++        lastSavedGlucoseValue = nil
++        sessionActivationDate = nil
++        // Clear the per-day denominator anchor for the debug "Connects: X / Y" and "EGVs: X / Y"
++        // rows. The existing regression check in `handleSensorDidRead` only resets the anchor
++        // when the new sensor's first sequence is *lower* than the previous anchor — a new G7's
++        // starting sequence can land above the old anchor, in which case the denominator would
++        // misleadingly straddle two sensors. `applyNewSensorName` is the authoritative sensor-
++        // identity transition, so reset the anchor here regardless.
++        bleFirstSequenceToday = nil
++        UserDefaults.standard.removeObject(forKey: Keys.firstSequenceToday)
++        mirrorDailyCountersToWatchState()
++        if !isStopped {
++            boundSensorName = nil
++            initiateScanForNewSensor()
++            if wasNil, name != nil { log("start_recovered_from_nil_sensor") }
 +        }
-+        queue.async { [weak self] in
-+            guard let self else { return }
-+            self.isStopped = true
-+            self.cancelSessionWatchdog()
-+            self.flushBackfillBuffer(reason: "stop")
-+            if self.central.isScanning { self.central.stopScan() }
-+            if let p = self.active { self.central.cancelPeripheralConnection(p) }
-+            self.active = nil
-+            self.chars.removeAll()
-+            self.sessionActivationDate = nil
-+            self.pendingAuth = false
-+            self.lastSavedGlucoseValue = nil
-+            self.lastReadingSequence = nil
-+            self.log("stop_completed")
++        if name == nil {
++            log("sensor_name_cleared")
++        }
++        publishConnectionStatus()
++    }
++
++    // MARK: - Logging
++
++    private func log(_ eventName: String, _ fields: String = "") {
++        let sid = adapterSessionID ?? "nil"
++        let sensorName = expectedSensorName ?? "nil"
++        Task {
++            await WatchLogger.shared.log(
++                G7StructuredTelemetryLogLine.formatBleModule(
++                    sensorName: sensorName,
++                    event: eventName,
++                    fields: fields,
++                    g7Session: sid
++                )
++            )
 +        }
 +    }
 +
-+    func start() {
-+        queue.async { [weak self] in
-+            guard let self else { return }
-+            self.isStopped = false
-+            self.loadDailyCountersIfNewCalendarDay()
-+            self.scanForPeripheral()
-+        }
++    // MARK: - Timers
++
++    private func stopTimers() {
++        heartbeatTimer?.cancel()
++        heartbeatTimer = nil
++        expectedWindowTimer?.cancel()
++        expectedWindowTimer = nil
++        expectedWindowNextEpoch = nil
 +    }
 +
-+    // MARK: - Daily counters
++    private func startHeartbeatTimer() {
++        heartbeatTimer?.cancel()
++        let interval: TimeInterval = 5 * 60
++        let timer = DispatchSource.makeTimerSource(queue: timerQueue)
++        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(2))
++        timer.setEventHandler { [weak self] in
++            Task { @MainActor [weak self] in
++                self?.emitHeartbeat()
++            }
++        }
++        timer.resume()
++        heartbeatTimer = timer
++    }
++
++    private func emitHeartbeat() {
++        let extStateRaw: String
++        if let s = extendedSession {
++            extStateRaw = String(describing: s.state)
++        } else {
++            extStateRaw = "nil"
++        }
++        let active = lastKnownExtSessionActive
++        log("heartbeat", "ext_session_active=\(active) ext_session_state=\(extStateRaw)")
++    }
++
++    private func reanchorExpectedWindowTimer(fromEpoch lastEpoch: Int, coldStart: Bool) {
++        let nowEpoch = Int(Date().timeIntervalSince1970)
++        var missedCount = 0
++        var lastMissed: Int?
++        var e = lastEpoch + 300
++        while e < nowEpoch {
++            missedCount += 1
++            lastMissed = e
++            e += 300
++        }
++
++        let retro: [Int]
++        if coldStart, missedCount > 50 {
++            let skip = missedCount - 50
++            let startEpoch = lastEpoch + 300 + skip * 300
++            retro = Array(stride(from: startEpoch, to: nowEpoch, by: 300))
++        } else if missedCount > 0 {
++            retro = Array(stride(from: lastEpoch + 300, to: nowEpoch, by: 300))
++        } else {
++            retro = []
++        }
++        for epoch in retro {
++            emitExpectedWindowTick(epoch: epoch, retroactive: true)
++        }
++
++        var nextEpoch: Int
++        if let lm = lastMissed {
++            nextEpoch = lm + 300
++        } else {
++            nextEpoch = lastEpoch + 300
++        }
++        while nextEpoch < nowEpoch {
++            nextEpoch += 300
++        }
++        let delay = max(1.0, Double(nextEpoch) - Date().timeIntervalSince1970)
++        scheduleWindowTick(deadline: .now() + delay, nextEpoch: nextEpoch)
++    }
++
++    private func scheduleWindowTick(deadline: DispatchTime, nextEpoch: Int) {
++        expectedWindowTimer?.cancel()
++        expectedWindowNextEpoch = nextEpoch
++        let timer = DispatchSource.makeTimerSource(queue: timerQueue)
++        timer.schedule(deadline: deadline, leeway: .seconds(2))
++        timer.setEventHandler { [weak self] in
++            Task { @MainActor [weak self] in
++                self?.fireExpectedWindowTick()
++            }
++        }
++        timer.resume()
++        expectedWindowTimer = timer
++    }
++
++    private func fireExpectedWindowTick() {
++        guard let epoch = expectedWindowNextEpoch else { return }
++        emitExpectedWindowTick(epoch: epoch, retroactive: false)
++        reanchorExpectedWindowTimer(fromEpoch: epoch, coldStart: false)
++    }
++
++    private func emitExpectedWindowTick(epoch: Int, retroactive: Bool) {
++        let lastSuccess = UserDefaults.standard.object(forKey: Keys.lastEGVEpoch) as? Int ?? -1
++        let eligible = !isStopped && expectedSensorName != nil
++        let reason = eligible ? "ok" : (isStopped ? "stopped" : "no_sensor")
++
++        log(
++            "expected_window",
++            "tick_epoch=\(epoch) last_success_epoch=\(lastSuccess) eligible=\(eligible) reason=\(reason) retroactive=\(retroactive) ext_session_active=\(lastKnownExtSessionActive)"
++        )
++    }
++
++    // MARK: - Daily counters (Task B2 — parity with `G7DirectBLEObserver`; keys `G7DirectBLEObserver.bleCountersCalendarDay` / `bleConnectsToday` / `bleEGVsToday`)
 +
 +    private func loadDailyCounters() {
 +        let dayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
-+        let storedDay = UserDefaults.standard.double(forKey: G7DailyCounterKeys.calendarDay)
++        let storedDay = UserDefaults.standard.double(forKey: Keys.calendarDay)
 +        if storedDay != dayStart {
 +            bleConnectsToday = 0
 +            bleEGVsToday = 0
-+            bleConnectionEventsToday = 0
-+            UserDefaults.standard.set(dayStart, forKey: G7DailyCounterKeys.calendarDay)
++            bleFirstSequenceToday = nil
++            UserDefaults.standard.set(dayStart, forKey: Keys.calendarDay)
++            UserDefaults.standard.removeObject(forKey: Keys.firstSequenceToday)
 +            persistDailyCounters()
 +        } else {
-+            bleConnectsToday = UserDefaults.standard.integer(forKey: G7DailyCounterKeys.connects)
-+            bleEGVsToday = UserDefaults.standard.integer(forKey: G7DailyCounterKeys.egvs)
-+            bleConnectionEventsToday = UserDefaults.standard.integer(forKey: G7DailyCounterKeys.connectionEvents)
++            bleConnectsToday = UserDefaults.standard.integer(forKey: Keys.connects)
++            bleEGVsToday = UserDefaults.standard.integer(forKey: Keys.egvs)
++            bleFirstSequenceToday = UserDefaults.standard.object(forKey: Keys.firstSequenceToday) as? Int
 +        }
 +        mirrorDailyCountersToWatchState()
 +    }
 +
 +    private func persistDailyCounters() {
-+        UserDefaults.standard.set(bleConnectsToday, forKey: G7DailyCounterKeys.connects)
-+        UserDefaults.standard.set(bleEGVsToday, forKey: G7DailyCounterKeys.egvs)
-+        UserDefaults.standard.set(bleConnectionEventsToday, forKey: G7DailyCounterKeys.connectionEvents)
++        UserDefaults.standard.set(bleConnectsToday, forKey: Keys.connects)
++        UserDefaults.standard.set(bleEGVsToday, forKey: Keys.egvs)
 +    }
 +
 +    private func loadDailyCountersIfNewCalendarDay() {
 +        let dayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
-+        let storedDay = UserDefaults.standard.double(forKey: G7DailyCounterKeys.calendarDay)
++        let storedDay = UserDefaults.standard.double(forKey: Keys.calendarDay)
 +        guard storedDay != dayStart else { return }
 +        bleConnectsToday = 0
 +        bleEGVsToday = 0
-+        bleConnectionEventsToday = 0
-+        UserDefaults.standard.set(dayStart, forKey: G7DailyCounterKeys.calendarDay)
++        bleFirstSequenceToday = nil
++        UserDefaults.standard.set(dayStart, forKey: Keys.calendarDay)
++        UserDefaults.standard.removeObject(forKey: Keys.firstSequenceToday)
 +        persistDailyCounters()
 +        mirrorDailyCountersToWatchState()
 +    }
 +
 +    private func mirrorDailyCountersToWatchState() {
-+        Task { @MainActor in
-+            WatchState.shared.bleConnectsToday = bleConnectsToday
-+            WatchState.shared.bleEGVsToday = bleEGVsToday
-+            WatchState.shared.bleConnectionEventsToday = bleConnectionEventsToday
++        WatchState.shared.bleConnectsToday = bleConnectsToday
++        WatchState.shared.bleEGVsToday = bleEGVsToday
++        WatchState.shared.bleFirstSequenceToday = bleFirstSequenceToday
++    }
++
++    /// Minutes since the last persisted EGV epoch (`Keys.lastEGVEpoch`). Returns -1 when no EGV
++    /// has been observed. Internal access so the debug view can render it.
++    func minutesSinceLastEGV() -> Int {
++        guard let epoch = UserDefaults.standard.object(forKey: Keys.lastEGVEpoch) as? Int else {
++            return -1
++        }
++        let now = Int(Date().timeIntervalSince1970)
++        return max(0, (now - epoch) / 60)
++    }
++
++    /// Calls `sensor.scanForNewSensor()` with `isScanningForNewSensor` set so the downstream
++    /// disconnect callback (if any) skips the pre-EGV counter increment.
++    ///
++    /// **Auto-clear:** `bluetoothManager.disconnect()` only fires a callback when an active
++    /// peripheral exists. When we initiate a rescan while not connected (cold start, inside a
++    /// disconnect-driven path), no callback comes and a sticky `true` flag would suppress the
++    /// next legitimate disconnect. Clearing after a short timeout bounds that window.
++    private func initiateScanForNewSensor() {
++        isScanningForNewSensor = true
++        sensor.scanForNewSensor()
++        Task { @MainActor [weak self] in
++            try? await Task.sleep(nanoseconds: 2_000_000_000)
++            self?.isScanningForNewSensor = false
 +        }
 +    }
 +
-+    private func noteStatus(_ status: G7DirectBLEStatus) {
-+        Task { @MainActor in
-+            WatchState.shared.applyG7DirectBleStatus(status)
++    private func publishConnectionStatus() {
++        let s = sensor
++        let status: G7DirectBLEStatus
++        if s.isConnected {
++            status = .active
++        } else if s.isScanning {
++            status = .scanning
++        } else if isStopped {
++            status = .off
++        } else {
++            status = .retrieving
 +        }
++        WatchState.shared.applyG7DirectBleStatus(status)
 +    }
 +
-+    // MARK: - Attach ladder
-+
-+    private func scanForPeripheral() {
-+        guard !isStopped, central.state == .poweredOn, active == nil else { return }
-+
-+        // 1. Stored identifier (validated via attachIntent)
-+        if let id = persistedID,
-+           let p = central.retrievePeripherals(withIdentifiers: [id]).first,
-+           attachIntent(for: p) != .ignore {
-+            return handle(p)
-+        }
-+
-+        // 2. OS-connected peripheral, both UUIDs (matches G7SensorKit)
-+        for p in central.retrieveConnectedPeripherals(withServices: [G7UUID.advertisement, G7UUID.dataService])
-+            where attachIntent(for: p) != .ignore { return handle(p) }
-+
-+        // 3. Passive scan + connection events. CB will deliver via delegates.
-+        central.registerForConnectionEvents(options: [
-+            CBConnectionEventMatchingOption.serviceUUIDs: [G7UUID.advertisement, G7UUID.dataService]
-+        ])
-+        central.scanForPeripherals(withServices: [G7UUID.advertisement], options: nil)
-+        log("scan_started known_sensor=\(knownSensorName ?? "nil")")
-+        noteStatus(.searching)
-+    }
-+
-+    /// 2-second settle delay before re-entering listen state. Mirrors G7SensorKit's scanAfterDelay.
-+    private func scanAfterDelay() {
-+        queue.asyncAfter(deadline: .now() + 2) { [weak self] in self?.scanForPeripheral() }
-+    }
-+
-+    /// Mirrors G7SensorKit's shouldConnectPeripheral byte-for-byte for candidate rules.
-+    /// Adoption flow (auto-accept first reliable EGV) differs from G7SensorKit's
-+    /// delegate-mediated flow — see summary table.
-+    private func attachIntent(for p: CBPeripheral) -> AttachIntent {
-+        guard let name = p.name else { return .ignore }
-+        guard name.hasPrefix("DXCM") || name.hasPrefix("DX02") else { return .ignore }
-+
-+        if let known = knownSensorName, name.suffix(2) == known.suffix(2) {
-+            return .makeActive
-+        } else if knownSensorName == nil {
-+            return .connect
-+        }
-+        return .ignore
-+    }
-+
-+    private func handle(_ p: CBPeripheral) {
-+        guard !isStopped else {
-+            log("connect_skipped reason=stopped peripheral=\(p.identifier.uuidString)")
-+            return
-+        }
-+        let intent = attachIntent(for: p)
-+        guard intent != .ignore, active == nil else { return }
-+        active = p
-+        p.delegate = self
-+        // Defensive cleanup of any leftover buffered backfill from prior abnormal teardown.
-+        backfillBuffer.removeAll()
-+        if central.isScanning { central.stopScan() }
-+        central.connect(p, options: nil) // No connect timeout. Let CB do its thing.
-+        bumpSessionWatchdog(progress: "connect_called")
-+        log("connect_called intent=\(intent) peripheral=\(p.identifier.uuidString) name=\(p.name ?? "nil")")
-+    }
-+
-+    // MARK: - Stall-style session watchdog
-+
-+    /// Re-arms the watchdog with a fresh deadline. Called after every meaningful CB callback
-+    /// so a healthy long-lived session never trips the timer; only true silence does.
-+    /// The progress label is captured into the watchdog closure so when the timer fires, the
-+    /// log identifies the LAST successful step before silence (not the cause of the stall).
-+    private func bumpSessionWatchdog(progress: String) {
-+        sessionWatchdog?.cancel()
-+        let work = DispatchWorkItem { [weak self] in
-+            guard let self, let p = self.active else { return }
-+            self.log("session_watchdog_fired last_progress=\(progress) peripheral=\(p.identifier.uuidString)")
-+            self.central.cancelPeripheralConnection(p)
-+        }
-+        sessionWatchdog = work
-+        queue.asyncAfter(deadline: .now() + sessionWatchdogTimeout, execute: work)
-+    }
-+
-+    private func cancelSessionWatchdog() {
-+        sessionWatchdog?.cancel()
-+        sessionWatchdog = nil
-+    }
-+
-+    // MARK: - Glucose parsing & save
-+
-+    private func parseGlucose(_ data: Data) {
-+        guard data.count >= 19, data[1] == 0 else { return }
-+        let messageTimestamp = UInt32(littleEndian: data.integer(at: 2))
-+        let sequence = UInt16(littleEndian: data.integer(at: 6))
-+        let age = UInt16(littleEndian: data.integer(at: 10))
-+        let glucoseBytes = UInt16(littleEndian: data.integer(at: 12))
-+        let algorithmState = data[14]
-+        guard glucoseBytes != 0xffff else { return }
-+        let glucose = Int(glucoseBytes & 0x0fff)
-+
-+        // Algorithm-state filtering: only state 6 (.ok) is "hasReliableGlucose".
-+        guard algorithmState == G7AlgorithmState.ok else {
-+            log("egv_unreliable algorithm_state=\(algorithmState) glucose=\(glucose) sequence=\(sequence)")
-+            return
-+        }
-+
-+        // Sequence-based dedup (one per real reading).
-+        if let lastSeq = lastReadingSequence, lastSeq == sequence {
-+            log("egv_dedup glucose=\(glucose) sequence=\(sequence)")
-+            return
-+        }
-+        lastReadingSequence = sequence
-+
-+        noteStatus(.active)
-+
-+        bleEGVsToday += 1
-+        persistDailyCounters()
-+        mirrorDailyCountersToWatchState()
-+
-+        if sessionActivationDate == nil {
-+            sessionActivationDate = Date().addingTimeInterval(-TimeInterval(messageTimestamp))
-+        }
-+        guard let activation = sessionActivationDate else { return }
-+        let readingTs = messageTimestamp >= UInt32(age) ? messageTimestamp - UInt32(age) : messageTimestamp
-+        let readingDate = activation.addingTimeInterval(TimeInterval(readingTs))
-+        let trendRate = data[15] == 0x7f ? nil : Double(Int8(bitPattern: data[15])) / 10.0
-+        let trend = trendArrow(trendRate)
-+
-+        // Lock sensor identity on FIRST RELIABLE GLUCOSE. Mirrors G7SensorKit's
-+        // handleGlucoseMessage flow: identity is set when delegate accepts the new sensor,
-+        // not at auth completion. We auto-accept (no UI), so the moment we have a reliable
-+        // reading is the moment we lock.
-+        if knownSensorName == nil, let name = active?.name {
-+            knownSensorName = name
-+            log("sensor_name_locked name=\(name)")
-+        }
-+
-+        // Lazy-enable backfill notify on first glucose (matches G7SensorKit ordering).
-+        if let p = active, let bf = chars[G7UUID.backfill], !bf.isNotifying {
-+            log("backfill_notify_requested")
-+            p.setNotifyValue(true, for: bf)
-+        }
-+
-+        bumpSessionWatchdog(progress: "egv_received")
-+
-+        let delta: String = {
-+            guard let previous = lastSavedGlucoseValue else { return "--" }
-+            return String(format: "%+d", glucose - previous)
++    private func triggerEndOfSessionFromEGV(reason: String, message: G7GlucoseMessage) {
++        // Adapter is `@MainActor`; this path runs only after delegate hop — safe to read battery on-device.
++        let battery: Int = {
++            let device = WKInterfaceDevice.current()
++            guard device.isBatteryMonitoringEnabled else { return -1 }
++            let level = device.batteryLevel
++            guard level >= 0 else { return -1 }
++            return Int(round(level * 100))
 +        }()
-+        lastSavedGlucoseValue = glucose
-+
-+        let snapshot = TrioComplicationSnapshot(
-+            glucose: "\(glucose)", trend: trend, delta: delta,
-+            readingDate: readingDate, date: Date(),
-+            state: "g7_direct_ble", glucoseColor: nil, source: .g7DirectBLE
++        let sensorAgeSeconds = Int(Double(message.messageTimestamp) - Double(message.age))
++        log(
++            "eos_detected",
++            "reason=\(reason) battery_level_percent=\(battery) state=\(message.algorithmState.rawValue) sensor_age_s=\(sensorAgeSeconds)"
 +        )
-+        log("egv_received glucose=\(glucose) delta=\(delta) sequence=\(sequence) trend=\(trend) algorithm_state=\(algorithmState) age_s=\(age) message_timestamp=\(messageTimestamp) reading_epoch=\(Int(readingDate.timeIntervalSince1970))")
-+
-+        Task { @MainActor in
-+            TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
-+            WatchState.shared.applyG7DirectBleSnapshot(snapshot)
-+        }
++        performEndOfSessionTeardown()
 +    }
 +
-+    private func trendArrow(_ rate: Double?) -> String {
-+        guard let r = rate else { return "" }
-+        switch r {
-+        case ..<(-2): return "DoubleDown"
-+        case ..<(-1): return "SingleDown"
-+        case ..<1: return "Flat"
-+        case ..<2: return "SingleUp"
-+        default: return "DoubleUp"
-+        }
++    /// Disconnect-path EOS: triggered when the sensor disconnects with `suspectedEndOfSession=true`
++    /// from `G7Sensor.peripheralDidDisconnect` (normal remote disconnect without auth — the G7 app
++    /// stopped the session). No `G7GlucoseMessage` is available here, so battery/age fields are omitted.
++    private func triggerEndOfSessionFromDisconnect() {
++        log("eos_detected", "reason=disconnect_suspected_eos")
++        performEndOfSessionTeardown()
 +    }
 +
-+    // MARK: - Backfill
-+
-+    /// Parses G7SensorKit's 9-byte G7BackfillMessage layout (verified byte-for-byte against
-+    /// G7BackfillMessage.swift). Layout:
-+    ///   bytes 0-2: timestamp (3 bytes, seconds since pairing)
-+    ///   byte  3:   unused/padding
-+    ///   bytes 4-5: glucose (UInt16, mask 0xfff if not 0xffff)
-+    ///   byte  6:   algorithm state
-+    ///   byte  7:   flags (bit 0x10 = glucoseIsDisplayOnly)
-+    ///   byte  8:   trend rate (Int8 / 10.0; 0x7f = nil)
-+    private func parseBackfill(_ data: Data) -> G7BackfillEntry? {
-+        guard data.count == 9 else { return nil }
-+        let timestamp = UInt32(data[0]) | (UInt32(data[1]) << 8) | (UInt32(data[2]) << 16)
-+        let glucoseBytes = UInt16(littleEndian: data.integer(at: 4))
-+        let glucose: UInt16? = (glucoseBytes != 0xffff) ? (glucoseBytes & 0x0fff) : nil
-+        let algoState = data[6]
-+        let displayOnly = (data[7] & 0x10) != 0
-+        let trendRate = data[8] == 0x7f ? nil : Double(Int8(bitPattern: data[8])) / 10.0
-+        return G7BackfillEntry(
-+            timestamp: timestamp, glucose: glucose,
-+            algorithmState: algoState, displayOnly: displayOnly, trendRate: trendRate
-+        )
-+    }
-+
-+    /// Mirrors G7SensorKit's flushBackfillBuffer. Triggered on backfillFinished (0x59) on control,
-+    /// or on disconnect (since backfillFinished may not arrive). Build 192: log only.
-+    /// Build 193 will route entries to a historical-readings consumer.
-+    private func flushBackfillBuffer(reason: String) {
-+        guard !backfillBuffer.isEmpty else { return }
-+        log("backfill_flush count=\(backfillBuffer.count) reason=\(reason)")
-+        for entry in backfillBuffer {
-+            log("backfill_entry timestamp=\(entry.timestamp) glucose=\(entry.glucose.map(String.init) ?? "nil") algorithm_state=\(entry.algorithmState) display_only=\(entry.displayOnly) trend=\(entry.trendRate.map { String(format: "%.1f", $0) } ?? "nil")")
-+        }
-+        backfillBuffer.removeAll()
-+    }
-+
-+    private func log(_ msg: String) {
-+        Task { await WatchLogger.shared.log("event=g7_ble \(msg)") }
++    /// Shared post-EOS state teardown. Clears the expected/bound names, resets the disconnect
++    /// counter and session-scoped state, and asks the live `G7Sensor` to forget its peripheral
++    /// and start a fresh scan. With `expectedSensorName == nil`, `didDiscoverNewSensor` rejects
++    /// every discovery until the phone pushes a new name. Status is published as `.scanning`
++    /// (we are actively scanning, just for nothing the adapter will accept yet).
++    private func performEndOfSessionTeardown() {
++        expectedSensorName = nil
++        boundSensorName = nil
++        consecutivePreEGVDisconnects = 0
++        lastReadingSequence = nil
++        lastSavedGlucoseValue = nil
++        sessionActivationDate = nil
++        // Same reasoning as `applyNewSensorName`: EOS ends the current sensor's contribution to
++        // the daily denominator. Without this, a watch process that restarts between EOS and a
++        // new sensor name being pushed could read a stale `Keys.firstSequenceToday` and use it
++        // against the next sensor's sequences.
++        bleFirstSequenceToday = nil
++        UserDefaults.standard.removeObject(forKey: Keys.firstSequenceToday)
++        mirrorDailyCountersToWatchState()
++        sessionPhase = .preEGV
++        initiateScanForNewSensor()
++        WatchState.shared.applyG7DirectBleStatus(.scanning)
 +    }
 +}
 +
-+// MARK: - Central delegate
++// MARK: - G7SensorDelegate (G7SensorKit invokes these on `delegateQueue`; nonisolated stubs hop to `@MainActor` adapter.)
 +
-+extension G7DirectBLEObserver: CBCentralManagerDelegate {
-+    func centralManagerDidUpdateState(_ c: CBCentralManager) {
-+        log("central_state state=\(c.state.rawValue)")
-+        switch c.state {
-+        case .poweredOff, .unauthorized, .unsupported:
-+            if !isStopped { noteStatus(.unavailable) }
-+        default:
-+            break
++extension G7WatchSensorAdapter: G7SensorDelegate {
++    nonisolated func sensorDidConnect(_ sensor: G7Sensor, name: String) {
++        Task { @MainActor in
++            G7WatchSensorAdapter.shared.handleSensorDidConnect(name: name)
 +        }
-+        if c.state == .poweredOn { scanForPeripheral() }
 +    }
 +
-+    func centralManager(_ c: CBCentralManager, willRestoreState dict: [String: Any]) {
-+        let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
-+        for p in restored where attachIntent(for: p) != .ignore { handle(p) }
-+    }
-+
-+    func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
-+                        advertisementData: [String: Any], rssi RSSI: NSNumber) {
-+        if attachIntent(for: p) != .ignore { handle(p) }
-+    }
-+
-+    func centralManager(_ c: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent,
-+                        for p: CBPeripheral) {
-+        if event == .peerConnected {
-+            bleConnectionEventsToday += 1
-+            persistDailyCounters()
-+            mirrorDailyCountersToWatchState()
++    nonisolated func sensorDisconnected(_ sensor: G7Sensor, suspectedEndOfSession: Bool) {
++        Task { @MainActor in
++            G7WatchSensorAdapter.shared.handleSensorDisconnected(suspectedEndOfSession: suspectedEndOfSession)
 +        }
-+        if event == .peerConnected, active == nil, attachIntent(for: p) != .ignore { handle(p) }
 +    }
 +
-+    func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
-+        log("did_connect peripheral=\(p.identifier.uuidString) name=\(p.name ?? "nil")")
-+        guard active?.identifier == p.identifier else {
-+            log("did_connect_ignored peripheral=\(p.identifier.uuidString) active=\(active?.identifier.uuidString ?? "nil")")
-+            return
++    nonisolated func sensor(_ sensor: G7Sensor, didError error: Error) {
++        Task { @MainActor in
++            G7WatchSensorAdapter.shared.log("sensor_error", "error=\(String(describing: error))")
 +        }
-+        noteStatus(.connecting)
-+        persistedID = p.identifier
-+        if c.isScanning { c.stopScan() }
-+        bumpSessionWatchdog(progress: "did_connect")
++    }
++
++    nonisolated func sensor(_ sensor: G7Sensor, logComms comms: String) {
++        _ = comms
++    }
++
++    nonisolated func sensor(_ sensor: G7Sensor, didRead glucose: G7GlucoseMessage) {
++        Task { @MainActor in
++            G7WatchSensorAdapter.shared.handleSensorDidRead(glucose: glucose)
++        }
++    }
++
++    nonisolated func sensor(_ sensor: G7Sensor, didReadBackfill backfill: [G7BackfillMessage]) {
++        Task { @MainActor in
++            G7WatchSensorAdapter.shared.handleSensorDidReadBackfill(backfill: backfill)
++        }
++    }
++
++    nonisolated func sensor(_ sensor: G7Sensor, didDiscoverNewSensor name: String, activatedAt: Date) -> Bool {
++        _ = activatedAt
++        // This callback runs on G7Sensor's `delegateQueue`, not MainActor — so we can't go through
++        // `G7WatchSensorAdapter.shared` synchronously. Read the same UserDefaults key that backs
++        // `expectedSensorName` directly (thread-safe). With no expected name, reject all discoveries.
++        guard let expected = UserDefaults.standard.string(forKey: Keys.sensorName) else { return false }
++        return name.suffix(2) == expected.suffix(2)
++    }
++
++    nonisolated func sensor(_ sensor: G7Sensor, didReceive extendedVersion: ExtendedVersionMessage) {
++        _ = extendedVersion
++    }
++
++    nonisolated func sensorConnectionStatusDidUpdate(_ sensor: G7Sensor) {
++        Task { @MainActor in
++            G7WatchSensorAdapter.shared.publishConnectionStatus()
++        }
++    }
++
++    private func handleSensorDidConnect(name: String) {
++        recordSessionConnect(name: name, source: "did_connect_callback")
++    }
++
++    /// Shared connect bookkeeping. Called from `handleSensorDidConnect` (normal reconnect path,
++    /// fired by `G7Sensor` once `sensorID` is set) **and** from `handleSensorDidRead` when a
++    /// first-discovery cycle delivers a glucose message without a prior `sensorDidConnect`.
++    ///
++    /// **Why a first-read bootstrap exists:** `G7Sensor.bluetoothManager(_:readied:)` only fires
++    /// `sensorDidConnect` when `sensorID != nil` at the time the peripheral is readied. On the
++    /// initial discovery cycle for a new sensor identity (post-`scanForNewSensor()`), `sensorID`
++    /// is nil at readied time. `G7Sensor` then sets `sensorID` itself inside `handleGlucoseMessage`
++    /// after `didDiscoverNewSensor` returns true, and calls `didRead` directly. From the adapter's
++    /// perspective, that means the first reading arrives without a preceding connect callback —
++    /// so we treat the first reading as the connect event and run the same bookkeeping.
++    private func recordSessionConnect(name: String, source: String) {
++        // Record the peripheral name the sensor bound to. Mirrors `G7Sensor.sensorID` (private)
++        // and is used by the debug UI and `start()`'s mismatch check. Setting this on the
++        // first-read path also prevents `start()` from calling `initiateScanForNewSensor()`
++        // again (which would disconnect the freshly-bound peripheral).
++        boundSensorName = name
++        sessionPhase = .preEGV
++        adapterSessionID = String(UUID().uuidString.prefix(8))
++        sessionConnectAt = Date()
++        hadEGVThisSession = false
++        loggedTimeToFirstEGVForSession = false
 +        bleConnectsToday += 1
 +        persistDailyCounters()
 +        mirrorDailyCountersToWatchState()
-+        log("discover_services_started services=[\(G7UUID.dataService)]")
-+        p.discoverServices([G7UUID.dataService])
++        let connectAt = Date()
++        WatchState.shared.bleLastConnectAt = connectAt
++        log(
++            "did_connect",
++            "scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive) source=\(source)"
++        )
++        renewSessionIfNeeded()
++        publishConnectionStatus()
 +    }
 +
-+    func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
-+        guard active?.identifier == p.identifier else {
-+            log("did_fail_to_connect_ignored peripheral=\(p.identifier.uuidString)")
-+            return
-+        }
-+        log("connect_failed error=\(error?.localizedDescription ?? "nil")")
-+        teardownAndRescan(error: error, peripheral: p)
-+    }
-+
-+    func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
-+        guard active?.identifier == p.identifier else {
-+            log("disconnect_ignored peripheral=\(p.identifier.uuidString)")
-+            return
-+        }
-+        log("disconnect error=\(error?.localizedDescription ?? "nil") pendingAuth=\(pendingAuth)")
-+        teardownAndRescan(error: error, peripheral: p)
-+    }
-+
-+    /// Mirrors G7SensorKit's peripheralDidDisconnect: if the known sensor disconnected remotely
-+    /// while pendingAuth, the Dexcom app likely stopped the session. Clear identity so the next
-+    /// attach can adopt a new sensor.
-+    private func teardownAndRescan(error: Error?, peripheral: CBPeripheral) {
-+        cancelSessionWatchdog()
-+        flushBackfillBuffer(reason: "disconnect")
-+
-+        let isRemoteDisconnect: Bool
-+        if let nsError = error as NSError?,
-+           nsError.domain == CBErrorDomain,
-+           nsError.code == CBError.peripheralDisconnected.rawValue {
-+            isRemoteDisconnect = true
-+        } else {
-+            isRemoteDisconnect = false
-+        }
-+
-+        let disconnectedMatchedKnown: Bool = {
-+            guard let known = knownSensorName, let name = peripheral.name else { return false }
-+            return name.suffix(2) == known.suffix(2)
++    private func handleSensorDisconnected(suspectedEndOfSession: Bool) {
++        let sinceConnectS: Int = {
++            guard let t = sessionConnectAt else { return -1 }
++            return Int(Date().timeIntervalSince(t))
 +        }()
++        let durationS = sinceConnectS
 +
-+        if pendingAuth, isRemoteDisconnect, disconnectedMatchedKnown {
-+            log("suspected_end_of_session clearing_sensor_identity prior_name=\(knownSensorName ?? "nil")")
-+            knownSensorName = nil
-+            persistedID = nil
-+            // New sensor's sequence space is unrelated to the previous sensor's;
-+            // reset to avoid spurious dedup against a stale value.
-+            lastReadingSequence = nil
-+            lastSavedGlucoseValue = nil
++        // A disconnect that we ourselves initiated via `sensor.scanForNewSensor()` (which calls
++        // `bluetoothManager.disconnect()` under the hood). Skip counter logic so self-rebinds,
++        // sensor swaps, and EOS teardowns do not register as stale-binding failures.
++        let initiatedScan = isScanningForNewSensor
++        if initiatedScan {
++            isScanningForNewSensor = false
 +        }
 +
-+        active = nil
-+        chars.removeAll()
-+        sessionActivationDate = nil
-+        pendingAuth = false
-+        if !isStopped {
-+            scanAfterDelay()
++        log(
++            "disconnect",
++            "phase=\(sessionPhase.rawValue) since_did_connect_s=\(sinceConnectS) had_egv=\(hadEGVThisSession) session_duration_s=\(durationS) suspected_eos=\(suspectedEndOfSession) initiated_scan=\(initiatedScan) scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive)"
++        )
++
++        // NOTE: do not clear `boundSensorName` here. It mirrors `G7Sensor.sensorID`, which is only
++        // cleared by `scanForNewSensor()` — not by transient disconnects (auto-reconnects expect
++        // the binding to remain). The teardown paths that DO clear sensorID also clear bound here.
++
++        if initiatedScan {
++            // Skip counter logic — we caused this disconnect.
++        } else if suspectedEndOfSession {
++            // Phone-side parity: a clean remote disconnect without auth signals the G7 app stopped
++            // the session. Treat as a genuine EOS, not as a pre-EGV failure.
++            triggerEndOfSessionFromDisconnect()
++        } else if sessionPhase == .preEGV {
++            consecutivePreEGVDisconnects += 1
++            let minutesSinceEGV = minutesSinceLastEGV()
++            log(
++                "pre_egv_disconnect",
++                "since_connect_s=\(sinceConnectS) consecutive_count=\(consecutivePreEGVDisconnects) suspected_eos=\(suspectedEndOfSession) minutes_since_last_egv=\(minutesSinceEGV) ext_session_active=\(lastKnownExtSessionActive)"
++            )
++            // Gate the diagnostic / remediation thresholds on `minutesSinceLastEGV` too: a high
++            // consecutive count while EGVs are still fresh means BLE noise, not stale binding.
++            if consecutivePreEGVDisconnects >= 3 && minutesSinceEGV > 10 {
++                log(
++                    "stale_sensor_binding_suspected",
++                    "consecutive_pre_egv_disconnects=\(consecutivePreEGVDisconnects) minutes_since_last_egv=\(minutesSinceEGV)"
++                )
++            }
++            if consecutivePreEGVDisconnects >= 5 && minutesSinceEGV > 15 {
++                log(
++                    "stale_sensor_reinit",
++                    "count=\(consecutivePreEGVDisconnects) minutes_since_last_egv=\(minutesSinceEGV)"
++                )
++                // Reset BEFORE `initiateScanForNewSensor()` so the downstream disconnect callback
++                // (which sees `isScanningForNewSensor=true`) skips counter increment cleanly.
++                consecutivePreEGVDisconnects = 0
++                boundSensorName = nil
++                initiateScanForNewSensor()
++            }
++        } else {
++            consecutivePreEGVDisconnects = 0
 +        }
++
++        sessionPhase = .preEGV
++        adapterSessionID = nil
++        sessionConnectAt = nil
++        hadEGVThisSession = false
++        loggedTimeToFirstEGVForSession = false
++        publishConnectionStatus()
 +    }
-+}
 +
-+// MARK: - Peripheral delegate
-+
-+extension G7DirectBLEObserver: CBPeripheralDelegate {
-+    func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
-+        if let error {
-+            log("discover_services_failed error=\(error.localizedDescription)")
-+            central.cancelPeripheralConnection(p)
++    private func handleSensorDidRead(glucose: G7GlucoseMessage) {
++        // First-read connect bootstrap. On the initial discovery cycle for a new sensor identity,
++        // `G7Sensor` accepts the peripheral via `didDiscoverNewSensor` and calls `didRead` without
++        // firing `sensorDidConnect` (see `recordSessionConnect` docs). Detect that case via
++        // `boundSensorName == nil` and run the connect bookkeeping inline before any of the
++        // glucose-message validation paths below. EOS / unreliable / dedup early-returns still
++        // run after this; that's intentional — the sensor *did* connect, even if this particular
++        // message is unusable, so the connect counter / log lines / session ID should reflect it.
++        if boundSensorName == nil, let expected = expectedSensorName {
++            recordSessionConnect(name: expected, source: "first_discovery_path")
++        }
++        if glucose.algorithmState.sensorFailed {
++            triggerEndOfSessionFromEGV(reason: "algorithm_state", message: glucose)
 +            return
 +        }
-+        bumpSessionWatchdog(progress: "services_discovered")
-+        for s in p.services ?? [] where s.uuid == G7UUID.dataService {
-+            log("discover_chars_started service=\(s.uuid)")
-+            p.discoverCharacteristics(
-+                [G7UUID.authentication, G7UUID.control, G7UUID.backfill],
-+                for: s
++        if glucose.algorithmState == .known(.sessionEnded) {
++            triggerEndOfSessionFromEGV(reason: "algorithm_state", message: glucose)
++            return
++        }
++
++        let sensorAgeSeconds = Double(glucose.messageTimestamp) - Double(glucose.age)
++        if sensorAgeSeconds > G7Sensor.defaultLifetime + G7Sensor.gracePeriod {
++            triggerEndOfSessionFromEGV(reason: "sensor_age_ceiling", message: glucose)
++            return
++        }
++
++        guard glucose.hasReliableGlucose else {
++            log(
++                "egv_unreliable",
++                "algorithm_state=\(glucose.algorithmState.rawValue) sequence=\(glucose.sequence) glucose=\(glucose.glucose.map(String.init) ?? "nil")"
++            )
++            return
++        }
++
++        if let lastSeq = lastReadingSequence, lastSeq == glucose.sequence {
++            log("egv_dedup", "glucose=\(glucose.glucose.map(String.init) ?? "nil") sequence=\(glucose.sequence)")
++            return
++        }
++
++        guard let gMgDl = glucose.glucose else {
++            log("egv_missing_glucose_value", "sequence=\(glucose.sequence) state=\(glucose.algorithmState.rawValue)")
++            return
++        }
++        let glucoseValue = Int(gMgDl)
++
++        lastReadingSequence = glucose.sequence
++
++        sessionPhase = .postEGV
++        consecutivePreEGVDisconnects = 0
++        hadEGVThisSession = true
++
++        if sessionActivationDate == nil {
++            sessionActivationDate = Date().addingTimeInterval(-TimeInterval(glucose.messageTimestamp))
++        }
++        guard let activation = sessionActivationDate else { return }
++
++        let readingDate = activation.addingTimeInterval(TimeInterval(glucose.glucoseTimestamp))
++        let readingEpoch = Int(readingDate.timeIntervalSince1970)
++        UserDefaults.standard.set(readingEpoch, forKey: Keys.lastEGVEpoch)
++        reanchorExpectedWindowTimer(fromEpoch: readingEpoch, coldStart: false)
++
++        loadDailyCountersIfNewCalendarDay()
++
++        bleEGVsToday += 1
++        let currentSequence = Int(glucose.sequence)
++        if let anchor = bleFirstSequenceToday {
++            if currentSequence < anchor {
++                bleFirstSequenceToday = currentSequence
++                UserDefaults.standard.set(currentSequence, forKey: Keys.firstSequenceToday)
++            }
++        } else {
++            bleFirstSequenceToday = currentSequence
++            UserDefaults.standard.set(currentSequence, forKey: Keys.firstSequenceToday)
++        }
++        persistDailyCounters()
++        mirrorDailyCountersToWatchState()
++        let delta: String = {
++            guard let previous = lastSavedGlucoseValue else { return "--" }
++            return String(format: "%+d", glucoseValue - previous)
++        }()
++        lastSavedGlucoseValue = glucoseValue
++
++        let trend = WatchState.trendString(fromDirectBleRate: glucose.trend)
++
++        if !loggedTimeToFirstEGVForSession, let connectAt = sessionConnectAt {
++            loggedTimeToFirstEGVForSession = true
++            let ms = Int(Date().timeIntervalSince(connectAt) * 1000)
++            log(
++                "egv_received",
++                "scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive) sequence=\(glucose.sequence) glucose=\(glucoseValue) time_to_first_egv_ms=\(ms)"
++            )
++        } else {
++            log(
++                "egv_received",
++                "scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive) sequence=\(glucose.sequence) glucose=\(glucoseValue)"
++            )
++        }
++
++        let snapshot = TrioComplicationSnapshot(
++            glucose: "\(glucoseValue)",
++            trend: trend,
++            delta: delta,
++            readingDate: readingDate,
++            date: Date(),
++            state: nil,
++            glucoseColor: nil,
++            source: .g7DirectBLE,
++            sequence: Int(glucose.sequence)
++        )
++
++        TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
++        WatchState.shared.applyG7DirectBleSnapshot(snapshot)
++        WatchState.shared.bleLastEGVDate = readingDate
++        WatchState.shared.bleLastEGVValue = glucoseValue
++        WatchState.shared.bleLastEGVSequence = currentSequence
++
++        publishConnectionStatus()
++    }
++
++    private func handleSensorDidReadBackfill(backfill: [G7BackfillMessage]) {
++        for msg in backfill {
++            log(
++                "backfill_entry",
++                "timestamp=\(msg.timestamp) glucose=\(msg.glucose.map(String.init) ?? "nil") algorithm_state=\(msg.algorithmState.rawValue) display_only=\(msg.glucoseIsDisplayOnly) trend=\(msg.trend.map { String(format: "%.1f", $0) } ?? "nil")"
 +            )
 +        }
 +    }
-+
-+    func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
-+        if let error {
-+            log("discover_chars_failed service=\(s.uuid) error=\(error.localizedDescription)")
-+            central.cancelPeripheralConnection(p)
-+            return
-+        }
-+        bumpSessionWatchdog(progress: "chars_discovered")
-+        for c in s.characteristics ?? [] { chars[c.uuid] = c }
-+        if let auth = chars[G7UUID.authentication], !auth.isNotifying {
-+            log("auth_notify_requested")
-+            p.setNotifyValue(true, for: auth)
-+        }
-+    }
-+
-+    func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor c: CBCharacteristic, error: Error?) {
-+        if let error {
-+            log("notify_state_failed char=\(c.uuid) error=\(error.localizedDescription)")
-+            // Auth and control notify failures are session-fatal. Cancel for fast re-attach.
-+            // Backfill notify failure is non-fatal.
-+            if c.uuid == G7UUID.authentication || c.uuid == G7UUID.control {
-+                central.cancelPeripheralConnection(p)
-+            }
-+            return
-+        }
-+        log("notify_state_ok char=\(c.uuid) notifying=\(c.isNotifying)")
-+        // Char-specific bump label so a watchdog firing in post-EGV backfill silence is identifiable.
-+        bumpSessionWatchdog(progress: "notify_state_ok_\(c.uuid)")
-+
-+        // Mirror G7SensorKit: set pendingAuth only AFTER auth notify is actually enabled.
-+        if c.uuid == G7UUID.authentication, c.isNotifying {
-+            pendingAuth = true
-+        }
-+    }
-+
-+    func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
-+        if let error {
-+            log("value_update_failed char=\(c.uuid) error=\(error.localizedDescription)")
-+            // Auth and control value-update failures are session-fatal. Backfill failure non-fatal.
-+            if c.uuid == G7UUID.authentication || c.uuid == G7UUID.control {
-+                central.cancelPeripheralConnection(p)
-+            }
-+            return
-+        }
-+        guard let data = c.value, !data.isEmpty else { return }
-+        bumpSessionWatchdog(progress: "value_update_\(c.uuid)")
-+        switch c.uuid {
-+        case G7UUID.authentication:
-+            // 0x05 authChallengeRx: bytes [1]=authenticated, [2]=bonded
-+            if data.first == G7Opcode.authChallengeRx,
-+               data.count > 2, data[1] == 1, data[2] == 1,
-+               let control = chars[G7UUID.control], !control.isNotifying {
-+                pendingAuth = false
-+                log("auth_authenticated_bonded control_notify_requested")
-+                p.setNotifyValue(true, for: control)
-+            }
-+        case G7UUID.control:
-+            // Sensor pushes 0x4E glucose unsolicited. We never write to control.
-+            switch data.first {
-+            case G7Opcode.glucoseTx:
-+                parseGlucose(data)
-+            case G7Opcode.backfillFinished:
-+                log("backfill_finished bytes=\(data.count)")
-+                flushBackfillBuffer(reason: "backfillFinished")
-+            default:
-+                break
-+            }
-+        case G7UUID.backfill:
-+            if let entry = parseBackfill(data) {
-+                backfillBuffer.append(entry)
-+            } else {
-+                log("backfill_parse_failed bytes=\(data.count)")
-+            }
-+        default: break
-+        }
-+    }
 +}
 +
-+// MARK: - Helpers
++// MARK: - WKExtendedRuntimeSessionDelegate
 +
-+private extension Data {
-+    func integer<T: FixedWidthInteger>(at offset: Int) -> T {
-+        subdata(in: offset ..< offset + MemoryLayout<T>.size)
-+            .withUnsafeBytes { $0.loadUnaligned(as: T.self) }
++extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
++    func extendedRuntimeSessionWillExpire(_ session: WKExtendedRuntimeSession) {
++        lastKnownExtSessionActive = false
++        log("ext_session_will_expire")
++        let newSession = WKExtendedRuntimeSession()
++        newSession.delegate = self
++        // Invalidate any prior pending session(s) before overwriting the slots, so we don't leak
++        // a started-or-starting WKExtendedRuntimeSession when willExpire fires while a previous
++        // chain attempt is still in flight.
++        if let prior = pendingChainSession, prior !== session {
++            prior.invalidate()
++        }
++        if let prior = sessionPendingDidStart, prior !== session {
++            prior.invalidate()
++        }
++        pendingChainSession = newSession
++        sessionPendingDidStart = newSession
++        newSession.start()
++        log("ext_session_chain_attempted")
++        Task { @MainActor [weak self, weak newSession] in
++            try? await Task.sleep(nanoseconds: 10_000_000_000)
++            guard let self, let newSession else { return }
++            if self.pendingChainSession === newSession {
++                // Timeout: explicitly invalidate before nilling the slot so the system reclaims
++                // the never-started session (otherwise it can persist as a dangling delegate).
++                newSession.invalidate()
++                self.pendingChainSession = nil
++                if self.sessionPendingDidStart === newSession {
++                    self.sessionPendingDidStart = nil
++                }
++                self.log("ext_session_chain_timeout")
++            }
++        }
++    }
++
++    func extendedRuntimeSessionDidStart(_ session: WKExtendedRuntimeSession) {
++        lastKnownExtSessionActive = true
++        // Defensive: if an older `extendedSession` is still held (e.g. unexpected double-start
++        // without an intervening willExpire/invalidate), invalidate it before replacing. Leaking
++        // a started session keeps a CBCentralManager-backed runtime alive in the background.
++        if let old = extendedSession, old !== session {
++            old.invalidate()
++            log("ext_session_replaced_unexpectedly")
++        }
++        extendedSession = session
++        if session === pendingChainSession {
++            pendingChainSession = nil
++            log("ext_session_chain_started")
++        } else {
++            log("ext_session_started")
++        }
++        if session === sessionPendingDidStart {
++            sessionPendingDidStart = nil
++        }
++    }
++
++    func extendedRuntimeSession(
++        _ session: WKExtendedRuntimeSession,
++        didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason,
++        error: Error?
++    ) {
++        lastKnownExtSessionActive = false
++        let hasError = (error != nil)
++        log("ext_session_did_invalidate", "reason=\(reason.rawValue) has_error=\(hasError)")
++
++        if session === pendingChainSession {
++            pendingChainSession = nil
++            if session === sessionPendingDidStart {
++                sessionPendingDidStart = nil
++            }
++            log("ext_session_chain_denied", "has_error=\(hasError)")
++            return
++        }
++
++        // Renew / foreground session that never reached didStart — do not tear down BLE.
++        if session === sessionPendingDidStart {
++            sessionPendingDidStart = nil
++            log("ext_session_pending_start_invalidated", "has_error=\(hasError)")
++            return
++        }
++
++        if hasError {
++            log("ext_session_unexpected_invalidation", "triggering_teardown=true")
++            stop()
++            guard !recoveryScheduled else { return }
++            recoveryScheduled = true
++            Task { @MainActor [weak self] in
++                try? await Task.sleep(nanoseconds: 5_000_000_000)
++                guard let self else { return }
++                guard self.lastKnownScenePhase == "active" else {
++                    self.log("recovery_skipped", "reason=not_active scene=\(self.lastKnownScenePhase)")
++                    self.recoveryScheduled = false
++                    return
++                }
++                self.log("post_stop_recovery_attempt")
++                self.start()
++            }
++        } else {
++            log("ext_session_natural_or_unknown_expiry")
++        }
 +    }
 +}
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
-index ff9c6637f..0c3016718 100644
+index ff9c6637f..30a6b4dad 100644
 --- a/Trio Watch App Extension/Views/ComplicationDebugView.swift	
 +++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
-@@ -37,7 +37,13 @@ struct ComplicationDebugView: View {
+@@ -5,7 +5,6 @@ struct ComplicationDebugView: View {
+     @State private var snapshot: TrioComplicationSnapshot?
+     @State private var showConfirmation = false
+     @State private var confirmationMessage = ""
+-    @State private var refreshTrigger = UUID()
+ 
+     @State private var watchLogCount: Int = 0
+     @State private var watchLogBytes: UInt64 = 0
+@@ -13,9 +12,46 @@ struct ComplicationDebugView: View {
+     @State private var drainBytes: UInt64 = 0
+     @State private var pendingCount: Int = 0
+     @State private var isLoadingLogFiles: Bool = false
++    /// Ticks every second to drive live countdown, age display, and nav title
++    /// regardless of whether snapshot has changed (snapshot is Equatable — unchanged
++    /// readings produce no-op @State assignments and no re-render without this).
++    @State private var now: Date = Date()
++
++    /// Scene phase, used **only** to drive the `isActive` `@State` flag via `.onChange`.
++    /// **Do not read directly from inside the `.task` polling loop** — the task closure captures
++    /// `self` (a value-type view struct) at task creation, so a captured `scenePhase` would be
++    /// frozen at its initial value and would never reflect later scene-phase transitions.
++    /// `isActive` (below) is the actual gate the loop reads, because `@State`-backed values are
++    /// observed through SwiftUI's storage and are safe to read from a long-lived concurrent Task.
++    @Environment(\.scenePhase) private var scenePhase
++
++    /// `true` while the watch app is in `.active` scene phase. Mirror of `scenePhase` written via
++    /// `.onChange(of: scenePhase)` and read from the 1Hz polling task to gate per-second work.
++    /// Defaults to `true` so the very first ticks after `.onAppear` (before any scene-phase
++    /// transition is observed) are not unnecessarily suppressed.
++    @State private var isActive: Bool = true
+ 
+     private let dataStore = TrioComplicationDataStore.shared
+ 
++    // Static formatter — allocated once, reused every 1s tick (item 21)
++    private static let timeFormatter: DateFormatter = {
++        let f = DateFormatter()
++        f.dateFormat = "HH:mm:ss"
++        return f
++    }()
++
++    // MARK: - Nav title (item 2)
++
++    private var navTitle: String {
++        guard let s = snapshot, s.readingDate != .distantPast else { return "Debug" }
++        let t = trendSymbol(s.trend)
++        var parts = [s.glucose, t, s.delta].filter { !$0.isEmpty }
++        parts.append(nextReadingCountdown(s.readingDate, relativeTo: now))
++        return parts.joined(separator: " ")
++    }
++
++    // MARK: - Body
++
+     var body: some View {
+         ScrollView {
+             VStack(alignment: .leading, spacing: 8) {
+@@ -31,60 +67,99 @@ struct ComplicationDebugView: View {
  
                  Divider().padding(.vertical, 4)
  
--                // SECTION 4: Actions
-+                // SECTION 4: G7 Direct BLE
+-                // SECTION 3: Reload Status
+-                sectionHeader("RELOAD STATUS")
+-                reloadStatusView
++                // SECTION 3: G7 Direct BLE
 +                sectionHeader("G7 DIRECT BLE")
-+                G7DirectBleDebugSection()
-+
-+                Divider().padding(.vertical, 4)
-+
-+                // SECTION 5: Actions
++                G7DirectBleDebugSection(now: now)
+ 
+                 Divider().padding(.vertical, 4)
+ 
+                 // SECTION 4: Actions
                  sectionHeader("ACTIONS")
                  actionsView
++                    .padding(.bottom, 8)
              }
-@@ -48,8 +54,20 @@ struct ComplicationDebugView: View {
+             .padding(.horizontal, 8)
+         }
+-        .navigationTitle("Debug")
++        .navigationTitle(navTitle)
+         .onAppear {
              loadSnapshot()
              loadLogFileStats()
          }
++        .onChange(of: scenePhase) { _, newPhase in
++            isActive = (newPhase == .active)
++        }
++        // Unified 1s task — snapshot every tick, file stats every 5s (items 18, 20).
++        // `now` updated unconditionally to drive countdown/age even when snapshot is unchanged.
++        //
++        // **Invariant:** the loop continues running while the view exists, but skips work
++        // (no `now` tick, no `loadSnapshot()`, no `loadLogFileStats()`) whenever the watch app
++        // is not in `.active` scene phase. This eliminates 1Hz log-store reads (and the
++        // `latestSnapshot()` cascade) while the user is on the watch face or in another app.
++        //
++        // **Correctness note:** the gate reads `isActive` (a `@State`-backed mirror of
++        // `scenePhase`) instead of `scenePhase` directly. The `.task` closure captures `self`
++        // by value at task creation, so a directly-captured `@Environment(\.scenePhase)` would
++        // be **frozen** at the value present at view first-appear and would never observe later
++        // background ↔ active transitions, defeating the suspension entirely.
 +        .task {
++            var tick = 0
 +            while !Task.isCancelled {
 +                try? await Task.sleep(nanoseconds: 1_000_000_000)
++                guard isActive else { continue }
++                now = Date()
 +                loadSnapshot()
-+            }
-+        }
-+        .task {
-+            while !Task.isCancelled {
-+                try? await Task.sleep(nanoseconds: 10_000_000_000)
-+                loadLogFileStats()
-+                refreshTrigger = UUID()
++                tick += 1
++                if tick % 5 == 0 {
++                    loadLogFileStats()
++                }
 +            }
 +        }
          .overlay(confirmationOverlay)
 -        .id(refreshTrigger)
      }
  
-     // MARK: - Data Store State Section
-@@ -116,89 +134,9 @@ struct ComplicationDebugView: View {
+-    // MARK: - Data Store State Section
++    // MARK: - Data Store State Section (items 3–9)
+ 
+     private var dataStoreStateView: some View {
+         VStack(alignment: .leading, spacing: 4) {
+             if let s = snapshot {
+-                HStack {
+-                    Text("Glucose:")
+-                    Spacer()
++                HStack(spacing: 8) {
+                     Text(s.glucose)
+                         .foregroundColor(glucoseColor(for: s.glucose))
+                         .fontWeight(.bold)
++                    Text(s.trend.isEmpty ? "—" : trendSymbol(s.trend))
++                    Text(s.delta)
+                 }
++                .font(.title)
++                .lineLimit(1)
++                .minimumScaleFactor(0.6)
++                .frame(maxWidth: .infinity, alignment: .center)
++                .padding(.vertical, 2)
+ 
++                // item 3: source row
+                 HStack {
+-                    Text("Trend:")
++                    Text("Source:")
+                     Spacer()
+-                    Text(s.trend.isEmpty ? "--" : s.trend)
++                    Text(s.source?.shortLabel ?? "?")
++                        .foregroundColor(.cyan)
+                 }
+ 
+                 HStack {
+-                    Text("Delta:")
++                    Text("Reading:")
+                     Spacer()
+-                    Text(s.delta)
++                    Text(formatTime(s.readingDate))
++                        .foregroundColor(ageColor(s.readingDate, relativeTo: now))
+                 }
+ 
+-                HStack {
+-                    Text("Reading:")
+-                    Spacer()
+-                    VStack(alignment: .trailing, spacing: 2) {
+-                        Text(formatTime(s.readingDate))
+-                        Text("(\(formatAge(s.readingDate)))")
+-                            .font(.caption2)
+-                            .foregroundColor(ageColor(s.readingDate))
++                // item 4: next reading countdown — only meaningful for BLE source where
++                // 5-min cadence is authoritative. Phone/HK readings may be delayed,
++                // backfilled, or gap-filled; showing a countdown would be misleading.
++                if s.source == .g7DirectBLE {
++                    HStack {
++                        Text("Next:")
++                        Spacer()
++                        Text(nextReadingCountdown(s.readingDate, relativeTo: now))
++                            .foregroundColor(nextReadingColor(s.readingDate, relativeTo: now))
++                            .monospacedDigit()
+                     }
+                 }
+ 
+@@ -94,155 +169,43 @@ struct ComplicationDebugView: View {
+                     Text(formatTime(s.date))
+                 }
+ 
+-                if let state = s.state, !state.isEmpty {
+-                    HStack {
+-                        Text("State:")
+-                        Spacer()
+-                        Text(state)
+-                            .foregroundColor(.orange)
+-                    }
+-                }
+             } else {
+                 Text("No snapshot available")
                      .foregroundColor(.secondary)
-                     .lineLimit(1)
+                     .frame(maxWidth: .infinity, alignment: .center)
              }
+ 
+-            HStack {
+-                Text("Path:")
+-                Spacer()
+-                Text(truncatePath(dataStore.appGroupContainerPath))
+-                    .font(.system(size: 9))
+-                    .foregroundColor(.secondary)
+-                    .lineLimit(1)
+-            }
 -
 -            Divider().padding(.vertical, 2)
 -
@@ -777,21 +1244,179 @@ index ff9c6637f..0c3016718 100644
 -                    }
 -                }
 -            }
+-        }
+-        .font(.caption)
+-    }
+-
+-    // MARK: - Reload Status Section
+-
+-    private var reloadStatusView: some View {
+-        VStack(alignment: .leading, spacing: 4) {
++            // items 7–8: always visible — most useful when there's no snapshot yet
+             HStack {
+                 Text("Last reload:")
+                 Spacer()
+                 Text(formatTime(dataStore.lastReloadTimestamp))
+             }
+ 
+-            HStack {
+-                Text("Elapsed:")
+-                Spacer()
+-                Text("\(Int(dataStore.secondsSinceLastReload))s ago")
+-            }
+-
+             HStack {
+                 Text("Debounce:")
+                 Spacer()
+                 if dataStore.isDebounceActive {
+                     HStack(spacing: 4) {
+-                        Circle()
+-                            .fill(Color.red)
+-                            .frame(width: 8, height: 8)
++                        Circle().fill(Color.red).frame(width: 8, height: 8)
+                         Text("\(Int(dataStore.secondsUntilNextReloadAllowed))s")
+                     }
+                     .foregroundColor(.red)
+                 } else {
+                     HStack(spacing: 4) {
+-                        Circle()
+-                            .fill(Color.green)
+-                            .frame(width: 8, height: 8)
++                        Circle().fill(Color.green).frame(width: 8, height: 8)
+                         Text("Ready")
+                     }
+                     .foregroundColor(.green)
+                 }
+             }
++            // items 5, 6: State and Path rows removed
          }
          .font(.caption)
-+        .id(refreshTrigger)
++        // item 9: removed .id(refreshTrigger) — @State snapshot drives re-renders
      }
  
-     // MARK: - Reload Status Section
-@@ -266,6 +204,7 @@ struct ComplicationDebugView: View {
+-    // MARK: - Log Files Section
++    // MARK: - Log Files Section (item 10)
+ 
+     private var logFilesView: some View {
+         VStack(alignment: .leading, spacing: 4) {
+@@ -258,20 +221,47 @@ struct ComplicationDebugView: View {
+                 Text("\(drainCount) files, \(formatBytes(drainBytes))")
+                     .foregroundColor(.secondary)
+             }
++            // item 10: composite upload status replaces bare Pending row
+             HStack {
+-                Text("Pending:")
++                Text("Upload status:")
+                 Spacer()
+-                Text("\(pendingCount)")
+-                    .foregroundColor(pendingCount > 0 ? .yellow : .secondary)
++                uploadStatusView
              }
          }
          .font(.caption)
-+        .id(refreshTrigger)
      }
  
-     private func loadLogFileStats() {
-@@ -379,22 +318,6 @@ struct ComplicationDebugView: View {
+-    private func loadLogFileStats() {
++    @ViewBuilder
++    private var uploadStatusView: some View {
++        if pendingCount > 0 {
++            // Fast phase: payload sent to phone, awaiting ACK
++            HStack(spacing: 4) {
++                Circle().fill(Color.yellow).frame(width: 8, height: 8)
++                Text("ACK pending (\(pendingCount))")
++                    .foregroundColor(.yellow)
++            }
++        } else if watchLogCount > 0 || drainCount > 0 {
++            // Slow phase: files not yet transferred/deleted
++            HStack(spacing: 4) {
++                Circle().fill(Color.orange).frame(width: 8, height: 8)
++                Text("\(watchLogCount)L · \(drainCount)D queued")
++                    .foregroundColor(.orange)
++            }
++        } else {
++            HStack(spacing: 4) {
++                Circle().fill(Color.green).frame(width: 8, height: 8)
++                Text("Clean")
++                    .foregroundColor(.green)
++            }
++        }
++    }
++
++    @MainActor private func loadLogFileStats() {
+         guard !isLoadingLogFiles else { return }
+         isLoadingLogFiles = true
+         Task {
++            // item 19: isLoadingLogFiles always cleared via MainActor.run at end;
++            // no early returns inside Task body so this path is always reached.
+             let fileManager = FileManager.default
+             var wlCount = 0
+             var wlBytes: UInt64 = 0
+@@ -290,38 +280,31 @@ struct ComplicationDebugView: View {
+                     && file.lastPathComponent.hasSuffix(".txt")
+                     && file.lastPathComponent != "watch_log_daily.txt" {
+                     wlCount += 1
+-                    if let attrs = try? fileManager.attributesOfItem(
+-                        atPath: file.path
+-                    ), let size = attrs[.size] as? UInt64 {
++                    if let attrs = try? fileManager.attributesOfItem(atPath: file.path),
++                       let size = attrs[.size] as? UInt64 {
+                         wlBytes += size
+                     }
+                 }
+             }
+ 
+-            if let containerURL = ComplicationLogBuffer
+-                .sharedContainerURL() {
+-                let drainsDir = containerURL.appendingPathComponent(
+-                    "logs", isDirectory: true
+-                )
++            if let containerURL = ComplicationLogBuffer.sharedContainerURL() {
++                let drainsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
+                 if let files = try? fileManager.contentsOfDirectory(
+                     at: drainsDir, includingPropertiesForKeys: [.fileSizeKey]
+                 ) {
+                     for file in files
+-                        where file.lastPathComponent
+-                        .hasPrefix("complication_log.drain.")
++                        where file.lastPathComponent.hasPrefix("complication_log.drain.")
+                         && file.lastPathComponent.hasSuffix(".txt") {
+                         dcCount += 1
+-                        if let attrs = try? fileManager.attributesOfItem(
+-                            atPath: file.path
+-                        ), let size = attrs[.size] as? UInt64 {
++                        if let attrs = try? fileManager.attributesOfItem(atPath: file.path),
++                           let size = attrs[.size] as? UInt64 {
+                             dcBytes += size
+                         }
+                     }
+                 }
+             }
+ 
+-            let pCount = await WatchLogger.shared
+-                .getPendingPayloads().count
++            let pCount = await WatchLogger.shared.getPendingPayloads().count
+ 
+             await MainActor.run {
+                 watchLogCount = wlCount
+@@ -349,7 +332,7 @@ struct ComplicationDebugView: View {
+                 }
+                 // scheduleRetry: false — debug view one-shot; no retry needed (Phase 1.3).
+                 dataStore.forceReload(scheduleRetry: false)
+-                showConfirmation(message: "✅ Reload triggered!")
++                triggerConfirmation(message: "✅ Reload triggered!")
+                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                     loadSnapshot()
+                 }
+@@ -368,7 +351,7 @@ struct ComplicationDebugView: View {
+                     await WatchLogger.shared.log("🔧 Debug: Request Fresh Data tapped")
+                 }
+                 WatchState.shared.requestWatchStateUpdate()
+-                showConfirmation(message: "📡 Requesting...")
++                triggerConfirmation(message: "📡 Requesting...")
+             } label: {
+                 HStack {
+                     Image(systemName: "iphone.radiowaves.left.and.right")
+@@ -379,22 +362,6 @@ struct ComplicationDebugView: View {
              .buttonStyle(.bordered)
              .tint(.orange)
  
@@ -814,75 +1439,277 @@ index ff9c6637f..0c3016718 100644
              Button {
                  flushWatchLogs()
              } label: {
-@@ -504,6 +427,66 @@ struct ComplicationDebugView: View {
+@@ -415,7 +382,7 @@ struct ComplicationDebugView: View {
+             await WatchLogger.shared.flushIfNeeded(force: true)
+             await WatchLogger.shared.flushPersistedLogs()
+             await MainActor.run {
+-                showConfirmation(message: "📤 Logs flushed")
++                triggerConfirmation(message: "📤 Logs flushed")
+             }
+         }
      }
- }
+@@ -452,11 +419,12 @@ struct ComplicationDebugView: View {
+             .padding(.top, 4)
+     }
  
-+/// G7 debug rows: read `WatchState` from this type’s `body` so updates observe reliably (vs. a
-+/// `private var` on the parent). DATA STORE / log stats still use `refreshTrigger` and `.task` poll.
+-    private func loadSnapshot() {
++    @MainActor private func loadSnapshot() {
+         snapshot = dataStore.latestSnapshot()
+     }
+ 
+-    private func showConfirmation(message: String) {
++    // item 20: renamed from showConfirmation(message:) to eliminate property/method name collision
++    @MainActor private func triggerConfirmation(message: String) {
+         confirmationMessage = message
+         showConfirmation = true
+         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+@@ -466,22 +434,12 @@ struct ComplicationDebugView: View {
+ 
+     private func formatTime(_ date: Date) -> String {
+         if date == .distantPast { return "--" }
+-        let formatter = DateFormatter()
+-        formatter.dateFormat = "HH:mm:ss"
+-        return formatter.string(from: date)
+-    }
+-
+-    private func formatAge(_ date: Date) -> String {
+-        if date == .distantPast { return "--" }
+-        let seconds = Int(Date().timeIntervalSince(date))
+-        if seconds < 60 { return "\(seconds)s ago" }
+-        if seconds < 3600 { return "\(seconds / 60)m ago" }
+-        return "\(seconds / 3600)h ago"
++        return Self.timeFormatter.string(from: date)
+     }
+ 
+-    private func ageColor(_ date: Date) -> Color {
++    private func ageColor(_ date: Date, relativeTo now: Date = Date()) -> Color {
+         if date == .distantPast { return .secondary }
+-        let age = Date().timeIntervalSince(date)
++        let age = now.timeIntervalSince(date)
+         if age < 300 { return .green }
+         if age < 900 { return .yellow }
+         return .red
+@@ -494,13 +452,212 @@ struct ComplicationDebugView: View {
+         return .green
+     }
+ 
+-    private func truncatePath(_ path: String?) -> String {
+-        guard let path = path else { return "Unknown" }
+-        let components = path.components(separatedBy: "/")
+-        if components.count > 3 {
+-            return ".../" + components.suffix(2).joined(separator: "/")
++    // item 2: trend arrow → unicode symbol for nav title
++    private func trendSymbol(_ trend: String) -> String {
++        switch trend {
++        case "DoubleDown":    return "↓↓"
++        case "SingleDown":    return "↓"
++        case "FortyFiveDown": return "↘"
++        case "Flat":          return "→"
++        case "FortyFiveUp":   return "↗"
++        case "SingleUp":      return "↑"
++        case "DoubleUp":      return "↑↑"
++        default:              return trend.isEmpty ? "" : "~"
++        }
++    }
++
++    // item 4: countdown to anticipated next reading
++    // G7 nominal cadence is 5 min; all current sources (BLE, Phone, HK) deliver on this schedule.
++    private static let expectedReadingCadence: TimeInterval = 300
++
++    private func nextReadingCountdown(_ date: Date, relativeTo now: Date = Date()) -> String {
++        if date == .distantPast { return "--" }
++        let remaining = Int(date.addingTimeInterval(Self.expectedReadingCadence).timeIntervalSince(now))
++        if remaining < 0 { return "⚠️+\(abs(remaining))s" }
++        return "\(remaining)s"
++    }
++
++    private func nextReadingColor(_ date: Date, relativeTo now: Date = Date()) -> Color {
++        if date == .distantPast { return .secondary }
++        return date.addingTimeInterval(Self.expectedReadingCadence).timeIntervalSince(now) < 0 ? .red : .primary
++    }
++}
++
++/// G7 debug rows: read `WatchState` from this type's `body` so updates observe reliably (vs. a
++/// `private var` on the parent). DATA STORE / log stats still use the unified 1s task poll.
 +private struct G7DirectBleDebugSection: View {
++    /// Driven by parent's 1s tick so countdown rows re-render even when underlying state is unchanged.
++    let now: Date
++
++    /// G7 nominal cadence (matches `ComplicationDebugView.expectedReadingCadence`).
++    private static let expectedCadence: TimeInterval = 300
++
++    // item 21: static formatter
++    private static let timeFormatter: DateFormatter = {
++        let f = DateFormatter()
++        f.dateFormat = "HH:mm:ss"
++        return f
++    }()
++
 +    var body: some View {
 +        VStack(alignment: .leading, spacing: 4) {
++            // item 12: status now reflects build 191 state machine via updated enum
 +            HStack {
 +                Text("Status:")
 +                Spacer()
 +                Text(WatchState.shared.g7DirectBleStatus.rawValue)
 +            }
++            // Ext-session diagnostics: state of the live WKExtendedRuntimeSession (or the last
++            // observed `active` flag as a fallback) and whether a chain-renewal is pending.
++            HStack {
++                Text("Ext session:")
++                Spacer()
++                Text(extSessionDisplay)
++                    .foregroundColor(.secondary)
++            }
++            HStack {
++                Text("Pending chain:")
++                Spacer()
++                Text(G7WatchSensorAdapter.shared.hasPendingChainSession ? "yes" : "—")
++                    .foregroundColor(.secondary)
++            }
++            // items 13–14: bleLastConnectAt / bleLastEGVDate / bleLastEGVValue (updated by `G7WatchSensorAdapter`)
 +            HStack {
 +                Text("Last connect:")
 +                Spacer()
-+                if let t = WatchState.shared.bleLastConnectAt {
-+                    Text(formatG7Time(t))
-+                } else {
-+                    Text("--")
-+                }
++                Text(formatG7Time(WatchState.shared.bleLastConnectAt))
++            }
++            // Countdown to next anticipated connect (last connect + 5 min cadence).
++            HStack {
++                Text("Next connect:")
++                Spacer()
++                Text(nextConnectCountdown(WatchState.shared.bleLastConnectAt))
++                    .monospacedDigit()
 +            }
 +            HStack {
 +                Text("Last BLE EGV:")
 +                Spacer()
-+                if let d = WatchState.shared.bleLastEGVDate, let v = WatchState.shared.bleLastEGVValue {
++                if let d = WatchState.shared.bleLastEGVDate,
++                   let v = WatchState.shared.bleLastEGVValue {
 +                    Text("\(formatG7Time(d)) · \(v) mg/dL")
 +                } else {
 +                    Text("--")
 +                }
 +            }
++            // Minutes since the last EGV epoch — primary diagnostic for "is the sensor stalled?".
 +            HStack {
-+                Text("Connects / today:")
++                Text("Since EGV:")
 +                Spacer()
-+                Text("\(WatchState.shared.bleConnectsToday)")
++                Text(sinceEGVDisplay)
++                    .foregroundColor(sinceEGVColor)
++                    .monospacedDigit()
++            }
++            // Pre-EGV disconnect streak: > 2 means the adapter is struggling to authenticate.
++            HStack {
++                Text("Pre-EGV disconnects:")
++                Spacer()
++                Text("\(G7WatchSensorAdapter.shared.consecutivePreEGVDisconnectsCount)")
++                    .foregroundColor(G7WatchSensorAdapter.shared.consecutivePreEGVDisconnectsCount > 2 ? .red : .secondary)
++                    .monospacedDigit()
 +            }
 +            HStack {
-+                Text("EGVs / today:")
++                Text("Connects:")
 +                Spacer()
-+                Text("\(WatchState.shared.bleEGVsToday)")
++                Text(countWithDenominator(WatchState.shared.bleConnectsToday))
++                    .monospacedDigit()
 +            }
 +            HStack {
-+                Text("MOD-E / today:")
++                Text("EGVs:")
 +                Spacer()
-+                Text("\(WatchState.shared.bleConnectionEventsToday)")
++                Text(countWithDenominator(WatchState.shared.bleEGVsToday))
++                    .monospacedDigit()
 +            }
++            // Phone-relay sensor name (UserDefaults via adapter) — must match WC `g7_active_sensor_name` sync.
 +            HStack {
-+                Text("Was restored:")
++                Text("Phone sensor:")
 +                Spacer()
-+                Text(WatchState.shared.bleWasRestored ? "Yes" : "No")
++                Text(G7WatchSensorAdapter.shared.telemetrySensorName)
++                    .foregroundColor(.secondary)
 +            }
++            // Phone-pushed identity the adapter will accept in `didDiscoverNewSensor`.
++            HStack {
++                Text("Expected:")
++                Spacer()
++                Text(G7WatchSensorAdapter.shared.expectedSensorName ?? "—")
++                    .foregroundColor(.secondary)
++            }
++            // Name the live `G7Sensor` is currently bound to (set in `sensorDidConnect`). Should
++            // converge to `Expected:` once a discovery is accepted.
++            HStack {
++                Text("Bound:")
++                Spacer()
++                Text(G7WatchSensorAdapter.shared.boundSensorName ?? "—")
++                    .foregroundColor(.secondary)
++            }
++            // item 16: live WatchState source vs persisted snapshot — mismatches are diagnostic
++            HStack {
++                Text("Live source:")
++                Spacer()
++                Text(WatchState.shared.displayedReadingSource.watchBadgeText)
++                    .foregroundColor(.cyan)
++            }
++            // item 15: Was Restored removed — structurally dead (observer pattern,
++            // willRestoreState never fires for Trio's non-owning central)
 +        }
 +        .font(.caption)
 +    }
 +
-+    private func formatG7Time(_ date: Date) -> String {
-+        if date == .distantPast { return "--" }
-+        let f = DateFormatter()
-+        f.dateFormat = "HH:mm:ss"
-+        return f.string(from: date)
++    private var extSessionDisplay: String {
++        let state = G7WatchSensorAdapter.shared.extSessionState
++        if state == "nil" {
++            return G7WatchSensorAdapter.shared.extSessionLastKnownActive ? "active?" : "nil"
++        }
++        return state
 +    }
-+}
 +
- #Preview {
-     NavigationStack {
-         ComplicationDebugView()
++    private var sinceEGVDisplay: String {
++        let m = G7WatchSensorAdapter.shared.minutesSinceLastEGV()
++        return m < 0 ? "—" : "\(m)m"
++    }
++
++    private var sinceEGVColor: Color {
++        let m = G7WatchSensorAdapter.shared.minutesSinceLastEGV()
++        if m < 0 { return .secondary }
++        if m < 6 { return .green }
++        if m <= 15 { return .yellow }
++        return .red
++    }
++
++    private func formatG7Time(_ date: Date?) -> String {
++        guard let date, date != .distantPast else { return "--" }
++        return Self.timeFormatter.string(from: date)
++    }
++
++    /// Mirrors `ComplicationDebugView.nextReadingCountdown` semantics: "Ns" when in the future,
++    /// "⚠️+Ns" when overdue (last connect + cadence has already passed). "--" if no connect yet.
++    private func nextConnectCountdown(_ lastConnect: Date?) -> String {
++        guard let lastConnect, lastConnect != .distantPast else { return "--" }
++        let remaining = Int(lastConnect.addingTimeInterval(Self.expectedCadence).timeIntervalSince(now))
++        if remaining < 0 { return "⚠️+\(abs(remaining))s" }
++        return "\(remaining)s"
++    }
++
++    /// Format a daily counter as "X / Y" where Y is the number of EGVs the G7 sensor has
++    /// produced since the first one observed today (sequence-anchored, not wall-clock anchored).
++    /// Falls back to "X" alone when no EGV has been received today (denominator unknown) or
++    /// when the latest sequence is somehow older than the anchor.
++    private func countWithDenominator(_ count: Int) -> String {
++        guard let first = WatchState.shared.bleFirstSequenceToday,
++              let last = WatchState.shared.bleLastEGVSequence,
++              last >= first else {
++            return "\(count)"
+         }
+-        return path
++        let expected = last - first + 1
++        // 5-min cadence caps a single calendar day at 288 readings. Anything larger means
++        // the anchor and last sequence transiently disagreed (e.g. mid-update read between
++        // anchor reset and lastSequence write); show count alone instead of a misleading huge ratio.
++        guard expected <= 288 else { return "\(count)" }
++        return "\(count) / \(expected)"
+     }
+ }
+ 
 diff --git a/Trio Watch App Extension/Views/GlucoseTrendView.swift b/Trio Watch App Extension/Views/GlucoseTrendView.swift
-index 20b50f21f..cc5bf5f2f 100644
+index 20b50f21f..38337a82a 100644
 --- a/Trio Watch App Extension/Views/GlucoseTrendView.swift	
 +++ b/Trio Watch App Extension/Views/GlucoseTrendView.swift	
 @@ -35,6 +35,23 @@ struct GlucoseTrendView: View {
@@ -902,7 +1729,7 @@ index 20b50f21f..cc5bf5f2f 100644
 +        } else if fromBle {
 +            Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
 +        } else {
-+            Text(recency)
++            Text(recency) + Text(" · Phone").foregroundStyle(.secondary)
 +        }
 +    }
 +
@@ -951,7 +1778,7 @@ index 20b50f21f..cc5bf5f2f 100644
              Spacer()
  
 diff --git a/Trio Watch App Extension/Views/TrioMainWatchView.swift b/Trio Watch App Extension/Views/TrioMainWatchView.swift
-index 51999791d..b88a27af1 100644
+index 51999791d..c5df4498d 100644
 --- a/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 +++ b/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 @@ -6,7 +6,8 @@ struct TrioMainWatchView: View {
@@ -964,7 +1791,17 @@ index 51999791d..b88a27af1 100644
      @State private var rotationDegrees: Double = 0.0
      @State private var showingTempTargetSheet = false
  
-@@ -62,7 +63,21 @@ struct TrioMainWatchView: View {
+@@ -35,8 +36,7 @@ struct TrioMainWatchView: View {
+         guard let session = state.session else {
+             return true // No session at all => unreachable
+         }
+-        // Return true if not .activated OR not reachable
+-        return session.activationState != .activated
++        return session.activationState != .activated || !session.isReachable
+     }
+ 
+     // Active adjustment indicator
+@@ -62,19 +62,34 @@ struct TrioMainWatchView: View {
      var body: some View {
          NavigationStack(path: $navigationPath) {
              TabView(selection: $currentPage) {
@@ -987,6 +1824,26 @@ index 51999791d..b88a27af1 100644
                  ZStack {
                      GlucoseTrendView(
                          state: state,
+                         rotationDegrees: rotationDegrees,
+-                        isWatchStateDated: isWatchStateDated || isSessionUnreachable
++                        // Do NOT OR with `isSessionUnreachable` here: G7 direct BLE and
++                        // HealthKit both update `lastWatchStateUpdate` without phone
++                        // involvement, so the 5-minute `isWatchStateDated` window is the
++                        // authoritative freshness check for the glucose bubble. Blanking
++                        // on phone unreachability would hide a fresh BLE/HK reading.
++                        // Treatment buttons + IOB/COB rows below still gate on
++                        // `isSessionUnreachable` because those values come from the phone.
++                        isWatchStateDated: isWatchStateDated
+                     )
+-                    .onLongPressGesture(minimumDuration: 1.0) {
+-                        // Long press to quickly access debug view
+-                        withAnimation {
+-                            currentPage = 2
+-                        }
+-                    }
+ 
+                     if state.showSyncingAnimation {
+                         Image(systemName: "iphone.radiowaves.left.and.right")
 @@ -91,23 +106,10 @@ struct TrioMainWatchView: View {
                                      7 // Font .body == 14, so half of default size for the SF Symbol image
                              )
@@ -1016,7 +1873,7 @@ index 51999791d..b88a27af1 100644
                      state.currentGlucose = snapshot.glucose
                      state.trend = snapshot.trend
                      state.delta = snapshot.delta
-+                    state.displayedReadingSource = snapshot.source ?? .unknown
++                    state.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
                      if let glucoseColor = snapshot.glucoseColor {
                          state.currentGlucoseColorString = glucoseColor
                      }
@@ -1024,7 +1881,7 @@ index 51999791d..b88a27af1 100644
                      state.currentGlucose = snapshot.glucose
                      state.trend = snapshot.trend
                      state.delta = snapshot.delta
-+                    state.displayedReadingSource = snapshot.source ?? .unknown
++                    state.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
                      if let glucoseColor = snapshot.glucoseColor {
                          state.currentGlucoseColorString = glucoseColor
                      }
@@ -1043,30 +1900,145 @@ index 51999791d..b88a27af1 100644
              .digitalCrownRotation($currentPage.doubleBinding(), from: 0, through: 2, by: 1)
              .onChange(of: state.trend) { _, newTrend in
                  withAnimation {
+@@ -166,58 +170,64 @@ struct TrioMainWatchView: View {
+                 }
+             }
+             .toolbar {
+-                ToolbarItem(placement: .topBarLeading) {
+-                    VStack {
+-                        Image(systemName: "syringe.fill")
+-                            .foregroundStyle(Color.insulin)
++                if currentPage != 2 {
++                    ToolbarItem(placement: .topBarLeading) {
++                        VStack {
++                            Image(systemName: "syringe.fill")
++                                .foregroundStyle(Color.insulin)
+ 
+-                        Text(isWatchStateDated || isSessionUnreachable ? "--" : state.iob ?? "--")
+-                            .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
+-                            .frame(alignment: .leading)
+-                            .minimumScaleFactor(0.5)
+-                    }.font(.caption2)
++                            Text(isWatchStateDated || isSessionUnreachable ? "--" : state.iob ?? "--")
++                                .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
++                                .frame(alignment: .leading)
++                                .minimumScaleFactor(0.5)
++                        }.font(.caption2)
++                    }
+                 }
+ 
+-                ToolbarItem(placement: .topBarTrailing) {
+-                    VStack {
+-                        Image(systemName: "fork.knife")
+-                            .foregroundStyle(Color.orange)
++                if currentPage != 2 {
++                    ToolbarItem(placement: .topBarTrailing) {
++                        VStack {
++                            Image(systemName: "fork.knife")
++                                .foregroundStyle(Color.orange)
+ 
+-                        Text(isWatchStateDated || isSessionUnreachable ? "--" : state.cob ?? "--")
+-                            .foregroundStyle(isWatchStateDated || isSessionUnreachable ? Color.secondary : Color.white)
+-                            .frame(alignment: .trailing)
+-                            .minimumScaleFactor(0.5)
+-                    }.font(.caption2)
++                            Text(isWatchStateDated || isSessionUnreachable ? "--" : state.cob ?? "--")
++                                .foregroundStyle(isWatchStateDated || isSessionUnreachable ? Color.secondary : Color.white)
++                                    .frame(alignment: .trailing)
++                                    .minimumScaleFactor(0.5)
++                        }.font(.caption2)
++                    }
+                 }
+ 
+-                ToolbarItemGroup(placement: .bottomBar) {
+-                    Button {
+-                        showingOverrideSheet = true
+-                    } label: {
+-                        Image(systemName: "clock.arrow.2.circlepath")
+-                            .foregroundStyle(Color.primary, isOverrideActive ? Color.primary : Color.purple)
+-                    }
+-                    .tint(isOverrideActive ? Color.purple : nil)
+-                    .disabled(isWatchStateDated || isSessionUnreachable)
++                if currentPage != 2 {
++                    ToolbarItemGroup(placement: .bottomBar) {
++                        Button {
++                            showingOverrideSheet = true
++                        } label: {
++                            Image(systemName: "clock.arrow.2.circlepath")
++                                .foregroundStyle(Color.primary, isOverrideActive ? Color.primary : Color.purple)
++                        }
++                        .tint(isOverrideActive ? Color.purple : nil)
++                        .disabled(isWatchStateDated || isSessionUnreachable)
+ 
+-                    Button {
+-                        showingTreatmentMenuSheet = true
+-                    } label: {
+-                        Image(systemName: "plus")
+-                            .foregroundStyle(Color.bgDarkerDarkBlue)
+-                    }
+-                    .controlSize(.large)
+-                    .buttonStyle(WatchOSButtonStyle(deviceType: state.deviceType))
+-                    .disabled(isWatchStateDated || isSessionUnreachable)
++                        Button {
++                            showingTreatmentMenuSheet = true
++                        } label: {
++                            Image(systemName: "plus")
++                                .foregroundStyle(Color.bgDarkerDarkBlue)
++                        }
++                        .controlSize(.large)
++                        .buttonStyle(WatchOSButtonStyle(deviceType: state.deviceType))
++                        .disabled(isWatchStateDated || isSessionUnreachable)
+ 
+-                    Button {
+-                        showingTempTargetSheet = true
+-                    } label: {
+-                        Image(systemName: "target")
+-                            .foregroundStyle(isTempTargetActive ? Color.primary : Color.loopGreen.opacity(0.75))
++                        Button {
++                            showingTempTargetSheet = true
++                        } label: {
++                            Image(systemName: "target")
++                                .foregroundStyle(isTempTargetActive ? Color.primary : Color.loopGreen.opacity(0.75))
++                        }
++                        .tint(isTempTargetActive ? Color.loopGreen.opacity(0.75) : nil)
++                        .disabled(isWatchStateDated || isSessionUnreachable)
+                     }
+-                    .tint(isTempTargetActive ? Color.loopGreen.opacity(0.75) : nil)
+-                    .disabled(isWatchStateDated || isSessionUnreachable)
+                 }
+             }
+             .fullScreenCover(isPresented: $showingTreatmentMenuSheet) {
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 5b72af7de..74d129cdc 100644
+index 5b72af7de..e82df6ff9 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
-@@ -32,6 +32,39 @@ enum BackgroundTaskWindowCounter {
+@@ -32,6 +32,46 @@ enum BackgroundTaskWindowCounter {
      }
  }
  
++// Aligned with build 191 state machine (item 12).
++// .stalled removed (was never called). .searching renamed .scanning.
++// .fastRetry / .moderateWait added for scheduler states (wired in future build).
 +enum G7DirectBLEStatus: String, Equatable {
-+    case off
-+    case searching
-+    case connecting
-+    case active
-+    case stalled
-+    case unavailable
++    case off           // IDLE: no active session or timer
++    case retrieving    // RETRIEVING: checking OS peripheral cache
++    case scanning      // SCANNING: active BLE scan; no cached peripheral found
++    case connecting    // CONNECTING: centralManager.connect() in flight
++    case active        // WINDOW_ACTIVE: inside a live sensor session
++    case fastRetry     // FAST_RETRY: 2s fixed delay after failure/post-success disconnect
++    case moderateWait  // MODERATE_WAIT: 15s delay after 5 consecutive scheduler retries
++    case unavailable   // Bluetooth off / unauthorized
 +
 +    var badgeText: String {
 +        switch self {
-+        case .off: return "off"
-+        case .searching: return "scan"
-+        case .connecting: return "conn"
-+        case .active: return "ok"
-+        case .stalled: return "stall"
-+        case .unavailable: return "n/a"
++        case .off:          return "off"
++        case .retrieving:   return "retr"
++        case .scanning:     return "scan"
++        case .connecting:   return "conn"
++        case .active:       return "ok"
++        case .fastRetry:    return "retry"
++        case .moderateWait: return "wait"
++        case .unavailable:  return "n/a"
 +        }
 +    }
 +
@@ -1087,7 +2059,7 @@ index 5b72af7de..74d129cdc 100644
  @Observable final class WatchState: NSObject, WCSessionDelegate {
      static let shared = WatchState()
  
-@@ -53,6 +86,27 @@ enum BackgroundTaskWindowCounter {
+@@ -53,6 +93,30 @@ enum BackgroundTaskWindowCounter {
      var cob: String? = "--"
      var iob: String? = "--"
      var lastLoopTime: String? = "--"
@@ -1106,34 +2078,99 @@ index 5b72af7de..74d129cdc 100644
 +    /// G7 direct BLE: daily-persistent counters and debug (mirrored from observer; UserDefaults in observer).
 +    var bleConnectsToday: Int = 0
 +    var bleEGVsToday: Int = 0
-+    var bleConnectionEventsToday: Int = 0
 +    var bleLastConnectAt: Date?
 +    var bleLastEGVDate: Date?
 +    var bleLastEGVValue: Int?
++    /// Latest G7 EGV sequence number observed on the BLE direct path; mirrored from `G7WatchSensorAdapter`. nil until first EGV today.
++    var bleLastEGVSequence: Int?
++    /// G7 EGV sequence anchor for "expected readings today" calculation. Set on first EGV of the calendar day; reset on day rollover or sensor swap (sequence regression). Mirrored from `G7WatchSensorAdapter`.
++    var bleFirstSequenceToday: Int?
 +    /// True when `CBCentralManager` had state restored this process (willRestoreState).
 +    var bleWasRestored: Bool = false
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
-@@ -233,6 +287,8 @@ enum BackgroundTaskWindowCounter {
+@@ -113,6 +177,18 @@ enum BackgroundTaskWindowCounter {
+     private var lastUserInfoReceiveTimestamp: Date?
+     private var quietWindowWorkItem: DispatchWorkItem?
+ 
++    /// Effective CGM reading date for which `displayedReadingSource` was last set. In-memory only; nil on cold start.
++    private var displayedReadingAttributedForDate: Date?
++    /// G7 sequence for the attributed reading when known; nil when the winning channel did not carry sequence (e.g. HK).
++    private var displayedReadingAttributedSequence: Int?
++
++    /// Most recent payload build-time (`WatchMessageKeys.date`) that produced a successful
++    /// `setActiveSensorName` application. In-memory only; resets on process restart. Suppresses
++    /// stale WC payloads (out-of-order userInfo, queued message after a phone-side sensor swap)
++    /// from rolling back the adapter's active G7 sensor identity. See
++    /// `applyG7ActiveSensorNameFromWatchPayloadIfPresent`.
++    private var lastAppliedG7SensorNamePayloadDate: Date?
++
+     private var activationTimestamp: Date?
+     private var forcedSinceActivation = false
+ 
+@@ -153,6 +229,23 @@ enum BackgroundTaskWindowCounter {
+ 
+     private var backgroundRefreshCount = 0
+     private var lastBackgroundRefreshDate: Date?
++
++    /// Set when a `WKApplicationRefreshBackgroundTask` triggers `requestWatchStateUpdate()` and the
++    /// resulting fresh data application should trigger `forceComplicationUpdate()`. Consumed (fired
++    /// and cleared) in `finalizePendingData` once the WC reply has been processed and applied to
++    /// UI state.
++    ///
++    /// **Two clearing paths exist**, both gated by `bgTaskComplicationUpdateWindow`:
++    /// 1. `finalizePendingData` (fresh data arrived): fires `forceComplicationUpdate()` when
++    ///    within window, or logs `"🔄 bgtask complication update flag expired"` if past it.
++    /// 2. `DispatchQueue.main.asyncAfter` scheduled alongside the flag in the bgtask handler:
++    ///    if the flag is still set with the **same timestamp** after the window elapses (no
++    ///    data ever arrived), clears the flag and logs `"⌚️ bgTask complication update skipped:
++    ///    flag stale"`. The timestamp match ensures a later bgtask's flag is not stolen.
++    private var pendingBgTaskComplicationUpdateAt: Date?
++    /// Staleness bound for `pendingBgTaskComplicationUpdateAt`. Matches the WC sync timeout in
++    /// `requestWatchStateUpdate(retryCount:)` so any flag older than this is treated as expired.
++    private let bgTaskComplicationUpdateWindow: TimeInterval = 30.0
+     private var lastConnectivityTerminalAt: Date?
+     private var lastConnectivityTerminalPath: String?
+     private var deferredConnectivityCompletionWorkItem: DispatchWorkItem?
+@@ -215,6 +308,7 @@ enum BackgroundTaskWindowCounter {
+         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
+     }
+ 
++    @MainActor
+     func handleForegroundActiveEntry() {
+         assert(Thread.isMainThread, "handleForegroundActiveEntry must be called on main thread")
+         guard !startupIsForegroundActive else { return }
+@@ -233,6 +327,8 @@ enum BackgroundTaskWindowCounter {
          noteAppBecameActive()
          WatchErrorReporter.markBecameActiveImmediately()
          scheduleStartupSequenceOnMain(activationSequence: activationSequence)
 +        applyG7DirectBleScenePhase("active")
-+        G7DirectBLEObserver.shared.applyForegroundActiveEntry()
++        G7WatchSensorAdapter.shared.applyForegroundActiveEntry()
  
          Task {
              await WatchLogger.shared.log(
-@@ -259,6 +315,8 @@ enum BackgroundTaskWindowCounter {
-         cancelStartupSequenceOnMain()
-         startupCurrentActivationSequence = nil
-         WatchErrorReporter.markEnteredBackgroundOrInactiveImmediately()
-+        applyG7DirectBleScenePhase("inactive_or_background")
-+        G7DirectBLEObserver.shared.noteForegroundInactiveOrBackground("inactive_or_background")
+@@ -246,8 +342,18 @@ enum BackgroundTaskWindowCounter {
+         }
+     }
  
-         if let activationSequence {
-             WatchStartupTransportGate.disarm(activationSequence: activationSequence)
-@@ -670,7 +728,8 @@ enum BackgroundTaskWindowCounter {
+-    func handleForegroundInactiveOrBackground() {
++    /// Leaving the active foreground. **Dual path:** `TrioWatchApp`’s `scenePhase` `.onChange` passes
++    /// `active` / `inactive` / `background` via `watchScenePhaseToken`; `ExtensionDelegate.applicationWillResignActive`
++    /// passes `inactive` (resign-active precedes true background). Both can fire close together—duplicate
++    /// `scene_phase=inactive` lines in logs are a known artifact, not necessarily duplicate work.
++    @MainActor
++    func handleForegroundInactiveOrBackground(phase: String) {
+         assert(Thread.isMainThread, "handleForegroundInactiveOrBackground must be called on main thread")
++        // Scene phase + adapter snapshot must update on every SwiftUI transition (`inactive` then `background`).
++        // Startup teardown below runs at most once per activation, so phase notify stays **above** the guard.
++        applyG7DirectBleScenePhase(phase)
++        G7WatchSensorAdapter.shared.noteForegroundInactiveOrBackground(phase)
++
+         guard startupIsForegroundActive else { return }
+ 
+         pendingResidentSampleFirstMainView = false
+@@ -670,11 +776,13 @@ enum BackgroundTaskWindowCounter {
              delta: deltaString,
              readingDate: readingDate,
              date: Date(),
@@ -1142,8 +2179,14 @@ index 5b72af7de..74d129cdc 100644
 +            source: .healthKit
          )
  
-         DispatchQueue.main.async {
-@@ -842,6 +901,42 @@ enum BackgroundTaskWindowCounter {
+-        DispatchQueue.main.async {
++        DispatchQueue.main.async { [weak self] in
+             TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
++            self?.applyHKSnapshot(snapshot)
+             completionHandler()
+         }
+     }
+@@ -842,6 +950,126 @@ enum BackgroundTaskWindowCounter {
          }
      }
  
@@ -1163,12 +2206,48 @@ index 5b72af7de..74d129cdc 100644
 +        assert(Thread.isMainThread, "applyG7DirectBleScenePhase must be called on main thread")
 +        g7DirectBleLastEventAt = Date()
 +        Task {
-+            await WatchLogger.shared.log("event=g7_ble_lifecycle scene_phase=\(phase) status=\(self.g7DirectBleStatus.rawValue)")
++            let sid = await G7WatchSensorAdapter.shared.adapterSessionID ?? "nil"
++            let sensorName = await G7WatchSensorAdapter.shared.telemetrySensorName
++            let line = G7StructuredTelemetryLogLine.formatBleModule(
++                sensorName: sensorName,
++                event: "lifecycle",
++                fields: "scene_phase=\(phase) status=\(self.g7DirectBleStatus.rawValue)",
++                g7Session: sid
++            )
++            await WatchLogger.shared.log(line)
 +        }
++    }
++
++    /// Aligns attribution watermarks from a complication snapshot unless that would regress a newer in-memory reading (e.g. store lagging BLE).
++    /// Also call when hydrating the main watch UI from `latestSnapshot()` (`onAppear`) so `tryAttributeDisplayedReadingSource` gates match the screen.
++    func alignDisplayedReadingAttributionWithComplicationSnapshot(_ snapshot: TrioComplicationSnapshot) {
++        assert(Thread.isMainThread, "alignDisplayedReadingAttributionWithComplicationSnapshot must be called on main thread")
++        if let attributed = displayedReadingAttributedForDate,
++           snapshot.readingDate <= attributed
++        {
++            return
++        }
++        displayedReadingSource = snapshot.source ?? .unknown
++        displayedReadingAttributedForDate = snapshot.readingDate
++        displayedReadingAttributedSequence = snapshot.sequence
 +    }
 +
 +    func applyG7DirectBleSnapshot(_ snapshot: TrioComplicationSnapshot) {
 +        assert(Thread.isMainThread, "applyG7DirectBleSnapshot must be called on main thread")
++        g7DirectBleLastEventAt = Date()
++        g7DirectBleLastReadingAt = snapshot.readingDate
++        if snapshot.source == .g7DirectBLE {
++            g7DirectBleStatus = .active
++        }
++        showSyncingAnimation = false
++        syncTimeoutWorkItem?.cancel()
++
++        guard tryAttributeDisplayedReadingSource(
++            snapshot.source ?? .g7DirectBLE,
++            forReadingDate: snapshot.readingDate,
++            sequence: snapshot.sequence
++        ) else { return }
++
 +        currentGlucose = snapshot.glucose
 +        trend = snapshot.trend
 +        delta = snapshot.delta
@@ -1176,65 +2255,392 @@ index 5b72af7de..74d129cdc 100644
 +            currentGlucoseColorString = glucoseColor
 +        }
 +        lastWatchStateUpdate = snapshot.readingDate
-+        displayedReadingSource = snapshot.source ?? .g7DirectBLE
-+        g7DirectBleStatus = .active
-+        g7DirectBleLastEventAt = Date()
-+        g7DirectBleLastReadingAt = snapshot.readingDate
-+        showSyncingAnimation = false
++    }
++
++    func applyHKSnapshot(_ snapshot: TrioComplicationSnapshot) {
++        assert(Thread.isMainThread, "applyHKSnapshot must be called on main thread")
++        guard tryAttributeDisplayedReadingSource(
++            .healthKit,
++            forReadingDate: snapshot.readingDate,
++            sequence: snapshot.sequence
++        ) else { return }
++        currentGlucose = snapshot.glucose
++        trend = snapshot.trend
++        delta = snapshot.delta
++        lastWatchStateUpdate = snapshot.readingDate
++    }
++
++    /// Must be called on main thread. Sequence matches same reading across channels; date orders readings globally.
++    @discardableResult
++    private func tryAttributeDisplayedReadingSource(
++        _ source: TrioComplicationDataSource,
++        forReadingDate date: Date,
++        sequence: Int? = nil
++    ) -> Bool {
++        assert(Thread.isMainThread)
++        if let seq = sequence,
++           let attributedSeq = displayedReadingAttributedSequence,
++           seq == attributedSeq
++        {
++            // Same G7 reading as already attributed. Allow promotion to a higher-priority
++            // source (e.g. phone-relayed snapshot rendered first, direct BLE arrived after
++            // for the same sequence — BLE should win the display). Mirrors the sequence-
++            // equality logic in `TrioComplicationDataStore.shouldUpdate` so the complication
++            // store and live UI agree about which source owns the visible reading.
++            if source.priority > displayedReadingSource.priority {
++                displayedReadingSource = source
++                // Date may differ slightly across channels for the same sensor reading;
++                // advance the watermark so subsequent monotonic checks remain consistent.
++                displayedReadingAttributedForDate = date
++                return true
++            }
++            return false
++        }
++        if let attributed = displayedReadingAttributedForDate, date <= attributed {
++            return false
++        }
++        displayedReadingSource = source
++        displayedReadingAttributedForDate = date
++        displayedReadingAttributedSequence = sequence
++        return true
++    }
++
++    private func intForWatchMessageKey(_ key: String, in message: [String: Any]) -> Int? {
++        if let n = message[key] as? NSNumber { return n.intValue }
++        return message[key] as? Int
 +    }
 +
      /// Path B1 — Summarize inbound WC messages without stringifying nested `glucoseValues` (avoids large transient `String` allocations).
      private static func watchConnectivityInboundSummary(_ message: [String: Any]) -> String {
          let topKeys = message.keys.sorted().joined(separator: ",")
-@@ -1097,7 +1192,8 @@ enum BackgroundTaskWindowCounter {
+@@ -959,7 +1187,15 @@ enum BackgroundTaskWindowCounter {
+         }
+ 
+         // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
+-        if let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any],
++        // G7 sensor identity must sync whenever watchState is present, even when this method later skips UI (stale `date`, monotonic guard in scheduleUIUpdate, missing/invalid `date` — downstream branches must still run).
++        let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any]
++        if let ws = watchStateDict {
++            DispatchQueue.main.async { @MainActor in
++                self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(ws)
++            }
++        }
++
++        if let watchStateDict,
+            let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
+         {
+             if date >= Date().addingTimeInterval(-15 * 60) {
+@@ -1047,6 +1283,10 @@ enum BackgroundTaskWindowCounter {
+ 
+         let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
+ 
++        DispatchQueue.main.async { @MainActor [weak self] in
++            self?.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
++        }
++
+         let readingDate: Date
+         switch resolveEffectiveCGMReadingDate(from: payload) {
+         case let .found(date):
+@@ -1097,7 +1337,9 @@ enum BackgroundTaskWindowCounter {
              trend: payload[WatchMessageKeys.trend] as? String ?? "",
              delta: payload[WatchMessageKeys.delta] as? String ?? "",
              readingDate: readingDate,
 -            date: Date()
 +            date: Date(),
-+            source: .watchConnectivity
++            source: .watchConnectivity,
++            sequence: intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: payload)
          )
          if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
              DispatchQueue.main.async { [weak self] in
-@@ -1713,6 +1809,13 @@ enum BackgroundTaskWindowCounter {
-             self.lastLoopTime = lastLoopTime
+@@ -1109,7 +1351,7 @@ enum BackgroundTaskWindowCounter {
+             return
          }
  
-+        if message[WatchMessageKeys.currentGlucose] != nil
-+            || message[WatchMessageKeys.trend] != nil
-+            || message[WatchMessageKeys.delta] != nil
+-        DispatchQueue.main.async { [self] in
++        DispatchQueue.main.async { @MainActor [self] in
+             // R5d: compute gap BEFORE updating timestamp
+             let gap = lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+             let isSleepGap = gap > 600
+@@ -1217,8 +1459,9 @@ enum BackgroundTaskWindowCounter {
+             return
+         }
+         let readingResolution = resolveEffectiveCGMReadingDate(from: payload)
+-        DispatchQueue.main.async { [weak self] in
++        DispatchQueue.main.async { @MainActor [weak self] in
+             guard let self else { return }
++            self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
+             let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+             self.saveComplicationSnapshot(from: payload)
+             if case .found = readingResolution {
+@@ -1485,8 +1728,55 @@ enum BackgroundTaskWindowCounter {
+         return pendingCount
+     }
+ 
++    /// Phase C — sync G7 sensor identity from iPhone watch payload into `G7WatchSensorAdapter`.
++    ///
++    /// **Freshness gate (P1 fix):** patch 13 sends `g7_active_sensor_name` on every state
++    /// payload (using `""` when no G7 is active). WatchConnectivity is best-effort and can
++    /// deliver an older queued userInfo / message *after* a newer payload has already updated
++    /// the watch's view of the phone state. Without gating, the older payload's stale sensor
++    /// name (possibly empty after a swap, or the previous identity) would force a rescan via
++    /// `setActiveSensorName(oldName/nil)` and reset BLE session state.
++    ///
++    /// Gate by `WatchMessageKeys.date` (payload build time on the phone — documented as
++    /// "BUILD TIME, not CGM reading time"). Only apply identity changes when the incoming
++    /// build-time is at least as new as the last applied one. Payloads without a parseable
++    /// `date` fall through and apply (defensive — keeps cold-start / malformed-payload paths
++    /// from silently dropping identity sync; the inner `name != knownSensorName` check in
++    /// `applyNewSensorName` is the no-op guard for redundant re-applies).
++    @MainActor
++    private func applyG7ActiveSensorNameFromWatchPayloadIfPresent(_ payload: [String: Any]) {
++        guard payload[WatchMessageKeys.g7ActiveSensorName] != nil else { return }
++
++        let payloadDate = dateValue(from: payload[WatchMessageKeys.date])
++        if let payloadDate,
++           let lastApplied = lastAppliedG7SensorNamePayloadDate,
++           payloadDate < lastApplied
 +        {
-+            displayedReadingSource = .watchConnectivity
++            Task {
++                await WatchLogger.shared.log(
++                    "⚠️ g7_active_sensor_name suppressed: stale_payload"
++                        + " payload_date=\(Int(payloadDate.timeIntervalSince1970))"
++                        + " last_applied=\(Int(lastApplied.timeIntervalSince1970))"
++                )
++            }
++            return
 +        }
 +
-         if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
-             glucoseValues = glucoseData.compactMap { data in
-                 guard let glucose = data["glucose"] as? Double,
-@@ -1843,7 +1946,8 @@ enum BackgroundTaskWindowCounter {
++        let raw = payload[WatchMessageKeys.g7ActiveSensorName]
++        let name: String?
++        if let s = raw as? String {
++            name = s.isEmpty ? nil : s
++        } else {
++            name = nil
++        }
++
++        if let payloadDate { lastAppliedG7SensorNamePayloadDate = payloadDate }
++
++        G7WatchSensorAdapter.shared.setActiveSensorName(name)
++    }
++
+     private func processWatchMessage(_ message: [String: Any]) {
+-        DispatchQueue.main.async {
++        DispatchQueue.main.async { @MainActor in
+             if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
+                let ackMessage = message[WatchMessageKeys.message] as? String,
+                let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
+@@ -1531,6 +1821,7 @@ enum BackgroundTaskWindowCounter {
+         }
+     }
+ 
++    @MainActor
+     private func scheduleUIUpdate(
+         with newData: [String: Any],
+         fromUserInfo: Bool = false,
+@@ -1538,7 +1829,7 @@ enum BackgroundTaskWindowCounter {
+         pendingConnectivityCompletionPath: String? = nil
+     ) {
+         guard Thread.isMainThread else {
+-            DispatchQueue.main.async { [self] in
++            DispatchQueue.main.async { @MainActor [self] in
+                 scheduleUIUpdate(
+                     with: newData,
+                     fromUserInfo: fromUserInfo,
+@@ -1549,6 +1840,8 @@ enum BackgroundTaskWindowCounter {
+             return
+         }
+ 
++        applyG7ActiveSensorNameFromWatchPayloadIfPresent(newData)
++
+         guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
+             Task {
+                 await WatchLogger.shared.log("Invalid date format in WatchState data")
+@@ -1607,6 +1900,14 @@ enum BackgroundTaskWindowCounter {
+         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+     }
+ 
++    /// Apply any buffered WC payload to UI state, then fire the **conditional** complication
++    /// refresh that a background-task-driven `requestWatchStateUpdate()` is waiting on.
++    ///
++    /// **Invariant (Bug #6):** `forceComplicationUpdate()` runs at most **once** per pending bgtask,
++    /// and only when *fresh* data has actually been applied (we entered this method with a
++    /// non-empty `pendingData`). Empty-payload finalizes do **not** trigger the complication
++    /// refresh — they simply hide the syncing animation and let the existing complication state
++    /// remain. The flag is also auto-cleared when stale (older than `bgTaskComplicationUpdateWindow`).
+     private func finalizePendingData(
+         fromUserInfo: Bool = false,
+         userInfoReceiveTimestamp: Date? = nil,
+@@ -1644,6 +1945,21 @@ enum BackgroundTaskWindowCounter {
+             await WatchLogger.shared.log("Watch UI update complete")
+         }
+ 
++        // Consume the bgtask-driven complication-update flag once fresh data has been applied.
++        // Stale flags (older than `bgTaskComplicationUpdateWindow`) are dropped silently so a
++        // foreground refresh long after a failed bgtask cannot trigger a spurious complication
++        // update.
++        if let bgTaskRequestedAt = pendingBgTaskComplicationUpdateAt {
++            pendingBgTaskComplicationUpdateAt = nil
++            if Date().timeIntervalSince(bgTaskRequestedAt) <= bgTaskComplicationUpdateWindow {
++                forceComplicationUpdate()
++            } else {
++                Task {
++                    await WatchLogger.shared.log("🔄 bgtask complication update flag expired; skipping forceComplicationUpdate")
++                }
++            }
++        }
++
+         guard let pendingConnectivityCompletionPath else { return }
+         let pendingCountBeforeCompletion = pendingConnectivityTasks.count
+         let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
+@@ -1677,28 +1993,46 @@ enum BackgroundTaskWindowCounter {
+ 
+         startupFirstRefreshInFlight = false
+ 
+-        if let date = dateValue(from: message[WatchMessageKeys.date]) {
+-            lastWatchStateUpdate = date
+-            forcedSinceActivation = false
+-        }
+-
+         syncTimeoutWorkItem?.cancel()
+         syncTimeoutWorkItem = nil
+ 
+-        if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
+-            self.currentGlucose = currentGlucose
+-        }
++        let effectiveReading = resolveEffectiveCGMReadingDate(from: message)
++        let sequence = intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
+ 
+-        if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
+-            self.currentGlucoseColorString = currentGlucoseColorString
++        let shouldApplyCGMFields: Bool
++        if case let .found(readingDate) = effectiveReading {
++            shouldApplyCGMFields = tryAttributeDisplayedReadingSource(
++                .watchConnectivity,
++                forReadingDate: readingDate,
++                sequence: sequence
++            )
++        } else {
++            shouldApplyCGMFields = (displayedReadingAttributedForDate == nil)
+         }
+ 
+-        if let trend = message[WatchMessageKeys.trend] as? String {
+-            self.trend = trend
++        if shouldApplyCGMFields {
++            if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
++                self.currentGlucose = currentGlucose
++            }
++
++            if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
++                self.currentGlucoseColorString = currentGlucoseColorString
++            }
++
++            if let trend = message[WatchMessageKeys.trend] as? String {
++                self.trend = trend
++            }
++
++            if let delta = message[WatchMessageKeys.delta] as? String {
++                self.delta = delta
++            }
+         }
+ 
+-        if let delta = message[WatchMessageKeys.delta] as? String {
+-            self.delta = delta
++        // lastWatchStateUpdate uses WatchMessageKeys.date (delivery/snapshot time), not CGM reading time.
++        // BLE/HK paths set it from readingDate. The 15s fallback guard uses this field — semantics differ per channel.
++        if let date = dateValue(from: message[WatchMessageKeys.date]) {
++            lastWatchStateUpdate = date
++            forcedSinceActivation = false
+         }
+ 
+         if let iob = message[WatchMessageKeys.iob] as? String {
+@@ -1843,7 +2177,9 @@ enum BackgroundTaskWindowCounter {
              delta: deltaValue,
              readingDate: readingDate,
              date: Date(),
 -            glucoseColor: glucoseColorValue
 +            glucoseColor: glucoseColorValue,
-+            source: .watchConnectivity
++            source: .watchConnectivity,
++            sequence: intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
          )
  
          // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
-@@ -1904,7 +2008,8 @@ enum BackgroundTaskWindowCounter {
+@@ -1904,7 +2240,9 @@ enum BackgroundTaskWindowCounter {
              delta: delta ?? "",
              readingDate: effectiveReadingDate,
              date: Date(),
 -            glucoseColor: currentGlucoseColorString
 +            glucoseColor: currentGlucoseColorString,
-+            source: displayedReadingSource
++            source: displayedReadingSource,
++            sequence: displayedReadingAttributedSequence
          )
  
          Task {
-@@ -2077,6 +2182,7 @@ enum BackgroundTaskWindowCounter {
+@@ -1996,9 +2334,27 @@ enum BackgroundTaskWindowCounter {
+                     lastBackgroundRefreshDate = Date()
+ 
+                     if isReachable {
++                        // Defer `forceComplicationUpdate()` to the data-application success path
++                        // (`finalizePendingData`) instead of firing unconditionally after 2s. Avoids
++                        // refreshing the complication with stale `currentGlucose` when the WC reply
++                        // is slow or never arrives — see Bug #6 / `pendingBgTaskComplicationUpdateAt`.
++                        let requestedAt = Date()
++                        pendingBgTaskComplicationUpdateAt = requestedAt
+                         requestWatchStateUpdate()
+-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+-                            self.forceComplicationUpdate()
++                        // Stale-flag detector: if `finalizePendingData` never fires within the
++                        // window (WC unreachable, dropped reply, retries exhausted), the deferred
++                        // complication update is silently skipped. Emit one log line so the
++                        // bgtask → complication-update path is observable in telemetry.
++                        // The timestamp check ensures we only clear / log our **own** flag —
++                        // a later bgtask that re-set the flag with a fresh timestamp is untouched.
++                        let window = bgTaskComplicationUpdateWindow
++                        DispatchQueue.main.asyncAfter(deadline: .now() + window) { [weak self] in
++                            guard let self = self else { return }
++                            guard self.pendingBgTaskComplicationUpdateAt == requestedAt else { return }
++                            self.pendingBgTaskComplicationUpdateAt = nil
++                            Task {
++                                await WatchLogger.shared.log("⌚️ bgTask complication update skipped: flag stale (no data within \(Int(window))s)")
++                            }
+                         }
+                     } else {
+                         loadFallbackDataFromComplication()
+@@ -2060,6 +2416,16 @@ enum BackgroundTaskWindowCounter {
+             return
+         }
+ 
++        // Don't regress watermark / UI from store if in-memory reading is already newer (matches alignDisplayedReadingAttributionWithComplicationSnapshot).
++        if let attributed = displayedReadingAttributedForDate,
++           snapshot.readingDate <= attributed
++        {
++            DispatchQueue.main.async {
++                self.showSyncingAnimation = false
++            }
++            return
++        }
++
+         if let lastUpdate = lastWatchStateUpdate,
+            Date().timeIntervalSince(lastUpdate) <= 15
+         {
+@@ -2070,6 +2436,13 @@ enum BackgroundTaskWindowCounter {
+         }
+ 
+         DispatchQueue.main.async {
++            // Re-check after deferral: BLE may have advanced the watermark before this block runs.
++            if let attributed = self.displayedReadingAttributedForDate,
++               snapshot.readingDate <= attributed
++            {
++                self.showSyncingAnimation = false
++                return
++            }
+             self.currentGlucose = snapshot.glucose
+             self.trend = snapshot.trend
+             self.delta = snapshot.delta
+@@ -2077,6 +2450,7 @@ enum BackgroundTaskWindowCounter {
                  self.currentGlucoseColorString = glucoseColor
              }
              self.lastWatchStateUpdate = snapshot.readingDate
-+            self.displayedReadingSource = snapshot.source ?? .unknown
++            self.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
              self.showSyncingAnimation = false
              self.syncTimeoutWorkItem?.cancel()
          }
@@ -1345,10 +2751,10 @@ index 1ee4b80a6..9b0197a49 100644
      }
  }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
-index 1cc2a5535..6011c7ee7 100644
+index 1cc2a5535..255a397ab 100644
 --- a/Trio Watch Shared/TrioComplicationDataStore.swift	
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -5,6 +5,22 @@ import WatchConnectivity
+@@ -5,6 +5,35 @@ import WatchConnectivity
  #endif
  import WidgetKit
  
@@ -1366,38 +2772,55 @@ index 1cc2a5535..6011c7ee7 100644
 +        case .unknown: return "?"
 +        }
 +    }
++
++    /// Tie-break priority when the same CGM reading arrives via multiple channels. Higher wins.
++    /// Used by both `TrioComplicationDataStore.shouldUpdate` (complication-store dedup) and
++    /// `WatchState.tryAttributeDisplayedReadingSource` (live UI attribution) so the two paths
++    /// agree about which source should win on a sequence tie.
++    var priority: Int {
++        switch self {
++        case .g7DirectBLE: return 3
++        case .watchConnectivity: return 2
++        case .healthKit: return 1
++        case .unknown: return 0
++        }
++    }
 +}
 +
  struct TrioComplicationSnapshot: Equatable, Codable {
      private enum Constants {
          static let fallbackGlucose = "--"
-@@ -18,6 +34,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
+@@ -18,6 +47,9 @@ struct TrioComplicationSnapshot: Equatable, Codable {
      let readingDate: Date
      let state: String?
      let glucoseColor: String?
 +    let source: TrioComplicationDataSource?
++    /// G7 EGV sequence when known; optional same-reading identity alongside `readingDate`.
++    let sequence: Int?
  
      // INVARIANT (Phase 3.4): All display-field sanitization here.
      // Dedup always compares sanitized values.
-@@ -28,7 +45,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
+@@ -28,7 +60,9 @@ struct TrioComplicationSnapshot: Equatable, Codable {
          readingDate: Date,
          date: Date,
          state: String? = nil,
 -        glucoseColor: String? = nil
 +        glucoseColor: String? = nil,
-+        source: TrioComplicationDataSource? = nil
++        source: TrioComplicationDataSource? = nil,
++        sequence: Int? = nil
      ) {
          glucose = Self.sanitizedGlucose(from: rawGlucose)
          trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
-@@ -37,6 +55,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
+@@ -37,6 +71,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
          self.date = date
          self.state = state
          self.glucoseColor = glucoseColor
 +        self.source = source
++        self.sequence = sequence
      }
  
      private static func sanitizedGlucose(from value: String) -> String {
-@@ -89,6 +108,7 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
+@@ -89,6 +125,7 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
      let trend: String
      let delta: String
      let state: String
@@ -1405,7 +2828,7 @@ index 1cc2a5535..6011c7ee7 100644
  }
  
  extension ComplicationSnapshotFingerprint {
-@@ -100,6 +120,7 @@ extension ComplicationSnapshotFingerprint {
+@@ -100,6 +137,7 @@ extension ComplicationSnapshotFingerprint {
          // Sentinel for nil: state is always optional in the model; sentinel ensures
          // nil and non-nil are always distinguishable in Equatable comparison.
          state = snapshot.state ?? "<nil>"
@@ -1413,15 +2836,33 @@ index 1cc2a5535..6011c7ee7 100644
      }
  }
  
-@@ -569,14 +590,34 @@ final class TrioComplicationDataStore {
+@@ -569,14 +607,48 @@ final class TrioComplicationDataStore {
      //   Same timestamp, different glucose → true
      //   Newer timestamp (>1s)            → true
      //   Older timestamp (<-1s)           → false
 +    //   Within ±1s, same glucose+trend, higher-priority source → true (MOD-D synthesis)
++    //   Within ±1s, same g7Sequence (regardless of display fields), lower-priority source → false
      func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
          let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
          if timeDiff > 1.0  { return true }
          if timeDiff < -1.0 { return false }
++        // Sequence-equality guard for the BLE/phone race. When both snapshots carry a G7 sequence
++        // and the values match, they are the *same* sensor reading even if their derived display
++        // fields disagree (trend mapping in particular can differ across channels — direct BLE
++        // uses the 5-min trend rate, phone uses its own delta-window logic, and they can land on
++        // different `hkTrendString` buckets for the same underlying reading). Without this check
++        // the fallthrough OR below treats trend/delta inequality as "different reading" and lets
++        // a lower-priority channel (e.g. `.watchConnectivity`, priority 2) overwrite a higher-
++        // priority one (`.g7DirectBLE`, priority 3) that already saved this sequence.
++        if let newSeq = new.sequence, let curSeq = current.sequence, newSeq == curSeq {
++            let newP = Self.sourcePriority(new.source)
++            let curP = Self.sourcePriority(current.source)
++            if newP > curP { return true }
++            if newP < curP { return false }
++            // Equal priority + same sequence + within ±1s → same reading from the same channel,
++            // no-op even if display fields differ (shouldn't happen in practice but defensive).
++            return false
++        }
 +        let sameCore = new.glucose == current.glucose && new.trend == current.trend
 +        if sameCore {
 +            let newP = Self.sourcePriority(new.source)
@@ -1437,17 +2878,124 @@ index 1cc2a5535..6011c7ee7 100644
 +    }
 +
 +    /// Tie-break when two channels race within the ±1s dedup window (direct BLE preferred).
++    /// Delegates to `TrioComplicationDataSource.priority` so the same ordering is used by the
++    /// live UI attribution path in `WatchState.tryAttributeDisplayedReadingSource`.
 +    private static func sourcePriority(_ source: TrioComplicationDataSource?) -> Int {
-+        guard let source else { return 0 }
-+        switch source {
-+        case .g7DirectBLE: return 3
-+        case .watchConnectivity: return 2
-+        case .healthKit: return 1
-+        case .unknown: return 0
-+        }
++        source?.priority ?? 0
      }
  
      // MARK: - Phase 3.0 Pre-dispatch Dedup
+@@ -682,8 +754,14 @@ final class TrioComplicationDataStore {
+                 return
+             }
+         } else if let lastTS = Self.lastValidTimestamp {
+-            if snapshot.readingDate.timeIntervalSince(lastTS) < 0.0 {
+-                log("⏭️ saveOnMain: rejected older snapshot via lastValidTimestamp fallback (readingDate=\(snapshot.readingDate), lastValid=\(lastTS))")
++            // Monotonic write guard (Bug #5): authoritative monotonic check lives on the write
++            // path. `<` is a genuine backward-in-time write — log it. `==` is a normal duplicate
++            // (same reading seen twice) and is silenced so it doesn't masquerade as an anomaly
++            // in telemetry / log streams. The read path (`latestSnapshot`) no longer logs this.
++            if snapshot.readingDate < lastTS {
++                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(snapshot.readingDate) < \(lastTS))")
++                return
++            } else if snapshot.readingDate == lastTS {
+                 return
+             }
+         }
+@@ -782,8 +860,15 @@ final class TrioComplicationDataStore {
+     }
+ 
+     /// Loads the latest complication snapshot from disk.
+-    /// May be called from any thread. Updates `lastValidTimestamp` as a side-effect (serialized on main
+-    /// when App Group defaults are unavailable to protect in-memory fallback).
++    ///
++    /// May be called from any thread.
++    ///
++    /// **Invariant (Bug #5):** the monotonic write guard lives on `saveOnMain`, **not** here.
++    /// This read path no longer logs `lastValidTimestamp: skipped non-monotonic write` — that
++    /// message previously fired on every poll of an unchanged snapshot (e.g., the 1Hz debug-view
++    /// task) and on every legitimate dedup, masquerading as an anomaly. The only timestamp
++    /// side-effect retained here is **cold-start hydration** when `lastValidTimestamp` has not
++    /// yet been seeded in this process / App Group; that path is silent unless it actually fires.
+     func latestSnapshot() -> TrioComplicationSnapshot? {
+         guard let fileURL = snapshotFileURL else {
+             log("❌ Snapshot load FAILED: no App Group container URL")
+@@ -803,16 +888,16 @@ final class TrioComplicationDataStore {
+             guard !data.isEmpty else { throw NSError(domain: "EmptySnapshot", code: -1) }
+             let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
+             let readingDate = snapshot.readingDate
+-            if let currentTS = Self.lastValidTimestamp, readingDate.timeIntervalSince(currentTS) <= 0 {
+-                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(readingDate) <= \(currentTS))")
+-            } else if appGroupDefaults == nil {
+-                onMain {
++            if Self.lastValidTimestamp == nil {
++                if appGroupDefaults == nil {
++                    onMain {
++                        Self.lastValidTimestamp = readingDate
++                        self.log("✅ lastValidTimestamp hydrated from disk (main): \(readingDate)")
++                    }
++                } else {
+                     Self.lastValidTimestamp = readingDate
+-                    self.log("✅ lastValidTimestamp updated (main): \(readingDate)")
++                    log("✅ lastValidTimestamp hydrated from disk: \(readingDate)")
+                 }
+-            } else {
+-                Self.lastValidTimestamp = readingDate
+-                log("✅ lastValidTimestamp updated: \(readingDate)")
+             }
+             return snapshot
+         }
+diff --git a/Trio/Sources/Models/WatchMessageKeys.swift b/Trio/Sources/Models/WatchMessageKeys.swift
+index 24a31f2ea..391df0f6e 100644
+--- a/Trio/Sources/Models/WatchMessageKeys.swift
++++ b/Trio/Sources/Models/WatchMessageKeys.swift
+@@ -46,6 +46,10 @@ enum WatchMessageKeys {
+ 
+     // Transfer Metadata Keys
+     static let readingEpoch = "reading_epoch"
++    /// G7 EGV sequence (same-reading identity with watch direct BLE); optional.
++    static let g7Sequence = "g7_sequence"
++    /// G7 peripheral/sensor name for `G7WatchSensorAdapter`; empty string means clear (sent whenever key is present).
++    static let g7ActiveSensorName = "g7_active_sensor_name"
+     static let transferEnqueuedAt = "transfer_enqueued_at"
+ 
+     // Limits and Settings Keys
+diff --git a/Trio/Sources/Models/WatchState.swift b/Trio/Sources/Models/WatchState.swift
+index cb2bf3c0b..9128c5e89 100644
+--- a/Trio/Sources/Models/WatchState.swift
++++ b/Trio/Sources/Models/WatchState.swift
+@@ -27,6 +27,12 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+     var bolusIncrement: Decimal = 0.05
+     var confirmBolusFaster: Bool = false
+ 
++    /// G7 EGV sequence when the active CGM is G7 and it matches `latestGlucose`; watch attribution only.
++    var g7Sequence: Int?
++
++    /// G7 peripheral name from the active `G7CGMManager` when applicable; `nil` encodes as empty over WC.
++    var g7ActiveSensorName: String?
++
+     static func == (lhs: WatchState, rhs: WatchState) -> Bool {
+         lhs.date == rhs.date &&
+             lhs.currentGlucose == rhs.currentGlucose &&
+@@ -49,7 +55,9 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+             lhs.maxFat == rhs.maxFat &&
+             lhs.maxProtein == rhs.maxProtein &&
+             lhs.bolusIncrement == rhs.bolusIncrement &&
+-            lhs.confirmBolusFaster == rhs.confirmBolusFaster
++            lhs.confirmBolusFaster == rhs.confirmBolusFaster &&
++            lhs.g7Sequence == rhs.g7Sequence &&
++            lhs.g7ActiveSensorName == rhs.g7ActiveSensorName
+     }
+ 
+     func hash(into hasher: inout Hasher) {
+@@ -76,5 +84,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+         hasher.combine(maxProtein)
+         hasher.combine(bolusIncrement)
+         hasher.combine(confirmBolusFaster)
++        hasher.combine(g7Sequence)
++        hasher.combine(g7ActiveSensorName)
+     }
+ }
 -- 
 2.50.1 (Apple Git-155)
 

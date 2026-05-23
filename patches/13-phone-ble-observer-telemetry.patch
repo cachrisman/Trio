@@ -1,0 +1,266 @@
+From 5f116eb869d855e8e45f66e2a641d5f3a35dc804 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sat, 23 May 2026 13:24:59 +0200
+Subject: [PATCH] feat: phone-ble-observer-telemetry
+
+---
+ Trio/Sources/APS/CGM/PluginSource.swift       |  2 +
+ Trio/Sources/APS/DeviceDataManager.swift      |  1 +
+ Trio/Sources/Application/TrioApp.swift        | 27 ++++++-
+ .../G7StructuredTelemetryLogLine.swift        | 28 ++++++++
+ .../WatchManager/AppleWatchManager.swift      | 70 +++++++++++++++++++
+ 5 files changed, 126 insertions(+), 2 deletions(-)
+ create mode 100644 Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
+
+diff --git a/Trio/Sources/APS/CGM/PluginSource.swift b/Trio/Sources/APS/CGM/PluginSource.swift
+index 304d6800c..5717665d9 100644
+--- a/Trio/Sources/APS/CGM/PluginSource.swift
++++ b/Trio/Sources/APS/CGM/PluginSource.swift
+@@ -19,6 +19,8 @@ final class PluginSource: GlucoseSource {
+         self.glucoseStorage = glucoseStorage
+         self.glucoseManager = glucoseManager
+ 
++        // Snapshot of fetch manager cgmManager at source creation; if FetchGlucoseManager swaps the manager without
++        // recreating this PluginSource, self.cgmManager can drift (narrow - typical G7 use keeps one instance).
+         cgmManager = glucoseManager.cgmManager
+         cgmManager?.delegateQueue = processQueue
+         cgmManager?.cgmManagerDelegate = self
+diff --git a/Trio/Sources/APS/DeviceDataManager.swift b/Trio/Sources/APS/DeviceDataManager.swift
+index 637323ecb..3fe49bde1 100644
+--- a/Trio/Sources/APS/DeviceDataManager.swift
++++ b/Trio/Sources/APS/DeviceDataManager.swift
+@@ -314,6 +314,7 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
+ 
+     @Persisted(key: "BaseDeviceDataManager.lastFetchGlucoseDate") private var lastFetchGlucoseDate: Date = .distantPast
+ 
++    // Plugin CGM uses FetchGlucoseManager; glucoseManager / cgmManager here stay unset - do not use them for plugin identity.
+     var glucoseManager: FetchGlucoseManager?
+     var cgmManager: CGMManagerUI?
+     var cgmType: CGMType = .enlite
+diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
+index 7ace0f37c..933a0522c 100644
+--- a/Trio/Sources/Application/TrioApp.swift
++++ b/Trio/Sources/Application/TrioApp.swift
+@@ -1,6 +1,7 @@
+ import BackgroundTasks
+ import CoreData
+ import Foundation
++import G7SensorKit
+ import SwiftUI
+ import Swinject
+ 
+@@ -68,9 +69,10 @@ extension Notification.Name {
+         if let appearance = resolveOrLog(AppearanceManager.self) {
+             appearance.setupGlobalAppearance()
+         }
+-        resolveOrLog(DeviceDataManager.self)
++        let deviceDataManager = resolveOrLog(DeviceDataManager.self)
+         resolveOrLog(APSManager.self)
+-        resolveOrLog(FetchGlucoseManager.self)
++        let fetchGlucoseManager = resolveOrLog(FetchGlucoseManager.self)
++        configureG7ForkTelemetry(deviceDataManager: deviceDataManager, fetchGlucoseManager: fetchGlucoseManager)
+         resolveOrLog(FetchTreatmentsManager.self)
+         resolveOrLog(CalendarManager.self)
+         resolveOrLog(UserNotificationsManager.self)
+@@ -88,6 +90,27 @@ extension Notification.Name {
+         resolveOrLog(IOBService.self)
+     }
+ 
++    /// Routes G7SensorKit fork telemetry (`G7TelemetryPayload`) into the iOS log file / cloud upload pipeline.
++    /// Uses `FetchGlucoseManager.cgmManager` first (plugin CGM), then `DeviceDataManager.cgmManager` — matches `BaseWatchManager` G7 resolution.
++    private func configureG7ForkTelemetry(deviceDataManager: DeviceDataManager?, fetchGlucoseManager: FetchGlucoseManager?) {
++        G7Telemetry.emit = { [deviceDataManager, fetchGlucoseManager] payload in
++            let sensorName: String
++            let g7 = (fetchGlucoseManager?.cgmManager as? G7CGMManager)
++                ?? (deviceDataManager?.cgmManager as? G7CGMManager)
++            if let g7 {
++                sensorName = g7.sensorName ?? "nil"
++            } else {
++                sensorName = "nil"
++            }
++            let line = G7StructuredTelemetryLogLine.formatCoreTelemetry(
++                sensorName: sensorName,
++                payload: payload,
++                g7Session: "na"
++            )
++            debug(.service, line)
++        }
++    }
++
+     @discardableResult
+     private func resolveOrLog<T>(_ type: T.Type) -> T? {
+         guard let service = resolver.resolve(type) else {
+diff --git a/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift b/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
+new file mode 100644
+index 000000000..fba604016
+--- /dev/null
++++ b/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
+@@ -0,0 +1,28 @@
++import Foundation
++import G7SensorKit
++
++/// Canonical key order for G7 cloud logs: `module` → `sensor_name` → `event` → optional fields → `g7_session`.
++/// Pipeline code may append further keys (e.g. battery) after this string.
++enum G7StructuredTelemetryLogLine {
++    /// G7SensorKit telemetry (`module=g7_core`).
++    static func formatCoreTelemetry(sensorName: String, payload: G7TelemetryPayload, g7Session: String) -> String {
++        let core: String
++        if payload.fields.isEmpty {
++            core = "module=g7_core sensor_name=\(sensorName) event=\(payload.event)"
++        } else {
++            core = "module=g7_core sensor_name=\(sensorName) event=\(payload.event) \(payload.fields)"
++        }
++        return "\(core) g7_session=\(g7Session)"
++    }
++
++    /// Watch direct BLE observer (`module=g7_ble`).
++    static func formatBleModule(sensorName: String, event: String, fields: String, g7Session: String) -> String {
++        let core: String
++        if fields.isEmpty {
++            core = "module=g7_ble sensor_name=\(sensorName) event=\(event)"
++        } else {
++            core = "module=g7_ble sensor_name=\(sensorName) event=\(event) \(fields)"
++        }
++        return "\(core) g7_session=\(g7Session)"
++    }
++}
+diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+index 5782a6d6f..2c3c2a399 100644
+--- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
++++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+@@ -2,6 +2,7 @@ import Combine
+ import CoreData
+ import FirebaseCrashlytics
+ import Foundation
++import G7SensorKit
+ import Swinject
+ import UIKit
+ import WatchConnectivity
+@@ -20,6 +21,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+     @Injected() var broadcaster: Broadcaster!
+     @Injected() private var apsManager: APSManager!
++    @Injected() private var deviceManager: DeviceDataManager!
++    @Injected() private var fetchGlucoseManager: FetchGlucoseManager!
+     @Injected() private var settingsManager: SettingsManager!
+     @Injected() private var fileStorage: FileStorage!
+     @Injected() private var glucoseStorage: GlucoseStorage!
+@@ -37,6 +40,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     private var currentGlucoseTarget: Decimal = 100.0
+     private var activeBolusAmount: Double = 0.0
+ 
++    /// Last non-empty G7 peripheral name — same string as `G7CGMManager.state.sensorID` (`sensorName`).
++    /// Persisted because that identity can be missing at snapshot time while glucose pipeline still runs.
++    /// Valid only with `lastKnownG7SensorActivatedAtEpoch` for the same session (`state.activatedAt`).
++    @Persisted(key: "BaseWatchManager.lastKnownG7ActiveSensorName") private var lastKnownG7ActiveSensorName: String = ""
++
++    /// Session anchor: `G7CGMManager.state.activatedAt.timeIntervalSince1970` when the cached name was stored; `0` = none.
++    /// EOS / scan-for-new clears both `sensorID` and `activatedAt` in `G7CGMManager.scanForNewSensor()` — verified in fork source.
++    @Persisted(key: "BaseWatchManager.lastKnownG7SensorActivatedAtEpoch") private var lastKnownG7SensorActivatedAtEpoch: TimeInterval = 0
++
+     // Queue for handling Core Data change notifications
+     private let queue = DispatchQueue(label: "BaseWatchManagerManager.queue", qos: .utility)
+     private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
+@@ -231,6 +243,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+     /// Prepares the current state data to be sent to the Watch
+     /// - Returns: WatchState containing current glucose readings and trends and determination infos for displaying cob and iob in the view
++    ///
++    /// **G7 filter name:** On a fresh install, `g7_active_sensor_name` may be absent until the first snapshot where
++    /// `G7CGMManager` exposes a non-empty `sensorID` — then the UserDefaults-backed cache survives later gaps. Expected.
+     func setupWatchState() async -> WatchState {
+         // Check if a watch is paired and reachable before doing expensive calculations
+         guard let session else {
+@@ -260,6 +275,46 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             debug(.watchManager, "⌚️❌ Skipping setupWatchState - Watch session not activated")
+             return WatchState(date: Date())
+         }
++        let g7PhoneContext = await MainActor.run { () -> (seqCtx: (sequence: Int, timestamp: Date)?, resolvedSensorName: String?) in
++            let g7 = (fetchGlucoseManager.cgmManager as? G7CGMManager)
++                ?? (deviceManager.cgmManager as? G7CGMManager)
++            guard let g7 else { return (nil, nil) }
++            let seqCtx: (sequence: Int, timestamp: Date)?
++            if let msg = g7.latestReading, let ts = g7.latestReadingTimestamp {
++                seqCtx = (Int(msg.sequence), ts)
++            } else {
++                seqCtx = nil
++            }
++            // `sensorName` is `state.sensorID`; `sessionEpoch` uses `state.activatedAt` (equivalent to `G7CGMManager.sensorActivatedAt`).
++            let sessionEpoch = g7.state.activatedAt?.timeIntervalSince1970 ?? 0
++            let liveTrimmed = g7.sensorName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
++
++            // EOS / scan-for-new: `G7CGMManager.scanForNewSensor()` clears `sensorID` and `activatedAt` together (fork source).
++            // Do not treat `liveTrimmed.isEmpty && activatedAt != nil` as an error — that pairing is exactly when we may need the cache.
++            if sessionEpoch == 0 {
++                lastKnownG7ActiveSensorName = ""
++                lastKnownG7SensorActivatedAtEpoch = 0
++            }
++
++            if !liveTrimmed.isEmpty {
++                lastKnownG7ActiveSensorName = liveTrimmed
++                lastKnownG7SensorActivatedAtEpoch = sessionEpoch
++            }
++
++            let cachedTrimmed = lastKnownG7ActiveSensorName.trimmingCharacters(in: .whitespacesAndNewlines)
++            let cachedEpoch = lastKnownG7SensorActivatedAtEpoch
++
++            let resolved: String?
++            if !liveTrimmed.isEmpty {
++                resolved = liveTrimmed
++            } else if !cachedTrimmed.isEmpty, sessionEpoch > 0, sessionEpoch == cachedEpoch {
++                resolved = cachedTrimmed
++            } else {
++                resolved = nil
++            }
++            return (seqCtx, resolved)
++        }
++
+         do {
+             // Get NSManagedObjectIDs
+             let glucoseIds = try await fetchGlucose()
+@@ -281,6 +336,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+             return await backgroundContext.perform {
+                 var watchState = WatchState(date: Date())
++                watchState.g7ActiveSensorName = g7PhoneContext.resolvedSensorName
+ 
+                 // Set lastLoopDate
+                 let lastLoopMinutes = Int((Date().timeIntervalSince(self.apsManager.lastLoopDate) - 30) / 60) + 1
+@@ -311,6 +367,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                     return watchState
+                 }
+ 
++                if let ctx = g7PhoneContext.seqCtx,
++                   let gd = latestGlucose.date,
++                   abs(ctx.timestamp.timeIntervalSince(gd)) <= 120
++                {
++                    watchState.g7Sequence = ctx.sequence
++                }
++
+                 // Assign currentGlucose and its color
+                 /// Set current glucose with proper formatting
+                 if self.units == .mgdL {
+@@ -554,6 +617,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             dict[WatchMessageKeys.readingEpoch] = newestReading.date.timeIntervalSince1970
+         }
+ 
++        if let seq = state.g7Sequence {
++            dict[WatchMessageKeys.g7Sequence] = seq
++        }
++
++        dict[WatchMessageKeys.g7ActiveSensorName] = state.g7ActiveSensorName ?? ""
++
+         return dict
+     }
+ 
+@@ -781,6 +850,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             (WatchMessageKeys.trend, "trend"),
+             (WatchMessageKeys.delta, "delta"),
+             (WatchMessageKeys.readingEpoch, "readingEpoch"),
++            (WatchMessageKeys.g7Sequence, "g7Sequence"),
+             (WatchMessageKeys.transferEnqueuedAt, "transferEnqueuedAt"),
+             (WatchMessageKeys.date, "date"),
+         ]
+-- 
+2.50.1 (Apple Git-155)
+
