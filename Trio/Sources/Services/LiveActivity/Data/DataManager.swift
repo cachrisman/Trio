@@ -67,6 +67,20 @@ extension LiveActivityManager {
         }
     }
 
+    func fetchAndMapTempTarget() -> TempTargetData? {
+        guard let current = tempTargetsStorage.current() else {
+            return nil
+        }
+
+        return TempTargetData(
+            isActive: true,
+            tempTargetName: current.displayName,
+            date: current.createdAt,
+            duration: current.duration,
+            target: current.targetTop ?? 0
+        )
+    }
+
     func fetchAndMapOverride() async throws -> OverrideData? {
         let results = try await CoreDataStack.shared.fetchEntitiesAsync(
             ofType: OverrideStored.self,
