@@ -1,27 +1,80 @@
-From 0d8c092d55bd977dd26a67e16a331b659053a070 Mon Sep 17 00:00:00 2001
+From 1951b4501c6980a8847ae5594e9ee3d271b9403d Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 23 May 2026 15:43:06 +0200
+Date: Tue, 26 May 2026 00:18:25 +0200
 Subject: [PATCH] feat: direct-ble-observer
 
 ---
- .../G7WatchSensorAdapter.swift                | 935 ++++++++++++++++++
- .../Views/ComplicationDebugView.swift         | 555 +++++++----
+ .../ExtensionDelegate.swift                   |  23 +-
+ .../G7WatchSensorAdapter.swift                | 990 ++++++++++++++++++
+ Trio Watch App Extension/TrioWatchApp.swift   |   2 +-
+ .../Views/ComplicationDebugView.swift         | 555 ++++++----
  .../Views/GlucoseTrendView.swift              |  41 +-
  .../Views/TrioMainWatchView.swift             | 150 +--
  Trio Watch App Extension/WatchState.swift     | 428 +++++++-
  .../TrioWatchComplication.swift               |  37 +-
- .../TrioComplicationDataStore.swift           | 111 ++-
+ .../TrioComplicationDataStore.swift           | 111 +-
+ .../G7StructuredTelemetryLogLine.swift        |  28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   4 +
  Trio/Sources/Models/WatchState.swift          |  12 +-
- 9 files changed, 1942 insertions(+), 331 deletions(-)
+ 12 files changed, 2047 insertions(+), 334 deletions(-)
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
+ create mode 100644 Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
 
+diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
+index 0ef9b4431..1b72c289a 100644
+--- a/Trio Watch App Extension/ExtensionDelegate.swift	
++++ b/Trio Watch App Extension/ExtensionDelegate.swift	
+@@ -1,7 +1,23 @@
++import G7SensorKit
+ import WatchKit
+ 
+ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
+     func applicationDidFinishLaunching() {
++        // Fork-level G7SensorKit telemetry (`G7TelemetryPayload`) → WatchLogger → BetterStack
++        // (same pipeline as BLE logs).
++        G7Telemetry.emit = { payload in
++            Task { @MainActor in
++                let sid = G7WatchSensorAdapter.shared.adapterSessionID ?? "nil"
++                let sensorName = G7WatchSensorAdapter.shared.telemetrySensorName
++                let line = G7StructuredTelemetryLogLine.formatCoreTelemetry(
++                    sensorName: sensorName,
++                    payload: payload,
++                    g7Session: sid
++                )
++                await WatchLogger.shared.log(line)
++            }
++        }
++
+         // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
+         TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
+         WatchState.shared.scheduleBackgroundLaunchDisarmIfNeeded()
+@@ -12,7 +28,9 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
+                 force: false
+             )
+             // Emit App Group diagnostics early, before any snapshot reads/writes.
+-            let diagnostics = TrioComplicationDataStore.shared.diagnosticsSummary(context: "applicationDidFinishLaunching")
++            let diagnostics = TrioComplicationDataStore.shared.diagnosticsSummary(
++                context: "applicationDidFinishLaunching"
++            )
+             await WatchLogger.shared.log(diagnostics, force: false)
+         }
+         WatchState.shared.scheduleBackgroundRefresh()
+@@ -32,7 +50,8 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
+     }
+ 
+     func applicationWillResignActive() {
+-        WatchState.shared.handleForegroundInactiveOrBackground()
++        // Semantically `.inactive` — losing active status (often before SwiftUI reports `.background`).
++        WatchState.shared.handleForegroundInactiveOrBackground(phase: "inactive")
+         Task {
+             await WatchLogger.shared.log(
+                 "event=watch_app_resigning_active source=wk_application_delegate "
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..9378d4556
+index 000000000..16de6b1ce
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,935 @@
+@@ -0,0 +1,990 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -63,6 +116,28 @@ index 000000000..9378d4556
 +    /// Session for which `start()` was called but `extendedRuntimeSessionDidStart` has not yet run.
 +    /// `extendedSession` is assigned **only** in `extendedRuntimeSessionDidStart` so it always refers to a started session.
 +    private var sessionPendingDidStart: WKExtendedRuntimeSession?
++
++    /// Identities of `WKExtendedRuntimeSession`s that the adapter intentionally invalidated and
++    /// whose `didInvalidateWith` callback has not yet been delivered. The delegate consults this
++    /// set at the top of `extendedRuntimeSession(_:didInvalidateWith:)` and short-circuits with an
++    /// `ext_session_intentional_invalidation` log if the incoming `session` matches, so a stale
++    /// invalidation callback from a session we already tore down cannot fall through to the
++    /// `stop()` call in the error branch and clobber a freshly-requested `sessionPendingDidStart`.
++    ///
++    /// Insertion sites — every place we call `invalidate()` on a session we owned must add the
++    /// session's `ObjectIdentifier` here first:
++    ///   1. `stop()` — when tearing down `extendedSession`, `pendingChainSession`, `sessionPendingDidStart`.
++    ///   2. `extendedRuntimeSessionWillExpire` — when displacing a prior `pendingChainSession` /
++    ///      `sessionPendingDidStart` ahead of a new chain attempt.
++    ///   3. The chain-attempt timeout in `extendedRuntimeSessionWillExpire` — when the 10s
++    ///      timeout fires and we invalidate the never-started chain session.
++    ///   4. `extendedRuntimeSessionDidStart` — when an unexpected old `extendedSession` is
++    ///      replaced (the `ext_session_replaced_unexpectedly` path).
++    ///
++    /// Removal sites: the early-return in `extendedRuntimeSession(_:didInvalidateWith:)`
++    /// (consumes the entry) and a defensive `remove` in `extendedRuntimeSessionDidStart`
++    /// (keeps the set bounded if a session somehow started despite being marked for invalidation).
++    private var invalidatingSessionIDs = Set<ObjectIdentifier>()
 +
 +    /// Read-only accessor for the currently started extended runtime session.
 +    ///
@@ -173,13 +248,13 @@ index 000000000..9378d4556
 +    private override init() {
 +        // Always construct in scan mode; identity is established via `didDiscoverNewSensor` once
 +        // the phone has pushed an `expectedSensorName` (or, on cold start, from UserDefaults).
++        // BLE scanning is started by `start()` only, never from `init()` — kicking off scans
++        // before any WKExtendedRuntimeSession is established starves the session and lets the
++        // system reclaim BLE while the watch is in the background.
 +        sensor = G7Sensor(sensorID: nil)
 +        super.init()
 +        sensor.delegate = self
 +        loadDailyCounters()
-+        if expectedSensorName != nil {
-+            sensor.resumeScanning()
-+        }
 +    }
 +
 +    /// Begin (or no-op resume) the G7 BLE pipeline.
@@ -226,9 +301,18 @@ index 000000000..9378d4556
 +        isStarted = false
 +        lastKnownExtSessionActive = false
 +        hasAnchored = false
-+        extendedSession?.invalidate()
-+        pendingChainSession?.invalidate()
-+        sessionPendingDidStart?.invalidate()
++        if let s = extendedSession {
++            invalidatingSessionIDs.insert(ObjectIdentifier(s))
++            s.invalidate()
++        }
++        if let s = pendingChainSession {
++            invalidatingSessionIDs.insert(ObjectIdentifier(s))
++            s.invalidate()
++        }
++        if let s = sessionPendingDidStart {
++            invalidatingSessionIDs.insert(ObjectIdentifier(s))
++            s.invalidate()
++        }
 +        extendedSession = nil
 +        pendingChainSession = nil
 +        sessionPendingDidStart = nil
@@ -863,11 +947,15 @@ index 000000000..9378d4556
 +        newSession.delegate = self
 +        // Invalidate any prior pending session(s) before overwriting the slots, so we don't leak
 +        // a started-or-starting WKExtendedRuntimeSession when willExpire fires while a previous
-+        // chain attempt is still in flight.
++        // chain attempt is still in flight. Track the IDs in `invalidatingSessionIDs` so the
++        // stale `didInvalidateWith` callback from the displaced prior session is treated as an
++        // intentional invalidation rather than falling through to the `stop()` error branch.
 +        if let prior = pendingChainSession, prior !== session {
++            invalidatingSessionIDs.insert(ObjectIdentifier(prior))
 +            prior.invalidate()
 +        }
 +        if let prior = sessionPendingDidStart, prior !== session {
++            invalidatingSessionIDs.insert(ObjectIdentifier(prior))
 +            prior.invalidate()
 +        }
 +        pendingChainSession = newSession
@@ -880,6 +968,9 @@ index 000000000..9378d4556
 +            if self.pendingChainSession === newSession {
 +                // Timeout: explicitly invalidate before nilling the slot so the system reclaims
 +                // the never-started session (otherwise it can persist as a dangling delegate).
++                // Track the ID so the eventual `didInvalidateWith` callback is treated as
++                // intentional rather than falling through to the `stop()` error branch.
++                self.invalidatingSessionIDs.insert(ObjectIdentifier(newSession))
 +                newSession.invalidate()
 +                self.pendingChainSession = nil
 +                if self.sessionPendingDidStart === newSession {
@@ -891,11 +982,18 @@ index 000000000..9378d4556
 +    }
 +
 +    func extendedRuntimeSessionDidStart(_ session: WKExtendedRuntimeSession) {
++        // Defensive cleanup: a session that successfully started should not be sitting in the
++        // intentional-invalidation set (stop() would have invalidated it before it could start),
++        // but if it somehow is, remove it so the set stays bounded across long-running processes.
++        invalidatingSessionIDs.remove(ObjectIdentifier(session))
 +        lastKnownExtSessionActive = true
 +        // Defensive: if an older `extendedSession` is still held (e.g. unexpected double-start
 +        // without an intervening willExpire/invalidate), invalidate it before replacing. Leaking
 +        // a started session keeps a CBCentralManager-backed runtime alive in the background.
++        // Track the ID so the displaced session's `didInvalidateWith` is short-circuited as
++        // intentional and never reaches the `stop()` error branch.
 +        if let old = extendedSession, old !== session {
++            invalidatingSessionIDs.insert(ObjectIdentifier(old))
 +            old.invalidate()
 +            log("ext_session_replaced_unexpectedly")
 +        }
@@ -916,6 +1014,16 @@ index 000000000..9378d4556
 +        didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason,
 +        error: Error?
 +    ) {
++        let id = ObjectIdentifier(session)
++        if invalidatingSessionIDs.contains(id) {
++            invalidatingSessionIDs.remove(id)
++            lastKnownExtSessionActive = false
++            log(
++                "ext_session_intentional_invalidation",
++                "reason=\(reason.rawValue) has_error=\(error != nil)"
++            )
++            return
++        }
 +        lastKnownExtSessionActive = false
 +        let hasError = (error != nil)
 +        log("ext_session_did_invalidate", "reason=\(reason.rawValue) has_error=\(hasError)")
@@ -957,6 +1065,19 @@ index 000000000..9378d4556
 +        }
 +    }
 +}
+diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
+index 3650c066e..0a7caeb11 100644
+--- a/Trio Watch App Extension/TrioWatchApp.swift	
++++ b/Trio Watch App Extension/TrioWatchApp.swift	
+@@ -25,7 +25,7 @@ import WatchKit
+             if newPhase == .active {
+                 WatchState.shared.handleForegroundActiveEntry()
+             } else if newPhase == .background || newPhase == .inactive {
+-                WatchState.shared.handleForegroundInactiveOrBackground()
++                WatchState.shared.handleForegroundInactiveOrBackground(phase: watchScenePhaseToken(newPhase))
+             }
+ 
+             let forceFlush = newPhase != .active
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
 index ff9c6637f..30a6b4dad 100644
 --- a/Trio Watch App Extension/Views/ComplicationDebugView.swift	
@@ -2945,6 +3066,40 @@ index 1cc2a5535..255a397ab 100644
              }
              return snapshot
          }
+diff --git a/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift b/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
+new file mode 100644
+index 000000000..fba604016
+--- /dev/null
++++ b/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
+@@ -0,0 +1,28 @@
++import Foundation
++import G7SensorKit
++
++/// Canonical key order for G7 cloud logs: `module` → `sensor_name` → `event` → optional fields → `g7_session`.
++/// Pipeline code may append further keys (e.g. battery) after this string.
++enum G7StructuredTelemetryLogLine {
++    /// G7SensorKit telemetry (`module=g7_core`).
++    static func formatCoreTelemetry(sensorName: String, payload: G7TelemetryPayload, g7Session: String) -> String {
++        let core: String
++        if payload.fields.isEmpty {
++            core = "module=g7_core sensor_name=\(sensorName) event=\(payload.event)"
++        } else {
++            core = "module=g7_core sensor_name=\(sensorName) event=\(payload.event) \(payload.fields)"
++        }
++        return "\(core) g7_session=\(g7Session)"
++    }
++
++    /// Watch direct BLE observer (`module=g7_ble`).
++    static func formatBleModule(sensorName: String, event: String, fields: String, g7Session: String) -> String {
++        let core: String
++        if fields.isEmpty {
++            core = "module=g7_ble sensor_name=\(sensorName) event=\(event)"
++        } else {
++            core = "module=g7_ble sensor_name=\(sensorName) event=\(event) \(fields)"
++        }
++        return "\(core) g7_session=\(g7Session)"
++    }
++}
 diff --git a/Trio/Sources/Models/WatchMessageKeys.swift b/Trio/Sources/Models/WatchMessageKeys.swift
 index 24a31f2ea..391df0f6e 100644
 --- a/Trio/Sources/Models/WatchMessageKeys.swift
