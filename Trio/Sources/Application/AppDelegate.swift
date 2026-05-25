@@ -7,7 +7,7 @@ import UserNotifications
 class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNotificationCenterDelegate {
     func application(
         _: UIApplication,
-        didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]?
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         FirebaseApp.configure()
 
@@ -32,7 +32,39 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
             TelemetryClient.shared.scheduleRecurring()
         }
 
+        // Check for unexpected termination from previous launch, then mark this launch.
+        // Note: AppTerminationTracker uses UserDefaults for state persistence. In rare cases
+        // (ultra-rapid termination <1s), the state may not be synced before iOS kills the app.
+        // If this becomes a problem, consider: (A) file-based atomic writes, (B) hybrid
+        // UserDefaults + file approach. For now, UserDefaults is sufficient for most cases.
+        AppTerminationTracker.shared.checkForUnexpectedTermination()
+        AppTerminationTracker.shared.markAppLaunched(launchOptions: launchOptions)
+
         return true
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppBecameActive()
+    }
+
+    func applicationWillResignActive(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppWillResignActive()
+    }
+
+    func applicationDidEnterBackground(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppEnteredBackground()
+    }
+
+    func applicationWillEnterForeground(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppWillEnterForeground()
+    }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        AppTerminationTracker.shared.markAppWillTerminate()
+    }
+
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        AppTerminationTracker.shared.handleMemoryWarning()
     }
 
     func application(
