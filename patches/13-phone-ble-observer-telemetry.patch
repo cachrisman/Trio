@@ -1,16 +1,14 @@
-From 5f116eb869d855e8e45f66e2a641d5f3a35dc804 Mon Sep 17 00:00:00 2001
+From 8fc20fdbfe3b0b0d28c5d3bef3896d43cf7d890b Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 23 May 2026 13:24:59 +0200
+Date: Sat, 23 May 2026 16:11:28 +0200
 Subject: [PATCH] feat: phone-ble-observer-telemetry
 
 ---
  Trio/Sources/APS/CGM/PluginSource.swift       |  2 +
  Trio/Sources/APS/DeviceDataManager.swift      |  1 +
  Trio/Sources/Application/TrioApp.swift        | 27 ++++++-
- .../G7StructuredTelemetryLogLine.swift        | 28 ++++++++
- .../WatchManager/AppleWatchManager.swift      | 70 +++++++++++++++++++
- 5 files changed, 126 insertions(+), 2 deletions(-)
- create mode 100644 Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
+ .../WatchManager/AppleWatchManager.swift      | 80 +++++++++++++++++++
+ 4 files changed, 108 insertions(+), 2 deletions(-)
 
 diff --git a/Trio/Sources/APS/CGM/PluginSource.swift b/Trio/Sources/APS/CGM/PluginSource.swift
 index 304d6800c..5717665d9 100644
@@ -90,42 +88,8 @@ index 7ace0f37c..933a0522c 100644
      @discardableResult
      private func resolveOrLog<T>(_ type: T.Type) -> T? {
          guard let service = resolver.resolve(type) else {
-diff --git a/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift b/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
-new file mode 100644
-index 000000000..fba604016
---- /dev/null
-+++ b/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
-@@ -0,0 +1,28 @@
-+import Foundation
-+import G7SensorKit
-+
-+/// Canonical key order for G7 cloud logs: `module` → `sensor_name` → `event` → optional fields → `g7_session`.
-+/// Pipeline code may append further keys (e.g. battery) after this string.
-+enum G7StructuredTelemetryLogLine {
-+    /// G7SensorKit telemetry (`module=g7_core`).
-+    static func formatCoreTelemetry(sensorName: String, payload: G7TelemetryPayload, g7Session: String) -> String {
-+        let core: String
-+        if payload.fields.isEmpty {
-+            core = "module=g7_core sensor_name=\(sensorName) event=\(payload.event)"
-+        } else {
-+            core = "module=g7_core sensor_name=\(sensorName) event=\(payload.event) \(payload.fields)"
-+        }
-+        return "\(core) g7_session=\(g7Session)"
-+    }
-+
-+    /// Watch direct BLE observer (`module=g7_ble`).
-+    static func formatBleModule(sensorName: String, event: String, fields: String, g7Session: String) -> String {
-+        let core: String
-+        if fields.isEmpty {
-+            core = "module=g7_ble sensor_name=\(sensorName) event=\(event)"
-+        } else {
-+            core = "module=g7_ble sensor_name=\(sensorName) event=\(event) \(fields)"
-+        }
-+        return "\(core) g7_session=\(g7Session)"
-+    }
-+}
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 5782a6d6f..2c3c2a399 100644
+index 5782a6d6f..d57218332 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,6 +2,7 @@ import Combine
@@ -253,11 +217,28 @@ index 5782a6d6f..2c3c2a399 100644
          return dict
      }
  
-@@ -781,6 +850,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -774,6 +843,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+         // R3: Build complication payload from explicit allowlist.
+         // Uses safe if-let inserts to avoid Optional-as-Any bridging issues.
++        //
++        // `g7ActiveSensorName` MUST be in this allowlist (not just on the reachable sendMessage
++        // path that ships `fullMessage`). All three background WC channels — transferUserInfo,
++        // transferCurrentComplicationUserInfo, and updateApplicationContext — use this subset.
++        // Without it, a phone-side sensor swap or EOS that happens while the watch app is
++        // unreachable would never propagate to the watch's `G7WatchSensorAdapter`, and the
++        // adapter's direct-BLE path would keep tracking the stale sensor identity until the
++        // next reachable foreground sendMessage. The watch-side handler is a no-op when the
++        // key is absent (`applyG7ActiveSensorNameFromWatchPayloadIfPresent` returns early).
+         var complicationMessage: [String: Any] = [:]
+         let complicationAllowlist: [(String, String)] = [
+             (WatchMessageKeys.currentGlucose, "currentGlucose"),
+@@ -781,6 +859,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              (WatchMessageKeys.trend, "trend"),
              (WatchMessageKeys.delta, "delta"),
              (WatchMessageKeys.readingEpoch, "readingEpoch"),
 +            (WatchMessageKeys.g7Sequence, "g7Sequence"),
++            (WatchMessageKeys.g7ActiveSensorName, "g7ActiveSensorName"),
              (WatchMessageKeys.transferEnqueuedAt, "transferEnqueuedAt"),
              (WatchMessageKeys.date, "date"),
          ]
