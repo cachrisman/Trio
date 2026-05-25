@@ -1,13 +1,17 @@
 # HapticBeacon — implementation log
 
-**Plan:** [`haptic-beacon-impl-plan.md`](haptic-beacon-impl-plan.md) (v1.9)
+**Plan:** [`haptic-beacon-impl-plan.md`](haptic-beacon-impl-plan.md) (v1.15)
 **Started:** 2026-05-11 11:18 CET
+**R8 stale-gap-relayed recovery landed (worktree):** 2026-05-11 23:08 CET
+**R7 warm-arm invariant tightening landed (worktree):** 2026-05-11 23:00 CET
+**R6 multi-source safety pass landed (worktree):** 2026-05-11 22:55 CET
+**Cut 4 landed (worktree):** 2026-05-11 22:30 CET
 **Cut 1 landed (worktree):** 2026-05-11 11:25 CET
 **Cut 1 review-round-2 fixes landed (worktree):** 2026-05-11 12:25 CET
 **Cut 1 review-round-3 fixes landed (worktree):** 2026-05-11 12:50 CET
 **Cut 1 review-round-4 fixes landed (worktree):** 2026-05-11 13:30 CET
 **Cut 1 review-round-5 fixes landed (worktree):** 2026-05-11 14:26 CET
-**Status:** Cut 1 + R2 + R3 + R4 + R5 fixes implemented, awaiting build / on-device verification.
+**Status:** Cuts 1–4 + R2–R5 fixes + R6 multi-source safety pass + R7 warm-arm invariant tightening + **R8 stale-gap-relayed recovery + dedup log enrichment** implemented in worktree; Cut 2 background spike (§5.3–5.4) still pending; awaiting build / on-device verification.
 
 ---
 
@@ -25,7 +29,7 @@
   - **Concurrency:** `timerQueue` is a private serial `DispatchQueue` with `.utility` QoS, label `org.nightscout.trio.watch.haptic.timers` — mirrors `G7WatchSensorAdapter.timerQueue`. Every timer event handler is a tiny closure that schedules `Task { @MainActor in HapticBeacon.shared.<method>() }` and returns. No beacon state is touched from `timerQueue`.
   - **Telemetry:** `WatchLogger.shared.log(...)` via fire-and-forget `Task { await ... }`. Lines tagged `module=haptic_beacon event=<name> [field=value ...]`. Five event names emitted in Cut 1: `start`, `stop`, `setEnabled`, `haptic_armed` (×2 per cycle: phase=ramp, phase=miss), `haptic_fired`, `haptic_skipped`, `rearm_skipped`.
   - **Vocabulary reservation (plan §10.1):** beacon owns `.click`, `.start`, `.notification`, `.success`, `.retry`. `.failure`, `.directionUp`, `.directionDown`, `.stop` reserved for future clinical alerter — not used anywhere in this file.
-  - **`play(_:)` is the single delivery choke point** (plan §10.2). Cut 1 routes through `WKInterfaceDevice.current().play(_:)` only. Cut 2 spike will switch this method body to prefer `G7WatchSensorAdapter.shared.currentExtendedSession.notifyUser(haptic:)` when available.
+  - **`play(_:label:)` is the single delivery choke point** (plan §10.2). Cut 1 routed through `WKInterfaceDevice.current().play(_:)` only; Cut 2 (plan v1.10) prefers `WKExtendedRuntimeSession.notifyUser(haptic:)` when `currentExtendedSession?.state == .running`, else device — see § Cut 2 below.
 
 ### Files modified
 
@@ -85,15 +89,117 @@ From plan §9 Cut 1:
 
 ## Cut 2 — background spike
 
-Not started. Plan §5; gate is on user instruction to proceed.
+**Code (plan §5.2): implemented** — `HapticBeacon.play(_:label:)` now prefers `G7WatchSensorAdapter.shared.currentExtendedSession?.notifyUser(haptic:)` when `session.state == .running`, otherwise `WKInterfaceDevice.current().play(_:)`. Telemetry matches plan §4.1: `delivered_via=extended_session` with `session_state=<rawValue>`, or `delivered_via=device` with `reason_no_session=<extended_session.state.rawValue|"nil">`. File-level doc comments in `HapticBeacon.swift` updated to describe the dual path and per-fire session re-query.
+
+**Plan deviation:** §5.2 draft used `name(of: type)` in log lines; implementation retains the pre-existing `label` parameter (`ramp_click`, `success`, …) for the `type=` field — equivalent for analysts and avoids relying on `WKHapticType` debug naming.
+
+**Spike validation (plan §5.3–5.4): not executed in-session** — 5-cycle screen-off protocol, Better Stack tally, and pass/partial/fail decision remain for on-device follow-up (`docs/in-progress/haptic-beacon/haptic-beacon-cut2-spike.md` when recorded).
+
+### Files modified (Cut 2)
+
+- `Trio Watch App Extension/HapticBeacon.swift` — `play(_:label:)` body + file/header comment tweaks only.
+
+### Cut 2 done-criteria status
+
+- [ ] Spike protocol §5.3 executed for 5 cycles; results recorded in `docs/in-progress/haptic-beacon/haptic-beacon-cut2-spike.md`.
+- [ ] Decision per §5.4 (pass / partial / fail) recorded with telemetry citations.
 
 ---
 
 ## Cut 3 — phone / HK source coverage
 
-Not started. Gated on Cut 2 = pass per plan §6.
+**Code (plan §6): implemented.** Gate "Cut 2 = pass" was **explicitly deferred** by user direction in the same session that landed Cut 2. The Cut 2 spike protocol (§5.3 / §5.4) has not been executed on-device, so it is unknown whether `notifyUser(haptic:)` actually delivers haptics with the screen off. Cut 3 ships the source-filter UI and per-cycle source telemetry regardless — these are useful in foreground even if the spike fails — but the user should weigh that the multi-source plumbing was the part the gate was designed to defer.
+
+### Plan deviations
+
+1. **Cut 2 spike not run before Cut 3.** Plan §6 originally said Cut 3 is "gated on Cut 2 = pass" because (a) wc/hk readings can be late/batched/out-of-cadence and (b) plumbing them in before background haptics are validated is wasted work if Cut 2 fails. The user explicitly directed Cut 3 implementation in the same session. Both rationales (a) and (b) are still true; the user's tradeoff is to ship the option now and live with the consequences in the source-filter telemetry. §6 rewritten to reflect the new gating posture; the original "Why deferred" rationale is retained as historical context.
+
+2. **`cancelAllTimers()` now owns the `lastCycleSource = nil` clearing.** Plan §6 specified the new state slot as paired with `lastReceiptAt`. Implementation chose to centralize the clear in `cancelAllTimers()` instead of repeating `lastCycleSource = nil` in every caller (`stop`, `setEnabled(false)`, `setSourceFilter`, the adapter-stopped branch of `noteEGVReceived`). The function captures `currentSourceTag()` *before* clearing so cancellation telemetry still tags the cycle being torn down. Equivalent semantics, fewer drift opportunities.
+
+3. **`setSourceFilter` cancellation is conditional.** Plan §6 implied "Add a second debug-view button … toggle"; the implementation refines the contract: narrowing `.all` → `.ble` cancels in-flight timers **only when** `lastCycleSource` is non-nil and not already `.g7DirectBLE`. Widening `.ble` → `.all` is always a no-op until the next non-BLE EGV. This avoids cancelling a perfectly-good BLE-anchored cycle when the user merely flips the policy.
+
+4. **`source` tag added to several skip logs that the plan only listed for `armed` / `fired`.** Plan §6 said "Telemetry: `source=ble|hk|wc` on both `armed` and `fired` lines." Implementation also adds `source=` to `haptic_cancelled`, `haptic_skipped`, `rearm_skipped reason=stale_gap`, and `rearm_skipped reason=deadline_passed`. Same telemetry contract direction; broader coverage so analysts can attribute every line to a provenance.
+
+5. **New `egv_ignored` event.** Plan §6 said `noteEGVReceived` "ignores non-BLE sources unless `.all` is selected" but did not specify whether the rejection should log. Implementation logs `egv_ignored reason=source_filtered source=<tag> filter=<value>` so analysts can size the wc/hk traffic the filter is currently shielding from. Expected in `.ble` mode whenever a phone or HK EGV arrives.
+
+### Files modified (Cut 3)
+
+- `Trio Watch App Extension/HapticBeacon.swift` — `SourceFilter` enum, persisted `sourceFilter` + `Keys.sourceFilter` / `setSourceFilter(_:)`, `lastCycleSource` slot, helpers (`accepts(source:under:)`, `shortTag(for:)`, `currentSourceTag()`), source-tagged log lines on `armed`/`cancelled`/`fired`/`skipped`/`rearm_skipped`, new `egv_ignored` + `setSourceFilter` events, `start` now logs `source_filter`. File-level docstring updated with a "Source filter" section.
+- `Trio Watch App Extension/WatchState.swift` — two one-line hooks: `applyHKSnapshot` end (after `lastWatchStateUpdate = snapshot.readingDate`) calls `noteEGVReceived(at: Date(), source: .healthKit)`; `saveComplicationSnapshot` after `TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)` calls `noteEGVReceived(at: Date(), source: .watchConnectivity)`. Both hooks are past their respective accept gates (`tryAttributeDisplayedReadingSource` for HK, `shouldSkipPreDispatch` for WC).
+- `Trio Watch App Extension/Views/ComplicationDebugView.swift` — `@State hapticBeaconSourceFilter`, init in `.onAppear`, second `Button` in `actionsView` immediately below the existing Haptic Beacon toggle.
+
+### Source-filter cancellation: which transition cancels timers?
+
+| Prior `sourceFilter` | New `sourceFilter` | `lastCycleSource` at toggle | Action |
+|---|---|---|---|
+| `.ble` | `.all` | any | log `setSourceFilter value=all` only |
+| `.all` | `.ble` | nil | log `setSourceFilter value=ble` only |
+| `.all` | `.ble` | `.g7DirectBLE` | log `setSourceFilter value=ble` only — BLE cycles survive |
+| `.all` | `.ble` | `.watchConnectivity` or `.healthKit` | `cancelAllTimers()`, clear `lastReceiptAt`, log `setSourceFilter value=ble action=cancelled_pending_timers prior_cycle_source=wc\|hk` |
+
+### Self-review checklist (per Trio AGENTS.md)
+
+- [x] All three modified files re-read top to bottom after final edit.
+- [x] All new symbols (`SourceFilter`, `setSourceFilter`, `accepts`, `shortTag`, `currentSourceTag`, `lastCycleSource`, `Keys.sourceFilter`) are referenced consistently across the file (no orphans, no dangling).
+- [x] Imports unchanged — `Foundation` and `WatchKit` already present in `HapticBeacon.swift`; `WatchState.swift` and `ComplicationDebugView.swift` already had `HapticBeacon` in scope (same module).
+- [x] No half-finished edits; all `lastCycleSource = nil` redundancies removed in favor of centralization in `cancelAllTimers()`.
+- [x] No scope creep into clinical-alerts (§10) or new haptic types.
+- [x] No project file edits or `sync_project_files.rb` invocation (AGENTS rule 6); WatchState/Views are existing tracked files, no new files added.
+- [x] SourceKit lints (`No such module 'WatchKit'` / `No such module 'WatchConnectivity'`) are pre-existing IDE-only false positives — same noise as Cut 1+2 rounds.
+
+### Cut 3 done-criteria status
+
+(Done-criteria identical to plan §9 Cut 3.)
+
+- [ ] With `Source: BLE only` selected, behavior identical to Cut 1+2 (only BLE EGVs arm cycles). Verify in foreground by toggling the second debug button to BLE only and watching `egv_ignored reason=source_filtered source=wc|hk` in Better Stack while a phone-relayed reading arrives.
+- [ ] With `Source: All` selected, beacon fires on phone-relayed and HK-relayed EGVs. Verify success buzz fires after `noteEGVReceived` from `applyHKSnapshot` or `saveComplicationSnapshot` paths.
+- [ ] `egv_ignored reason=source_filtered` log volume in `.ble` mode roughly matches the number of non-BLE EGVs received during the window.
+- [ ] Narrowing `.all` → `.ble` while a wc/hk cycle is armed cancels in-flight timers and emits `setSourceFilter ... action=cancelled_pending_timers prior_cycle_source=<wc|hk>`.
+- [ ] False-miss rate on non-BLE sources documented (subjective + telemetry) — primarily a question of how often `haptic_fired type=retry_1|retry_2 source=wc|hk` appears in `.all` mode.
 
 ---
+
+## Cut 4 — richer cadence (ramp / success / miss)
+
+**Code (plan § Cut 4 narrative + §9): implemented** in `Trio Watch App Extension/HapticBeacon.swift` only.
+
+### What changed
+
+- **`rampLeadTime`:** `3` → **`5` s**. Ramp one-shot still fires at `lastReceiptAt + (expectedCadence − rampLeadTime)` → **`receipt + 295 s`** for a nominal live anchor (vs **297 s** before).
+- **`fireRamp()`:** Seven UUID-keyed sub-timers from a single `steps` literal — offsets **0.0, 0.5, 1.5, 2.0, 3.5, 4.0, 4.5** s from ramp trigger; types `.click` ×2 → `.start` ×2 → `.notification` ×3; telemetry labels reuse **`ramp_click`**, **`ramp_start`**, **`ramp_notif`** per beat group (same string repeated), matching plan § Cut 4 table.
+- **Success:** Removed **`successTimer` / `successTimerID`** (Cut 1–3 pair-buzz). Added **`successSubTimers: [UUID: DispatchSourceTimer]`** + **`successSubTimerFired`**, driven by static **`successBuzzSteps`**: triple `.success` at **0 / 200 / 350 ms** with labels **`success_1`**, **`success_2`**, **`success_3`**.
+- **Miss:** Outer **`missTimer`** unchanged; **`fireMiss()`** now schedules **`missSubTimers`** from **`missRetrySteps`**: double `.retry` at **0 / 300 ms** with **`retry_1`**, **`retry_2`**.
+- **`cancelAllTimers()`:** Emits **`phase=success_sub`** and **`phase=miss_sub`** with **`pending_count`** when triple-success or double-miss sub-steps are torn down mid-sequence (same pattern as **`phase=ramp_sub`**). Order: ramp outer → ramp_sub → success_sub → miss outer → miss_sub; **`lastCycleSource`** cleared last.
+
+### Plan deviations
+
+None. Matches plan v1.12 §3.1, §4.1–§4.2, § Cut 4 table, and §9 Cut 4 deliverables.
+
+### Analyst / query migration notes
+
+Historical logs and queries that filtered on **`type=success`** should treat Cut 4+ lines as **`success_1`**, **`success_2`**, **`success_3`** (often counting **`success_1`** ≈ completed success bursts). Miss accounting: **`retry_1`** ≈ **`retry_2`** when neither sub-step cancelled; **`haptic_armed phase=miss`** still counts outer miss arms.
+
+### Self-review checklist (per Trio AGENTS.md)
+
+- [x] Re-read `Trio Watch App Extension/HapticBeacon.swift` after Cut 4 edits (constants, `fireRamp` / `fireSuccess` / `fireMiss`, `cancelAllTimers`, file header).
+- [x] No new Swift symbols conflict with in-scope shadows; `play(_:label:)` choke point unchanged.
+- [x] No `project.pbxproj` or `sync_project_files.rb` changes (AGENTS rule 6).
+- [x] Static verification only — no `xcodebuild` / `ci/local-build.sh` per AGENTS rule 10.
+
+### Cut 4 done-criteria status
+
+From plan §9 Cut 4:
+
+- [ ] Ramp spans **5 s** before expected EGV with **seven** perceptible beats in the planned grouping.
+- [ ] Success delivers **three** `.success` haptics at ~0 / 200 / 350 ms.
+- [ ] Miss delivers **two** `.retry` haptics at ~0 / 300 ms when grace fires with no EGV.
+- [ ] Better Stack shows **`success_*`** / **`retry_*`** labels and mid-sequence **`haptic_cancelled phase=success_sub|miss_sub`** when interrupted.
+
+---
+
+## Cut 3 — Cut 2 spike validation (still pending)
+
+Cut 2's `notifyUser(haptic:)` background spike (plan §5.3 / §5.4) is unchanged by Cut 3. Cut 3's source-filter and source-tagging changes affect *which* EGVs arm cycles and *how* lines are tagged in telemetry, but not whether `notifyUser(haptic:)` delivers a haptic when `currentExtendedSession?.state == .running` with the screen off. Spike checkboxes from the Cut 2 section above remain authoritative for the §5.4 decision.
 
 ---
 
@@ -751,13 +857,433 @@ Log changes (this section): consolidated R5 findings table, "verified safe" list
 
 On top of the eight Cut 1 + three R2 + two R3 + two R4 done criteria, three new R5-verifiable behaviors awaiting on-device verification:
 
-- [ ] **Disable-clears-anchor:** with the beacon enabled and a recent BLE EGV (so `lastReceiptAt` is set), toggle the beacon OFF, wait > 10 minutes, toggle the beacon ON. The next live BLE EGV produces a `setEnabled enabled=true`, `warm_arm_skipped reason=cycle_already_expired` (because `bleLastEGVDate` is also stale by now), then a `haptic_fired type=success` and `haptic_armed phase=ramp`/`phase=miss`. **No `rearm_skipped reason=stale_gap` log line should appear** on this recovery EGV (pre-R5, it would have).
+- [ ] **Disable-clears-anchor:** with the beacon enabled and a recent BLE EGV (so `lastReceiptAt` is set), toggle the beacon OFF, wait > 10 minutes, toggle the beacon ON. The next live BLE EGV produces a `setEnabled enabled=true`, `warm_arm_skipped reason=cycle_already_expired` (because `bleLastEGVDate` is also stale by now), then **`haptic_fired type=success_1` … `success_3`** (Cut 4 triple) and `haptic_armed phase=ramp`/`phase=miss`. **No `rearm_skipped reason=stale_gap` log line should appear** on this recovery EGV (pre-R5, it would have).
 - [ ] **`warm_arm_skipped reason=adapter_stopped`:** with the adapter intentionally stopped (e.g. via the existing G7 BLE OFF action in the debug view), toggle the beacon ON. A `warm_arm_skipped reason=adapter_stopped` log line should appear (no `anchor_age_s` field).
 - [ ] **`warm_arm_skipped reason=no_anchor`:** at cold launch with no BLE EGV yet received this process (`WatchState.shared.bleLastEGVDate == nil`), toggle the beacon ON. A `warm_arm_skipped reason=no_anchor` log line should appear (no `anchor_age_s` field). The next live BLE EGV arms normally via `noteEGVReceived`.
 
 ---
 
+## R6 — multi-source safety + UX polish (review pass)
+
+External review of the post-R5 + Cut2/Cut3/Cut4 worktree was solicited from Claude and ChatGPT. ChatGPT escalated **two real blockers** in the multi-source plumbing landed by Cut 3 + Cut 4: (1) WC / HK hooks treated "state updated now" as "fresh EGV received now" with no dedup, and (2) `.all` mode let stale or duplicate WC / HK readings displace an active BLE cycle. The user then provided five **product decisions** that lock down the multi-source policy. R6 implements all of ChatGPT's findings, both Claude minor-fix items, and aligns the source-filter UI / haptic feel to the product decisions.
+
+### R6 product decisions (authoritative)
+
+1. **Success haptic = BLE only.** The triple `.success` confirms a fresh **direct BLE** reading. WC / HealthKit relayed deliveries do not fire it.
+2. **Relayed-source miss suppression:** allowed, but only when the relayed payload is genuinely new (passes the dedup gate) and BLE is stale enough (passes the precedence gate).
+3. **Relayed-source cadence arming:** fallback only. BLE remains the primary cadence anchor; relayed deliveries can arm only when no recent BLE EGV exists (`bleFreshnessWindow = 360 s`).
+4. **Debug UI label:** rename "All" to "BLE + relayed". Persisted enum case becomes `.bleAndRelayedFallback` (raw `"ble_relayed_fallback"`); historical `"all"` migrates to it.
+5. **Different feel by source:** relayed cycles fire a single quiet `.click` (`relayed_confirm`), not the BLE success triple.
+
+### Consolidated finding table
+
+| # | Source | Severity (reviewer) | Severity (this log) | Disposition | Fix location |
+|---|---|---|---|---|---|
+| 1 | ChatGPT blocker — WC/HK call `noteEGVReceived(at: Date())` without dedup | Blocker | Blocker (false success / wrong anchor / suppressed real miss) | **Fix** — add `readingDate` parameter; track `lastAcceptedReadingDate`; reject duplicates with `egv_ignored reason=duplicate` | `HapticBeacon.noteEGVReceived` + BLE adapter call site + both WatchState hooks |
+| 2 | ChatGPT blocker — `.all` lets WC/HK override BLE | Blocker | Blocker (BLE is the authoritative cadence) | **Fix** — track `lastBLEReceiptAt`; reject relayed source while `bleAge < bleFreshnessWindow` (360 s) with `egv_ignored reason=ble_recent` | `HapticBeacon.noteEGVReceived` |
+| 3 | ChatGPT — `cancelAllTimers()` clearing `lastCycleSource` is risky in a generic helper | Conceptual | Medium (drift risk in future edits) | **Fix** — split into `cancelAllTimers()` (timers only) and `clearCurrentCycle()` (timers + cycle source); teardown vs. rearm callers use the appropriate one | `cancelAllTimers`, `clearCurrentCycle`, `stop`, `setEnabled(false)`, `setSourceFilter` narrowing |
+| 4 | ChatGPT — `success_sub` cancellation telemetry semantics | High (telemetry meaning shift) | High (analyst confusion) | **Fix-in-doc + sync first beat (#5)** — synchronous `success_1` makes `phase=success_sub` describe companion-beat cancellation only; documented in plan §4.2 and `successSubTimers` doc comment | `fireSuccess`, `successSubTimers` doc, plan §4.2 |
+| 5 | ChatGPT — 0.0 sub-timer can be cancelled before first haptic plays | High (lost confirmation) | High | **Fix** — play first beat of success/miss synchronously; sub-timers from `steps.dropFirst()` | `fireSuccess`, `fireMiss` |
+| 6 | ChatGPT — duplicate ramp labels lose event-level visibility | High (analysis quality) | High | **Fix** — unique labels `ramp_click_1`/`_2`, `ramp_start_1`/`_2`, `ramp_notif_1`/`_2`/`_3` | `fireRamp` + plan §§4.1, 4.5, Cut 4 table |
+| 7 | ChatGPT — code comments reintroduced "Cut 4" references | Medium | Medium (matches R4 cleanup standard) | **Fix** — rewrite source-doc comments behavior-focused; no review-round / cut references in code | `HapticBeacon.swift` headers + inline comments |
+| 8 | ChatGPT + product decision — "All" label is misleading | Medium | Medium (UI honesty) | **Fix** — rename `SourceFilter.all` → `.bleAndRelayedFallback`; raw `"ble_relayed_fallback"`; debug button "BLE + relayed"; `"all"` raw value migrates | `HapticBeacon.SourceFilter` + `sourceFilter` getter migration + `ComplicationDebugView` |
+| 9 | ChatGPT — `setSourceFilter(.ble)` cancels but does not warm-arm | Medium (UX) | Medium | **Fix** — factor `attemptBLEWarmArm(trigger:)`; `setSourceFilter(.ble)` calls it after cancel (with `trigger="source_filter_narrow"`) | `attemptBLEWarmArm`, `setSourceFilter`, `setEnabled` |
+| 10 | ChatGPT — WC + HK can double-fire on same reading | Blocker (covered by #1) | Same fix as #1 | (covered) | (covered) |
+| Claude #1 | WatchState hook thread safety | Minor (verify) | Minor (defensive) | **Fix** — wrap WatchState calls in `Task { @MainActor in … }` to match the file's existing 7+ uses of the pattern. BLE adapter call stays direct (adapter is `@MainActor`). | both WatchState hook sites |
+| Claude #2 | WC hook fires regardless of `minInterval=5` debounce | Minor (maintainer note) | Minor (mitigated by R6 dedup) | **Fix** — add comment at WC call site explaining beacon-side `lastAcceptedReadingDate` dedup is what protects against batched WC; data-store guard does not | WC hook site comment |
+| Claude #3 | `session.state` read twice in `play()` | Cosmetic | Cosmetic | **Fix** — capture `session.state.rawValue` once before `notifyUser` and reuse for the log line | `play(_:label:)` |
+
+### Per-finding implementation notes
+
+**Findings 1, 2, 10 — dedup + source precedence (the core blocker pair).**
+
+`noteEGVReceived` signature is now `(at: Date, readingDate: Date, source: TrioComplicationDataSource)`. Two new private state slots:
+
+- `lastAcceptedReadingDate: Date?` — set in step 5 of the accept pipeline (after dedup passes). Reading whose `readingDate <= last` is dropped before any state mutation.
+- `lastBLEReceiptAt: Date?` — set in step 5 only when `source == .g7DirectBLE`. Drives the precedence gate.
+
+Pipeline order in `noteEGVReceived` (matches plan §3.1 R6 update):
+
+1. `isEnabled` early-return.
+2. `accepts(source:under:)` — `egv_ignored reason=source_filtered` on reject.
+3. `isAdapterStopped()` — `clearCurrentCycle()` + `haptic_skipped reason=adapter_stopped phase=success` on reject.
+4. **Dedup** — `egv_ignored reason=duplicate reading_age_s=<int>` on reject.
+5. **Source precedence** (skipped for BLE source) — `egv_ignored reason=ble_recent ble_age_s=<int>` on reject.
+6. Capture prior receipt → `cancelAllTimers()` → assign `lastReceiptAt` / `lastCycleSource` / `lastAcceptedReadingDate` / (if BLE) `lastBLEReceiptAt` → fire (`fireSuccess` for BLE, `fireRelayedConfirm` for relayed).
+7. Stale-gap check; otherwise `rearm(after: receiptDate)`.
+
+Both WatchState hooks now capture the snapshot `readingDate` to a local before the `Task { @MainActor in … }` wrapper so the value is captured deterministically:
+
+```swift
+let hkReadingDate = snapshot.readingDate
+Task { @MainActor in
+    HapticBeacon.shared.noteEGVReceived(at: Date(), readingDate: hkReadingDate, source: .healthKit)
+}
+```
+
+The BLE adapter call site (`G7WatchSensorAdapter.swift:659`) passes the already-computed `readingDate` local.
+
+**Finding 3 — split `cancelAllTimers()` from cycle-source clearing.**
+
+`cancelAllTimers()` now cancels only timer slots; documented as `(timers only)`. New `clearCurrentCycle()` calls `cancelAllTimers()` then `lastCycleSource = nil`. Teardown callers (`stop`, `setEnabled(false)`, `setSourceFilter` narrowing) use `clearCurrentCycle()`. Rearm callers (`noteEGVReceived` accept path, `attemptBLEWarmArm`) use `cancelAllTimers()` and reassign `lastCycleSource` immediately. Cancellation telemetry still tags the prior cycle (the source slot is still set when `cancelAllTimers()` runs).
+
+**Findings 4 + 5 — sync first beat for success / miss.**
+
+`fireSuccess()` plays `successBuzzSteps[0]` (`success_1`) synchronously through `play(_:label:)`, then schedules `successBuzzSteps.dropFirst()` (success_2 at +200 ms, success_3 at +350 ms) as `successSubTimers` entries. Same pattern for `fireMiss()` with `missRetrySteps`. The `successSubTimers` / `missSubTimers` doc comments describe these as **companion** beats so `phase=success_sub` / `phase=miss_sub` cancellation telemetry is no longer ambiguous about whether the confirmation itself was lost.
+
+**Finding 6 — unique ramp labels.**
+
+Updated `fireRamp` step array to `ramp_click_1`, `ramp_click_2`, `ramp_start_1`, `ramp_start_2`, `ramp_notif_1`, `ramp_notif_2`, `ramp_notif_3`. Each beat is now identifiable in Better Stack without grouping by `expected_at` window. Ramp accounting in plan §4.5.2 simplifies: `count(haptic_fired type=ramp_click_1)` is a 1:1 proxy for "ramp triggered at all".
+
+**Finding 7 — comment cleanup.**
+
+Removed every `Cut 4` reference from the source file. The header docstring describes behavior (e.g. "Pre-EGV ramp: seven beats from T-5s through ~T-0.5s"); the constants describe rationale ("Ramp begins this far before expected EGV"); the sub-timer doc comments describe the behavior contract (e.g. "Companion sub-timers for the success triple"). Matches the R4 cleanup standard previously applied to the file.
+
+**Finding 8 — `SourceFilter` rename + UI relabel.**
+
+```swift
+enum SourceFilter: String {
+    case ble
+    case bleAndRelayedFallback = "ble_relayed_fallback"
+}
+```
+
+The `sourceFilter` getter falls back gracefully:
+
+```swift
+guard let raw = UserDefaults.standard.string(forKey: Keys.sourceFilter) else { return .ble }
+if let value = SourceFilter(rawValue: raw) { return value }
+if raw == "all" { return .bleAndRelayedFallback }   // historical migration
+return .ble
+```
+
+Existing testers who toggled the old `.all` keep their preference under the new policy without a `UserDefaults` reset. The debug button reads "Source: BLE only" / "Source: BLE + relayed" with toast "📡 Haptic Source: BLE + relayed fallback" on switch.
+
+**Finding 9 — `setSourceFilter(.ble)` warm-arm.**
+
+Factored `attemptBLEWarmArm(trigger: String)` out of `setEnabled(true)`. Two callers:
+
+- `setEnabled(true)` → `attemptBLEWarmArm(trigger: "setEnabled")`
+- `setSourceFilter(.ble)` (when narrowing displaces a non-BLE cycle) → `clearCurrentCycle()` + `attemptBLEWarmArm(trigger: "source_filter_narrow")`
+
+Each silent guard logs `warm_arm_skipped reason=… trigger=<trigger>`. The `trigger=` field is **R6** new across `warm_armed` and all four `warm_arm_skipped reason=` values.
+
+**Claude #1 — thread safety.**
+
+`G7WatchSensorAdapter` is `@MainActor` (declared at line 15), so the BLE call site stays direct. `WatchState` is `@Observable final class WatchState: NSObject, WCSessionDelegate` (line 75) — not `@MainActor`. The two hook sites previously called the `@MainActor` `noteEGVReceived` directly; in Swift 5 minimal-concurrency mode this compiles (with possible warning) but is not unambiguously safe under stricter modes. Wrapped both in `Task { @MainActor in … }` to match the file's existing 7+ `DispatchQueue.main.async { @MainActor in … }` / `Task { @MainActor in … }` patterns (lines 1175, 1268, 1336, 1444, 1728, 1781).
+
+Latency cost is one main-actor reschedule (microseconds when already on main thread); first success beat of a fresh BLE EGV is unaffected because the BLE call site is direct. Relayed cycles (WC / HK) get the synchronous `.click` from `fireRelayedConfirm` after the Task hop — perceptually still "instant" relative to the data-store save that preceded it.
+
+**Claude #2 — WC pre-debounce.**
+
+The data-store's `minInterval=5` debounce protects the data store, not the beacon. With **R6** dedup, batched WC deliveries for the *same* reading (same `readingDate`) are caught by `lastAcceptedReadingDate` and produce `egv_ignored reason=duplicate`. Batched WC deliveries for *distinct* readings (rare in steady state, possible during catch-up) will each fire `relayed_confirm` if BLE is stale — which is the desired behavior. Comment added at the WC hook site documenting this so future maintainers don't assume the data-store guard covers the beacon.
+
+**Claude #3 — `session.state` read twice.**
+
+`play(_:label:)` now reads `session.state.rawValue` once into `stateAtPlay` immediately before `notifyUser(haptic:)`, then uses that captured value in the log line. Eliminates the cosmetic risk of the gate and the log disagreeing if the session transitions between the two reads.
+
+### R6 plan deviations (none)
+
+All R6 changes implement plan v1.13 §"R6 — multi-source safety and UX polish" exactly. The product decisions and 13-row fix list disposition were authored together with this implementation.
+
+### Files modified (R6)
+
+- `Trio Watch App Extension/HapticBeacon.swift` — full rewrite (565 lines):
+  - New constants: `bleFreshnessWindow`.
+  - New state: `lastAcceptedReadingDate`, `lastBLEReceiptAt`.
+  - `SourceFilter.all` → `.bleAndRelayedFallback` (raw `"ble_relayed_fallback"`); migration in `sourceFilter` getter.
+  - `noteEGVReceived(at:readingDate:source:)` new signature; 7-step accept pipeline; new `egv_ignored reason=duplicate|ble_recent` paths.
+  - New helpers: `attemptBLEWarmArm(trigger:)`, `clearCurrentCycle()`, `fireRelayedConfirm()`.
+  - `fireSuccess()` / `fireMiss()` — synchronous first beat; sub-timers from `dropFirst()`.
+  - `fireRamp()` — unique labels per beat.
+  - `cancelAllTimers()` — no longer clears `lastCycleSource`.
+  - `play(_:label:)` — single state read before `notifyUser`.
+  - Header docstring + inline comments rewritten (no review-round / cut references).
+- `Trio Watch App Extension/G7WatchSensorAdapter.swift` — call site updated to pass `readingDate: readingDate`.
+- `Trio Watch App Extension/WatchState.swift` — both hooks now `Task { @MainActor in … }`-wrapped, pass `readingDate`, WC hook gains debounce-explanation comment.
+- `Trio Watch App Extension/Views/ComplicationDebugView.swift` — `SourceFilter` rename propagated to button label / SF Symbol switch; toast text "BLE + relayed fallback".
+
+### Self-review checklist (per Trio AGENTS.md)
+
+- [x] Re-read all four modified files top to bottom after edits (`HapticBeacon.swift` rewrite, two WatchState hook sites, BLE adapter line, debug button block).
+- [x] All new symbols (`lastAcceptedReadingDate`, `lastBLEReceiptAt`, `bleFreshnessWindow`, `attemptBLEWarmArm`, `clearCurrentCycle`, `fireRelayedConfirm`, `bleAndRelayedFallback`) referenced consistently across the file. The historical `lastCycleSource = nil` line that was inside `cancelAllTimers()` is gone (now in `clearCurrentCycle()` only); every callsite using `cancelAllTimers()` either reassigns `lastCycleSource` immediately (rearm path) or is a teardown that calls `clearCurrentCycle()` instead.
+- [x] No half-finished edits or stale TODOs in the changed surface.
+- [x] No project file edits or `sync_project_files.rb` invocations (AGENTS rule 6); no new files added.
+- [x] No `xcodebuild` / `ci/local-build.sh` runs (AGENTS rule 10); static review + lint check only.
+- [x] Lint check via `ReadLints` over the four modified files: zero new warnings/errors. Pre-existing items: `G7WatchSensorAdapter.swift` has 27 long-standing line-length / function-length / identifier-name lints unrelated to the one-line R6 edit; `WatchState.swift` shows the pre-existing SourceKit `No such module 'WatchConnectivity'` false-positive.
+- [x] Cross-patch shadowing audit unchanged (no new symbol names introduced that conflict with the existing `NotificationCenter` protocol shadow or any other in-scope name).
+- [x] Telemetry contract: every accept-path branch emits exactly one log line; every reject-path branch emits exactly one `egv_ignored` / `haptic_skipped`. The accept path emits `haptic_fired` (via `play`) for either `success_1` or `relayed_confirm` followed by `haptic_armed phase=ramp` and `haptic_armed phase=miss` (or `rearm_skipped reason=stale_gap` when the gap exceeds threshold).
+- [x] Source-precedence + dedup interact safely with warm-arm: `attemptBLEWarmArm` sets `lastAcceptedReadingDate = bleLastEGV` so the very next live BLE EGV with the same `readingDate` is rejected as `duplicate` (correctly avoiding a redundant cycle). The next live EGV with a newer `readingDate` accepts normally.
+
+### R6 done-criteria (on-device verification)
+
+(In addition to the criteria from Cuts 1–4 + R2–R5.)
+
+- [ ] WC or HK delivery with the same `readingDate` as a prior BLE accept logs `egv_ignored reason=duplicate` and does not fire any haptic.
+- [ ] WC or HK delivery while `lastBLEReceiptAt` is < 360 s old logs `egv_ignored reason=ble_recent`.
+- [ ] In `.bleAndRelayedFallback` mode with BLE quiet (no BLE accept ≥ 360 s), a fresh WC / HK delivery fires a single `haptic_fired type=relayed_confirm` and arms a relayed cycle (no `success_*` beats).
+- [ ] `setSourceFilter(.ble)` while a non-BLE cycle is armed emits `setSourceFilter value=ble action=cancelled_pending_timers prior_cycle_source=<wc|hk>` followed by either `warm_armed trigger=source_filter_narrow` (BLE recent) or `warm_arm_skipped reason=… trigger=source_filter_narrow` (BLE not recent).
+- [ ] Each ramp beat is identifiable by a unique `type=` label in Better Stack (`ramp_click_1`, `ramp_click_2`, `ramp_start_1`, `ramp_start_2`, `ramp_notif_1`, `ramp_notif_2`, `ramp_notif_3`).
+- [ ] Mid-success-triple cancellation logs `phase=success_sub pending_count=1|2`; mid-miss-double cancellation logs `phase=miss_sub pending_count=1`. Neither indicates a missed confirmation (first beat of each was synchronous and would have logged `haptic_fired type=success_1` / `retry_1` before cancellation).
+- [ ] Historical `"all"` source-filter preference still loads the new policy (no `UserDefaults` reset required).
+
+---
+
+## R7 — warm-arm invariant tightening (review pass)
+
+A second external review pass was solicited on the post-R6 worktree from Claude (round 2) and ChatGPT (round 3). The two reviewers disagreed on the central question — whether warm-arm seeding `lastAcceptedReadingDate` poisons subsequent BLE delivery — so R7 begins with a verification step before any code change.
+
+### Verification of the central disagreement
+
+ChatGPT's "blocker 1" claim: warm-arm sets `lastAcceptedReadingDate = bleLastEGV`; if the next real BLE callback arrives with the same `readingDate`, the dedup gate at the top of `noteEGVReceived` will drop it as a duplicate and no success triple will fire.
+
+Claude's defense: the next real BLE reading will have a strictly newer `readingDate`, so the dedup gate will pass.
+
+To resolve, traced the BLE delivery path in `Trio Watch App Extension/G7WatchSensorAdapter.swift`. Lines 578–580:
+
+```swift
+if let lastSeq = lastReadingSequence, lastSeq == glucose.sequence {
+    log("egv_dedup", "glucose=\(glucose.glucose.map(String.init) ?? "nil") sequence=\(glucose.sequence)")
+    return
+}
+```
+
+Same `sequence` is filtered before `noteEGVReceived` is ever called. `readingDate` is computed from `glucose.glucoseTimestamp` (line 600), which is a function of the sensor sequence. Therefore: **same sequence ⇒ same `glucoseTimestamp` ⇒ same `readingDate`**. Two `noteEGVReceived` calls cannot share a `readingDate` from the live BLE path.
+
+ChatGPT's literal blocker scenario cannot occur. Claude is correct on the central point. No code change for "blocker 1".
+
+However, ChatGPT's deeper invariant point (medium #1: warm-arm should not write `lastBLEReceiptAt` because that slot is documented as a watch receipt time, while warm-arm uses a sensor reading time) is a legitimate clean-up. Adopted that with rationale.
+
+### Per-finding disposition
+
+| # | Reviewer | Severity claimed | Disposition | Rationale |
+|---|---|---|---|---|
+| 1 | ChatGPT — "blocker 1": warm-arm seeding `lastAcceptedReadingDate = bleLastEGV` poisons the next real BLE EGV | Blocker | **Disagree, no code change.** G7 adapter dedups same-`sequence` deliveries before they reach `noteEGVReceived` (citation above). Spelled the invariant out in the `lastAcceptedReadingDate` doc comment so future readers do not re-litigate. |
+| 2 | ChatGPT — "blocker 2": dedup may drop newer-source recovery after stale BLE if dedup state is poisoned | Blocker (conditional on #1) | **Resolved by docs + #4.** Once the property doc comments precisely define what `lastAcceptedReadingDate` represents (real arrival OR warm-arm anchor) and `lastBLEReceiptAt` is no longer poisoned, the precedence + dedup interaction matches the intent. |
+| 3 | ChatGPT — "high-risk": relayed-fallback `.click` may be misread as "BLE healthy" | High | **No code change; intent affirmed.** Already covered by R6 product decision #5 ("different feel"). On-device validation should explicitly confirm testers can distinguish `.click` (relayed) from `.success` triple (BLE) at the wrist. |
+| 4 | ChatGPT — "medium 1": `lastBLEReceiptAt = bleLastEGV` in warm-arm conflates two clocks | Medium | **Adopted.** `attemptBLEWarmArm` no longer writes `lastBLEReceiptAt`. Property doc comment makes the "only real BLE deliveries write this slot" invariant explicit. Behavior change: after warm-arm, a fresh relayed reading with a newer `readingDate` is allowed to arm a relayed cycle (no false "BLE recent" rejection). This is correct: warm-arm is a synthetic recovery, not a guarantee that BLE just delivered. |
+| 5 | ChatGPT — "medium 1 invariant": dedup-state writers should be limited to real-EGV-acceptance paths | Medium | **Partially adopted.** `lastAcceptedReadingDate` is still written by warm-arm — Claude's defense is correct that this blocks WC / HK echoes of the warm-arm anchor from arming a redundant cycle. The doc comment now lists warm-arm as a documented exception with the precise invariant (warm-arm seeds with the synthetic anchor; live BLE arrivals will be strictly newer). |
+| 6 | ChatGPT — "medium 2": `setEnabled(false)` clears `lastAcceptedReadingDate`, so a quick disable / re-enable could allow a replay | Medium | **No code change; documented.** Acceptable for the current debug-only beacon toggle. Inline comment added at the clear site noting that, if the toggle becomes user-facing, dedup state should survive enable cycles within the process lifetime. |
+| 7 | ChatGPT — "medium 3": file-level docstrings becoming a mini design doc | Medium | **Deferred.** Active development; the docstrings serve as the local source of truth. Pre-upstream-PR cleanup task — not blocking on-device validation. |
+| 8 | ChatGPT — "medium 4": pre-existing `R5c —` comment in `WatchState.swift` violates source-comment hygiene | Medium | **Out of scope.** That comment belongs to the watch G7 BLE observer initiative tracked at `Trio-dev/docs/in-progress/watch-g7-direct-ble-observer/`, not the haptic beacon. |
+| 9 | Claude — `guard let firstStep = …` in `fireSuccess` / `fireMiss` is defensive on a non-empty static; cosmetic inconsistency with `fireRamp` | Cosmetic | **Documented in code.** Inline comments explain the static array is non-empty by construction and the guard exists to make the synchronous-first / companion-rest pattern locally obvious to a future maintainer. Behavior unchanged. |
+
+### Per-finding implementation notes
+
+**Finding 4 — `lastBLEReceiptAt` no longer seeded by warm-arm.**
+
+Removed the `lastBLEReceiptAt = bleLastEGV` line from `attemptBLEWarmArm`. The remaining warm-arm sequence is:
+
+```swift
+cancelAllTimers()
+lastReceiptAt = bleLastEGV
+lastCycleSource = .g7DirectBLE
+// Seeded for dedup only. See `lastAcceptedReadingDate` doc for the invariant.
+lastAcceptedReadingDate = bleLastEGV
+// Note: `lastBLEReceiptAt` is intentionally not seeded.
+rearm(after: bleLastEGV)
+log("warm_armed", ...)
+```
+
+**Property doc updates** in the same file:
+
+- `lastAcceptedReadingDate`: a new "Warm-arm exception" paragraph spells out the invariant (warm-arm seeds with the synthetic anchor; the G7 adapter same-`sequence` dedup at `G7WatchSensorAdapter.swift:578–580` guarantees the next live BLE EGV has a strictly newer `readingDate` and accepts normally).
+- `lastBLEReceiptAt`: a new "Only real BLE deliveries write this slot" paragraph explains that warm-arm uses a sensor `readingDate`, not a watch receipt time, so storing it would conflate clocks.
+
+**Behavioral consequence to verify on device:** during the warm-armed window (after `setEnabled(true)` or `setSourceFilter(.ble)`), a fresh WC / HK delivery with a strictly newer `readingDate` than the warm-arm anchor will arm a relayed cycle and fire `relayed_confirm` — because `lastBLEReceiptAt` is no longer falsely reading "BLE just arrived". Same-`readingDate` echoes are still blocked by dedup. New R7 done-criterion records this expectation.
+
+**Finding 6 — `setEnabled(false)` dedup-clearing comment.**
+
+Added an inline comment at the `lastAcceptedReadingDate = nil` line acknowledging that this allows a quick disable / re-enable inside one cycle to re-accept the just-seen reading. Acceptable for the current debug-only beacon toggle (used for on-device verification). If the toggle becomes user-facing in a future cut, the comment instructs the maintainer to consider preserving dedup across enable toggles within the process lifetime.
+
+**Finding 9 — defensive-guard comments.**
+
+`fireSuccess` and `fireMiss` both unwrap their static step array's `first` element to play synchronously, then schedule `dropFirst()` as sub-timers. Inline comments now explain that `successBuzzSteps` / `missRetrySteps` are non-empty by construction and the `guard` is a readability anchor for the synchronous-first / companion-rest pattern (so a future maintainer comparing this method against `fireRamp`, which has no equivalent guard, understands why the asymmetry exists).
+
+### R7 plan deviations (none)
+
+All R7 changes implement plan v1.14 §"R7 — warm-arm invariant tightening" exactly. The verification step against `G7WatchSensorAdapter.swift:578–580` is recorded both in this section and in the plan's R7 disposition table.
+
+### Files modified (R7)
+
+- `Trio Watch App Extension/HapticBeacon.swift` only:
+  - `attemptBLEWarmArm`: removed `lastBLEReceiptAt = bleLastEGV`; tightened inline rationale at the assignment site.
+  - `lastAcceptedReadingDate` property doc: added "Warm-arm exception" paragraph with adapter-dedup citation.
+  - `lastBLEReceiptAt` property doc: added "Only real BLE deliveries write this slot" paragraph.
+  - `fireSuccess`, `fireMiss`: defensive-guard explanation comments.
+  - `setEnabled(false)`: inline comment on dedup-clearing trade-off.
+
+No changes to `WatchState.swift`, `G7WatchSensorAdapter.swift`, `ComplicationDebugView.swift`, or any other file. R6's WatchState `Task { @MainActor in … }` wrappers, the BLE adapter `readingDate` plumbing, and the debug UI label remain as landed.
+
+### Self-review checklist (per Trio AGENTS.md)
+
+- [x] Re-read the modified file (`HapticBeacon.swift`) top to bottom after edits — all five edit sites cohesive; property docs / call-site comments / sync-first-beat guards / setEnabled comment all reference the same invariants.
+- [x] No half-finished edits or stale TODOs in the changed surface. The only writers of `lastBLEReceiptAt` are now the BLE branch of `noteEGVReceived` and the `setEnabled(false)` clear (matches the doc claim).
+- [x] No project file edits or `sync_project_files.rb` invocations (AGENTS rule 6); no new files added.
+- [x] No `xcodebuild` / `ci/local-build.sh` runs (AGENTS rule 10); static review + lint check only.
+- [x] Lint check via `ReadLints` over `HapticBeacon.swift`: zero new warnings/errors.
+- [x] Verified the central disagreement against the actual G7 adapter source code before adopting / rejecting either reviewer's position; cited the line numbers.
+- [x] Behavior contract preserved for the documented R6 done-criteria; new behavior (relayed cycle armable during warm-armed window when no real BLE since process start) recorded as a new R7 done-criterion.
+
+### R7 done-criteria (on-device verification)
+
+(In addition to the criteria from Cuts 1–4 + R2–R6.)
+
+- [ ] `setEnabled(true)` while `WatchState.shared.bleLastEGVDate` is recent emits `warm_armed`, and the next live BLE EGV (different `sequence`, hence strictly newer `readingDate`) fires `haptic_fired type=success_1` followed by `success_2` / `success_3` — no `egv_ignored reason=duplicate` line precedes it.
+- [ ] `setEnabled(true)` followed by a WC / HK delivery whose `readingDate` exactly matches `bleLastEGVDate` logs `egv_ignored reason=duplicate` and fires no haptic.
+- [ ] `setEnabled(true)` warm-arm on a fresh process (no prior live BLE arrivals via `noteEGVReceived`) followed by a WC / HK delivery with a strictly newer `readingDate` arms a relayed cycle and fires `relayed_confirm` — no `ble_recent` rejection precedes it (because warm-arm did not seed `lastBLEReceiptAt`).
+- [ ] Better Stack search across the validation window confirms zero pairs of `egv_ignored reason=duplicate source=ble` immediately preceding a missing `haptic_fired type=success_1` — i.e., warm-arm seeding never suppresses a real BLE success in production telemetry.
+
+---
+
+## R8 — stale-gap-relayed recovery + dedup log enrichment (review pass)
+
+A third external review pass (ChatGPT round 4) on the post-R7 worktree was a "close to bless" with one remaining product-behavior concern around the stale-gap rule applying uniformly to all sources, plus three explicitly non-blocking notes. R8 adopts ChatGPT's recommended option for the stale-gap concern — let relayed fallback restore cadence after a long BLE outage when the relayed reading is itself fresh — and the small log-enrichment non-blocking note (it's a tiny change with operational value and lives in the same edit surface as the dedup gate R7 reasoned about).
+
+### Review of the central concern
+
+Pre-R8 stale-gap policy in `noteEGVReceived` applied uniformly to all sources:
+
+```swift
+if let prior = priorReceiptAt {
+    let gap = receiptDate.timeIntervalSince(prior)
+    if gap > Self.staleThreshold {
+        log("rearm_skipped", "reason=stale_gap gap_s=\(Int(gap)) source=\(sourceTag)")
+        return
+    }
+}
+```
+
+For BLE, that policy is well-grounded: a long-gap BLE EGV is usually the recovery edge of an outage, and predicting cadence on it before the next EGV proves the cycle is stable would generate confident-sounding ramp/miss buzzes around the wrong time.
+
+For relayed sources in `.bleAndRelayedFallback` mode, the same policy means the *whole point* of fallback (provide cadence haptics when BLE is unavailable) is broken in exactly the scenario where users care most: after BLE has been quiet for a while. The first relayed reading just confirms; cadence prediction only restarts on the second relayed reading 5 minutes later. Users would feel like fallback "didn't do anything" for the first EGV after the outage.
+
+ChatGPT's recommended fix: split the policy by source and add a freshness gate so late relayed payloads (HK batch sync, late WC catch-up) still cannot poison cadence prediction. Adopted as the R8 product decision.
+
+### R8 product decision (authoritative)
+
+**Stale-gap rearm policy (`gap > staleThreshold`):**
+
+| Source | Reading freshness | Behavior |
+|---|---|---|
+| BLE | (any) | Confirm only. `rearm_skipped reason=stale_gap`. |
+| Relayed (WC / HK) | `receiptDate − readingDate < relayedFreshnessForRearmAfterGap` (30 s) | Confirm + rearm. Logs informational `rearm_after_stale_gap reason=relayed_fresh`. |
+| Relayed (WC / HK) | `receiptDate − readingDate >= relayedFreshnessForRearmAfterGap` | Confirm only. `rearm_skipped reason=stale_gap_relayed_not_fresh`. |
+
+If on-device validation shows the 30 s gate is too tight (e.g. WC hop occasionally peaks at 35 s) or too loose (some users seeing cadence rearmed on stale HK syncs), tune `relayedFreshnessForRearmAfterGap` rather than restructuring the policy.
+
+### R8 reviewer disposition
+
+| # | Reviewer | Severity claimed | Disposition | Rationale |
+|---|---|---|---|---|
+| 1 | ChatGPT — `stale_gap` rule applies uniformly; first relayed reading after long BLE outage just confirms | Product call (close-to-bless) | **Adopted ChatGPT's recommended option.** Stale-gap check is split by source; new constant + two new telemetry events (one fall-through informational, one new `rearm_skipped reason=`). Trade-off and freshness-gate threshold (30 s) documented in the constant's doc comment and in the inline comment block at the call site. |
+| 2 | ChatGPT — non-blocking #1: dedup logs could include both ages | Non-blocking | **Adopted (small enrichment).** `egv_ignored reason=duplicate` log line now carries `last_reading_age_s` in addition to `reading_age_s`. Inline comment near the dedup gate documents the cross-source monotonicity assumption (in steady state each new sensor reading has a strictly newer `glucoseTimestamp`; if a future source reorders deliveries the worst case is a real reading being silently dropped, and the per-source ages on the log line will let analysts spot it). |
+| 3 | ChatGPT — non-blocking #2: `relayed_confirm` may confuse users; consider opt-out | Non-blocking | **No code change.** Already covered by R6 product decision #5. Bench-mark on-device validation; revisit before any user-facing rollout. |
+| 4 | ChatGPT — non-blocking #3: source comments getting long again | Non-blocking | **Deferred.** Same pre-PR cleanup task already noted in R7 finding #7. |
+| 5 | ChatGPT — non-blocking #4: pre-existing `R5c —` comment in `WatchState.swift` | Non-blocking | **Out of scope.** Same as R7 finding #8. |
+
+### Per-finding implementation notes
+
+**Finding 1 — source-split stale-gap policy.**
+
+Added `relayedFreshnessForRearmAfterGap: TimeInterval = 30` to the tuning constants block. The doc comment spells out the rationale: 30 s comfortably covers healthy WC hop latency (typically < 5 s) without admitting old HK batch syncs.
+
+Restructured the stale-gap check in `noteEGVReceived` (after the confirmation fire, before `rearm(after:)`):
+
+```swift
+if let prior = priorReceiptAt {
+    let gap = receiptDate.timeIntervalSince(prior)
+    if gap > Self.staleThreshold {
+        // (inline policy comment block)
+        if isBLE {
+            log("rearm_skipped", "reason=stale_gap gap_s=\(Int(gap)) source=\(sourceTag)")
+            return
+        }
+        let relayedLatency = receiptDate.timeIntervalSince(readingDate)
+        if relayedLatency >= Self.relayedFreshnessForRearmAfterGap {
+            log("rearm_skipped", "reason=stale_gap_relayed_not_fresh gap_s=\(Int(gap)) reading_age_s=\(Int(relayedLatency)) source=\(sourceTag)")
+            return
+        }
+        log("rearm_after_stale_gap", "reason=relayed_fresh gap_s=\(Int(gap)) reading_age_s=\(Int(relayedLatency)) source=\(sourceTag)")
+    }
+}
+rearm(after: receiptDate)
+```
+
+Both new log events follow the existing `module=haptic_beacon event=… <fields>` convention. `rearm_after_stale_gap` is informational-only (no behavioral effect — falls through to the standard `rearm(after:)`), but is a distinct event so analysts can size how often fallback recovers cadence and at what relayed-latency without conflating it with normal (no-stale-gap) rearms.
+
+**Finding 2 — dedup log enrichment.**
+
+```swift
+if let last = lastAcceptedReadingDate, readingDate <= last {
+    let readingAge = Int(receiptDate.timeIntervalSince(readingDate))
+    let lastReadingAge = Int(receiptDate.timeIntervalSince(last))
+    log(
+        "egv_ignored",
+        "reason=duplicate source=\(sourceTag) reading_age_s=\(readingAge) last_reading_age_s=\(lastReadingAge)"
+    )
+    return
+}
+```
+
+The new field gives analysts the second leg of the dedup comparison without a separate query. Comment block immediately above the gate documents the cross-source monotonicity assumption and the silent-drop failure mode.
+
+### R8 plan deviations (none)
+
+All R8 changes implement plan v1.15 §"R8 — stale-gap-relayed recovery + dedup log enrichment" exactly.
+
+### Files modified (R8)
+
+- `Trio Watch App Extension/HapticBeacon.swift` only:
+  - New constant `relayedFreshnessForRearmAfterGap` with doc comment.
+  - `noteEGVReceived` stale-gap block restructured per the source-split policy; inline policy comment.
+  - `egv_ignored reason=duplicate` log line gains `last_reading_age_s`; inline comment documents the cross-source monotonicity assumption.
+
+No changes to `WatchState.swift`, `G7WatchSensorAdapter.swift`, or `ComplicationDebugView.swift`.
+
+### Self-review checklist (per Trio AGENTS.md)
+
+- [x] Re-read the modified file (`HapticBeacon.swift`) top to bottom after edits — all edits cohesive; constant doc / call-site comment / new telemetry events all reference the same policy.
+- [x] No half-finished edits or stale TODOs in the changed surface. The new `rearm_after_stale_gap` event is informational only and the fall-through into `rearm(after:)` is the standard path; no new exit branch was introduced.
+- [x] No project file edits or `sync_project_files.rb` invocations (AGENTS rule 6); no new files added.
+- [x] No `xcodebuild` / `ci/local-build.sh` runs (AGENTS rule 10); static review + lint check only.
+- [x] Lint check via `ReadLints` over `HapticBeacon.swift`: zero new warnings/errors.
+- [x] Behavior contract preserved for all R6 / R7 done-criteria; new R8 behavior (relayed fallback rearms after long gap when relayed latency < 30 s) recorded as new R8 done-criteria along with explicit "stale relayed payload still confirm-only" verification.
+- [x] Telemetry contract: every new code branch emits exactly one log line; the `rearm_after_stale_gap` informational event sits between the `haptic_fired type=relayed_confirm` line (already emitted by `fireRelayedConfirm()`) and the two `haptic_armed phase=ramp|miss` lines (emitted by `rearm(after:)`).
+
+### R8 done-criteria (on-device verification)
+
+(In addition to the criteria from Cuts 1–4 + R2–R7.)
+
+- [ ] **Fallback recovers cadence on fresh relayed reading after long BLE outage:** in `.bleAndRelayedFallback` mode, after ≥ 10 minutes with no accepted EGV, a fresh WC / HK reading (relayed latency < 30 s) emits `haptic_fired type=relayed_confirm` immediately followed by `rearm_after_stale_gap reason=relayed_fresh gap_s=<n> reading_age_s=<m>` and then `haptic_armed phase=ramp` + `haptic_armed phase=miss`.
+- [ ] **Stale relayed payload after long outage still confirm-only:** in `.bleAndRelayedFallback` mode, after ≥ 10 minutes with no accepted EGV, a stale relayed reading (relayed latency ≥ 30 s, e.g. an HK batch sync representing an older sensor reading) emits `haptic_fired type=relayed_confirm` followed by `rearm_skipped reason=stale_gap_relayed_not_fresh gap_s=<n> reading_age_s=<m>` — no ramp / miss arm.
+- [ ] **BLE long-outage behavior preserved (R6 invariant):** after ≥ 10 minutes with no accepted EGV, a long-gap BLE EGV emits `haptic_fired type=success_1` (+ companions) followed by `rearm_skipped reason=stale_gap` — no `rearm_after_stale_gap` for BLE source.
+- [ ] **Steady-state telemetry:** in normal cadence (no stale gap), neither `rearm_skipped reason=stale_gap_relayed_not_fresh` nor `rearm_after_stale_gap` should appear in Better Stack — both events are stale-gap-recovery-only.
+- [ ] `egv_ignored reason=duplicate` log lines now carry both `reading_age_s` and `last_reading_age_s` fields.
+
+> **Tester note (per ChatGPT's explicit recommended test case):** "In fallback mode after >10 minutes with no accepted EGV, send one fresh WC/HK reading and verify whether the desired behavior is confirm-only or confirm+rearm." With R8 the answer is **confirm + rearm** for fresh relayed readings (latency < 30 s) and **confirm only** for stale relayed readings. If the user prefers strict semantics across the board (i.e., fallback never rearms after long outage, matching pre-R8 behavior), this is a one-line revert (collapse the source-split back to a single `rearm_skipped reason=stale_gap` branch) — recorded here so the trade-off is visible.
+
+---
+
 ## Changelog
+
+### v11 (2026-05-11 23:08 CET)
+- **R8 — stale-gap-relayed recovery + dedup log enrichment (review pass).** Third external review (ChatGPT round 4) on the post-R7 worktree. ChatGPT verdict was "close to bless" with one product-behavior call: pre-R8 stale-gap rule applied uniformly to all sources, so `.bleAndRelayedFallback` mode required *two* relayed readings ≥ 5 minutes apart before fallback restored cadence after a long BLE outage — defeating the purpose of fallback in the exact scenario users care about. Authoritative product decision: split stale-gap policy by source (BLE remains strict; relayed sources may rearm after long gap if relayed latency < 30 s; stale relayed payloads still confirm-only). Adopted ChatGPT non-blocking #1 (dedup log enrichment) since it lives in the same edit surface as the R7 dedup-gate reasoning. New constant `relayedFreshnessForRearmAfterGap = 30 s`; new telemetry events `rearm_after_stale_gap reason=relayed_fresh` (informational fall-through) and `rearm_skipped reason=stale_gap_relayed_not_fresh`. `egv_ignored reason=duplicate` now also carries `last_reading_age_s` for ordering-anomaly debugging; inline comment near the dedup gate documents the cross-source monotonicity assumption. New section **"R8 — stale-gap-relayed recovery + dedup log enrichment (review pass)"** documents the 5-row reviewer disposition, per-finding implementation, telemetry contract changes, and five new R8 done-criteria (including ChatGPT's explicit test case and the trade-off note for reverting to strict semantics if desired). Plan reference bumped to **v1.15**. Self-review across the single modified file (`HapticBeacon.swift`); no new lints; no other files touched.
+
+### v10 (2026-05-11 23:00 CET)
+- **R7 — warm-arm invariant tightening (review pass).** Second external review (Claude round 2 + ChatGPT round 3) on the post-R6 worktree. Reviewers disagreed on the central question (warm-arm seeding `lastAcceptedReadingDate`); verified ChatGPT's literal blocker scenario against `G7WatchSensorAdapter.swift:578–580` (same-`sequence` adapter dedup happens before `noteEGVReceived`, so two `noteEGVReceived` calls cannot share a `readingDate` from the live BLE path) and sided with Claude. Adopted ChatGPT's deeper invariant point (medium #1) about clean type separation: warm-arm no longer writes `lastBLEReceiptAt` because that slot is documented as a watch receipt time and warm-arm has only a sensor reading time available. Property doc comments tightened to make both invariants explicit. Added Claude's defensive-guard explanation comments in `fireSuccess` / `fireMiss`. Added trade-off comment on `setEnabled(false)` dedup-clearing (debug-feature acceptable; revisit if user-facing). New section **"R7 — warm-arm invariant tightening (review pass)"** documents the 9-row reviewer disposition, verification trace, behavioral consequences, and four new R7 done-criteria. Plan reference bumped to **v1.14**. Self-review across the single modified file (`HapticBeacon.swift`); no new lints; no other files touched.
+
+### v9 (2026-05-11 22:55 CET)
+- **R6 — multi-source safety + UX polish (review pass).** Consolidated Claude + ChatGPT external review of the post-R5 + Cut2/Cut3/Cut4 worktree (13-row finding table) plus five authoritative product decisions on multi-source policy. Fix highlights: dedup by `readingDate` in `noteEGVReceived` (closes ChatGPT blockers #1/#10); source-precedence gate via `lastBLEReceiptAt` + `bleFreshnessWindow=360 s` (closes ChatGPT blocker #2); BLE-only success triple, relayed sources fire single `relayed_confirm` `.click` (product decision #5); unique ramp labels (`ramp_click_1`/`_2`, `ramp_start_1`/`_2`, `ramp_notif_1`/`_2`/`_3`); sync first beat for success/miss (no lost confirmation); `cancelAllTimers` / `clearCurrentCycle` split; `attemptBLEWarmArm(trigger:)` reused by `setEnabled(true)` and `setSourceFilter(.ble)` narrowing; `SourceFilter.all` → `.bleAndRelayedFallback` with `"all"` raw-value migration; debug UI label "BLE + relayed"; WatchState hooks wrapped in `Task { @MainActor in … }` (Claude #1) with debounce-context comment at WC site (Claude #2); `play()` single state-read (Claude #3); source-comment cleanup (no Cut/review references). Plan reference bumped to **v1.13**. Self-review across four modified files; no new lints. See § "R6 — multi-source safety + UX polish" above for per-finding implementation notes and seven new R6 done-criteria for on-device verification.
+
+### v8 (2026-05-11 22:30 CET)
+- **Cut 4 — richer cadence haptics:** `rampLeadTime` 5 s; seven-beat ramp (`steps` array); triple `.success` via `successSubTimers` (`success_1`…`success_3`); double `.retry` via `missSubTimers` (`retry_1`, `retry_2`); `cancelAllTimers()` gains `phase=success_sub` / `phase=miss_sub` with `pending_count`. Plan reference bumped to **v1.12**. See § Cut 4 section above; canonical code `Trio Watch App Extension/HapticBeacon.swift`.
+
+### v7 (2026-05-11 22:15 CET)
+- **Cut 3 code deliverable** ahead of Cut 2 spike, per user direction. SourceFilter (`.ble` default / `.all` opt-in) + persisted state, two new `WatchState` hooks (`applyHKSnapshot` end, `saveComplicationSnapshot` after data-store save), `lastCycleSource` slot driving per-cycle `source=` telemetry across `armed`/`cancelled`/`fired`/`skipped`/`rearm_skipped` log lines, new `egv_ignored` and `setSourceFilter` events, second debug button (`Source: BLE only` / `Source: All`). Five plan deviations documented in this section: Cut 2 gate explicitly deferred; `cancelAllTimers()` owns `lastCycleSource` clearing; `setSourceFilter` cancellation is conditional; `source=` tag broadened beyond plan's `armed`/`fired`; new `egv_ignored` event added. Self-review checklist completed; SourceKit module-not-found warnings are pre-existing IDE noise. Spike validation for Cut 2 still pending.
+
+### v6 (2026-05-11 22:09 CET)
+- **Cut 2 code deliverable:** Dual-path `play(_:label:)` (`notifyUser` when extended session `.running`, else `WKInterfaceDevice`), telemetry fields per plan §4.1 / §5.2. Spike protocol §5.3–5.4 left as manual on-device validation; Cut 2 section in this log expanded accordingly. Plan bumped v1.9 → **v1.10** (not v2.0).
 
 ### v5 (2026-05-11 14:26 CET)
 - **Cut 1 review round 5** (in-session red-team pass over the post-R4 surface). Three findings — one comment-cleanup followup miss in `G7WatchSensorAdapter.swift` (the two new haptic-beacon accessors still carried "Cut 2 spike" / "R2 fix, GPT #3" framing — R4's comment-cleanup pass only touched `HapticBeacon.swift`); one minor semantic gap (`setEnabled(false)` left `lastReceiptAt` set, causing a correct-but-confusing `rearm_skipped reason=stale_gap` log on the first live EGV after a long disable period); one telemetry hole (three silent `guard` returns in the `setEnabled(true)` warm-arm path produced no log, so analysts couldn't distinguish "no warm-arm because of X" from "warm-arm logic never ran"). All three fixed in the same turn. Five findings explicitly verified safe with rationale (identity-token guards, `rampSubTimers` race, EOS interaction, retain cycles, source-filter type alignment). One observation deferred (per-`.active`-transition `start` log noise — very low priority). Three new R5-verifiable done criteria added (disable-clears-anchor; `warm_arm_skipped reason=adapter_stopped`; `warm_arm_skipped reason=no_anchor`).
