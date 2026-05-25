@@ -62,6 +62,11 @@ TARGET_BASENAME_PREFERENCES = if SyncProjectFilesConfig.const_defined?(:TARGET_B
 else
   {}
 end
+TARGET_BUILT_PRODUCT_FRAMEWORKS = if SyncProjectFilesConfig.const_defined?(:TARGET_BUILT_PRODUCT_FRAMEWORKS)
+  SyncProjectFilesConfig::TARGET_BUILT_PRODUCT_FRAMEWORKS
+else
+  {}
+end
 
 def expand_brace(pattern)
   return [pattern] unless pattern.include?("{") && pattern.include?("}")
@@ -819,6 +824,110 @@ def sync_package_dependencies(project)
   additions
 end
 
+def built_products_dir_ref?(ref)
+  return false unless ref
+
+  st = ref.source_tree
+  st == :built_products_dir || st.to_s == "BUILT_PRODUCTS_DIR"
+end
+
+def find_built_product_framework_ref(project, framework_path, donor_target_names)
+  Array(donor_target_names).compact.each do |name|
+    donor = project.targets.find { |t| t.name == name }
+    next unless donor
+
+    phase = donor.frameworks_build_phase
+    next unless phase
+
+    phase.files.each do |bf|
+      ref = bf.file_ref
+      next unless ref && ref.path == framework_path && built_products_dir_ref?(ref)
+
+      return ref
+    end
+  end
+
+  project.files.each do |ref|
+    next unless ref.isa == "PBXFileReference"
+    next unless ref.path == framework_path && built_products_dir_ref?(ref)
+
+    return ref
+  end
+
+  nil
+end
+
+def ensure_embed_frameworks_phase(project, target)
+  existing = target.build_phases.grep(Xcodeproj::Project::Object::PBXCopyFilesBuildPhase).find do |p|
+    p.name == "Embed Frameworks"
+  end
+  return existing if existing
+
+  phase = project.new(Xcodeproj::Project::Object::PBXCopyFilesBuildPhase)
+  phase.name = "Embed Frameworks"
+  phase.symbol_dst_subfolder_spec = :frameworks
+  # xcodeproj typechecks buildActionMask as String (see AbstractBuildPhase)
+  phase.build_action_mask = "2147483647"
+  phase.run_only_for_deployment_postprocessing = "0"
+
+  insert_pair = target.build_phases.each_with_index.find do |p, _i|
+    p.respond_to?(:name) && p.name == "Embed Foundation Extensions"
+  end
+  if insert_pair
+    target.build_phases.insert(insert_pair[1] + 1, phase)
+  else
+    target.build_phases << phase
+  end
+
+  phase
+end
+
+def sync_built_product_frameworks(project)
+  additions = []
+
+  TARGET_BUILT_PRODUCT_FRAMEWORKS.each do |target_name, entries|
+    target = project.targets.find { |t| t.name == target_name }
+    unless target
+      warn "⚠️  Skipping built-product frameworks: missing target #{target_name}"
+      next
+    end
+
+    entries.each do |entry|
+      path = entry[:path] || entry["path"]
+      donor_names = entry[:donor_target_names] || entry["donor_target_names"] || []
+      embed = entry[:embed] != false && entry["embed"] != false
+
+      unless path
+        warn "⚠️  Skipping built-product framework entry without :path for #{target_name}"
+        next
+      end
+
+      file_ref = find_built_product_framework_ref(project, path, donor_names)
+      unless file_ref
+        warn "⚠️  Could not find PBXFileReference for #{path} (BUILT_PRODUCTS_DIR); skipping #{target_name}"
+        next
+      end
+
+      fw_phase = target.frameworks_build_phase
+      unless already_in_phase?(fw_phase, file_ref)
+        fw_phase.add_file_reference(file_ref)
+        additions << [target_name, path, "framework_link"]
+      end
+
+      next unless embed
+
+      embed_phase = ensure_embed_frameworks_phase(project, target)
+      next if already_in_phase?(embed_phase, file_ref)
+
+      bf = embed_phase.add_file_reference(file_ref)
+      bf.settings = { "ATTRIBUTES" => %w[CodeSignOnCopy RemoveHeadersOnCopy] }
+      additions << [target_name, path, "framework_embed"]
+    end
+  end
+
+  additions
+end
+
 def resolve_build_setting_value(value, config)
   return value unless value.is_a?(Hash)
   name_str = config.name.to_s
@@ -938,6 +1047,8 @@ def sync_project
     # Sync package dependencies
     additions.concat(sync_package_dependencies(project))
 
+    additions.concat(sync_built_product_frameworks(project))
+
     # Sync build settings
     build_setting_changes = sync_build_settings(project)
 
@@ -961,4 +1072,24 @@ def sync_project
   end
 end
 
-sync_project
+if ENV["SYNC_ONLY_BUILT_PRODUCT_FRAMEWORKS"] == "1"
+  Dir.chdir(PROJECT_ROOT) do
+    project = Xcodeproj::Project.open(PROJECT_PATH)
+    removals = []
+    removals = dedupe_project_build_phases(project) unless ENV["SYNC_SKIP_DEDUPE"] == "1"
+    additions = sync_built_product_frameworks(project)
+    project.save
+
+    removals.each do |target, phase, path|
+      puts "Removed duplicate #{path} -> #{target} (#{phase})"
+    end
+
+    additions.each do |target, path, type|
+      puts "Added #{path} -> #{target} (#{type})"
+    end
+
+    puts "Done (SYNC_ONLY_BUILT_PRODUCT_FRAMEWORKS=1)." if additions.empty? && removals.empty?
+  end
+else
+  sync_project
+end

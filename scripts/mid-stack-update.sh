@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.9)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.10)
 #
 # CHANGELOG:
+#   v1.10 - --scope-from-extra-files-only (with --from-feature-branch): build patch
+#           scope from --extra-files only, ignoring paths listed in the committed patch.
+#           Use when shrinking patch scope (e.g. drop project.pbxproj from a patch).
+#         - --drift-exclude-regex: extended-regex paths to omit from the drift-check
+#           "missing from patch" list (intentional exclusions).
 #   v1.9  - After applying baseline patches, run `submodule sync` + `submodule update`
 #           so gitlink commits match checked-out submodule SHAs (avoids spurious
 #           submodule reversals when using --from-feature-branch with `git add -A`).
@@ -108,6 +113,16 @@
 #       have diverged (e.g. merge into feature, then rebase/amend). Requires
 #       --feature-branch or auto-detect. Ignores --cherry-pick. New files on the
 #       feature branch that belong in this patch must be added via --extra-files.
+#
+#   --scope-from-extra-files-only
+#       With --from-feature-branch and --extra-files: use ONLY the --extra-files
+#       paths as patch scope (deduplicated). Ignores the file list from the current
+#       patch on disk. Requires non-empty --extra-files.
+#
+#   --drift-exclude-regex <extended-regex>
+#       During drift check, do not treat paths matching this regex as "missing from
+#       patch" when they appear in dev...feature. Use for intentional omissions
+#       (e.g. '^Trio\\.xcodeproj/project\\.pbxproj|^Trio/Sources/Modules/AppDiagnostics/').
 #
 #   --no-drift-check
 #       Skip the feature branch drift check entirely.
@@ -220,6 +235,8 @@ CHERRY_PICKS=""
 EXTRA_FILES=""
 FEATURE_BRANCH=""
 FROM_FEATURE_BRANCH=false
+SCOPE_FROM_EXTRA_FILES_ONLY=false
+DRIFT_EXCLUDE_REGEX=""
 NO_DRIFT_CHECK=false
 DRY_RUN=false
 SKIP_TEST=false
@@ -253,6 +270,14 @@ while [[ $# -gt 0 ]]; do
         --from-feature-branch)
             FROM_FEATURE_BRANCH=true
             shift
+            ;;
+        --scope-from-extra-files-only)
+            SCOPE_FROM_EXTRA_FILES_ONLY=true
+            shift
+            ;;
+        --drift-exclude-regex)
+            DRIFT_EXCLUDE_REGEX="$2"
+            shift 2
             ;;
         --no-drift-check)
             NO_DRIFT_CHECK=true
@@ -452,6 +477,11 @@ if [ -n "$EXTRA_FILES" ]; then
     for f in "${EXTRA_FILE_LIST[@]}"; do
         echo "    $f"
     done
+fi
+
+if [ "$SCOPE_FROM_EXTRA_FILES_ONLY" = true ]; then
+    [ "$FROM_FEATURE_BRANCH" = true ] || die "--scope-from-extra-files-only requires --from-feature-branch"
+    [ ${#EXTRA_FILE_LIST[@]} -gt 0 ] || die "--scope-from-extra-files-only requires a non-empty --extra-files list"
 fi
 
 # Resolve feature branch for drift check (and for --from-feature-branch)
@@ -758,12 +788,28 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
     # Build update from current feature branch state for patch-scope files only
     # Use EXTRA_FILE_LIST (already parsed); ensure defined when --extra-files wasn't passed
     [ -z "${EXTRA_FILE_LIST+set}" ] && EXTRA_FILE_LIST=()
-    PATCH_SCOPE_FILES=(${EXISTING_FILES[@]+"${EXISTING_FILES[@]}"})
-    if [ ${#EXTRA_FILE_LIST[@]} -gt 0 ]; then
+    if [ "$SCOPE_FROM_EXTRA_FILES_ONLY" = true ]; then
+        PATCH_SCOPE_FILES=()
+        _scope_seen=""
         for ef in "${EXTRA_FILE_LIST[@]}"; do
             ef_trimmed=$(strip_outer_whitespace "$ef")
-            [ -n "$ef_trimmed" ] && PATCH_SCOPE_FILES+=("$ef_trimmed")
+            [ -n "$ef_trimmed" ] || continue
+            case "$_scope_seen" in
+                *"|$ef_trimmed|") continue ;;
+            esac
+            _scope_seen="${_scope_seen}|${ef_trimmed}|"
+            PATCH_SCOPE_FILES+=("$ef_trimmed")
         done
+        [ ${#PATCH_SCOPE_FILES[@]} -gt 0 ] || die "--scope-from-extra-files-only produced an empty path list"
+        print_info "Patch scope (--scope-from-extra-files-only): ${#PATCH_SCOPE_FILES[@]} path(s); ignoring ${#EXISTING_FILES[@]} path(s) from current patch file list"
+    else
+        PATCH_SCOPE_FILES=(${EXISTING_FILES[@]+"${EXISTING_FILES[@]}"})
+        if [ ${#EXTRA_FILE_LIST[@]} -gt 0 ]; then
+            for ef in "${EXTRA_FILE_LIST[@]}"; do
+                ef_trimmed=$(strip_outer_whitespace "$ef")
+                [ -n "$ef_trimmed" ] && PATCH_SCOPE_FILES+=("$ef_trimmed")
+            done
+        fi
     fi
     print_info "Syncing ${#PATCH_SCOPE_FILES[@]} file(s) from $FEATURE_BRANCH (checkout or delete)"
     for f in ${PATCH_SCOPE_FILES[@]+"${PATCH_SCOPE_FILES[@]}"}; do
@@ -1043,6 +1089,10 @@ if [ -n "$FEATURE_BRANCH" ]; then
             fi
         done
         [ "$in_patch" = true ] && continue
+        # Skip paths intentionally excluded from this patch (narrower scope)
+        if [ -n "$DRIFT_EXCLUDE_REGEX" ] && printf '%s\n' "$ff" | grep -Eq "$DRIFT_EXCLUDE_REGEX"; then
+            continue
+        fi
         # Skip files covered by any other patch in the stack — they belong elsewhere
         if echo "$OTHER_PATCH_FILES_SORTED" | grep -qxF "$ff"; then
             continue

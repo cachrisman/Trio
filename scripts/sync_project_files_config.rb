@@ -15,6 +15,7 @@ module SyncProjectFilesConfig
       "Trio Watch App Extension/**/*.{swift,m,mm}",
       "Trio/Sources/Models/NotificationIdentifiers.swift",
       "Trio/Sources/Models/WatchMessageKeys.swift",
+      "Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift",
       "Trio Watch Shared/ComplicationLogBuffer.swift",
       "Trio Watch Shared/TrioComplicationDataStore.swift"
     ],
@@ -39,6 +40,23 @@ module SyncProjectFilesConfig
 
   # Map target names to package dependencies (package name => product name)
   TARGET_PACKAGE_DEPS = {
+  }.freeze
+
+  # Link/embed built-product frameworks (e.g. G7SensorKit.framework in BUILT_PRODUCTS_DIR).
+  # Used when a target needs the same binary the main app already builds without checking in pbxproj edits.
+  #
+  # Each entry:
+  #   :path — PBXFileReference path (e.g. "G7SensorKit.framework")
+  #   :embed — if true, add/update "Embed Frameworks" copy phase (CodeSignOnCopy, RemoveHeadersOnCopy)
+  #   :donor_target_names — try these targets' Frameworks phases first to reuse an existing file ref
+  TARGET_BUILT_PRODUCT_FRAMEWORKS = {
+    "Trio Watch App" => [
+      {
+        path: "G7SensorKit.framework",
+        embed: true,
+        donor_target_names: ["Trio"]
+      }
+    ]
   }.freeze
 
   # Map target names to required build settings (setting_key => setting_value)
