@@ -1,6 +1,6 @@
-From 22aeec6ae4083e7e7e1ac1e981d55b199a3c42ea Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sat, 2 May 2026 18:25:49 +0200
+From dfdb1d02410d842b9c9e8c325c76102280530e9a Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Tue, 26 May 2026 00:17:49 +0200
 Subject: [PATCH] feat: cloud-logging
 
 ---
@@ -1490,7 +1490,7 @@ index 3f9a83de5..0f81f3475 100644
      }
  }
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
-index 46134bc21..f938e4827 100644
+index cb07fabda..c80320be0 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
 +++ b/Trio/Sources/Application/AppDelegate.swift
 @@ -7,7 +7,7 @@ import UserNotifications
@@ -1502,9 +1502,9 @@ index 46134bc21..f938e4827 100644
      ) -> Bool {
          FirebaseApp.configure()
  
-@@ -20,9 +20,41 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
-         Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(crashReportingEnabled)
-         Crashlytics.crashlytics().setCustomValue(Bundle.main.appDevVersion ?? "unknown", forKey: "app_dev_version")
+@@ -32,9 +32,41 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+             TelemetryClient.shared.scheduleRecurring()
+         }
  
 +        // Check for unexpected termination from previous launch, then mark this launch.
 +        // Note: AppTerminationTracker uses UserDefaults for state persistence. In rare cases
@@ -1545,7 +1545,7 @@ index 46134bc21..f938e4827 100644
          _: UIApplication,
          didReceiveRemoteNotification userInfo: [AnyHashable: Any],
 diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
-index fea855ed8..94a505eba 100644
+index 9445fc974..b68280e76 100644
 --- a/Trio/Sources/Assemblies/ServiceAssembly.swift
 +++ b/Trio/Sources/Assemblies/ServiceAssembly.swift
 @@ -23,6 +23,7 @@ final class ServiceAssembly: Assembly {
@@ -3147,10 +3147,10 @@ index 2a02082b7..03a199a39 100644
          try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
      }
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
-index fefa4189b..c7c9abb6a 100644
+index d14e826ee..b175dd99d 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
 +++ b/Trio/Sources/Modules/Settings/SettingItems.swift
-@@ -325,6 +325,17 @@ enum SettingItems {
+@@ -326,6 +326,17 @@ enum SettingItems {
              ],
              path: ["Services", "Nightscout", "Fetch and Remote Control"]
          ),
