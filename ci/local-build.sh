@@ -810,11 +810,19 @@ apply_local_changes_to_worktree() {
   fi
 
   local exclude_specs=()
-  for path in "${excluded[@]}"; do
-    exclude_specs+=(":(exclude)$path")
-  done
-  git -C "$ROOT_DIR" diff --cached --binary -- . "${exclude_specs[@]}" > "$staged_patch"
-  git -C "$ROOT_DIR" diff --binary -- . "${exclude_specs[@]}" > "$unstaged_patch"
+  if ((${#excluded[@]} > 0)); then
+    for path in "${excluded[@]}"; do
+      exclude_specs+=(":(exclude)$path")
+    done
+  fi
+
+  if ((${#exclude_specs[@]} > 0)); then
+    git -C "$ROOT_DIR" diff --cached --binary -- . "${exclude_specs[@]}" > "$staged_patch"
+    git -C "$ROOT_DIR" diff --binary -- . "${exclude_specs[@]}" > "$unstaged_patch"
+  else
+    git -C "$ROOT_DIR" diff --cached --binary -- . > "$staged_patch"
+    git -C "$ROOT_DIR" diff --binary -- . > "$unstaged_patch"
+  fi
 
   if [[ -s "$staged_patch" ]]; then
     echo "[build] Applying staged changes to worktree..."

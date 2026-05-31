@@ -1,4 +1,4 @@
-# AGENTS.md — v14
+# AGENTS.md — v15
 
 Instructions for AI agents working in this repository.
 
@@ -346,6 +346,67 @@ mid-stack updates. That compares against raw `dev` and produces a patch
 containing ALL differences from every earlier patch — not just the changes
 for the patch being updated.
 
+## How a change actually reaches a build (mental model)
+
+A build is **`dev` + the patch stack**, never a feature branch directly. A commit
+on `feature/<name>` does **not** ship until it is folded into a patch. When a
+build misbehaves, the question is always "is this change in a patch, and is that
+patch in the build?" — not "is it on the branch?".
+
+- **Feature-branch commit → patch:** fold via `mid-stack-update.sh --patch <NN>
+  --cherry-pick <sha>` (see above).
+- **Build → branch mapping:** CI builds are tagged/branched as
+  `origin/ci-build/trio-vX.Y.Z-NNN-local-*` (NNN = build number). To see exactly
+  what shipped in a build, inspect that ref, not `dev` HEAD.
+- **Regression hunting across builds:** diff the *patches* between two build refs,
+  not just the source. A key that silently disappears between builds (e.g. an
+  Info.plist key) is usually a **patch regeneration scope** change, not a source
+  edit — see the watch Info.plist note below for a real instance.
+
+## Shared submodules and the iPhone north star (G7SensorKit)
+
+`G7SensorKit` is a **shared** dependency: the iPhone app (`G7CGMManager`) and the
+watch (`G7WatchSensorAdapter`) use the **same** submodule with **no platform
+conditionals** in the BLE state machine. Two consequences:
+
+- **North star = iPhone behavior.** The iPhone G7 path is reliable in production.
+  Diverge from it on the watch only with a specific, justified reason, and say why
+  in the commit/plan. Notably: the iPhone app has **no connect timeout** and relies
+  on CoreBluetooth's own retry — do **not** add a watch-only connect timeout, and do
+  **not** change `scanAfterDelay` (the delayed-rescan path), which is intended shared
+  behavior. Prefer fixes that make the watch match the iPhone (e.g. seeding
+  `G7Sensor(sensorID:)` from persisted identity, deduping redundant connects).
+- **Submodule change procedure (3 steps, in order):** Trio's build **clones
+  G7SensorKit from GitHub** (the `cachrisman` fork), it is not built from a local
+  tree. So a fork edit only reaches a build after:
+  1. Commit on the fork (`main`) and **push to origin** (`github.com/cachrisman/G7SensorKit`).
+  2. Repin the submodule SHA in **`patches/02-g7-reading-time-with-seconds.patch`**
+     (the `Subproject commit ...` line; `.gitmodules` already points at the fork).
+  3. Build (dev + patches). An un-pushed fork commit or un-bumped patch 02 means the
+     build silently uses the **old** G7SensorKit.
+
+## Watch app Info.plist (generated + merged) — regression guard
+
+The `Trio Watch App` target uses `GENERATE_INFOPLIST_FILE = YES`. Custom keys
+(e.g. `WKBackgroundModes`, `UIBackgroundModes`, `AppGroupID`) live in the on-disk
+`Trio Watch App/Info.plist` and are **merged** into the generated plist via
+`INFOPLIST_FILE`. `INFOPLIST_KEY_*` build settings are **unreliable for array keys**
+(WKBackgroundModes etc.) — keep array keys in the on-disk plist, not in
+`sync_project_files_config.rb`.
+
+- **`WKBackgroundModes` is load-bearing for the watch G7 observer.** Without the
+  relevant value (`physical-therapy`), every `WKExtendedRuntimeSession.start()`
+  immediately invalidates before `didStart`, so the direct-BLE observer never holds
+  a runtime session. A missing entry manifests downstream as a *connect storm*,
+  `configuration_failed`, and churning sensor UUIDs — symptoms, not the cause.
+- **Regression guard:** when regenerating the watch feature patch (patch `12`),
+  the regen scope **MUST include `Trio Watch App/Info.plist`**. Build 203 broke
+  because the keys lived only in the *old* direct-BLE patch (`11-...patch`, now
+  `.skipped`); when the feature migrated to the active patch `12`, the Info.plist
+  hunk was not carried over, so the built watch app had no `WKBackgroundModes`
+  even though the branch source file did. Verify the key is present in the *built*
+  app's Info.plist, not just the on-disk merge file or the feature branch.
+
 ## Upstream sync (local)
 
 ```bash
@@ -407,6 +468,29 @@ Agents use the Better Stack MCP server (`user-better-stack`) to query Trio and N
 - **High-volume patterns**: Column `_pattern` groups similar lines. Use `GROUP BY _pattern ORDER BY count(*) DESC` to find dominant patterns.
 - **Always**: Use a time bound (e.g. `INTERVAL 18 HOUR`) and a reasonable `LIMIT` to avoid oversized results.
 
+### Attributing events to build and platform (iPhone vs watch)
+
+The Trio source mixes **iPhone and watch** telemetry in one table. Several G7/BLE
+event strings (e.g. `connect_called`, `did_connect`) are emitted by the **shared**
+G7SensorKit on **both** platforms, so a raw count conflates them. To attribute
+correctly:
+
+- **Build:** `JSONExtract(raw, 'build', 'Nullable(String)')` (the build number, e.g. `203`).
+- **Platform:** `JSONExtract(raw, 'platform', 'Nullable(String)')` — values are
+  `ios` and `watchos`. **Always `GROUP BY build, platform`** when investigating G7/BLE
+  behavior; a watch-only regression is invisible if iPhone events are summed in.
+  (Real example: build 203's "connect storm" was `platform=watchos` only — the
+  `connect_called` volume that looked alarming in aggregate was mostly `platform=ios`
+  from the reliable iPhone path.)
+- **Event matching:** match structured event strings with `position(raw, '...') > 0`
+  (substring presence), not a `module=`/`category=` filter — the module prefix has
+  changed across builds (e.g. `event=g7_ble_ios` → `module=g7_core`) and an
+  over-specific filter silently returns zero rows.
+- **Historical window needs S3:** `remote(t491594_trio_logs)` is hot-tier only
+  (~30–40 min). For yesterday/today or any real window, `UNION ALL` with
+  `s3Cluster(primary, t491594_trio_s3) WHERE _row_type = 1` (same time bounds in both
+  branches). `_row_type = 1` is **required** on the s3Cluster branch.
+
 ### Example queries (Trio, last 18h)
 
 Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your team/source if different):
@@ -445,6 +529,12 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v15 (2026-05-31 CET)
+- **How a change reaches a build (mental model):** New section making explicit that a build is `dev` + the patch stack, that feature-branch commits don't ship until folded into a patch, the `origin/ci-build/trio-vX.Y.Z-NNN-local-*` build→branch mapping, and that cross-build regressions are usually patch-scope changes (diff patches, not just source). Distilled from the build 203 watch-G7 BLE investigation.
+- **Shared submodules and the iPhone north star (G7SensorKit):** New section — G7SensorKit is shared by iPhone and watch with no platform conditionals; iPhone behavior is the north star (no watch-only connect timeout, don't touch `scanAfterDelay`); documents the 3-step submodule change procedure (commit+push fork → repin patch 02 SHA → build) and that an un-pushed/un-bumped change silently uses the old framework.
+- **Watch app Info.plist regression guard:** New section — generated-plist + `INFOPLIST_FILE` merge mechanism, `INFOPLIST_KEY_*` unreliable for array keys, `WKBackgroundModes` is load-bearing for `WKExtendedRuntimeSession`, and patch 12 regen scope MUST include `Trio Watch App/Info.plist` (the exact build 203 regression).
+- **Telemetry: build/platform attribution:** New "Attributing events to build and platform" subsection under Better Stack query format — `JSONExtract(raw,'build'|'platform',...)` (`ios`/`watchos`), always `GROUP BY build, platform` for shared G7/BLE events, match events via `position(raw,'...')>0` rather than module/category filters (prefix drifts across builds), and `_row_type = 1` required on the `s3Cluster` historical branch.
 
 ### v14 (2026-04-08 12:21 CET)
 - **Xcode project file modification:** New safety rule **6** — agents must not edit `Trio.xcodeproj/project.pbxproj` or run `scripts/sync_project_files.rb` directly or indirectly from an agent session. Canonical project refresh occurs only through the normal build/sync workflow; agents must not force project regeneration.
