@@ -1,12 +1,12 @@
-From dfdb1d02410d842b9c9e8c325c76102280530e9a Mon Sep 17 00:00:00 2001
+From a3ae21a6765f6635e249ad13996cd13f14fcbb14 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 26 May 2026 00:17:49 +0200
+Date: Sun, 31 May 2026 09:29:33 +0200
 Subject: [PATCH] feat: cloud-logging
 
 ---
  .../WatchConnectivityPayloadIds.swift         |   59 +
  Trio Watch App Extension/WatchLogger.swift    | 1208 ++++++++++++++---
- Trio/Sources/Application/AppDelegate.swift    |   34 +-
+ Trio/Sources/Application/AppDelegate.swift    |   39 +-
  Trio/Sources/Assemblies/ServiceAssembly.swift |    1 +
  .../Helpers/AppTerminationTracker.swift       |  306 +++++
  .../BetterStackLogtailProvider.swift          |   71 +
@@ -22,7 +22,7 @@ Subject: [PATCH] feat: cloud-logging
  .../Settings/View/Subviews/ServicesView.swift |    1 +
  Trio/Sources/Router/Screen.swift              |    3 +
  TrioTests/CloudLogEntryAggregatorTests.swift  |   42 +
- 18 files changed, 2838 insertions(+), 194 deletions(-)
+ 18 files changed, 2839 insertions(+), 198 deletions(-)
  create mode 100644 Trio Watch App Extension/WatchConnectivityPayloadIds.swift
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
@@ -1490,7 +1490,7 @@ index 3f9a83de5..0f81f3475 100644
      }
  }
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
-index cb07fabda..c80320be0 100644
+index 7c67575fc..b5df24a58 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
 +++ b/Trio/Sources/Application/AppDelegate.swift
 @@ -7,7 +7,7 @@ import UserNotifications
@@ -1502,8 +1502,8 @@ index cb07fabda..c80320be0 100644
      ) -> Bool {
          FirebaseApp.configure()
  
-@@ -32,9 +32,41 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
-             TelemetryClient.shared.scheduleRecurring()
+@@ -42,15 +42,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+             TelemetryClient.shared.checkAndSendIfOverdue()
          }
  
 +        // Check for unexpected termination from previous launch, then mark this launch.
@@ -1517,33 +1517,40 @@ index cb07fabda..c80320be0 100644
          return true
      }
  
-+    func applicationDidBecomeActive(_ application: UIApplication) {
+-    /// Foreground-transition entry point for telemetry cadence. Re-evaluates
+-    /// the overdue window every time the user brings Trio to the foreground,
+-    /// since `scheduleRecurring`'s GCD timer doesn't fire while suspended.
+-    /// No-op if a send already landed within the last 24h.
++    func applicationDidBecomeActive(_: UIApplication) {
 +        AppTerminationTracker.shared.markAppBecameActive()
 +    }
 +
-+    func applicationWillResignActive(_ application: UIApplication) {
++    func applicationWillResignActive(_: UIApplication) {
 +        AppTerminationTracker.shared.markAppWillResignActive()
 +    }
 +
-+    func applicationDidEnterBackground(_ application: UIApplication) {
++    func applicationDidEnterBackground(_: UIApplication) {
 +        AppTerminationTracker.shared.markAppEnteredBackground()
 +    }
 +
-+    func applicationWillEnterForeground(_ application: UIApplication) {
++    /// Foreground-transition entry point. Drives telemetry cadence
++    /// (re-evaluates the overdue window — `scheduleRecurring`'s GCD timer
++    /// doesn't fire while suspended; no-op if a send landed within 24h)
++    /// and notifies `AppTerminationTracker` so lifecycle state is fresh.
+     func applicationWillEnterForeground(_: UIApplication) {
+         TelemetryClient.shared.checkAndSendIfOverdue()
 +        AppTerminationTracker.shared.markAppWillEnterForeground()
 +    }
 +
-+    func applicationWillTerminate(_ application: UIApplication) {
++    func applicationWillTerminate(_: UIApplication) {
 +        AppTerminationTracker.shared.markAppWillTerminate()
 +    }
 +
-+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
++    func applicationDidReceiveMemoryWarning(_: UIApplication) {
 +        AppTerminationTracker.shared.handleMemoryWarning()
-+    }
-+
+     }
+ 
      func application(
-         _: UIApplication,
-         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
 diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
 index 9445fc974..b68280e76 100644
 --- a/Trio/Sources/Assemblies/ServiceAssembly.swift
@@ -3147,10 +3154,10 @@ index 2a02082b7..03a199a39 100644
          try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
      }
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
-index d14e826ee..b175dd99d 100644
+index 00d070988..cd1463b97 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
 +++ b/Trio/Sources/Modules/Settings/SettingItems.swift
-@@ -326,6 +326,17 @@ enum SettingItems {
+@@ -390,6 +390,17 @@ enum SettingItems {
              ],
              path: ["Services", "Nightscout", "Fetch and Remote Control"]
          ),
