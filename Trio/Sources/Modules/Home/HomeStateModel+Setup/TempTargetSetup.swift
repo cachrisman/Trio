@@ -1,5 +1,6 @@
 import CoreData
 import Foundation
+import Swinject
 
 extension Home.StateModel {
     func setupTempTargetsStored() {
@@ -94,6 +95,8 @@ extension Home.StateModel {
 
             // We also need to update the storage for temp targets
             tempTargetStorage.saveTempTargetsToStorage([TempTarget.cancel(at: Date())])
+
+            await resolver?.resolve(LiveActivityManager.self)?.pushCurrentContent()
 
             Foundation.NotificationCenter.default.post(name: .didUpdateTempTargetConfiguration, object: nil)
         } catch let error as NSError {

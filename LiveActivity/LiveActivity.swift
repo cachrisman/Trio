@@ -121,6 +121,8 @@ private extension LiveActivityAttributes.ContentState {
             overrideDate: Date().addingTimeInterval(-3600),
             overrideDuration: 120,
             overrideTarget: 150,
+            isTempTargetActive: false,
+            tempTargetName: "Activity",
             widgetItems: LiveActivityAttributes.LiveActivityItem.defaultItems
         )
 
