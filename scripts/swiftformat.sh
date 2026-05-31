@@ -113,6 +113,7 @@ trailingClosures \
   TidepoolService, \
   DanaKit, \
   MedtrumKit, \
+  OmnipodKit, \
   build, \
   .build, \
   DerivedData, \
