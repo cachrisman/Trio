@@ -1,45 +1,102 @@
-From c28a5f0bbe8ff06b820bffa47f238f9d31b29d22 Mon Sep 17 00:00:00 2001
+From 54d330a9a98c9c8a21c1a8abf3464890962d2f79 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Mon, 4 May 2026 11:08:06 +0200
+Date: Sun, 31 May 2026 08:26:11 +0200
 Subject: [PATCH] feat: treatments-fixed-bottom-action
 
 ---
- .../Treatments/View/TreatmentsRootView.swift  | 250 ++++++++++++++----
- 1 file changed, 195 insertions(+), 55 deletions(-)
+ .../Treatments/View/TreatmentsRootView.swift  | 187 ++++++++++--------
+ 1 file changed, 100 insertions(+), 87 deletions(-)
 
 diff --git a/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift b/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift
-index 91b97f55c..6f02fbd22 100644
+index 91b97f55c..e9562182f 100644
 --- a/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift
 +++ b/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift
-@@ -13,6 +13,10 @@ extension Treatments {
-             case bolus
-         }
+@@ -286,39 +286,42 @@ extension Treatments {
+                         }.listRowBackground(Color.chart)
  
-+        private enum CycleField: Equatable {
-+            case carbs, fat, protein, bolus, externalInsulin
-+        }
-+
-         @FocusState private var focusedField: FocusedField?
- 
-         let resolver: Resolver
-@@ -29,6 +33,7 @@ extension Treatments {
-         private enum Config {
-             static let dividerHeight: CGFloat = 2
-             static let spacing: CGFloat = 3
-+            static let actionBarButtonHeight: CGFloat = 44
-         }
- 
-         @Environment(\.colorScheme) var colorScheme
-@@ -382,8 +387,6 @@ extension Treatments {
-                                 Toggle("", isOn: $state.externalInsulin).toggleStyle(CheckboxToggleStyle())
+                         Section {
+-                            if state.fattyMeals || state.sweetMeals {
+-                                HStack(spacing: 10) {
+-                                    if state.fattyMeals {
+-                                        Toggle(isOn: $state.useFattyMealCorrectionFactor) {
+-                                            Text("Reduced Bolus")
+-                                        }
+-                                        .toggleStyle(RadioButtonToggleStyle())
+-                                        .font(.footnote)
+-                                        .onChange(of: state.useFattyMealCorrectionFactor) {
+-                                            Task {
+-                                                state.insulinCalculated = await state.calculateInsulin()
+-                                                if state.useFattyMealCorrectionFactor {
+-                                                    state.useSuperBolus = false
+-                                                }
++                            HStack(spacing: 10) {
++                                if state.fattyMeals {
++                                    Toggle(isOn: $state.useFattyMealCorrectionFactor) {
++                                        Text("Reduced Bolus")
++                                    }
++                                    .toggleStyle(RadioButtonToggleStyle())
++                                    .font(.footnote)
++                                    .onChange(of: state.useFattyMealCorrectionFactor) {
++                                        Task {
++                                            state.insulinCalculated = await state.calculateInsulin()
++                                            if state.useFattyMealCorrectionFactor {
++                                                state.useSuperBolus = false
+                                             }
+                                         }
+                                     }
+-                                    if state.sweetMeals {
+-                                        Toggle(isOn: $state.useSuperBolus) {
+-                                            Text("Super Bolus")
+-                                        }
+-                                        .toggleStyle(RadioButtonToggleStyle())
+-                                        .font(.footnote)
+-                                        .onChange(of: state.useSuperBolus) {
+-                                            Task {
+-                                                state.insulinCalculated = await state.calculateInsulin()
+-                                                if state.useSuperBolus {
+-                                                    state.useFattyMealCorrectionFactor = false
+-                                                }
++                                }
++                                if state.sweetMeals {
++                                    Toggle(isOn: $state.useSuperBolus) {
++                                        Text("Super Bolus")
++                                    }
++                                    .toggleStyle(RadioButtonToggleStyle())
++                                    .font(.footnote)
++                                    .onChange(of: state.useSuperBolus) {
++                                        Task {
++                                            state.insulinCalculated = await state.calculateInsulin()
++                                            if state.useSuperBolus {
++                                                state.useFattyMealCorrectionFactor = false
+                                             }
+                                         }
+                                     }
+                                 }
++                                Toggle(isOn: $state.externalInsulin) {
++                                    Text("External Insulin")
++                                }
++                                .toggleStyle(CheckboxToggleStyle())
++                                .font(.footnote)
                              }
+ 
+                             HStack {
+@@ -375,15 +378,7 @@ extension Treatments {
+                                         }
+                                     }
+                             }
+-
+-                            HStack {
+-                                Text("External Insulin")
+-                                Spacer()
+-                                Toggle("", isOn: $state.externalInsulin).toggleStyle(CheckboxToggleStyle())
+-                            }
                          }.listRowBackground(Color.chart)
 -
 -                        treatmentButton
                      }
                      .listSectionSpacing(sectionSpacing)
                  }
-@@ -396,7 +399,17 @@ extension Treatments {
+@@ -396,6 +391,10 @@ extension Treatments {
              .padding(.top)
              .ignoresSafeArea(edges: .top)
              .scrollContentBackground(.hidden).background(appState.trioBackgroundColor(for: colorScheme))
@@ -48,24 +105,9 @@ index 91b97f55c..6f02fbd22 100644
 +                    .blur(radius: state.isAwaitingDeterminationResult ? 5 : 0)
 +            }
              .blur(radius: state.showInfo ? 3 : 0)
-+            .onChange(of: state.useFPUconversion) { _, newValue in
-+                if !newValue, (activeCycleField == .fat || activeCycleField == .protein) {
-+                    activeCycleField = .carbs
-+                    focusedField = .carbs
-+                }
-+            }
              .navigationTitle("Treatments")
              .navigationBarTitleDisplayMode(.inline)
-             .toolbar(content: {
-@@ -470,6 +483,7 @@ extension Treatments {
-         }
- 
-         @State private var showConfirmDialogForBolusing = false
-+        @State private var activeCycleField: CycleField = .carbs
- 
-         private var bolusWarning: (shouldConfirm: Bool, warningMessage: String, color: Color) {
-             let isGlucoseVeryLow = state.currentBG < 54
-@@ -491,65 +505,61 @@ extension Treatments {
+@@ -491,65 +490,69 @@ extension Treatments {
              return (shouldConfirm, warningMessage, warningColor)
          }
  
@@ -87,7 +129,7 @@ index 91b97f55c..6f02fbd22 100644
 -            } else if disableTaskButton {
 -                treatmentButtonBackground = Color(.systemGray)
 +                treatmentButton
-             }
++            }
 +            .padding(.horizontal, 16)
 +            .padding(.top, bolusWarning.warningMessage.isEmpty ? 10 : 14)
 +            .padding(.bottom, 10)
@@ -97,7 +139,7 @@ index 91b97f55c..6f02fbd22 100644
 +                    appState.trioBackgroundColor(for: colorScheme)
 +                }
 +                .ignoresSafeArea(edges: .bottom)
-+            }
+             }
 +        }
  
 -            return Section {
@@ -128,9 +170,11 @@ index 91b97f55c..6f02fbd22 100644
 +            if shouldDisplayBolusProgress {
 +                bolusInProgressView
 +            } else {
-+                HStack(spacing: 10) {
-+                    cycleArrowButton(systemName: "chevron.left") {
-+                        advanceCycle(by: -1)
++                Button {
++                    if bolusWarning.shouldConfirm {
++                        showConfirmDialogForBolusing = true
++                    } else {
++                        state.invokeTreatmentsTask()
                      }
 -                    .disabled(disableTaskButton)
 -                    .listRowBackground(treatmentButtonBackground)
@@ -149,12 +193,14 @@ index 91b97f55c..6f02fbd22 100644
 -                        ) {
 -                            state.invokeTreatmentsTask()
 -                        }
-+                    treatmentCenterButton
-+                        .frame(maxWidth: .infinity)
-+                        .frame(height: Config.actionBarButtonHeight)
-+                    cycleArrowButton(systemName: "chevron.right") {
-+                        advanceCycle(by: 1)
++                } label: {
++                    HStack {
++                        taskButtonLabel
                      }
++                    .font(.headline)
++                    .foregroundStyle(Color.white)
++                    .frame(maxWidth: .infinity, alignment: .center)
++                    .frame(height: 35)
                  }
 -            } header: {
 -                if !bolusWarning.warningMessage.isEmpty {
@@ -164,6 +210,10 @@ index 91b97f55c..6f02fbd22 100644
 -                        .foregroundColor(bolusWarning.color)
 -                        .frame(maxWidth: .infinity, alignment: .center)
 -                        .padding(.top, -22)
++                .disabled(disableTaskButton)
++                .background(treatmentButtonBackground)
++                .clipShape(RoundedRectangle(cornerRadius: 8))
++                .shadow(radius: 3)
 +                .confirmationDialog(
 +                    bolusWarning.warningMessage + " Bolus \(state.amount.description) U?",
 +                    isPresented: $showConfirmDialogForBolusing,
@@ -180,130 +230,7 @@ index 91b97f55c..6f02fbd22 100644
                  }
              }
          }
-@@ -623,6 +633,122 @@ extension Treatments {
-             .clipShape(RoundedRectangle(cornerRadius: 15))
-         }
- 
-+        private func cycleArrowButton(systemName: String, action: @escaping () -> Void) -> some View {
-+            Button(action: action) {
-+                Image(systemName: systemName)
-+                    .font(.headline)
-+                    .foregroundStyle(.primary)
-+                    .frame(width: 44, height: Config.actionBarButtonHeight)
-+                    .background(Color(.secondarySystemFill))
-+                    .clipShape(RoundedRectangle(cornerRadius: 8))
-+            }
-+            .buttonStyle(.plain)
-+        }
-+
-+        private func invokePrimaryTreatmentAction() {
-+            if bolusWarning.shouldConfirm {
-+                showConfirmDialogForBolusing = true
-+            } else {
-+                state.invokeTreatmentsTask()
-+            }
-+        }
-+
-+        private var orderedCycleFields: [CycleField] {
-+            if state.useFPUconversion {
-+                [.carbs, .fat, .protein, .bolus, .externalInsulin]
-+            } else {
-+                [.carbs, .bolus, .externalInsulin]
-+            }
-+        }
-+
-+        private func applyCycleFocus(for field: CycleField) {
-+            switch field {
-+            case .carbs: focusedField = .carbs
-+            case .fat: focusedField = .fat
-+            case .protein: focusedField = .protein
-+            case .bolus: focusedField = .bolus
-+            case .externalInsulin: focusedField = nil
-+            }
-+        }
-+
-+        private func advanceCycle(by delta: Int) {
-+            let fields = orderedCycleFields
-+            guard !fields.isEmpty else { return }
-+            guard let i = fields.firstIndex(of: activeCycleField) else {
-+                activeCycleField = fields[0]
-+                applyCycleFocus(for: activeCycleField)
-+                return
-+            }
-+            let n = fields.count
-+            let j = ((i + delta) % n + n) % n
-+            activeCycleField = fields[j]
-+            applyCycleFocus(for: activeCycleField)
-+        }
-+
-+        @ViewBuilder
-+        private var treatmentCenterButton: some View {
-+            switch activeCycleField {
-+            case .carbs, .fat, .protein:
-+                Button(action: invokePrimaryTreatmentAction) {
-+                    treatmentInvokeCenterLabel()
-+                }
-+                .disabled(disableTaskButton)
-+                .background(treatmentButtonBackground)
-+                .clipShape(RoundedRectangle(cornerRadius: 8))
-+                .shadow(radius: 3)
-+
-+            case .bolus:
-+                if state.amount == 0 {
-+                    Button {
-+                        state.amount = state.insulinCalculated
-+                    } label: {
-+                        Text("Use Recommendation", comment: "Treatments action bar when bolus amount is zero")
-+                            .font(.headline)
-+                            .foregroundStyle(Color.white)
-+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-+                    }
-+                    .disabled(disableTaskButton || state.insulinCalculated == 0 || state.amount == state.insulinCalculated)
-+                    .background(treatmentButtonBackground)
-+                    .clipShape(RoundedRectangle(cornerRadius: 8))
-+                    .shadow(radius: 3)
-+                } else {
-+                    Button(action: invokePrimaryTreatmentAction) {
-+                        treatmentInvokeCenterLabel()
-+                    }
-+                    .disabled(disableTaskButton)
-+                    .background(treatmentButtonBackground)
-+                    .clipShape(RoundedRectangle(cornerRadius: 8))
-+                    .shadow(radius: 3)
-+                }
-+
-+            case .externalInsulin:
-+                Button {
-+                    state.externalInsulin.toggle()
-+                } label: {
-+                    Text(
-+                        state.externalInsulin
-+                            ? String(localized: "Disable External Insulin", comment: "Treatments action bar turn off external insulin")
-+                            : String(localized: "Enable External Insulin", comment: "Treatments action bar turn on external insulin")
-+                    )
-+                    .font(.headline)
-+                    .foregroundStyle(Color.white)
-+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-+                }
-+                .disabled(disableExternalInsulinToggle)
-+                .background(Color(.systemBlue))
-+                .clipShape(RoundedRectangle(cornerRadius: 8))
-+                .shadow(radius: 3)
-+            }
-+        }
-+
-+        @ViewBuilder
-+        private func treatmentInvokeCenterLabel() -> some View {
-+            taskButtonLabel
-+                .font(.headline)
-+                .foregroundStyle(Color.white)
-+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-+        }
-+
-         private var taskButtonLabel: some View {
-             if pumpBolusLimitExceeded {
-                 return Text("Max Bolus of \(state.maxBolus.description) U Exceeded")
-@@ -688,6 +814,16 @@ extension Treatments {
+@@ -688,6 +691,16 @@ extension Treatments {
              pumpBolusLimitExceeded || externalBolusLimitExceeded || carbLimitExceeded || fatLimitExceeded || proteinLimitExceeded
          }
  
@@ -320,17 +247,6 @@ index 91b97f55c..6f02fbd22 100644
          private var disableTaskButton: Bool {
              (
                  state.isBolusInProgress && state
-@@ -695,6 +831,10 @@ extension Treatments {
-             ) || state
-                 .addButtonPressed || limitExceeded
-         }
-+
-+        private var disableExternalInsulinToggle: Bool {
-+            state.addButtonPressed || state.isBolusInProgress
-+        }
-     }
- 
-     struct DividerDouble: View {
 -- 
 2.50.1 (Apple Git-155)
 
