@@ -43,6 +43,8 @@ struct LiveActivityAttributes: ActivityAttributes {
         let overrideDate: Date
         let overrideDuration: Decimal
         let overrideTarget: Decimal
+        let isTempTargetActive: Bool
+        let tempTargetName: String
         let widgetItems: [LiveActivityItem]
     }
 

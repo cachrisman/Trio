@@ -36,6 +36,8 @@ final class LiveActivityData: ObservableObject {
     @Published var glucoseFromPersistence: [GlucoseData]?
     /// The current override data (if any).
     @Published var override: OverrideData?
+    /// The current temp target data (if any).
+    @Published var tempTarget: TempTargetData?
     /// The widget items displayed within the live activity.
     @Published var widgetItems: [LiveActivityAttributes.LiveActivityItem]?
 }
@@ -54,6 +56,7 @@ final class LiveActivityData: ObservableObject {
     @Injected() private var storage: FileStorage!
     @Injected() private var glucoseStorage: GlucoseStorage!
     @Injected() private var iobService: IOBService!
+    @Injected() var tempTargetsStorage: TempTargetsStorage!
 
     private let activityAuthorizationInfo = ActivityAuthorizationInfo()
     /// Indicates whether system live activities are enabled.
@@ -141,6 +144,10 @@ final class LiveActivityData: ObservableObject {
             Task { await self?.loadOverrides() }
         }.store(in: &subscriptions)
 
+        coreDataPublisher?.filteredByEntityName("TempTargetStored").sink { [weak self] _ in
+            Task { await self?.loadTempTargets() }
+        }.store(in: &subscriptions)
+
         coreDataPublisher?.filteredByEntityName("GlucoseStored").sink { [weak self] _ in
             Task { await self?.loadGlucose() }
         }.store(in: &subscriptions)
@@ -179,6 +186,18 @@ final class LiveActivityData: ObservableObject {
         }
     }
 
+    /// Fetches and maps the current temp target and updates the live activity content state.
+    private func loadTempTargets() async {
+        do {
+            data.tempTarget = try await fetchAndMapTempTarget()
+        } catch {
+            debug(
+                .default,
+                "[LiveActivityManager] \(DebuggingIdentifiers.failed) failed to fetch and map temp target: \(error)"
+            )
+        }
+    }
+
     /// Handles changes to the live activity order.
     ///
     /// Loads widget items from user defaults and triggers an update to the live activity order.
@@ -203,6 +222,7 @@ final class LiveActivityData: ObservableObject {
         Task {
             await self.loadGlucose()
             await self.loadOverrides()
+            await self.loadTempTargets()
             await self.loadDetermination()
             self.loadWidgetItems()
         }
@@ -301,6 +321,8 @@ final class LiveActivityData: ObservableObject {
                                 overrideDate: Date.now,
                                 overrideDuration: 0,
                                 overrideTarget: 0,
+                                isTempTargetActive: false,
+                                tempTargetName: "",
                                 widgetItems: []
                             ),
                             isInitialState: true
@@ -399,6 +421,7 @@ final class LiveActivityData: ObservableObject {
             determination: determination,
             iob: data.iob,
             override: data.override,
+            tempTarget: data.tempTarget,
             widgetItems: data.widgetItems
         )
 
