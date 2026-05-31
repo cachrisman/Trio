@@ -1,11 +1,11 @@
-From dfc6c8a2e9a57a2908cb41e753bdd49fcf95c8ae Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 31 May 2026 07:52:36 +0200
+From e3906b7d85195deb58e2cda4112f5603a7b3f400 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Sun, 31 May 2026 16:15:28 +0200
 Subject: [PATCH] feat: direct-ble-observer
 
 ---
  .../ExtensionDelegate.swift                   |  23 +-
- .../G7WatchSensorAdapter.swift                | 990 ++++++++++++++++++
+ .../G7WatchSensorAdapter.swift                | 992 ++++++++++++++++++
  Trio Watch App Extension/TrioWatchApp.swift   |   2 +-
  .../Views/ComplicationDebugView.swift         | 555 ++++++----
  .../Views/GlucoseTrendView.swift              |  41 +-
@@ -13,12 +13,13 @@ Subject: [PATCH] feat: direct-ble-observer
  .../WatchErrorReporter.swift                  |  80 +-
  Trio Watch App Extension/WatchLogger.swift    |  67 +-
  Trio Watch App Extension/WatchState.swift     | 434 +++++++-
+ Trio Watch App/Info.plist                     |  18 +
  .../TrioWatchComplication.swift               |  37 +-
  .../TrioComplicationDataStore.swift           | 111 +-
  .../G7StructuredTelemetryLogLine.swift        |  28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   4 +
  Trio/Sources/Models/WatchState.swift          |  12 +-
- 14 files changed, 2165 insertions(+), 369 deletions(-)
+ 15 files changed, 2185 insertions(+), 369 deletions(-)
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
 
@@ -73,10 +74,10 @@ index 0ef9b4431..1b72c289a 100644
                  "event=watch_app_resigning_active source=wk_application_delegate "
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..16de6b1ce
+index 000000000..2d8e5e6a3
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,990 @@
+@@ -0,0 +1,992 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -248,12 +249,14 @@ index 000000000..16de6b1ce
 +    }
 +
 +    private override init() {
-+        // Always construct in scan mode; identity is established via `didDiscoverNewSensor` once
-+        // the phone has pushed an `expectedSensorName` (or, on cold start, from UserDefaults).
++        // Seed the persisted sensor identity (mirrors the iPhone app's `G7Sensor(sensorID:
++        // state.sensorID)`) so a known sensor reconnects directly instead of forcing a fresh
++        // scan-and-discover cycle. `expectedSensorName` is nil on first launch / post-EOS, in
++        // which case this is identical to constructing in scan mode.
 +        // BLE scanning is started by `start()` only, never from `init()` — kicking off scans
 +        // before any WKExtendedRuntimeSession is established starves the session and lets the
 +        // system reclaim BLE while the watch is in the background.
-+        sensor = G7Sensor(sensorID: nil)
++        sensor = G7Sensor(sensorID: expectedSensorName)
 +        super.init()
 +        sensor.delegate = self
 +        loadDailyCounters()
@@ -2990,6 +2993,34 @@ index 5b72af7de..91ff6aec4 100644
              self.showSyncingAnimation = false
              self.syncTimeoutWorkItem?.cancel()
          }
+diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
+index 80d6438ea..244892dc7 100644
+--- a/Trio Watch App/Info.plist	
++++ b/Trio Watch App/Info.plist	
+@@ -16,5 +16,23 @@
+ 	<string>Trio reads your blood glucose data to keep the watch complication current when wireless sync is unavailable.</string>
+ 	<key>NSHealthUpdateUsageDescription</key>
+ 	<string>Trio may save blood glucose readings to Apple Health to keep your health data synchronized.</string>
++	<key>WKBackgroundModes</key>
++	<array>
++		<!--
++		  physical-therapy: background session, up to 1h, no entitlement required.
++		  Required for WKExtendedRuntimeSession to keep the G7 BLE observer alive
++		  after the watch face becomes inactive.
++		-->
++		<string>physical-therapy</string>
++	</array>
++	<key>UIBackgroundModes</key>
++	<array>
++		<!--
++		  bluetooth-central: allows the app to act as a BLE central while
++		  backgrounded so the direct G7 observer can keep receiving readings.
++		  Mirrors the iPhone app, which declares the same mode.
++		-->
++		<string>bluetooth-central</string>
++	</array>
+ </dict>
+ </plist>
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
 index 1ee4b80a6..9b0197a49 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
