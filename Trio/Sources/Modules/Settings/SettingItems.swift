@@ -390,6 +390,17 @@ enum SettingItems {
             ],
             path: ["Services", "Nightscout", "Fetch and Remote Control"]
         ),
+        SettingItem(
+            title: "Cloud Logging",
+            view: .cloudLogging,
+            searchContents: [
+                "Enable Cloud Logging",
+                "Source token",
+                "Ingestion URL",
+                "Test Connection"
+            ],
+            path: ["Services", "Cloud Logging"]
+        ),
         SettingItem(title: "Tidepool", view: .serviceSettings, path: ["Services"]),
         SettingItem(title: "Apple Health", view: .healthkit, path: ["Services"])
     ]
