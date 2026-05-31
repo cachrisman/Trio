@@ -1,6 +1,6 @@
-From 1951b4501c6980a8847ae5594e9ee3d271b9403d Mon Sep 17 00:00:00 2001
+From dfc6c8a2e9a57a2908cb41e753bdd49fcf95c8ae Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 26 May 2026 00:18:25 +0200
+Date: Sun, 31 May 2026 07:52:36 +0200
 Subject: [PATCH] feat: direct-ble-observer
 
 ---
@@ -10,13 +10,15 @@ Subject: [PATCH] feat: direct-ble-observer
  .../Views/ComplicationDebugView.swift         | 555 ++++++----
  .../Views/GlucoseTrendView.swift              |  41 +-
  .../Views/TrioMainWatchView.swift             | 150 +--
- Trio Watch App Extension/WatchState.swift     | 428 +++++++-
+ .../WatchErrorReporter.swift                  |  80 +-
+ Trio Watch App Extension/WatchLogger.swift    |  67 +-
+ Trio Watch App Extension/WatchState.swift     | 434 +++++++-
  .../TrioWatchComplication.swift               |  37 +-
  .../TrioComplicationDataStore.swift           | 111 +-
  .../G7StructuredTelemetryLogLine.swift        |  28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   4 +
  Trio/Sources/Models/WatchState.swift          |  12 +-
- 12 files changed, 2047 insertions(+), 334 deletions(-)
+ 14 files changed, 2165 insertions(+), 369 deletions(-)
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
 
@@ -2129,8 +2131,220 @@ index 51999791d..c5df4498d 100644
                  }
              }
              .fullScreenCover(isPresented: $showingTreatmentMenuSheet) {
+diff --git a/Trio Watch App Extension/WatchErrorReporter.swift b/Trio Watch App Extension/WatchErrorReporter.swift
+index 8858c3438..9d29d26f8 100644
+--- a/Trio Watch App Extension/WatchErrorReporter.swift	
++++ b/Trio Watch App Extension/WatchErrorReporter.swift	
+@@ -31,14 +31,22 @@ actor WatchErrorReporter {
+ 
+     /// Startup method - safe to call multiple times (idempotent).
+     /// Checks for previous crash and marks the session as checked.
+-    func startup() async {
++    ///
++    /// - Parameter previousRunWasForeground: Snapshot of `watchLastRunWasForeground` captured
++    ///   on the main thread **before** `markBecameActiveImmediately()` ran for the current
++    ///   activation. Reading the flag here would otherwise always observe the just-set `true`
++    ///   value and falsely report a crash on every foreground entry.
++    func startup(previousRunWasForeground: Bool) async {
+         guard !hasCheckedForCrash else { return }
+         hasCheckedForCrash = true
+-        await checkForPreviousCrash()
++        await checkForPreviousCrash(previousRunWasForeground: previousRunWasForeground)
+     }
+ 
+     /// Checks if the app crashed on the previous launch and reports it.
+-    private func checkForPreviousCrash() async {
++    ///
++    /// `previousRunWasForeground` must reflect the state **before** the current activation
++    /// flipped the marker via `markBecameActiveImmediately()`. See `startup(previousRunWasForeground:)`.
++    private func checkForPreviousCrash(previousRunWasForeground: Bool) async {
+         let userDefaults = UserDefaults.standard
+         let hasLaunchedBefore = userDefaults.bool(forKey: firstLaunchKey)
+ 
+@@ -49,14 +57,12 @@ actor WatchErrorReporter {
+             return
+         }
+ 
+-        // Subsequent launches - check if previous run was foreground
+-        let lastRunWasForeground = userDefaults.bool(forKey: Self.watchLastRunWasForegroundKey)
+-
+-        if lastRunWasForeground {
++        if previousRunWasForeground {
+             // Previous run was foreground and didn't transition to background - likely crashed
+             await reportPotentialCrash()
+-            // Clear the marker to prevent repeated reporting in the same session
+-            userDefaults.set(false, forKey: Self.watchLastRunWasForegroundKey)
++            // No need to clear watchLastRunWasForegroundKey here: the caller already set it
++            // to `true` for the current run, and `hasCheckedForCrash` guards against repeats
++            // within this session.
+         }
+     }
+ 
+@@ -137,35 +143,57 @@ actor WatchErrorReporter {
+         return validContext.isEmpty ? nil : validContext
+     }
+ 
+-    /// Reads recent log entries from persisted logs for crash context (with size cap).
++    /// Reads recent log entries from persisted logs for crash context.
++    ///
++    /// Uses a `FileHandle` tail read so peak allocation is at most `recentLogsSizeCap` bytes —
++    /// `Data(contentsOf:)` would load the entire `watch_log_daily.txt` into memory and was the
++    /// observed Jetsam trigger (peak ≈ 2× file size during crash-context capture).
+     private func readRecentLogs() async -> String? {
+         let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+             .appendingPathComponent("logs", isDirectory: true)
+ 
+-        // Try to read from daily log file
+         let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
+ 
+-        guard let data = try? Data(contentsOf: dailyLogFile),
+-              let logString = String(data: data, encoding: .utf8),
+-              !logString.isEmpty
+-        else { return nil }
++        guard let handle = try? FileHandle(forReadingFrom: dailyLogFile) else { return nil }
++        defer { try? handle.close() }
+ 
+-        // Apply size cap
+-        let cappedString: String
+-        if logString.utf8.count > recentLogsSizeCap {
+-            // Take last N bytes that fit within cap
+-            let cappedData = data.suffix(recentLogsSizeCap)
+-            cappedString = String(data: cappedData, encoding: .utf8) ?? String(logString.suffix(recentLogsSizeCap))
+-        } else {
+-            cappedString = logString
+-        }
++        guard let fileSize = try? handle.seekToEnd(), fileSize > 0 else { return nil }
++
++        let readSize = min(fileSize, UInt64(recentLogsSizeCap))
++        let startOffset = fileSize - readSize
++        try? handle.seek(toOffset: startOffset)
++
++        guard let data = try? handle.readToEnd(), !data.isEmpty else { return nil }
+ 
+-        // Return last 50 lines for context
+-        let lines = cappedString.components(separatedBy: .newlines)
++        // Tail read may slice mid-UTF-8 sequence; drop any leading bytes up to the first
++        // newline so we resync on a clean line boundary (only when we actually tailed).
++        let trimmed: Data = {
++            guard startOffset > 0, let nlIndex = data.firstIndex(of: UInt8(ascii: "\n")) else {
++                return data
++            }
++            let after = data.index(after: nlIndex)
++            return after < data.endIndex ? data.subdata(in: after ..< data.endIndex) : Data()
++        }()
++
++        guard !trimmed.isEmpty,
++              let tail = String(data: trimmed, encoding: .utf8),
++              !tail.isEmpty
++        else { return nil }
++
++        let lines = tail.components(separatedBy: "\n").filter { !$0.isEmpty }
++        guard !lines.isEmpty else { return nil }
+         let recentLines = Array(lines.suffix(50))
+         return recentLines.joined(separator: "\n")
+     }
+ 
++    /// Snapshot of `watchLastRunWasForeground` reflecting the **previous** run's last known
++    /// foreground state. Read this *before* calling `markBecameActiveImmediately()` so the
++    /// captured value isn't overwritten by the current activation; pass it into
++    /// `startup(previousRunWasForeground:)` for crash detection.
++    static var previousRunWasForeground: Bool {
++        UserDefaults.standard.bool(forKey: Self.watchLastRunWasForegroundKey)
++    }
++
+     /// Marks the app as having become active (foreground).
+     static func markBecameActiveImmediately() {
+         UserDefaults.standard.set(true, forKey: Self.watchLastRunWasForegroundKey)
+diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
+index d97e07b5f..c439455f5 100644
+--- a/Trio Watch App Extension/WatchLogger.swift	
++++ b/Trio Watch App Extension/WatchLogger.swift	
+@@ -72,6 +72,13 @@ actor WatchLogger {
+     private let maxPerPayloadFiles = 10
+     private let maxFileAge: TimeInterval = 48 * 60 * 60 // 48 hours
+ 
++    /// Hard ceiling for `watch_log_daily.txt`. Past this, `appendToDailyLog` rewrites the file
++    /// keeping only the newest `dailyLogTruncateKeepBytes`. Bounded so the rewrite read stays
++    /// well under the watchOS per-process memory limit that previously triggered Jetsam when
++    /// `WatchErrorReporter.readRecentLogs` slurped an unbounded daily log via `Data(contentsOf:)`.
++    private let dailyLogSizeCap: UInt64 = 2 * 1024 * 1024 // 2 MB
++    private let dailyLogTruncateKeepBytes: UInt64 = 1 * 1024 * 1024 // 1 MB
++
+     private let session = WCSession.default
+     private var timerTask: Task<Void, Never>?
+ 
+@@ -326,17 +333,61 @@ actor WatchLogger {
+         let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
+         let logEntry = text + "\n"
+ 
+-        if let data = logEntry.data(using: .utf8) {
+-            if let handle = try? FileHandle(forWritingTo: dailyLogFile) {
+-                _ = try? handle.seekToEnd()
+-                handle.write(data)
+-                try? handle.close()
+-            } else {
+-                try? data.write(to: dailyLogFile)
+-            }
++        guard let data = logEntry.data(using: .utf8) else { return }
++
++        var postWriteSize: UInt64?
++
++        if let handle = try? FileHandle(forWritingTo: dailyLogFile) {
++            _ = try? handle.seekToEnd()
++            handle.write(data)
++            postWriteSize = try? handle.offset()
++            try? handle.close()
++        } else {
++            try? data.write(to: dailyLogFile)
++            postWriteSize = UInt64(data.count)
++        }
++
++        if let size = postWriteSize, size > dailyLogSizeCap {
++            truncateDailyLogKeepingNewest(at: dailyLogFile)
+         }
+     }
+ 
++    /// Rewrites `watch_log_daily.txt` keeping only the newest `dailyLogTruncateKeepBytes`,
++    /// aligned to a newline boundary so the head of the file stays line-clean.
++    ///
++    /// Streaming tail read via `FileHandle` so peak allocation is bounded by
++    /// `dailyLogTruncateKeepBytes` (~1 MB) regardless of how large the on-disk file is —
++    /// `Data(contentsOf:)` would re-introduce the Jetsam risk this fix exists to prevent.
++    private func truncateDailyLogKeepingNewest(at url: URL) {
++        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
++        defer { try? handle.close() }
++
++        guard let fileSize = try? handle.seekToEnd(), fileSize > 0 else { return }
++        let keepBytes = min(fileSize, dailyLogTruncateKeepBytes)
++        let startOffset = fileSize - keepBytes
++        try? handle.seek(toOffset: startOffset)
++
++        guard let data = try? handle.readToEnd(), !data.isEmpty else { return }
++
++        // If we tailed from mid-file, drop any bytes before the first newline so we don't
++        // leave a partial line at the head of the rewritten file.
++        let aligned: Data = {
++            guard startOffset > 0, let nlIndex = data.firstIndex(of: UInt8(ascii: "\n")) else {
++                return data
++            }
++            let after = data.index(after: nlIndex)
++            return after < data.endIndex ? data.subdata(in: after ..< data.endIndex) : Data()
++        }()
++
++        guard !aligned.isEmpty else { return }
++
++        let marker = "[truncated daily log: kept newest \(aligned.count) bytes]\n"
++        var output = Data(marker.utf8)
++        output.append(aligned)
++
++        try? output.write(to: url, options: .atomic)
++    }
++
+     // MARK: - Flush
+ 
+     func flushIfNeeded(force: Bool = false) async {
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 5b72af7de..e82df6ff9 100644
+index 5b72af7de..91ff6aec4 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -32,6 +32,46 @@ enum BackgroundTaskWindowCounter {
@@ -2262,8 +2476,14 @@ index 5b72af7de..e82df6ff9 100644
      func handleForegroundActiveEntry() {
          assert(Thread.isMainThread, "handleForegroundActiveEntry must be called on main thread")
          guard !startupIsForegroundActive else { return }
-@@ -233,6 +327,8 @@ enum BackgroundTaskWindowCounter {
+@@ -231,8 +325,14 @@ enum BackgroundTaskWindowCounter {
+         startupBackgroundLaunchDisarmWorkItem = nil
+         WatchStartupTransportGate.arm(activationSequence: activationSequence)
          noteAppBecameActive()
++        // Snapshot the prior-run marker BEFORE flipping it for the current activation,
++        // otherwise WatchErrorReporter.startup would always observe the just-set `true`
++        // and report a phantom crash on every foreground entry.
++        let previousRunWasForeground = WatchErrorReporter.previousRunWasForeground
          WatchErrorReporter.markBecameActiveImmediately()
          scheduleStartupSequenceOnMain(activationSequence: activationSequence)
 +        applyG7DirectBleScenePhase("active")
@@ -2271,7 +2491,12 @@ index 5b72af7de..e82df6ff9 100644
  
          Task {
              await WatchLogger.shared.log(
-@@ -246,8 +342,18 @@ enum BackgroundTaskWindowCounter {
+@@ -242,12 +342,22 @@ enum BackgroundTaskWindowCounter {
+                     + " healthkit_delay_s=\(Int(startupHealthKitDelaySeconds))"
+                     + " flush_delay_s=\(Int(startupFlushDelaySeconds))"
+             )
+-            await WatchErrorReporter.shared.startup()
++            await WatchErrorReporter.shared.startup(previousRunWasForeground: previousRunWasForeground)
          }
      }
  
@@ -2291,7 +2516,7 @@ index 5b72af7de..e82df6ff9 100644
          guard startupIsForegroundActive else { return }
  
          pendingResidentSampleFirstMainView = false
-@@ -670,11 +776,13 @@ enum BackgroundTaskWindowCounter {
+@@ -670,11 +780,13 @@ enum BackgroundTaskWindowCounter {
              delta: deltaString,
              readingDate: readingDate,
              date: Date(),
@@ -2307,7 +2532,7 @@ index 5b72af7de..e82df6ff9 100644
              completionHandler()
          }
      }
-@@ -842,6 +950,126 @@ enum BackgroundTaskWindowCounter {
+@@ -842,6 +954,126 @@ enum BackgroundTaskWindowCounter {
          }
      }
  
@@ -2434,7 +2659,7 @@ index 5b72af7de..e82df6ff9 100644
      /// Path B1 — Summarize inbound WC messages without stringifying nested `glucoseValues` (avoids large transient `String` allocations).
      private static func watchConnectivityInboundSummary(_ message: [String: Any]) -> String {
          let topKeys = message.keys.sorted().joined(separator: ",")
-@@ -959,7 +1187,15 @@ enum BackgroundTaskWindowCounter {
+@@ -959,7 +1191,15 @@ enum BackgroundTaskWindowCounter {
          }
  
          // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
@@ -2451,7 +2676,7 @@ index 5b72af7de..e82df6ff9 100644
             let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
          {
              if date >= Date().addingTimeInterval(-15 * 60) {
-@@ -1047,6 +1283,10 @@ enum BackgroundTaskWindowCounter {
+@@ -1047,6 +1287,10 @@ enum BackgroundTaskWindowCounter {
  
          let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
  
@@ -2462,7 +2687,7 @@ index 5b72af7de..e82df6ff9 100644
          let readingDate: Date
          switch resolveEffectiveCGMReadingDate(from: payload) {
          case let .found(date):
-@@ -1097,7 +1337,9 @@ enum BackgroundTaskWindowCounter {
+@@ -1097,7 +1341,9 @@ enum BackgroundTaskWindowCounter {
              trend: payload[WatchMessageKeys.trend] as? String ?? "",
              delta: payload[WatchMessageKeys.delta] as? String ?? "",
              readingDate: readingDate,
@@ -2473,7 +2698,7 @@ index 5b72af7de..e82df6ff9 100644
          )
          if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
              DispatchQueue.main.async { [weak self] in
-@@ -1109,7 +1351,7 @@ enum BackgroundTaskWindowCounter {
+@@ -1109,7 +1355,7 @@ enum BackgroundTaskWindowCounter {
              return
          }
  
@@ -2482,7 +2707,7 @@ index 5b72af7de..e82df6ff9 100644
              // R5d: compute gap BEFORE updating timestamp
              let gap = lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
              let isSleepGap = gap > 600
-@@ -1217,8 +1459,9 @@ enum BackgroundTaskWindowCounter {
+@@ -1217,8 +1463,9 @@ enum BackgroundTaskWindowCounter {
              return
          }
          let readingResolution = resolveEffectiveCGMReadingDate(from: payload)
@@ -2493,7 +2718,7 @@ index 5b72af7de..e82df6ff9 100644
              let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
              self.saveComplicationSnapshot(from: payload)
              if case .found = readingResolution {
-@@ -1485,8 +1728,55 @@ enum BackgroundTaskWindowCounter {
+@@ -1485,8 +1732,55 @@ enum BackgroundTaskWindowCounter {
          return pendingCount
      }
  
@@ -2550,7 +2775,7 @@ index 5b72af7de..e82df6ff9 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -1531,6 +1821,7 @@ enum BackgroundTaskWindowCounter {
+@@ -1531,6 +1825,7 @@ enum BackgroundTaskWindowCounter {
          }
      }
  
@@ -2558,7 +2783,7 @@ index 5b72af7de..e82df6ff9 100644
      private func scheduleUIUpdate(
          with newData: [String: Any],
          fromUserInfo: Bool = false,
-@@ -1538,7 +1829,7 @@ enum BackgroundTaskWindowCounter {
+@@ -1538,7 +1833,7 @@ enum BackgroundTaskWindowCounter {
          pendingConnectivityCompletionPath: String? = nil
      ) {
          guard Thread.isMainThread else {
@@ -2567,7 +2792,7 @@ index 5b72af7de..e82df6ff9 100644
                  scheduleUIUpdate(
                      with: newData,
                      fromUserInfo: fromUserInfo,
-@@ -1549,6 +1840,8 @@ enum BackgroundTaskWindowCounter {
+@@ -1549,6 +1844,8 @@ enum BackgroundTaskWindowCounter {
              return
          }
  
@@ -2576,7 +2801,7 @@ index 5b72af7de..e82df6ff9 100644
          guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
              Task {
                  await WatchLogger.shared.log("Invalid date format in WatchState data")
-@@ -1607,6 +1900,14 @@ enum BackgroundTaskWindowCounter {
+@@ -1607,6 +1904,14 @@ enum BackgroundTaskWindowCounter {
          DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
      }
  
@@ -2591,7 +2816,7 @@ index 5b72af7de..e82df6ff9 100644
      private func finalizePendingData(
          fromUserInfo: Bool = false,
          userInfoReceiveTimestamp: Date? = nil,
-@@ -1644,6 +1945,21 @@ enum BackgroundTaskWindowCounter {
+@@ -1644,6 +1949,21 @@ enum BackgroundTaskWindowCounter {
              await WatchLogger.shared.log("Watch UI update complete")
          }
  
@@ -2613,7 +2838,7 @@ index 5b72af7de..e82df6ff9 100644
          guard let pendingConnectivityCompletionPath else { return }
          let pendingCountBeforeCompletion = pendingConnectivityTasks.count
          let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
-@@ -1677,28 +1993,46 @@ enum BackgroundTaskWindowCounter {
+@@ -1677,28 +1997,46 @@ enum BackgroundTaskWindowCounter {
  
          startupFirstRefreshInFlight = false
  
@@ -2674,7 +2899,7 @@ index 5b72af7de..e82df6ff9 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -1843,7 +2177,9 @@ enum BackgroundTaskWindowCounter {
+@@ -1843,7 +2181,9 @@ enum BackgroundTaskWindowCounter {
              delta: deltaValue,
              readingDate: readingDate,
              date: Date(),
@@ -2685,7 +2910,7 @@ index 5b72af7de..e82df6ff9 100644
          )
  
          // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
-@@ -1904,7 +2240,9 @@ enum BackgroundTaskWindowCounter {
+@@ -1904,7 +2244,9 @@ enum BackgroundTaskWindowCounter {
              delta: delta ?? "",
              readingDate: effectiveReadingDate,
              date: Date(),
@@ -2696,7 +2921,7 @@ index 5b72af7de..e82df6ff9 100644
          )
  
          Task {
-@@ -1996,9 +2334,27 @@ enum BackgroundTaskWindowCounter {
+@@ -1996,9 +2338,27 @@ enum BackgroundTaskWindowCounter {
                      lastBackgroundRefreshDate = Date()
  
                      if isReachable {
@@ -2726,7 +2951,7 @@ index 5b72af7de..e82df6ff9 100644
                          }
                      } else {
                          loadFallbackDataFromComplication()
-@@ -2060,6 +2416,16 @@ enum BackgroundTaskWindowCounter {
+@@ -2060,6 +2420,16 @@ enum BackgroundTaskWindowCounter {
              return
          }
  
@@ -2743,7 +2968,7 @@ index 5b72af7de..e82df6ff9 100644
          if let lastUpdate = lastWatchStateUpdate,
             Date().timeIntervalSince(lastUpdate) <= 15
          {
-@@ -2070,6 +2436,13 @@ enum BackgroundTaskWindowCounter {
+@@ -2070,6 +2440,13 @@ enum BackgroundTaskWindowCounter {
          }
  
          DispatchQueue.main.async {
@@ -2757,7 +2982,7 @@ index 5b72af7de..e82df6ff9 100644
              self.currentGlucose = snapshot.glucose
              self.trend = snapshot.trend
              self.delta = snapshot.delta
-@@ -2077,6 +2450,7 @@ enum BackgroundTaskWindowCounter {
+@@ -2077,6 +2454,7 @@ enum BackgroundTaskWindowCounter {
                  self.currentGlucoseColorString = glucoseColor
              }
              self.lastWatchStateUpdate = snapshot.readingDate
