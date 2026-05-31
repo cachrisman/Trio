@@ -1,6 +1,7 @@
 import Combine
 import CoreData
 import Foundation
+import Swinject
 
 extension Adjustments.StateModel {
     // MARK: - State Initialization and Updates
@@ -302,14 +303,14 @@ extension Adjustments.StateModel {
             // Get ALL NSManagedObject IDs of ALL active Temp Targets to cancel every single Temp Target
             let ids = try await tempTargetStorage.loadLatestTempTargetConfigurations(fetchLimit: 0) // 0 = no fetch limit
 
-            try await viewContext.perform {
+            let didCancel: Bool = try await viewContext.perform {
                 // Fetch the existing TempTargetStored objects from the context
                 let results = try ids.compactMap { id in
                     try self.viewContext.existingObject(with: id) as? TempTargetStored
                 }
 
                 // If there are no results, return early
-                guard !results.isEmpty else { return }
+                guard !results.isEmpty else { return false }
 
                 // Check if we also need to create a corresponding TempTargetRunStored entry
                 if createTempTargetRunEntry {
@@ -339,7 +340,13 @@ extension Adjustments.StateModel {
 
                     // Update the storage
                     self.tempTargetStorage.saveTempTargetsToStorage([TempTarget.cancel(at: Date().addingTimeInterval(-1))])
+                    return true
                 }
+                return false
+            }
+
+            if didCancel {
+                await resolver?.resolve(LiveActivityManager.self)?.pushCurrentContent()
             }
         } catch {
             debug(

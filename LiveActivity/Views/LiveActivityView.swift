@@ -62,6 +62,23 @@ struct LiveActivityView: View {
                 LiveActivityChartView(context: context, additionalState: context.state.detailedViewState)
                     .frame(maxWidth: UIScreen.main.bounds.width * 0.9)
                     .frame(height: 80)
+                    .overlay(alignment: .topLeading) {
+                        if context.state.detailedViewState.isTempTargetActive {
+                            HStack {
+                                Text("\(context.state.detailedViewState.tempTargetName)")
+                                    .font(.footnote)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(.white)
+                                    .lineLimit(nil)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(6)
+                            .background {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(Color.teal.opacity(colorScheme == .dark ? 0.6 : 0.8))
+                            }
+                        }
+                    }
                     .overlay(alignment: .topTrailing) {
                         if context.state.detailedViewState.isOverrideActive {
                             HStack {
