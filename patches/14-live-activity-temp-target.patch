@@ -1,20 +1,22 @@
-From 4d20d7ff369d43bdca289852b9977d208c3d4807 Mon Sep 17 00:00:00 2001
+From 355b0a997c832e7aeeda1832fcc7b775d65be26f Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sun, 24 May 2026 04:03:42 +0200
+Date: Sun, 31 May 2026 07:41:17 +0200
 Subject: [PATCH] feat: live-activity-temp-target
 
 ---
- LiveActivity/LiveActivity.swift                  |  2 ++
- LiveActivity/Views/LiveActivityView.swift        | 15 +++++++++++++++
- Trio.xcodeproj/project.pbxproj                   |  4 ++++
- .../Adjustments/AdjustmentsDataFlow.swift        |  6 +++---
- .../Adjustments/AdjustmentsStateModel.swift      |  2 +-
- .../Services/LiveActivity/Data/DataManager.swift | 14 ++++++++++++++
- .../LiveActivity/Data/TempTargetData.swift       |  9 +++++++++
- .../LiveActivity/LiveActitiyAttributes.swift     |  2 ++
- .../LiveActivityAttributes+Helper.swift          |  3 +++
- .../LiveActivity/LiveActivityManager.swift       | 16 ++++++++++++++++
- 10 files changed, 69 insertions(+), 4 deletions(-)
+ LiveActivity/LiveActivity.swift               |  2 ++
+ LiveActivity/Views/LiveActivityView.swift     | 17 +++++++++++
+ Trio.xcodeproj/project.pbxproj                |  4 +++
+ .../Adjustments/AdjustmentsDataFlow.swift     |  6 ++--
+ .../AdjustmentsStateModel+TempTargets.swift   | 11 +++++--
+ .../Adjustments/AdjustmentsStateModel.swift   |  2 +-
+ .../TempTargetSetup.swift                     |  3 ++
+ .../LiveActivity/Data/DataManager.swift       | 29 +++++++++++++++++++
+ .../LiveActivity/Data/TempTargetData.swift    |  9 ++++++
+ .../LiveActivity/LiveActitiyAttributes.swift  |  2 ++
+ .../LiveActivityAttributes+Helper.swift       |  3 ++
+ .../LiveActivity/LiveActivityManager.swift    | 23 +++++++++++++++
+ 12 files changed, 105 insertions(+), 6 deletions(-)
  create mode 100644 Trio/Sources/Services/LiveActivity/Data/TempTargetData.swift
 
 diff --git a/LiveActivity/LiveActivity.swift b/LiveActivity/LiveActivity.swift
@@ -31,10 +33,10 @@ index f1e61f3be..f8bc34540 100644
          )
  
 diff --git a/LiveActivity/Views/LiveActivityView.swift b/LiveActivity/Views/LiveActivityView.swift
-index 5dc3d7310..4bae5f2a7 100644
+index 5dc3d7310..f0ed3a4c2 100644
 --- a/LiveActivity/Views/LiveActivityView.swift
 +++ b/LiveActivity/Views/LiveActivityView.swift
-@@ -62,6 +62,21 @@ struct LiveActivityView: View {
+@@ -62,6 +62,23 @@ struct LiveActivityView: View {
                  LiveActivityChartView(context: context, additionalState: context.state.detailedViewState)
                      .frame(maxWidth: UIScreen.main.bounds.width * 0.9)
                      .frame(height: 80)
@@ -45,6 +47,8 @@ index 5dc3d7310..4bae5f2a7 100644
 +                                    .font(.footnote)
 +                                    .fontWeight(.bold)
 +                                    .foregroundStyle(.white)
++                                    .lineLimit(nil)
++                                    .fixedSize(horizontal: false, vertical: true)
 +                            }
 +                            .padding(6)
 +                            .background {
@@ -57,10 +61,10 @@ index 5dc3d7310..4bae5f2a7 100644
                          if context.state.detailedViewState.isOverrideActive {
                              HStack {
 diff --git a/Trio.xcodeproj/project.pbxproj b/Trio.xcodeproj/project.pbxproj
-index f4ea91180..52a9b8831 100644
+index 6129641cf..184d35af4 100644
 --- a/Trio.xcodeproj/project.pbxproj
 +++ b/Trio.xcodeproj/project.pbxproj
-@@ -432,6 +432,7 @@
+@@ -436,6 +436,7 @@
  		BDB899882C564509006F3298 /* ForecastChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDB899872C564509006F3298 /* ForecastChart.swift */; };
  		BDB8998A2C565D0C006F3298 /* CarbsGlucose+helper.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDB899892C565D0B006F3298 /* CarbsGlucose+helper.swift */; };
  		BDBAACFA2C2D439700370AAE /* OverrideData.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDBAACF92C2D439700370AAE /* OverrideData.swift */; };
@@ -68,7 +72,7 @@ index f4ea91180..52a9b8831 100644
  		BDC2EA452C3043B000E5BBD0 /* OverrideStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDC2EA442C3043B000E5BBD0 /* OverrideStorage.swift */; };
  		BDC2EA472C3045AD00E5BBD0 /* Override.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDC2EA462C3045AD00E5BBD0 /* Override.swift */; };
  		BDC530FF2D0F6BE300088832 /* ContactImageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDC530FE2D0F6BE300088832 /* ContactImageManager.swift */; };
-@@ -1269,6 +1270,7 @@
+@@ -1298,6 +1299,7 @@
  		BDB899872C564509006F3298 /* ForecastChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForecastChart.swift; sourceTree = "<group>"; };
  		BDB899892C565D0B006F3298 /* CarbsGlucose+helper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CarbsGlucose+helper.swift"; sourceTree = "<group>"; };
  		BDBAACF92C2D439700370AAE /* OverrideData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverrideData.swift; sourceTree = "<group>"; };
@@ -76,7 +80,7 @@ index f4ea91180..52a9b8831 100644
  		BDC2EA442C3043B000E5BBD0 /* OverrideStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverrideStorage.swift; sourceTree = "<group>"; };
  		BDC2EA462C3045AD00E5BBD0 /* Override.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Override.swift; sourceTree = "<group>"; };
  		BDC530FE2D0F6BE300088832 /* ContactImageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactImageManager.swift; sourceTree = "<group>"; };
-@@ -3073,6 +3075,7 @@
+@@ -3199,6 +3201,7 @@
  				BDF34F842C10C62E00D51995 /* GlucoseData.swift */,
  				BDF34F942C10D27300D51995 /* DeterminationData.swift */,
  				BDBAACF92C2D439700370AAE /* OverrideData.swift */,
@@ -84,7 +88,7 @@ index f4ea91180..52a9b8831 100644
  			);
  			path = Data;
  			sourceTree = "<group>";
-@@ -4680,6 +4683,7 @@
+@@ -4816,6 +4819,7 @@
  				38E98A2D25F52DC400C0CED0 /* NSLocking+Extensions.swift in Sources */,
  				715120D22D3C2BB4005D9FB6 /* GlucoseNotificationsOption.swift in Sources */,
  				BDBAACFA2C2D439700370AAE /* OverrideData.swift in Sources */,
@@ -117,6 +121,49 @@ index 93f3e920d..fc55772d2 100644
              }
          }
      }
+diff --git a/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel+Extensions/AdjustmentsStateModel+TempTargets.swift b/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel+Extensions/AdjustmentsStateModel+TempTargets.swift
+index 6fdefeda1..4592c08cb 100644
+--- a/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel+Extensions/AdjustmentsStateModel+TempTargets.swift
++++ b/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel+Extensions/AdjustmentsStateModel+TempTargets.swift
+@@ -1,6 +1,7 @@
+ import Combine
+ import CoreData
+ import Foundation
++import Swinject
+ 
+ extension Adjustments.StateModel {
+     // MARK: - State Initialization and Updates
+@@ -302,14 +303,14 @@ extension Adjustments.StateModel {
+             // Get ALL NSManagedObject IDs of ALL active Temp Targets to cancel every single Temp Target
+             let ids = try await tempTargetStorage.loadLatestTempTargetConfigurations(fetchLimit: 0) // 0 = no fetch limit
+ 
+-            try await viewContext.perform {
++            let didCancel: Bool = try await viewContext.perform {
+                 // Fetch the existing TempTargetStored objects from the context
+                 let results = try ids.compactMap { id in
+                     try self.viewContext.existingObject(with: id) as? TempTargetStored
+                 }
+ 
+                 // If there are no results, return early
+-                guard !results.isEmpty else { return }
++                guard !results.isEmpty else { return false }
+ 
+                 // Check if we also need to create a corresponding TempTargetRunStored entry
+                 if createTempTargetRunEntry {
+@@ -339,7 +340,13 @@ extension Adjustments.StateModel {
+ 
+                     // Update the storage
+                     self.tempTargetStorage.saveTempTargetsToStorage([TempTarget.cancel(at: Date().addingTimeInterval(-1))])
++                    return true
+                 }
++                return false
++            }
++
++            if didCancel {
++                await resolver?.resolve(LiveActivityManager.self)?.pushCurrentContent()
+             }
+         } catch {
+             debug(
 diff --git a/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel.swift b/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel.swift
 index b303d13b6..23d04500d 100644
 --- a/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel.swift
@@ -130,26 +177,61 @@ index b303d13b6..23d04500d 100644
          var activeOverrideName: String = ""
          var currentActiveOverride: OverrideStored?
          var activeTempTargetName: String = ""
+diff --git a/Trio/Sources/Modules/Home/HomeStateModel+Setup/TempTargetSetup.swift b/Trio/Sources/Modules/Home/HomeStateModel+Setup/TempTargetSetup.swift
+index a2a0a48b9..b7355ae4d 100644
+--- a/Trio/Sources/Modules/Home/HomeStateModel+Setup/TempTargetSetup.swift
++++ b/Trio/Sources/Modules/Home/HomeStateModel+Setup/TempTargetSetup.swift
+@@ -1,5 +1,6 @@
+ import CoreData
+ import Foundation
++import Swinject
+ 
+ extension Home.StateModel {
+     func setupTempTargetsStored() {
+@@ -95,6 +96,8 @@ extension Home.StateModel {
+             // We also need to update the storage for temp targets
+             tempTargetStorage.saveTempTargetsToStorage([TempTarget.cancel(at: Date())])
+ 
++            await resolver?.resolve(LiveActivityManager.self)?.pushCurrentContent()
++
+             Foundation.NotificationCenter.default.post(name: .didUpdateTempTargetConfiguration, object: nil)
+         } catch let error as NSError {
+             debugPrint("\(DebuggingIdentifiers.failed) \(#file) \(#function) Failed to cancel Temp Target with error: \(error)")
 diff --git a/Trio/Sources/Services/LiveActivity/Data/DataManager.swift b/Trio/Sources/Services/LiveActivity/Data/DataManager.swift
-index 766c7b684..c3b989db6 100644
+index 766c7b684..bdb81e617 100644
 --- a/Trio/Sources/Services/LiveActivity/Data/DataManager.swift
 +++ b/Trio/Sources/Services/LiveActivity/Data/DataManager.swift
-@@ -67,6 +67,20 @@ extension LiveActivityManager {
+@@ -67,6 +67,35 @@ extension LiveActivityManager {
          }
      }
  
-+    func fetchAndMapTempTarget() -> TempTargetData? {
-+        guard let current = tempTargetsStorage.current() else {
-+            return nil
-+        }
-+
-+        return TempTargetData(
-+            isActive: true,
-+            tempTargetName: current.displayName,
-+            date: current.createdAt,
-+            duration: current.duration,
-+            target: current.targetTop ?? 0
++    // Reads Core Data directly: the TempTargetStored save notification beats the JSON-file write, so `tempTargetsStorage.current()` would race.
++    func fetchAndMapTempTarget() async throws -> TempTargetData? {
++        let results = try await CoreDataStack.shared.fetchEntitiesAsync(
++            ofType: TempTargetStored.self,
++            onContext: context,
++            predicate: NSPredicate.lastActiveTempTarget,
++            key: "date",
++            ascending: false,
++            fetchLimit: 1,
++            propertiesToFetch: ["name", "date", "duration", "target"]
 +        )
++
++        return try await context.perform {
++            guard let tempTargetResults = results as? [[String: Any]] else {
++                throw CoreDataError.fetchError(function: #function, file: #file)
++            }
++
++            return tempTargetResults.first.map {
++                TempTargetData(
++                    isActive: true,
++                    tempTargetName: ($0["name"] as? String) ?? TempTarget.custom,
++                    date: ($0["date"] as? Date) ?? Date(),
++                    duration: ($0["duration"] as? NSDecimalNumber)?.decimalValue ?? 0,
++                    target: ($0["target"] as? NSDecimalNumber)?.decimalValue ?? 0
++                )
++            }
++        }
 +    }
 +
      func fetchAndMapOverride() async throws -> OverrideData? {
@@ -205,7 +287,7 @@ index fee9d4a80..3c0c6b6fd 100644
          )
  
 diff --git a/Trio/Sources/Services/LiveActivity/LiveActivityManager.swift b/Trio/Sources/Services/LiveActivity/LiveActivityManager.swift
-index 2549613e9..9c9b98e1f 100644
+index 2549613e9..2372fb199 100644
 --- a/Trio/Sources/Services/LiveActivity/LiveActivityManager.swift
 +++ b/Trio/Sources/Services/LiveActivity/LiveActivityManager.swift
 @@ -36,6 +36,8 @@ final class LiveActivityData: ObservableObject {
@@ -236,19 +318,26 @@ index 2549613e9..9c9b98e1f 100644
          coreDataPublisher?.filteredByEntityName("GlucoseStored").sink { [weak self] _ in
              Task { await self?.loadGlucose() }
          }.store(in: &subscriptions)
-@@ -179,6 +186,11 @@ final class LiveActivityData: ObservableObject {
+@@ -179,6 +186,18 @@ final class LiveActivityData: ObservableObject {
          }
      }
  
 +    /// Fetches and maps the current temp target and updates the live activity content state.
 +    private func loadTempTargets() async {
-+        data.tempTarget = fetchAndMapTempTarget()
++        do {
++            data.tempTarget = try await fetchAndMapTempTarget()
++        } catch {
++            debug(
++                .default,
++                "[LiveActivityManager] \(DebuggingIdentifiers.failed) failed to fetch and map temp target: \(error)"
++            )
++        }
 +    }
 +
      /// Handles changes to the live activity order.
      ///
      /// Loads widget items from user defaults and triggers an update to the live activity order.
-@@ -203,6 +215,7 @@ final class LiveActivityData: ObservableObject {
+@@ -203,6 +222,7 @@ final class LiveActivityData: ObservableObject {
          Task {
              await self.loadGlucose()
              await self.loadOverrides()
@@ -256,7 +345,7 @@ index 2549613e9..9c9b98e1f 100644
              await self.loadDetermination()
              self.loadWidgetItems()
          }
-@@ -301,6 +314,8 @@ final class LiveActivityData: ObservableObject {
+@@ -301,6 +321,8 @@ final class LiveActivityData: ObservableObject {
                                  overrideDate: Date.now,
                                  overrideDuration: 0,
                                  overrideTarget: 0,
@@ -265,7 +354,7 @@ index 2549613e9..9c9b98e1f 100644
                                  widgetItems: []
                              ),
                              isInitialState: true
-@@ -399,6 +414,7 @@ final class LiveActivityData: ObservableObject {
+@@ -399,6 +421,7 @@ final class LiveActivityData: ObservableObject {
              determination: determination,
              iob: data.iob,
              override: data.override,
