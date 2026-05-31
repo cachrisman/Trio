@@ -286,39 +286,42 @@ extension Treatments {
                         }.listRowBackground(Color.chart)
 
                         Section {
-                            if state.fattyMeals || state.sweetMeals {
-                                HStack(spacing: 10) {
-                                    if state.fattyMeals {
-                                        Toggle(isOn: $state.useFattyMealCorrectionFactor) {
-                                            Text("Reduced Bolus")
-                                        }
-                                        .toggleStyle(RadioButtonToggleStyle())
-                                        .font(.footnote)
-                                        .onChange(of: state.useFattyMealCorrectionFactor) {
-                                            Task {
-                                                state.insulinCalculated = await state.calculateInsulin()
-                                                if state.useFattyMealCorrectionFactor {
-                                                    state.useSuperBolus = false
-                                                }
-                                            }
-                                        }
+                            HStack(spacing: 10) {
+                                if state.fattyMeals {
+                                    Toggle(isOn: $state.useFattyMealCorrectionFactor) {
+                                        Text("Reduced Bolus")
                                     }
-                                    if state.sweetMeals {
-                                        Toggle(isOn: $state.useSuperBolus) {
-                                            Text("Super Bolus")
-                                        }
-                                        .toggleStyle(RadioButtonToggleStyle())
-                                        .font(.footnote)
-                                        .onChange(of: state.useSuperBolus) {
-                                            Task {
-                                                state.insulinCalculated = await state.calculateInsulin()
-                                                if state.useSuperBolus {
-                                                    state.useFattyMealCorrectionFactor = false
-                                                }
+                                    .toggleStyle(RadioButtonToggleStyle())
+                                    .font(.footnote)
+                                    .onChange(of: state.useFattyMealCorrectionFactor) {
+                                        Task {
+                                            state.insulinCalculated = await state.calculateInsulin()
+                                            if state.useFattyMealCorrectionFactor {
+                                                state.useSuperBolus = false
                                             }
                                         }
                                     }
                                 }
+                                if state.sweetMeals {
+                                    Toggle(isOn: $state.useSuperBolus) {
+                                        Text("Super Bolus")
+                                    }
+                                    .toggleStyle(RadioButtonToggleStyle())
+                                    .font(.footnote)
+                                    .onChange(of: state.useSuperBolus) {
+                                        Task {
+                                            state.insulinCalculated = await state.calculateInsulin()
+                                            if state.useSuperBolus {
+                                                state.useFattyMealCorrectionFactor = false
+                                            }
+                                        }
+                                    }
+                                }
+                                Toggle(isOn: $state.externalInsulin) {
+                                    Text("External Insulin")
+                                }
+                                .toggleStyle(CheckboxToggleStyle())
+                                .font(.footnote)
                             }
 
                             HStack {
@@ -375,15 +378,7 @@ extension Treatments {
                                         }
                                     }
                             }
-
-                            HStack {
-                                Text("External Insulin")
-                                Spacer()
-                                Toggle("", isOn: $state.externalInsulin).toggleStyle(CheckboxToggleStyle())
-                            }
                         }.listRowBackground(Color.chart)
-
-                        treatmentButton
                     }
                     .listSectionSpacing(sectionSpacing)
                 }
@@ -396,6 +391,10 @@ extension Treatments {
             .padding(.top)
             .ignoresSafeArea(edges: .top)
             .scrollContentBackground(.hidden).background(appState.trioBackgroundColor(for: colorScheme))
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                treatmentActionBar
+                    .blur(radius: state.isAwaitingDeterminationResult ? 5 : 0)
+            }
             .blur(radius: state.showInfo ? 3 : 0)
             .navigationTitle("Treatments")
             .navigationBarTitleDisplayMode(.inline)
@@ -491,65 +490,69 @@ extension Treatments {
             return (shouldConfirm, warningMessage, warningColor)
         }
 
-        var treatmentButton: some View {
-            let shouldDisplayBolusProgress = state.isBolusInProgress && state.amount > 0 &&
-                !state.externalInsulin && (state.carbs == 0 || state.fat == 0 || state.protein == 0)
-
-            var treatmentButtonBackground = Color(.systemBlue)
-            if limitExceeded {
-                treatmentButtonBackground = Color(.systemRed)
-            } else if disableTaskButton {
-                treatmentButtonBackground = Color(.systemGray)
-            }
-
-            return Section {
-                if shouldDisplayBolusProgress {
-                    bolusInProgressView
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                } else {
-                    Button {
-                        if bolusWarning.shouldConfirm {
-                            showConfirmDialogForBolusing = true
-                        } else {
-                            state.invokeTreatmentsTask()
-                        }
-                    } label: {
-                        HStack {
-                            taskButtonLabel
-                        }
-                        .font(.headline)
-                        .foregroundStyle(Color.white)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .frame(height: 35)
-                    }
-                    .disabled(disableTaskButton)
-                    .listRowBackground(treatmentButtonBackground)
-                    .shadow(radius: 3)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .confirmationDialog(
-                        bolusWarning.warningMessage + " Bolus \(state.amount.description) U?",
-                        isPresented: $showConfirmDialogForBolusing,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Cancel", role: .cancel) {}
-                        Button(
-                            bolusWarning.warningMessage
-                                .isEmpty ? String(localized: "Enact Bolus") : String(localized: "Ignore Warning and Enact Bolus"),
-                            role: bolusWarning.warningMessage.isEmpty ? nil : .destructive
-                        ) {
-                            state.invokeTreatmentsTask()
-                        }
-                    }
-                }
-            } header: {
+        var treatmentActionBar: some View {
+            VStack(spacing: 10) {
                 if !bolusWarning.warningMessage.isEmpty {
                     Text(bolusWarning.warningMessage)
-                        .textCase(nil)
                         .font(.subheadline)
                         .foregroundColor(bolusWarning.color)
                         .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.top, -22)
+                }
+
+                treatmentButton
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, bolusWarning.warningMessage.isEmpty ? 10 : 14)
+            .padding(.bottom, 10)
+            .background {
+                VStack(spacing: 0) {
+                    Divider()
+                    appState.trioBackgroundColor(for: colorScheme)
+                }
+                .ignoresSafeArea(edges: .bottom)
+            }
+        }
+
+        @ViewBuilder
+        private var treatmentButton: some View {
+            let shouldDisplayBolusProgress = state.isBolusInProgress && state.amount > 0 &&
+                !state.externalInsulin && (state.carbs == 0 || state.fat == 0 || state.protein == 0)
+
+            if shouldDisplayBolusProgress {
+                bolusInProgressView
+            } else {
+                Button {
+                    if bolusWarning.shouldConfirm {
+                        showConfirmDialogForBolusing = true
+                    } else {
+                        state.invokeTreatmentsTask()
+                    }
+                } label: {
+                    HStack {
+                        taskButtonLabel
+                    }
+                    .font(.headline)
+                    .foregroundStyle(Color.white)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .frame(height: 35)
+                }
+                .disabled(disableTaskButton)
+                .background(treatmentButtonBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .shadow(radius: 3)
+                .confirmationDialog(
+                    bolusWarning.warningMessage + " Bolus \(state.amount.description) U?",
+                    isPresented: $showConfirmDialogForBolusing,
+                    titleVisibility: .visible
+                ) {
+                    Button("Cancel", role: .cancel) {}
+                    Button(
+                        bolusWarning.warningMessage
+                            .isEmpty ? String(localized: "Enact Bolus") : String(localized: "Ignore Warning and Enact Bolus"),
+                        role: bolusWarning.warningMessage.isEmpty ? nil : .destructive
+                    ) {
+                        state.invokeTreatmentsTask()
+                    }
                 }
             }
         }
@@ -686,6 +689,16 @@ extension Treatments {
 
         private var limitExceeded: Bool {
             pumpBolusLimitExceeded || externalBolusLimitExceeded || carbLimitExceeded || fatLimitExceeded || proteinLimitExceeded
+        }
+
+        private var treatmentButtonBackground: Color {
+            if limitExceeded {
+                return Color(.systemRed)
+            } else if disableTaskButton {
+                return Color(.systemGray)
+            } else {
+                return Color(.systemBlue)
+            }
         }
 
         private var disableTaskButton: Bool {
