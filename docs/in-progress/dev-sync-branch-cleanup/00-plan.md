@@ -1,7 +1,7 @@
 # Dev sync + feature-branch cleanup — plan
 
 **Version:** 1.2 (executed 2026-06-16 — see changelog for outcomes + deviations)
-**Status:** Executed — Phases 0–4 complete, build-validated; pending milestone commit + deploy
+**Status:** Complete — Phases 0–5 done, build-validated, committed (`c21092055`) + force-pushed to `origin/dev` 2026-06-16. TestFlight deploy not yet run (build-only validation; deferred per Charlie).
 **Created:** 2026-06-13 17:25 CEST
 **Last updated:** 2026-06-16 00:15 CEST
 
@@ -166,7 +166,8 @@ so:
 - **Phase 3 (Flavor B):** Merged 09+12 → **`09-watch-g7.patch`** (27 files) on synced dev; restored the C-209-5 ComplicationLogBuffer hunk (#6). Upstream #1162 back-sync reconciliation: **Option A** — kept patch-09's richer 209-shipped receive path (superset of upstream's unified `handleIncomingWatchStatePayload`); upstream's load-bearing send-side `state.date = Date()` stamping preserved in `AppleWatchManager`. (Upstream's unified-handler refactor ≈ a ~5% slice of the [watch-messaging-centralization](../../backlog/watch-messaging-centralization/) plan point #3 — noted there as a precedent; full centralization remains deliberate future work.) Dropped patch 12. **Patch 13 reconciled** (Q=drop Omni-removal): its stale `DeviceDataManager` Omni-removal would have deleted the OmnipodKit/`OmniPumpManager` backend upstream still ships — dropped; kept only its telemetry additions.
 - **Phase 4:** 1:1 branch↔patch mapping established (11↔11). `feature/patch-metadata` reconstructed via `git am` of patch 08 (signed). Deleted all Phase-4-list stale branches + (Q2a) superseded `feature/watch-g7-direct-ble-observer-synthesis` and `feature/watch-complication-improvements` + replaced `feature/live-activity-temp-target-badge` + scratch/integration branches. **Deviation:** the 5 reconstructed source branches sit cleanly on synced dev (0 behind); the 6 untouched old branches (`01/03/05/06/07/10`) retain heavy drift (123–794 behind) — patches apply + compile, but branches are stale regeneration sources. Full reconciliation deferred (Q2b: leave clean branches' signing alone). `feature/cloud-logging` still needs its own origin reconciliation (ahead/behind vs origin) — separate item.
 - **Build:** `ci/local-build.sh --base-branch dev --build-only --include-untracked --no-sync-upstream` → **signed `Trio.ipa` produced, TOTAL Success 4m47s** (verified real export, not just exit 0). Reorganized stack applies clean AND compiles.
-- **Pending:** milestone commit of patches → `dev` + push `origin/dev` (awaiting explicit go / TestFlight deploy + BetterStack verification per AGENTS); optional reconciliation of the 6 drifted branches; frozen-doc 09/12-split banners.
+- **Milestone (done 2026-06-16):** patches + docs committed to `dev` as `c21092055` (signed) and force-pushed to `origin/dev` (`cf1219af6`→`c21092055`, `--force-with-lease`) per Charlie's "commit now, no deploy". origin/dev's 4 prior commits were content-redundant (attribution rule + GlucoseHueColor sync-config already on dev; 2 merge commits) — nothing of value lost. All 6 drifted source branches reconciled onto synced dev; `Trio-Patch-Source-Branch` trailers added to all 11 patches; frozen watch-g7 docs bannered.
+- **Still open (deferred):** TestFlight deploy + BetterStack verification (build-only was run); `feature/cloud-logging` origin-branch reconciliation (local branch is clean vs dev; origin/feature/cloud-logging still diverged); living-doc inline updates (review / upstream-PR plan / 209 plan / complication-freshness README); 25 `safety/pre-dev-sync-20260615/*` recovery tags retained until fully confirmed.
 
 ### v1.1 (2026-06-14 09:45 CEST)
 - **Q2 resolved** by fetch + FF check: `origin/dev` is **diverged, not auto-synced** (ahead 160 /
