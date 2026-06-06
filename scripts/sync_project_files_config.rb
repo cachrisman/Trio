@@ -16,6 +16,9 @@ module SyncProjectFilesConfig
       "Trio/Sources/Models/NotificationIdentifiers.swift",
       "Trio/Sources/Models/WatchMessageKeys.swift",
       "Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift",
+      # Foundation-only shared dynamic-glucose hue math (build 205 / W5). The phone picks it up via
+      # the Trio/Sources/** glob; the watch needs this explicit entry to see it.
+      "Trio/Sources/Helpers/GlucoseHueColor.swift",
       "Trio Watch Shared/ComplicationLogBuffer.swift",
       "Trio Watch Shared/TrioComplicationDataStore.swift"
     ],
