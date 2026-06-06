@@ -240,6 +240,7 @@ DRIFT_EXCLUDE_REGEX=""
 NO_DRIFT_CHECK=false
 DRY_RUN=false
 SKIP_TEST=false
+ALLOW_BEHIND_ORIGIN=false   # forwarded to generate-patch.sh to bypass its behind-origin guard
 
 show_help() {
     awk '
@@ -289,6 +290,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-test)
             SKIP_TEST=true
+            shift
+            ;;
+        --allow-behind-origin)
+            ALLOW_BEHIND_ORIGIN=true
             shift
             ;;
         -h|--help)
@@ -968,12 +973,15 @@ print_info "  -d $PATCH_DESC"
 print_info "  -o patches/$PATCH_BASENAME"
 print_info "  --include-files <${#DIFF_FILES[@]} files>"
 
+GEN_ALLOW_BEHIND=()
+[ "$ALLOW_BEHIND_ORIGIN" = true ] && GEN_ALLOW_BEHIND=(--allow-behind-origin)
 if ! "$REPO_ROOT/scripts/generate-patch.sh" -n \
     -s "$UPDATE_BRANCH" \
     -t "$BASELINE_BRANCH" \
     -d "$PATCH_DESC" \
     -o "$PATCH_OUTPUT_ABS" \
     --include-files "$INCLUDE_FILES_ARG" \
+    ${GEN_ALLOW_BEHIND[@]+"${GEN_ALLOW_BEHIND[@]}"} \
     -y; then
     die "generate-patch.sh failed. Check output above for details."
 fi

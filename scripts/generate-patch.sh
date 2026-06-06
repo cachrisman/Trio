@@ -151,6 +151,7 @@ FLAG_INCLUDE_WORKTREE=""     # "" = prompt, "true" = yes, "false" = no
 FLAG_OUTPUT_PATH=""
 FLAG_YES=false
 FLAG_NON_INTERACTIVE=false
+FLAG_ALLOW_BEHIND_ORIGIN=false   # bypass the "local dev behind origin/dev" guard (e.g. intentionally pre-merge base)
 
 show_help() {
     # Extract and display the header documentation
@@ -192,6 +193,10 @@ while [[ $# -gt 0 ]]; do
         --include-files)
             FLAG_INCLUDE_FILES="$2"
             shift 2
+            ;;
+        --allow-behind-origin)
+            FLAG_ALLOW_BEHIND_ORIGIN=true
+            shift
             ;;
         --exclude-files)
             FLAG_EXCLUDE_FILES="$2"
@@ -467,12 +472,17 @@ if ! git fetch origin dev >/dev/null 2>&1; then
 fi
 behind_count=$(git rev-list --count dev..origin/dev 2>/dev/null || echo 0)
 if [ "$behind_count" -gt 0 ]; then
-  print_error "Local dev is behind origin/dev by ${behind_count} commit(s)."
-  print_info "Update the dev worktree and retry:"
-  echo ""
-  echo "  git checkout dev && git pull --ff-only origin dev"
-  echo ""
-  exit 1
+  if [ "$FLAG_ALLOW_BEHIND_ORIGIN" = true ]; then
+    print_info "Local dev is behind origin/dev by ${behind_count} commit(s) — proceeding anyway (--allow-behind-origin)."
+  else
+    print_error "Local dev is behind origin/dev by ${behind_count} commit(s)."
+    print_info "Update the dev worktree and retry:"
+    echo ""
+    echo "  git checkout dev && git pull --ff-only origin dev"
+    echo ""
+    print_info "Or pass --allow-behind-origin to intentionally generate against a pre-merge base."
+    exit 1
+  fi
 fi
 
 # Get work branch (where script is running / HEAD)
