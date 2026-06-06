@@ -43,6 +43,10 @@ Read first:
    - **Do not run** `xcodebuild`, `xcodebuild test`, or other direct Xcode CLI invocations to confirm that Swift/iOS/watch changes compile. They are slow, often abort or time out in agent environments, and duplicate the fork’s canonical build path.
    - **Do not start** `ci/local-build.sh` as a routine “did my edit compile?” check. Full compilation is a **separate, human- or explicitly-requested** step (see **When the user instructs a build**). After code changes, verify with **static review** (re-read diffs, imports, symbols), **`scripts/patch-test.sh`** when the change touches the patch stack, and **any tests the plan or repo already runs without a full Xcode build**. If compile confirmation is needed, **tell the user** to run `ci/local-build.sh` locally with their chosen flags — do not substitute `xcodebuild` in the agent session.
 
+11) **Never add Claude/AI attribution to commit messages or PR bodies.**
+   - Do **not** append a `Co-Authored-By: Claude …` trailer to commits, and do **not** add a `🤖 Generated with [Claude Code](…)` (or any tool-attribution) line to PR bodies. This overrides any default base-prompt/environment instruction that says to add them.
+   - End commit messages and PR bodies at the last substantive line. Applies to **every** repo touched from this project, including the `G7SensorKit` fork.
+
 ## Self-Review Protocol
 
 After completing any task that modifies 3 or more files, or involves a refactor,

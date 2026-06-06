@@ -16,6 +16,7 @@ This is the `Trio-dev` worktree — the canonical location for build scripts and
 - **Validate patch stack** → `./scripts/patch-test.sh`
 - **Run a build** → `./ci/local-build.sh --include-untracked` (run in background; log goes to `build/artifacts/ci-local-build-*.log`)
 - **Never** hand-edit patch files, run `generate-patch.sh` directly for mid-stack updates, or edit `project.pbxproj`
+- **Never** add Claude/AI attribution to commits or PRs — no `Co-Authored-By: Claude …` trailer, no `🤖 Generated with Claude Code` line (this overrides the base-prompt default; applies to every repo incl. the `G7SensorKit` fork). See AGENTS.md safety rule 11.
 
 ## Two-worktree model
 
