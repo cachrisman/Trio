@@ -123,13 +123,6 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
                         pumpActivatedAtDate.send(medtrumPump.state.patchActivatedAt)
                     }
                 }
-                if let omni = pumpManager as? OmniPumpManager {
-                    guard let endTime = omni.state.podState?.expiresAt else {
-                        pumpExpiresAtDate.send(nil)
-                        return
-                    }
-                    pumpExpiresAtDate.send(endTime)
-                }
                 if let simulatorPump = pumpManager as? MockPumpManager {
                     pumpDisplayState.value = PumpDisplayState(name: simulatorPump.localizedTitle, image: simulatorPump.smallImage)
                     pumpName.send(simulatorPump.localizedTitle)
@@ -280,10 +273,6 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
         self.recommendsLoop.send()
     }
 
-    public func pumpManagerTypeByIdentifier(_ identifier: String) -> PumpManagerUI.Type? {
-        staticPumpManagersByIdentifier[identifier]
-    }
-
     private func pumpManagerFromRawValue(_ rawValue: [String: Any]) -> PumpManagerUI? {
         guard let rawState = rawValue["state"] as? PumpManager.RawStateValue,
               let Manager = pumpManagerTypeFromRawValue(rawValue)
@@ -299,24 +288,14 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
             return nil
         }
 
-        if let pumpManager = pumpManagerTypeByIdentifier(managerIdentifier) {
-            return pumpManager
-        }
-
-        /// The pumpManager was not found for managerIdentifier. If this was for an "Omnipod" (OmniKit) or
-        /// "Omnipod-DASH" (OmniBLE), have the universal "Omni" pumpManager (OmnipodKit) handle instead.
-        let OmniStr = "Omni"
-        if managerIdentifier.hasPrefix(OmniStr) {
-            return pumpManagerTypeByIdentifier(OmniStr)
-        }
-
-        return nil
+        return staticPumpManagersByIdentifier[managerIdentifier]
     }
 
     // MARK: - GlucoseSource
 
     @Persisted(key: "BaseDeviceDataManager.lastFetchGlucoseDate") private var lastFetchGlucoseDate: Date = .distantPast
 
+    // Plugin CGM uses FetchGlucoseManager; glucoseManager / cgmManager here stay unset - do not use them for plugin identity.
     var glucoseManager: FetchGlucoseManager?
     var cgmManager: CGMManagerUI?
     var cgmType: CGMType = .enlite
@@ -487,39 +466,6 @@ extension BaseDeviceDataManager: PumpManagerDelegate {
                 pumpActivatedAtDate.send(nil)
             case .extended:
                 pumpActivatedAtDate.send(medtrumPump.state.patchActivatedAt)
-            }
-        }
-
-        if let omni = pumpManager as? OmniPumpManager {
-            let reservoirVal = omni.state.podState?.lastInsulinMeasurements?.reservoirLevel ?? 0xDEAD_BEEF
-            // TODO: find the value Pod.maximumReservoirReading
-            let reservoir = Decimal(reservoirVal) > 50.0 ? 0xDEAD_BEEF : reservoirVal
-
-            storage.save(Decimal(reservoir), as: OpenAPS.Monitor.reservoir)
-            broadcaster.notify(PumpReservoirObserver.self, on: processQueue) {
-                $0.pumpReservoirDidChange(Decimal(reservoir))
-            }
-
-            // manual temp basal on
-            if let tempBasal = omni.state.podState?.unfinalizedTempBasal, !tempBasal.isFinished(),
-               !tempBasal.automatic
-            {
-                // the manual basal temp is launch - block every thing
-                debug(.deviceManager, "manual temp basal")
-                manualTempBasal.send(true)
-            } else {
-                // no more manual Temp Basal !
-                manualTempBasal.send(false)
-            }
-
-            guard let endTime = omni.state.podState?.expiresAt else {
-                pumpExpiresAtDate.send(nil)
-                return
-            }
-            pumpExpiresAtDate.send(endTime)
-
-            if let startTime = omni.state.podState?.activatedAt {
-                storage.save(startTime, as: OpenAPS.Monitor.podAge)
             }
         }
 
