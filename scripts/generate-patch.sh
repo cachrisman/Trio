@@ -151,6 +151,8 @@ FLAG_INCLUDE_WORKTREE=""     # "" = prompt, "true" = yes, "false" = no
 FLAG_OUTPUT_PATH=""
 FLAG_YES=false
 FLAG_NON_INTERACTIVE=false
+FLAG_ALLOW_BEHIND_ORIGIN=false   # bypass the "local dev behind origin/dev" guard (e.g. intentionally pre-merge base)
+FLAG_TRAILERS_FILE=""            # optional: file whose contents are appended to the squash commit body (provenance trailers)
 
 show_help() {
     # Extract and display the header documentation
@@ -193,6 +195,10 @@ while [[ $# -gt 0 ]]; do
             FLAG_INCLUDE_FILES="$2"
             shift 2
             ;;
+        --allow-behind-origin)
+            FLAG_ALLOW_BEHIND_ORIGIN=true
+            shift
+            ;;
         --exclude-files)
             FLAG_EXCLUDE_FILES="$2"
             shift 2
@@ -207,6 +213,13 @@ while [[ $# -gt 0 ]]; do
             ;;
         -o|--output)
             FLAG_OUTPUT_PATH="$2"
+            shift 2
+            ;;
+        --message-trailers-file)
+            # File whose contents are appended (verbatim) to the squash commit body,
+            # landing in the patch header after Subject. Used to record provenance
+            # trailers. Inert to `git am`.
+            FLAG_TRAILERS_FILE="$2"
             shift 2
             ;;
         -y|--yes)
@@ -467,12 +480,17 @@ if ! git fetch origin dev >/dev/null 2>&1; then
 fi
 behind_count=$(git rev-list --count dev..origin/dev 2>/dev/null || echo 0)
 if [ "$behind_count" -gt 0 ]; then
-  print_error "Local dev is behind origin/dev by ${behind_count} commit(s)."
-  print_info "Update the dev worktree and retry:"
-  echo ""
-  echo "  git checkout dev && git pull --ff-only origin dev"
-  echo ""
-  exit 1
+  if [ "$FLAG_ALLOW_BEHIND_ORIGIN" = true ]; then
+    print_info "Local dev is behind origin/dev by ${behind_count} commit(s) — proceeding anyway (--allow-behind-origin)."
+  else
+    print_error "Local dev is behind origin/dev by ${behind_count} commit(s)."
+    print_info "Update the dev worktree and retry:"
+    echo ""
+    echo "  git checkout dev && git pull --ff-only origin dev"
+    echo ""
+    print_info "Or pass --allow-behind-origin to intentionally generate against a pre-merge base."
+    exit 1
+  fi
 fi
 
 # Get work branch (where script is running / HEAD)
@@ -1076,10 +1094,21 @@ if [ "${#TRACKED_FILES[@]}" -gt 0 ] || [ "${#UNTRACKED_SELECTED[@]}" -gt 0 ]; th
   fi
 fi
 
-# Commit the changes
-if ! git commit -m "feat: ${PATCH_DESC}"; then
-  print_error "Failed to create commit in temporary worktree"
-  exit 1
+# Commit the changes (optionally appending provenance trailers to the commit body)
+if [ -n "$FLAG_TRAILERS_FILE" ] && [ -s "$FLAG_TRAILERS_FILE" ]; then
+  _commit_msg_file=$(mktemp)
+  { printf 'feat: %s\n\n' "${PATCH_DESC}"; cat "$FLAG_TRAILERS_FILE"; } > "$_commit_msg_file"
+  if ! git commit -F "$_commit_msg_file"; then
+    rm -f "$_commit_msg_file"
+    print_error "Failed to create commit in temporary worktree"
+    exit 1
+  fi
+  rm -f "$_commit_msg_file"
+else
+  if ! git commit -m "feat: ${PATCH_DESC}"; then
+    print_error "Failed to create commit in temporary worktree"
+    exit 1
+  fi
 fi
 
 # Generate mailbox patch to temp file

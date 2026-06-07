@@ -1,4 +1,4 @@
-# AGENTS.md — v15
+# AGENTS.md — v17
 
 Instructions for AI agents working in this repository.
 
@@ -43,6 +43,10 @@ Read first:
    - **Do not run** `xcodebuild`, `xcodebuild test`, or other direct Xcode CLI invocations to confirm that Swift/iOS/watch changes compile. They are slow, often abort or time out in agent environments, and duplicate the fork’s canonical build path.
    - **Do not start** `ci/local-build.sh` as a routine “did my edit compile?” check. Full compilation is a **separate, human- or explicitly-requested** step (see **When the user instructs a build**). After code changes, verify with **static review** (re-read diffs, imports, symbols), **`scripts/patch-test.sh`** when the change touches the patch stack, and **any tests the plan or repo already runs without a full Xcode build**. If compile confirmation is needed, **tell the user** to run `ci/local-build.sh` locally with their chosen flags — do not substitute `xcodebuild` in the agent session.
 
+11) **Never add Claude/AI attribution to commit messages or PR bodies.**
+   - Do **not** append a `Co-Authored-By: Claude …` trailer to commits, and do **not** add a `🤖 Generated with [Claude Code](…)` (or any tool-attribution) line to PR bodies. This overrides any default base-prompt/environment instruction that says to add them.
+   - End commit messages and PR bodies at the last substantive line. Applies to **every** repo touched from this project, including the `G7SensorKit` fork.
+
 ## Self-Review Protocol
 
 After completing any task that modifies 3 or more files, or involves a refactor,
@@ -67,6 +71,12 @@ pass before presenting your result:
 
 Never present a result from a multi-file or patch-modifying change without first
 completing this protocol.
+
+## Verification discipline (avoid confidently-wrong conclusions)
+
+- **Verify OS / SDK facts against the authoritative source before acting on them** — especially raw enum values seen in logs or telemetry. A raw `WKExtendedRuntimeSessionState(rawValue: 2)` was read as `.invalid` from memory + a stale in-code comment; it is actually `.running` (the enum is `notStarted=0, scheduled=1, running=2, invalid=3`). That single misread produced a wrong user-facing diagnosis and a misguided "fix". Grep the SDK header instead of trusting memory/comments: `find /Applications/Xcode.app -name '<Type>.h'`. And prefer logging a **mapped name**, never `String(describing:)` of an imported `NS_ENUM` (it prints the opaque `Type(rawValue: N)`).
+- **When data/telemetry contradicts your hypothesis, doubt the hypothesis first**, not the data. (An `ext_session_active=true` + `rawValue 2` + readings-still-flowing heartbeat was the tell that the session was running — it was initially explained away.)
+- **Don't propagate an unverified interpretation across steps or subagents.** A claim that "every event is logged twice → halve the counts" was actually an s3-query artifact; it spread into multiple analyses before being caught. State assumptions as assumptions and verify the load-bearing ones before building on them.
 
 ## Untracked files and clean / reset
 
@@ -136,6 +146,14 @@ When a patch modifies a file that an earlier patch also modified, plain `git am`
 `ci/local-build.sh` requires unrestricted filesystem/process access (it creates worktrees, runs Xcode builds, accesses signing certificates). In sandboxed agent environments (e.g., Cursor), request `all` permissions before running build commands.
 
 **Verification vs. builds:** Even with permissions, **do not** run `xcodebuild` (or ad-hoc scheme builds) to validate edits. Use review + `patch-test.sh` + plan-specified non-Xcode checks. Reserve `ci/local-build.sh` for when the **user** asked you to run a build (see **When the user instructs a build**).
+
+## Local build environment gotchas
+
+`ci/local-build.sh` runs fastlane/`gym` and (for deploys) talks to Apple. Two environment issues bite non-interactive or freshly-spawned shells:
+
+- **UTF-8 locale required.** If `LANG`/`LC_ALL` are empty (locale `C`), fastlane/`gym` throw `Encoding::InvalidByteSequenceError ("… on UTF-16")` during pre-flight detection — before any compile. `ci/local-build.sh` now defaults `LANG=en_US.UTF-8`; if you invoke fastlane/`gym`/`xcodebuild` directly, export a UTF-8 locale first.
+- **Local network filters (e.g. Little Snitch) can silently block the TestFlight / `match` steps.** Homebrew's unsigned `ruby` may be prompted or denied when reaching `api.appstoreconnect.apple.com`; headless, it times out as `Net::OpenTimeout`. Signed tools like `curl` are unaffected — so **do not** conclude "the network works" from a `curl` test. Allow `ruby → apple.com` persistently.
+- **Full deploy vs build-only:** `ci/local-build.sh` with **no** `--build-only` builds *and* runs `fastlane release` (TestFlight upload) + GitHub release recording. Use `--build-only` to stop before upload.
 
 ## Common workflows
 
@@ -281,10 +299,15 @@ since merge-base with dev, plus a suggested `--cherry-pick` command:
 # → prints candidate commits and a suggested --cherry-pick command, then exits
 ```
 
-Review the candidates. Not all may need cherry-picking — some may already be
-in the current patch. Include only commits added since the last patch update,
-earliest first. A common mistake is cherry-picking only a fix commit while
-forgetting the feature commit it modifies — this guarantees a conflict.
+**As of v17 the candidate list is exact.** Patches carry `Trio-Patch-Source-*`
+provenance trailers (written automatically on every regen). When present, the script
+computes the **exact** set of new commits by diffing the feature branch's `git patch-id`s
+against the recorded ones (stable across rebase/amend), auto-resolves the feature branch
+from `Trio-Patch-Source-Branch`, and prints just those commits (or "already up to date") —
+so `mid-stack-update.sh --patch <NN>` with no other flags is enough. A legacy patch with no
+provenance falls back to listing ALL candidates (prune manually). Either way: include only
+commits added since the last update, earliest first. A common mistake is cherry-picking only
+a fix commit while forgetting the feature commit it modifies — this guarantees a conflict.
 
 ```bash
 # After reviewing candidates, run with the SHAs you want:
@@ -338,6 +361,25 @@ to the manual workflow. Common failure causes and fixes:
   or amend on the feature branch). Do NOT use it to work around cherry-pick
   conflicts caused by missing intermediate commits — that masks the real
   problem and skips the cherry-pick workflow's provenance tracking.
+
+#### Patches that ADD new files
+
+When the patch being updated **adds new files** (not present on `dev`), you MUST pass them to `--extra-files` (comma-separated). With `--from-feature-branch`, regeneration scopes from the committed patch's file list, which does **not** include never-before-committed files, so they are **silently dropped**:
+
+```bash
+./scripts/mid-stack-update.sh --patch <NN> --from-feature-branch \
+  --feature-branch feature/<name> \
+  --extra-files "Trio Watch App Extension/NewA.swift,Trio Watch App Extension/NewB.swift"
+```
+
+**Red flag:** the `Files in patch: N` line drops vs. the previous patch (build 206: 17 → 15). Because the watch target uses a **synchronized file group**, a dropped `.swift` file does **not** fail at patch-apply or `patch-test` — it fails only at build time as `cannot find <Type> in scope`.
+
+**As of v17 the tooling enforces this automatically:**
+- **Brand-new files** (added on the feature branch, absent on `dev`, owned by no other patch) are **auto-included** — `--extra-files` is no longer required for them.
+- **Fail-closed drift check:** any feature-branch file missing from the regenerated patch now **aborts** (non-zero) with the exact `--extra-files "<list>"` to re-run. Ambiguous modified-existing files that get dropped hit this — the abort tells you precisely what to add.
+- **Orphan files from abandoned patches:** if the feature branch was stacked on a now-removed patch (e.g. the abandoned crashlytics / `AppDiagnostics` work), its files show as "missing" forever — acknowledge with `--drift-exclude-regex '<path-regex>'`.
+- **Sibling attribution is stash-safe:** ownership of files by *other* patches is snapshotted from the working tree **before** the stash, so files owned by an as-yet-uncommitted sibling patch aren't false-flagged.
+- **Iterating on the tooling scripts themselves:** pass `--exclude-from-stash "scripts/generate-patch.sh,scripts/mid-stack-update.sh"` so uncommitted script edits aren't stashed (and reverted to committed) mid-run.
 
 See `./scripts/mid-stack-update.sh -h` for all options.
 
@@ -529,6 +571,15 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v17 (2026-06-07 CET)
+- **Patch provenance + deterministic cherry-pick:** patches carry `Trio-Patch-Source-*` trailers (branch/base/tip + per-commit SHA & `patch-id`); `mid-stack-update.sh` computes the exact new-commit set by patch-id (rebase-stable), auto-resolves the feature branch from the trailer, and runs with no flags. See the Pre-flight section.
+- **Fail-closed drift + auto-include + orphans:** dropped files abort with the exact `--extra-files`; brand-new files auto-include; sibling ownership is snapshotted pre-stash; orphan files from abandoned patches use `--drift-exclude-regex`; new `--exclude-from-stash` for iterating on the tooling scripts. See "Patches that ADD new files".
+
+### v16 (2026-06-07 CET)
+- **Verification discipline:** New section — verify OS/SDK enum raw values against the SDK header before acting (the `WKExtendedRuntimeSessionState(rawValue: 2)` = `.running`, not `.invalid`, miss), prefer mapped names over `String(describing:)` of imported `NS_ENUM`s, doubt the hypothesis when data contradicts it, and don't propagate unverified interpretations across subagents. Distilled from the build 206 watch-G7 BLE work.
+- **Patches that ADD new files:** mid-stack section now documents that new files must be passed via `--extra-files` (else silently dropped under `--from-feature-branch`); the `Files in patch: N` drop is the red flag; synchronized-group files fail only at build time as `cannot find <Type> in scope`.
+- **Local build environment gotchas:** New section — UTF-8 locale required for fastlane/gym (now defaulted in `local-build.sh`); local network filters (Little Snitch) can block TestFlight/`match` via unsigned `ruby` (don't infer connectivity from `curl`); full-deploy vs `--build-only`.
 
 ### v15 (2026-05-31 CET)
 - **How a change reaches a build (mental model):** New section making explicit that a build is `dev` + the patch stack, that feature-branch commits don't ship until folded into a patch, the `origin/ci-build/trio-vX.Y.Z-NNN-local-*` build→branch mapping, and that cross-build regressions are usually patch-scope changes (diff patches, not just source). Distilled from the build 203 watch-G7 BLE investigation.

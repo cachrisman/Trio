@@ -404,6 +404,13 @@ export FASTLANE_SKIP_UPDATE_CHECK=1
 export FASTLANE_HIDE_CHANGELOG=1
 export FASTLANE_DONT_STORE_PASSWORD=1
 
+# Ensure a UTF-8 locale. fastlane/gym parse xcodebuild PTY output and throw
+# Encoding::InvalidByteSequenceError ("... on UTF-16") when LANG/LC_ALL are unset
+# (e.g. non-interactive CI / agent shells whose locale defaults to C). Preserve any
+# locale the caller already set; only fill in a sane default when absent.
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+
 export BUNDLE_SILENCE_ROOT_WARNING=1
 export BUNDLE_DISABLE_VERSION_CHECK=true
 
