@@ -48,6 +48,13 @@ extension NSPredicate {
         return NSPredicate(format: "date >= %@", date as NSDate)
     }
 
+    /// Last ~2 hours of glucose — the watch WC payload window (build 205 / P1). The watch retains the
+    /// full 24h chart in its own history store, so only recent readings need ship each transfer.
+    static var glucoseForTwoHoursAgo: NSPredicate {
+        let date = Date().addingTimeInterval(-7200)
+        return NSPredicate(format: "date >= %@", date as NSDate)
+    }
+
     static var manualGlucose: NSPredicate {
         let date = Date.oneDayAgo
         return NSPredicate(format: "isManual == %@ AND date >= %@", true as NSNumber, date as NSDate)
