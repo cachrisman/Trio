@@ -31,14 +31,22 @@ actor WatchErrorReporter {
 
     /// Startup method - safe to call multiple times (idempotent).
     /// Checks for previous crash and marks the session as checked.
-    func startup() async {
+    ///
+    /// - Parameter previousRunWasForeground: Snapshot of `watchLastRunWasForeground` captured
+    ///   on the main thread **before** `markBecameActiveImmediately()` ran for the current
+    ///   activation. Reading the flag here would otherwise always observe the just-set `true`
+    ///   value and falsely report a crash on every foreground entry.
+    func startup(previousRunWasForeground: Bool) async {
         guard !hasCheckedForCrash else { return }
         hasCheckedForCrash = true
-        await checkForPreviousCrash()
+        await checkForPreviousCrash(previousRunWasForeground: previousRunWasForeground)
     }
 
     /// Checks if the app crashed on the previous launch and reports it.
-    private func checkForPreviousCrash() async {
+    ///
+    /// `previousRunWasForeground` must reflect the state **before** the current activation
+    /// flipped the marker via `markBecameActiveImmediately()`. See `startup(previousRunWasForeground:)`.
+    private func checkForPreviousCrash(previousRunWasForeground: Bool) async {
         let userDefaults = UserDefaults.standard
         let hasLaunchedBefore = userDefaults.bool(forKey: firstLaunchKey)
 
@@ -49,14 +57,12 @@ actor WatchErrorReporter {
             return
         }
 
-        // Subsequent launches - check if previous run was foreground
-        let lastRunWasForeground = userDefaults.bool(forKey: Self.watchLastRunWasForegroundKey)
-
-        if lastRunWasForeground {
+        if previousRunWasForeground {
             // Previous run was foreground and didn't transition to background - likely crashed
             await reportPotentialCrash()
-            // Clear the marker to prevent repeated reporting in the same session
-            userDefaults.set(false, forKey: Self.watchLastRunWasForegroundKey)
+            // No need to clear watchLastRunWasForegroundKey here: the caller already set it
+            // to `true` for the current run, and `hasCheckedForCrash` guards against repeats
+            // within this session.
         }
     }
 
@@ -137,33 +143,55 @@ actor WatchErrorReporter {
         return validContext.isEmpty ? nil : validContext
     }
 
-    /// Reads recent log entries from persisted logs for crash context (with size cap).
+    /// Reads recent log entries from persisted logs for crash context.
+    ///
+    /// Uses a `FileHandle` tail read so peak allocation is at most `recentLogsSizeCap` bytes —
+    /// `Data(contentsOf:)` would load the entire `watch_log_daily.txt` into memory and was the
+    /// observed Jetsam trigger (peak ≈ 2× file size during crash-context capture).
     private func readRecentLogs() async -> String? {
         let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             .appendingPathComponent("logs", isDirectory: true)
 
-        // Try to read from daily log file
         let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
 
-        guard let data = try? Data(contentsOf: dailyLogFile),
-              let logString = String(data: data, encoding: .utf8),
-              !logString.isEmpty
+        guard let handle = try? FileHandle(forReadingFrom: dailyLogFile) else { return nil }
+        defer { try? handle.close() }
+
+        guard let fileSize = try? handle.seekToEnd(), fileSize > 0 else { return nil }
+
+        let readSize = min(fileSize, UInt64(recentLogsSizeCap))
+        let startOffset = fileSize - readSize
+        try? handle.seek(toOffset: startOffset)
+
+        guard let data = try? handle.readToEnd(), !data.isEmpty else { return nil }
+
+        // Tail read may slice mid-UTF-8 sequence; drop any leading bytes up to the first
+        // newline so we resync on a clean line boundary (only when we actually tailed).
+        let trimmed: Data = {
+            guard startOffset > 0, let nlIndex = data.firstIndex(of: UInt8(ascii: "\n")) else {
+                return data
+            }
+            let after = data.index(after: nlIndex)
+            return after < data.endIndex ? data.subdata(in: after ..< data.endIndex) : Data()
+        }()
+
+        guard !trimmed.isEmpty,
+              let tail = String(data: trimmed, encoding: .utf8),
+              !tail.isEmpty
         else { return nil }
 
-        // Apply size cap
-        let cappedString: String
-        if logString.utf8.count > recentLogsSizeCap {
-            // Take last N bytes that fit within cap
-            let cappedData = data.suffix(recentLogsSizeCap)
-            cappedString = String(data: cappedData, encoding: .utf8) ?? String(logString.suffix(recentLogsSizeCap))
-        } else {
-            cappedString = logString
-        }
-
-        // Return last 50 lines for context
-        let lines = cappedString.components(separatedBy: .newlines)
+        let lines = tail.components(separatedBy: "\n").filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return nil }
         let recentLines = Array(lines.suffix(50))
         return recentLines.joined(separator: "\n")
+    }
+
+    /// Snapshot of `watchLastRunWasForeground` reflecting the **previous** run's last known
+    /// foreground state. Read this *before* calling `markBecameActiveImmediately()` so the
+    /// captured value isn't overwritten by the current activation; pass it into
+    /// `startup(previousRunWasForeground:)` for crash detection.
+    static var previousRunWasForeground: Bool {
+        UserDefaults.standard.bool(forKey: Self.watchLastRunWasForegroundKey)
     }
 
     /// Marks the app as having become active (foreground).

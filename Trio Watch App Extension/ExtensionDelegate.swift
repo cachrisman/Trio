@@ -1,7 +1,30 @@
+import G7SensorKit
 import WatchKit
 
 final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     func applicationDidFinishLaunching() {
+        // D6: force-instantiate the BLE adapter (and its `CBCentralManager`, created with the
+        // `CBCentralManagerOptionRestoreIdentifierKey`) synchronously at launch so the OS can
+        // deliver `willRestoreState` on a background relaunch. Previously the central was created
+        // lazily (first via the telemetry closure below), which can be too late for restoration.
+        // WKApplicationDelegate callbacks run on the main thread, so assumeIsolated is safe.
+        MainActor.assumeIsolated { _ = G7WatchSensorAdapter.shared }
+
+        // Fork-level G7SensorKit telemetry (`G7TelemetryPayload`) → WatchLogger → BetterStack
+        // (same pipeline as BLE logs).
+        G7Telemetry.emit = { payload in
+            Task { @MainActor in
+                let sid = G7WatchSensorAdapter.shared.adapterSessionID ?? "nil"
+                let sensorName = G7WatchSensorAdapter.shared.telemetrySensorName
+                let line = G7StructuredTelemetryLogLine.formatCoreTelemetry(
+                    sensorName: sensorName,
+                    payload: payload,
+                    g7Session: sid
+                )
+                await WatchLogger.shared.log(line)
+            }
+        }
+
         // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
         TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
         WatchState.shared.scheduleBackgroundLaunchDisarmIfNeeded()
@@ -12,7 +35,9 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
                 force: false
             )
             // Emit App Group diagnostics early, before any snapshot reads/writes.
-            let diagnostics = TrioComplicationDataStore.shared.diagnosticsSummary(context: "applicationDidFinishLaunching")
+            let diagnostics = TrioComplicationDataStore.shared.diagnosticsSummary(
+                context: "applicationDidFinishLaunching"
+            )
             await WatchLogger.shared.log(diagnostics, force: false)
         }
         WatchState.shared.scheduleBackgroundRefresh()
@@ -32,7 +57,8 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
     }
 
     func applicationWillResignActive() {
-        WatchState.shared.handleForegroundInactiveOrBackground()
+        // Semantically `.inactive` — losing active status (often before SwiftUI reports `.background`).
+        WatchState.shared.handleForegroundInactiveOrBackground(phase: "inactive")
         Task {
             await WatchLogger.shared.log(
                 "event=watch_app_resigning_active source=wk_application_delegate "

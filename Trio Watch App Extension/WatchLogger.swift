@@ -72,6 +72,13 @@ actor WatchLogger {
     private let maxPerPayloadFiles = 10
     private let maxFileAge: TimeInterval = 48 * 60 * 60 // 48 hours
 
+    /// Hard ceiling for `watch_log_daily.txt`. Past this, `appendToDailyLog` rewrites the file
+    /// keeping only the newest `dailyLogTruncateKeepBytes`. Bounded so the rewrite read stays
+    /// well under the watchOS per-process memory limit that previously triggered Jetsam when
+    /// `WatchErrorReporter.readRecentLogs` slurped an unbounded daily log via `Data(contentsOf:)`.
+    private let dailyLogSizeCap: UInt64 = 2 * 1024 * 1024 // 2 MB
+    private let dailyLogTruncateKeepBytes: UInt64 = 1 * 1024 * 1024 // 1 MB
+
     private let session = WCSession.default
     private var timerTask: Task<Void, Never>?
 
@@ -326,15 +333,59 @@ actor WatchLogger {
         let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
         let logEntry = text + "\n"
 
-        if let data = logEntry.data(using: .utf8) {
-            if let handle = try? FileHandle(forWritingTo: dailyLogFile) {
-                _ = try? handle.seekToEnd()
-                handle.write(data)
-                try? handle.close()
-            } else {
-                try? data.write(to: dailyLogFile)
-            }
+        guard let data = logEntry.data(using: .utf8) else { return }
+
+        var postWriteSize: UInt64?
+
+        if let handle = try? FileHandle(forWritingTo: dailyLogFile) {
+            _ = try? handle.seekToEnd()
+            handle.write(data)
+            postWriteSize = try? handle.offset()
+            try? handle.close()
+        } else {
+            try? data.write(to: dailyLogFile)
+            postWriteSize = UInt64(data.count)
         }
+
+        if let size = postWriteSize, size > dailyLogSizeCap {
+            truncateDailyLogKeepingNewest(at: dailyLogFile)
+        }
+    }
+
+    /// Rewrites `watch_log_daily.txt` keeping only the newest `dailyLogTruncateKeepBytes`,
+    /// aligned to a newline boundary so the head of the file stays line-clean.
+    ///
+    /// Streaming tail read via `FileHandle` so peak allocation is bounded by
+    /// `dailyLogTruncateKeepBytes` (~1 MB) regardless of how large the on-disk file is —
+    /// `Data(contentsOf:)` would re-introduce the Jetsam risk this fix exists to prevent.
+    private func truncateDailyLogKeepingNewest(at url: URL) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+
+        guard let fileSize = try? handle.seekToEnd(), fileSize > 0 else { return }
+        let keepBytes = min(fileSize, dailyLogTruncateKeepBytes)
+        let startOffset = fileSize - keepBytes
+        try? handle.seek(toOffset: startOffset)
+
+        guard let data = try? handle.readToEnd(), !data.isEmpty else { return }
+
+        // If we tailed from mid-file, drop any bytes before the first newline so we don't
+        // leave a partial line at the head of the rewritten file.
+        let aligned: Data = {
+            guard startOffset > 0, let nlIndex = data.firstIndex(of: UInt8(ascii: "\n")) else {
+                return data
+            }
+            let after = data.index(after: nlIndex)
+            return after < data.endIndex ? data.subdata(in: after ..< data.endIndex) : Data()
+        }()
+
+        guard !aligned.isEmpty else { return }
+
+        let marker = "[truncated daily log: kept newest \(aligned.count) bytes]\n"
+        var output = Data(marker.utf8)
+        output.append(aligned)
+
+        try? output.write(to: url, options: .atomic)
     }
 
     // MARK: - Flush
