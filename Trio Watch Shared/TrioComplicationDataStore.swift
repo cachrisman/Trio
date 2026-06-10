@@ -5,6 +5,35 @@ import WatchConnectivity
 #endif
 import WidgetKit
 
+enum TrioComplicationDataSource: String, Codable, Equatable {
+    case watchConnectivity = "watch_connectivity"
+    case healthKit = "healthkit"
+    case g7DirectBLE = "g7_direct_ble"
+    case unknown = "unknown"
+
+    var shortLabel: String {
+        switch self {
+        case .watchConnectivity: return "Phone"
+        case .healthKit: return "HK"
+        case .g7DirectBLE: return "BLE"
+        case .unknown: return "?"
+        }
+    }
+
+    /// Tie-break priority when the same CGM reading arrives via multiple channels. Higher wins.
+    /// Used by both `TrioComplicationDataStore.shouldUpdate` (complication-store dedup) and
+    /// `WatchState.tryAttributeDisplayedReadingSource` (live UI attribution) so the two paths
+    /// agree about which source should win on a sequence tie.
+    var priority: Int {
+        switch self {
+        case .g7DirectBLE: return 3
+        case .watchConnectivity: return 2
+        case .healthKit: return 1
+        case .unknown: return 0
+        }
+    }
+}
+
 struct TrioComplicationSnapshot: Equatable, Codable {
     private enum Constants {
         static let fallbackGlucose = "--"
@@ -18,6 +47,9 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let readingDate: Date
     let state: String?
     let glucoseColor: String?
+    let source: TrioComplicationDataSource?
+    /// G7 EGV sequence when known; optional same-reading identity alongside `readingDate`.
+    let sequence: Int?
 
     // INVARIANT (Phase 3.4): All display-field sanitization here.
     // Dedup always compares sanitized values.
@@ -28,7 +60,9 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         readingDate: Date,
         date: Date,
         state: String? = nil,
-        glucoseColor: String? = nil
+        glucoseColor: String? = nil,
+        source: TrioComplicationDataSource? = nil,
+        sequence: Int? = nil
     ) {
         glucose = Self.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -37,6 +71,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         self.date = date
         self.state = state
         self.glucoseColor = glucoseColor
+        self.source = source
+        self.sequence = sequence
     }
 
     private static func sanitizedGlucose(from value: String) -> String {
@@ -89,6 +125,7 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
     let trend: String
     let delta: String
     let state: String
+    let source: String
 }
 
 extension ComplicationSnapshotFingerprint {
@@ -100,6 +137,7 @@ extension ComplicationSnapshotFingerprint {
         // Sentinel for nil: state is always optional in the model; sentinel ensures
         // nil and non-nil are always distinguishable in Equatable comparison.
         state = snapshot.state ?? "<nil>"
+        source = snapshot.source?.rawValue ?? "<nil>"
     }
 }
 
@@ -569,14 +607,48 @@ final class TrioComplicationDataStore {
     //   Same timestamp, different glucose → true
     //   Newer timestamp (>1s)            → true
     //   Older timestamp (<-1s)           → false
+    //   Within ±1s, same glucose+trend, higher-priority source → true (MOD-D synthesis)
+    //   Within ±1s, same g7Sequence (regardless of display fields), lower-priority source → false
     func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
         let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
         if timeDiff > 1.0  { return true }
         if timeDiff < -1.0 { return false }
+        // Sequence-equality guard for the BLE/phone race. When both snapshots carry a G7 sequence
+        // and the values match, they are the *same* sensor reading even if their derived display
+        // fields disagree (trend mapping in particular can differ across channels — direct BLE
+        // uses the 5-min trend rate, phone uses its own delta-window logic, and they can land on
+        // different `hkTrendString` buckets for the same underlying reading). Without this check
+        // the fallthrough OR below treats trend/delta inequality as "different reading" and lets
+        // a lower-priority channel (e.g. `.watchConnectivity`, priority 2) overwrite a higher-
+        // priority one (`.g7DirectBLE`, priority 3) that already saved this sequence.
+        if let newSeq = new.sequence, let curSeq = current.sequence, newSeq == curSeq {
+            let newP = Self.sourcePriority(new.source)
+            let curP = Self.sourcePriority(current.source)
+            if newP > curP { return true }
+            if newP < curP { return false }
+            // Equal priority + same sequence + within ±1s → same reading from the same channel,
+            // no-op even if display fields differ (shouldn't happen in practice but defensive).
+            return false
+        }
+        let sameCore = new.glucose == current.glucose && new.trend == current.trend
+        if sameCore {
+            let newP = Self.sourcePriority(new.source)
+            let curP = Self.sourcePriority(current.source)
+            if newP > curP { return true }
+            if newP < curP { return false }
+        }
         return new.glucose != current.glucose
             || new.trend   != current.trend
             || new.delta   != current.delta
             || new.state   != current.state
+            || new.source  != current.source
+    }
+
+    /// Tie-break when two channels race within the ±1s dedup window (direct BLE preferred).
+    /// Delegates to `TrioComplicationDataSource.priority` so the same ordering is used by the
+    /// live UI attribution path in `WatchState.tryAttributeDisplayedReadingSource`.
+    private static func sourcePriority(_ source: TrioComplicationDataSource?) -> Int {
+        source?.priority ?? 0
     }
 
     // MARK: - Phase 3.0 Pre-dispatch Dedup
@@ -682,8 +754,14 @@ final class TrioComplicationDataStore {
                 return
             }
         } else if let lastTS = Self.lastValidTimestamp {
-            if snapshot.readingDate.timeIntervalSince(lastTS) < 0.0 {
-                log("⏭️ saveOnMain: rejected older snapshot via lastValidTimestamp fallback (readingDate=\(snapshot.readingDate), lastValid=\(lastTS))")
+            // Monotonic write guard (Bug #5): authoritative monotonic check lives on the write
+            // path. `<` is a genuine backward-in-time write — log it. `==` is a normal duplicate
+            // (same reading seen twice) and is silenced so it doesn't masquerade as an anomaly
+            // in telemetry / log streams. The read path (`latestSnapshot`) no longer logs this.
+            if snapshot.readingDate < lastTS {
+                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(snapshot.readingDate) < \(lastTS))")
+                return
+            } else if snapshot.readingDate == lastTS {
                 return
             }
         }
@@ -782,8 +860,15 @@ final class TrioComplicationDataStore {
     }
 
     /// Loads the latest complication snapshot from disk.
-    /// May be called from any thread. Updates `lastValidTimestamp` as a side-effect (serialized on main
-    /// when App Group defaults are unavailable to protect in-memory fallback).
+    ///
+    /// May be called from any thread.
+    ///
+    /// **Invariant (Bug #5):** the monotonic write guard lives on `saveOnMain`, **not** here.
+    /// This read path no longer logs `lastValidTimestamp: skipped non-monotonic write` — that
+    /// message previously fired on every poll of an unchanged snapshot (e.g., the 1Hz debug-view
+    /// task) and on every legitimate dedup, masquerading as an anomaly. The only timestamp
+    /// side-effect retained here is **cold-start hydration** when `lastValidTimestamp` has not
+    /// yet been seeded in this process / App Group; that path is silent unless it actually fires.
     func latestSnapshot() -> TrioComplicationSnapshot? {
         guard let fileURL = snapshotFileURL else {
             log("❌ Snapshot load FAILED: no App Group container URL")
@@ -803,16 +888,16 @@ final class TrioComplicationDataStore {
             guard !data.isEmpty else { throw NSError(domain: "EmptySnapshot", code: -1) }
             let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
             let readingDate = snapshot.readingDate
-            if let currentTS = Self.lastValidTimestamp, readingDate.timeIntervalSince(currentTS) <= 0 {
-                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(readingDate) <= \(currentTS))")
-            } else if appGroupDefaults == nil {
-                onMain {
+            if Self.lastValidTimestamp == nil {
+                if appGroupDefaults == nil {
+                    onMain {
+                        Self.lastValidTimestamp = readingDate
+                        self.log("✅ lastValidTimestamp hydrated from disk (main): \(readingDate)")
+                    }
+                } else {
                     Self.lastValidTimestamp = readingDate
-                    self.log("✅ lastValidTimestamp updated (main): \(readingDate)")
+                    log("✅ lastValidTimestamp hydrated from disk: \(readingDate)")
                 }
-            } else {
-                Self.lastValidTimestamp = readingDate
-                log("✅ lastValidTimestamp updated: \(readingDate)")
             }
             return snapshot
         }
