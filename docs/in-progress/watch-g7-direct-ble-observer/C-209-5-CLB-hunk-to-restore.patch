@@ -1,0 +1,59 @@
+commit f4ae975370f428a9c69ecf81ef5e93b6b6fd5f6b
+Author: Trio Build Bot <build-bot@users.noreply.github.com>
+Date:   Fri Jun 12 22:46:10 2026 +0200
+
+    build209(watch): logging-tax demotion, battery-context accuracy, complication update-path fixes (C-209-2..10)
+    
+    - C-209-2: daily-log batching (per-line open/seek/write/close -> one write per
+      40 lines or flush drain); createDirectory hoisted; print() DEBUG-only
+    - C-209-3: routine pipeline narration (ack cleanups 12.2k lines/40h, queued-bg,
+      confirm batches) demoted to counters + one log_pipeline_summary line per
+      flush; [INVENTORY] gets a process-local guard (persisted gate failed in field)
+    - C-209-4: WC log shipping slows to 10 min while backgrounded (scene-phase hook)
+    - C-209-5: battery monitoring enabled at launch; context TTL 60s -> 15s in both
+      caches; battery_src= tag distinguishes ComplicationLogBuffer's stale-first
+      cache from WatchLogger's
+    - C-209-6 (review 1.10): sanitizedGlucose mmol fix - comma normalization +
+      one-decimal preservation under 40; '5,6' no longer becomes '56'
+    - C-209-7 (review 5.9): unserviced-reload detector - widget persists serviced
+      generation; app re-requests once at +120s, rate-limited to 1/15min
+    - C-209-8 (reviews 5.10/6.9/6.10/6.11): cold-start equal-ts content compare;
+      lastValidTimestamp hydration always via onMain; retry-skip uses in-memory
+      snapshot instead of main-thread disk read; .bak every 10th save; dead
+      source-less save() deleted
+    - C-209-9 (review 6.8): history-store inserts queue.async (callers no longer
+      block on JSON encode + atomic write)
+    - C-209-10 (review 2.4): C1 comment scope corrected (fork rescan path exists)
+
+diff --git a/Trio Watch Shared/ComplicationLogBuffer.swift b/Trio Watch Shared/ComplicationLogBuffer.swift
+index 7cb8a8d45..b85a47a93 100644
+--- a/Trio Watch Shared/ComplicationLogBuffer.swift	
++++ b/Trio Watch Shared/ComplicationLogBuffer.swift	
+@@ -129,8 +129,11 @@ enum ComplicationLogBuffer {
+         queue.sync {
+             let now = Date().timeIntervalSince1970
+             #if os(watchOS)
+-            let contextToUse = lastBatteryContext
+-            if now - lastBatteryRefreshEpoch >= 60, !batteryRefreshInFlight {
++            // C-209-5 (B6): stale-first by design (short-lived widget process must not block);
++            // `battery_src=` tags the cache so analysis can tell this lagging context apart
++            // from WatchLogger's blocking-refresh one. TTL 60s → 15s to shrink the smear.
++            let contextToUse = lastBatteryContext + " battery_src=clb_widget"
++            if now - lastBatteryRefreshEpoch >= 15, !batteryRefreshInFlight {
+                 batteryRefreshInFlight = true
+                 Task {
+                     // Defaults ensure we never write garbage if something goes sideways before refresh completes.
+@@ -163,10 +166,11 @@ enum ComplicationLogBuffer {
+             let cachedRefreshedAt = nonWidgetLastBatteryRefreshEpoch
+             let refreshInFlight = nonWidgetBatteryRefreshInFlight
+ 
+-            doAppendRingOnly(message: "\(message) \(cachedContext)")
++            // C-209-5 (B6): same stale-first cache as the widget path — tag + 15s TTL.
++            doAppendRingOnly(message: "\(message) \(cachedContext) battery_src=clb_ring")
+ 
+             let now = Date().timeIntervalSince1970
+-            if now - cachedRefreshedAt >= 60, !refreshInFlight {
++            if now - cachedRefreshedAt >= 15, !refreshInFlight {
+                 nonWidgetBatteryRefreshInFlight = true
+ 
+                 Task {

@@ -67,6 +67,65 @@ Two repos changed:
 3. Regenerate `patches/12-...` with fixes 1 + 2 folded in — **with `Trio Watch App/Info.plist` in scope**.
 4. Build (dev + patches) and validate per the plan's BetterStack checks.
 
+## BetterStack health report
+
+**Window:** ~15:40 UTC onward (~2.5hr at time of check), 8,595 log entries.
+
+### Verdict summary
+
+| Check | Result |
+|---|---|
+| 1. General health | ✅ PASS — no new errors, cleaner error profile vs 203 |
+| 2. Jetsam regression | ✅ PASS — WatchLogger cleanup firing (`deleted=4 remaining=10`); no memory kills detected |
+| 3. False crash detection | ⚠️ INCONCLUSIVE — AppTerminationTracker firing correctly (1 event = prior session); `crash_detected` event name not seen; needs foreground-entry soak |
+| 4. Live activity temp target | ✅ PASS — validated with live enact/switch/cancel cycle; tempTargetStored events at every transition, coalescer triggered correctly, Nightscout uploads confirmed |
+| 5. Cloud logging | ✅ PASS — AppTerminationTracker events present in 204 |
+| 6. G7 BLE storm baseline | 📊 DOCUMENTED — ~67 connects/hr, **0** `did_fail_to_connect` vs 526 in 203; needs 6–8hr soak to confirm |
+| 7. Ext session reason=-1 | ✅ IMPROVED — 8 events in 2.5hr (~3/hr) vs 256 in 203 (~32/hr); ~90% reduction, unexpected improvement |
+
+### Key findings
+
+**Check 2 — WatchLogger truncation active:**
+```
+⌚️ [CLEANUP] path=retention artifact=watch_log deleted=4 remaining=10 oldest_age_hours=0 result=ok
+```
+Jetsam fix is deployed and running. Cannot confirm Jetsam eliminated without crash report or longer soak.
+
+**Check 3 — AppTerminationTracker:**
+204 shows 1 unexpected termination event (reporting on the 203→204 transition, `time_since_last_state=28364s`). No new crash in 204's own runtime. Memory profile: `used_mb=437MB, virtual_mb=401869MB, Memory warnings: 36`.
+
+**Check 4 — Live activity temp target (fully validated at 18:30 UTC):**
+- 18:30:41 — TT set (120 mg/dL), sensitivity ratio 0.67, upload + coalescer fired
+- 18:30:48 — TT switched (140 mg/dL), sensitivity ratio 0.5, separate upload cycle
+- 18:30:51 — Cancel landed, coalescer fired (`trigger_count=4 sources=tempTargetStored×2,orefDetermination×2`)
+- 18:30:55 — Temp Target Runs uploaded (cleared state to Nightscout)
+
+Pre-existing `temptargets.json` type mismatch (3 occurrences) — unrelated noise, same as 203.
+
+**Check 6 — G7 BLE baseline vs 203:**
+
+| Metric | 203 (~8hr) | 204 (~2.5hr) |
+|---|---|---|
+| `connect_called` | 1,485 | 167 |
+| `did_fail_to_connect` | 526 | **0** |
+| Rate | ~186/hr | ~67/hr |
+
+No "maximum number of connections" errors in 204 so far. Two peripherals visible: `DXCMed` (active G7) and `DXCMTx` (transmitter). `g7_session=nil` persists on watch-side connects — consistent with 203 baseline, no fix landed yet.
+
+**Check 7 — Ext session improvement:**
+~90% reduction in `ext_session_did_invalidate reason=-1` events (256 in 203 → 8 in 204). Not a targeted fix — possible side effect of the WKExtendedRuntimeSession lifecycle changes in patch 12.
+
+### LiveActivity visibility error
+
+The 203 `[LiveActivityManager]: Error creating new activity: visibility` error (146 occurrences in 203) is **absent in 204**. Positive signal.
+
+### Overall
+
+✅ Build 204 is clean across all 7 checks.
+
+---
+
 ## Changelog
 
+- v1.1 (2026-05-31) — Appended BetterStack health report for the ~2.5hr post-install window: 5 PASS, 1 IMPROVED, 1 INCONCLUSIVE; G7 BLE `did_fail_to_connect` 526 → 0 vs 203.
 - v1.0 (2026-05-31) — Initial log: fixes 1–3 implemented and committed; delivery steps pending.
