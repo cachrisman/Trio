@@ -1,6 +1,6 @@
-From b00179e7e8527ff39160ac7795a51a176572b265 Mon Sep 17 00:00:00 2001
+From 12b5928f851a1683c2894a393a91e56cd3a8e769 Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sun, 7 Jun 2026 10:24:55 +0200
+Date: Mon, 15 Jun 2026 19:08:48 +0200
 Subject: [PATCH] feat: direct-ble-observer
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7-direct-ble-observer-synthesis
 Trio-Patch-Base: 86d17c3e794b73f55b62a3e4e21ebab6ad3f366b
-Trio-Patch-Feature-Tip: 06cb245de65a0335202e938741c550529fa2d7cc
-Trio-Patch-Generated: 2026-06-07T08:24:45Z
+Trio-Patch-Feature-Tip: 7776d8cff6ee1252f52813444a4616279d59ac99
+Trio-Patch-Generated: 2026-06-15T17:08:37Z
 Trio-Patch-Source-Commits:
  d4b6e8c385726130787ef0885a45f8e9104ad89f feat: ns-richer-settings
  7097c9de8f57d55c7fadc7f2310aeabb80ff4785 Update G7SensorKit (show reading timestamp with seconds)
@@ -121,6 +121,15 @@ Trio-Patch-Source-Commits:
  4a7707559666efedac786ba2accc5ac19ed3fb6d build206(watch): session-layer overhaul + false-EOS fix + dead-field cleanup
  f5eb57c8e3ecd700606d9dc2137490a1e559c515 build206(watch): drop dead BLE sequence mirrors + de-dup lifecycle log (D5, D10)
  06cb245de65a0335202e938741c550529fa2d7cc build206(watch): force-instantiate BLE adapter at launch for state restoration (D6)
+ 1135fc67c35fec28cccbfae893b8c15d396eae5a Watch G7: build-207 BLE + debug fixes (C-207-1, DS1, UI-207-1/2/3)
+ 694e006b7519587e4ec428405c112c4eb4d9e419 build208(watch): unwire BLE teardown from session invalidation; delete dead stop() machinery (C-208-1)
+ c144e9e5c0b82fb3ee652c9723532a963f851db9 build208(watch): watchdogs, telemetry ring, defer-tail, cross-thread fixes (C-208-2..10)
+ b2417f7bd8c9cc8239a5286c2a9e130d46a3df44 build208(watch): verification fixes (C-208-V1)
+ f4ae975370f428a9c69ecf81ef5e93b6b6fd5f6b build209(watch): logging-tax demotion, battery-context accuracy, complication update-path fixes (C-209-2..10)
+ f1b6450b7cb2d33afbb9197c0b0a335a06ee51c4 build209(watch): analytical slot denominator replaces timer-accumulated counter (C-209-1)
+ 9d05683716ec5a4d8b66de160033036ceec68cbb build209(watch): set G7BackgroundHints on scene transitions (C-209-11 adapter half)
+ faedb574bc8825e0c36f3b11960e1fbc1883e786 Revert "feat: crashlytics test crash button"
+ 7776d8cff6ee1252f52813444a4616279d59ac99 build209(watch): drop C-209-5 ComplicationLogBuffer hunk (TEMPORARY — restore in 09+12 merge)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  2bd60c66216d35a1fc674471a3b666d8f11cb89c
@@ -232,66 +241,82 @@ Trio-Patch-Source-PatchIds:
  5dac7e954c3059a3e225af4e6ba4a1c977fe8522
  d3e0c3a48924b94bc6368c565fd767bbc0e9c86e
  21491030985a9675acbb43bfd6136e252d8d1125
+ ba3f7f593787d9c36a84c0ec758be2d7d140ffa5
+ e25763ba49fae675e19141fa340454230e372d06
+ a37fc9dd44235039ac6022132294b28087bfdc47
+ c4ba4239b1f21c438777cc4a56ab67d0f2e8f9e2
+ 434001f54f0a083b0034cebff352b88f43be5585
+ 689b1719c9851e06b1df45abd169a70ef6934b17
+ c7b2919c18cef13073b34d1567184b915ffffedf
+ 22c37a1d93902721a306f18847bb38581fb6aa10
+ 3b56638be2f25d9081dfc534f32524f419b03376
 ---
- .../ExtensionDelegate.swift                   |   30 +-
- .../G7WatchSensorAdapter.swift                | 1173 +++++++++++++++++
- Trio Watch App Extension/TrioWatchApp.swift   |    2 +-
- .../Views/ComplicationDebugView.swift         |  571 +++++---
+ .../ExtensionDelegate.swift                   |   35 +-
+ .../G7WatchSensorAdapter.swift                | 1335 +++++++++++++++++
+ Trio Watch App Extension/TrioWatchApp.swift   |    5 +-
+ .../Views/ComplicationDebugView.swift         |  604 +++++---
  .../Views/GlucoseTrendView.swift              |   41 +-
- .../Views/TrioMainWatchView.swift             |  160 ++-
+ .../Views/TrioMainWatchView.swift             |  160 +-
  .../WatchErrorReporter.swift                  |   80 +-
- .../WatchGlucoseColorComputer.swift           |  154 +++
- .../WatchGlucoseHistoryStore.swift            |  198 +++
- Trio Watch App Extension/WatchLogger.swift    |   67 +-
- Trio Watch App Extension/WatchState.swift     |  586 +++++++-
+ .../WatchGlucoseColorComputer.swift           |  154 ++
+ .../WatchGlucoseHistoryStore.swift            |  202 +++
+ Trio Watch App Extension/WatchLogger.swift    |  224 ++-
+ Trio Watch App Extension/WatchState.swift     |  597 +++++++-
+ .../WatchTelemetryRing.swift                  |  119 ++
  Trio Watch App/Info.plist                     |   18 +
- .../TrioWatchComplication.swift               |   37 +-
- .../TrioComplicationDataStore.swift           |  111 +-
+ .../TrioWatchComplication.swift               |   40 +-
+ .../TrioComplicationDataStore.swift           |  230 ++-
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   14 +
  Trio/Sources/Models/WatchState.swift          |   24 +-
- 17 files changed, 2905 insertions(+), 389 deletions(-)
+ 18 files changed, 3457 insertions(+), 453 deletions(-)
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/WatchGlucoseColorComputer.swift
  create mode 100644 Trio Watch App Extension/WatchGlucoseHistoryStore.swift
+ create mode 100644 Trio Watch App Extension/WatchTelemetryRing.swift
  create mode 100644 Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
 
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
-index 0ef9b4431..dc6894af4 100644
+index 0ef9b4431..9c06e62ef 100644
 --- a/Trio Watch App Extension/ExtensionDelegate.swift	
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
-@@ -1,7 +1,30 @@
+@@ -1,7 +1,35 @@
 +import G7SensorKit
  import WatchKit
  
  final class ExtensionDelegate: NSObject, WKApplicationDelegate {
      func applicationDidFinishLaunching() {
++        // C-208-9: start the telemetry ring drainer first — emitters can enqueue from any point
++        // below (synchronously, no Task-per-event) and nothing is lost pre-drainer either.
++        WatchTelemetryRing.shared.startDrainer()
++
++        // C-209-5 (B6): enable battery monitoring at launch. WatchKit populates level/state
++        // asynchronously after enabling, so the previous lazy enable-on-first-log returned
++        // unknown/unknown for the first read of every process. (The per-file enable guards in
++        // WatchLogger/ComplicationLogBuffer stay — they're idempotent.)
++        WKInterfaceDevice.current().isBatteryMonitoringEnabled = true
++
++        // C-208-7 (1.8): assign the telemetry sink BEFORE constructing the adapter (whose init
++        // creates the `CBCentralManager`) so no BLE callback can race the closure publication.
++        // C-208-9: the sink is now a synchronous ring enqueue using emit-time session context
++        // (kept in sync by the adapter) — no MainActor hop on the BLE path.
++        // Fork-level G7SensorKit telemetry (`G7TelemetryPayload`) → ring → WatchLogger →
++        // BetterStack (same downstream pipeline as BLE logs).
++        G7Telemetry.emit = { payload in
++            WatchTelemetryRing.shared.enqueueCoreTelemetry(payload: payload)
++        }
++
 +        // D6: force-instantiate the BLE adapter (and its `CBCentralManager`, created with the
 +        // `CBCentralManagerOptionRestoreIdentifierKey`) synchronously at launch so the OS can
-+        // deliver `willRestoreState` on a background relaunch. Previously the central was created
-+        // lazily (first via the telemetry closure below), which can be too late for restoration.
++        // deliver `willRestoreState` on a background relaunch (M2 telemetry pending — per Apple
++        // docs, state restoration may not exist on watchOS at all).
 +        // WKApplicationDelegate callbacks run on the main thread, so assumeIsolated is safe.
 +        MainActor.assumeIsolated { _ = G7WatchSensorAdapter.shared }
-+
-+        // Fork-level G7SensorKit telemetry (`G7TelemetryPayload`) → WatchLogger → BetterStack
-+        // (same pipeline as BLE logs).
-+        G7Telemetry.emit = { payload in
-+            Task { @MainActor in
-+                let sid = G7WatchSensorAdapter.shared.adapterSessionID ?? "nil"
-+                let sensorName = G7WatchSensorAdapter.shared.telemetrySensorName
-+                let line = G7StructuredTelemetryLogLine.formatCoreTelemetry(
-+                    sensorName: sensorName,
-+                    payload: payload,
-+                    g7Session: sid
-+                )
-+                await WatchLogger.shared.log(line)
-+            }
-+        }
 +
          // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
          TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
          WatchState.shared.scheduleBackgroundLaunchDisarmIfNeeded()
-@@ -12,7 +35,9 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
+@@ -12,7 +40,9 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
                  force: false
              )
              // Emit App Group diagnostics early, before any snapshot reads/writes.
@@ -302,7 +327,7 @@ index 0ef9b4431..dc6894af4 100644
              await WatchLogger.shared.log(diagnostics, force: false)
          }
          WatchState.shared.scheduleBackgroundRefresh()
-@@ -32,7 +57,8 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
+@@ -32,7 +62,8 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
      }
  
      func applicationWillResignActive() {
@@ -314,10 +339,10 @@ index 0ef9b4431..dc6894af4 100644
                  "event=watch_app_resigning_active source=wk_application_delegate "
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..405fd60a0
+index 000000000..a8d695d1b
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,1173 @@
+@@ -0,0 +1,1335 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -365,13 +390,13 @@ index 000000000..405fd60a0
 +    /// Identities of `WKExtendedRuntimeSession`s that the adapter intentionally invalidated and
 +    /// whose `didInvalidateWith` callback has not yet been delivered. The delegate consults this
 +    /// set at the top of `extendedRuntimeSession(_:didInvalidateWith:)` and short-circuits with an
-+    /// `ext_session_intentional_invalidation` log if the incoming `session` matches, so a stale
-+    /// invalidation callback from a session we already tore down cannot fall through to the
-+    /// `stop()` call in the error branch and clobber a freshly-requested `sessionPendingDidStart`.
++    /// `ext_session_intentional_invalidation` log if the incoming `session` matches.
 +    ///
-+    /// Insertion sites — every place we call `invalidate()` on a session we owned must add the
-+    /// session's `ObjectIdentifier` here first:
-+    ///   1. `stop()` — when tearing down `extendedSession` / `sessionPendingDidStart`.
++    /// Insertion sites — every place that calls `invalidate()` on a session we owned must add the
++    /// session's `ObjectIdentifier` here first. Build 208: **no insertion sites remain** — the
++    /// sole inserter was `stop()`, removed with the session-invalidation teardown. The set (and
++    /// its early-return branch) is retained so any future intentional `invalidate()` gets its
++    /// callback classified correctly instead of falling through to the error branch.
 +    ///
 +    /// Removal sites: the early-return in `extendedRuntimeSession(_:didInvalidateWith:)`
 +    /// (consumes the entry) and a defensive `remove` in `extendedRuntimeSessionDidStart`
@@ -380,31 +405,22 @@ index 000000000..405fd60a0
 +
 +    /// Read-only accessor for the currently started extended runtime session.
 +    ///
-+    /// The adapter may replace this reference from several paths (`stop()`,
-+    /// `renewSessionIfNeeded()`, chain inside `extendedRuntimeSessionWillExpire`), so callers
++    /// The adapter may replace this reference from several paths (`renewSessionIfNeeded()`'s
++    /// `didStart`, the invalidation handler), so callers
 +    /// must re-query on every use — never cache the returned reference.
 +    var currentExtendedSession: WKExtendedRuntimeSession? { extendedSession }
-+
-+    /// Read-only mirror of the adapter's authoritative `isStopped` flag.
-+    ///
-+    /// Use this instead of `WatchState.shared.g7DirectBleStatus == .off` when an external
-+    /// subsystem needs to know whether the adapter was intentionally stopped. The published
-+    /// status mirror defaults to `.off` at cold start (until `publishConnectionStatus()` runs)
-+    /// and would falsely report "stopped" before the first BLE event. `isStopped` is mutated
-+    /// only by `start()` (false) and `stop()` (true), so this accessor reflects intentional
-+    /// lifecycle exactly.
-+    var isIntentionallyStopped: Bool { isStopped }
 +
 +    // MARK: - Debug-UI accessors
 +
 +    /// Current pre-EGV disconnect streak count (for `ComplicationDebugView`).
 +    var consecutivePreEGVDisconnectsCount: Int { consecutivePreEGVDisconnects }
 +
-+    /// Human-readable description of `extendedSession.state` ("notStarted", "running", "invalid")
-+    /// or "nil" when no session is held. Use alongside `extSessionLastKnownActive` for diagnosis.
++    /// Human-readable description of `extendedSession.state`
++    /// (`notStarted`/`scheduled`/`running`/`invalid`) or "nil" when no session is held. Use alongside
++    /// `extSessionLastKnownActive` for diagnosis.
 +    var extSessionState: String {
 +        if let s = extendedSession {
-+            return String(describing: s.state)
++            return describeState(s.state)
 +        }
 +        return "nil"
 +    }
@@ -419,26 +435,25 @@ index 000000000..405fd60a0
 +    private var expectedWindowTimer: DispatchSourceTimer?
 +    private var expectedWindowNextEpoch: Int?
 +
-+    private var isStopped = false
-+    /// `start()` re-entry gate. Set true on entry to `start()`, cleared in `stop()`. Replaces the
-+    /// previous `sensor.isConnected` check (which crossed `bluetoothManager.managerQueue.sync`).
-+    /// Multiple foreground re-entries collapse into a single setup pass per stop/start cycle.
++    /// `start()` re-entry gate. Set true on entry to `start()`; never cleared. Build 208 removed
++    /// `stop()` (its only caller was the session-invalidation teardown), so `start()` is one-shot
++    /// per process and foreground re-entries no-op. Replaces the previous `sensor.isConnected`
++    /// check (which crossed `bluetoothManager.managerQueue.sync`).
 +    private var isStarted = false
-+    private var recoveryScheduled = false
-+    /// `start()` idempotency flag. Gates the retroactive `expected_window` tick replay
-+    /// in `reanchorExpectedWindowTimer(coldStart: true)` so it runs **once** per process /
-+    /// stop-recovery cycle, not on every foreground active entry. Reset to `false` in `stop()`.
-+    private var hasAnchored = false
 +    private var bleConnectsToday: Int = 0
 +    private var bleEGVsToday: Int = 0
-+    // W7 slot accounting: `expectedSlotsToday` = eligible 5-min slots since midnight (monotonic
-+    // high-water via `lastExpectedSlotEpoch`); `gatedSlotEpochsToday` = the subset C1 deferred and
-+    // hasn't yet captured (a SET so a slot can be un-gated by a later capture). Debug shows
-+    // N / (expected − gated). All accumulate across a sensor swap; reset only on day rollover.
-+    private var expectedSlotsToday: Int = 0
++    // C-209-1 (B1): the "possible chances" denominator is computed ANALYTICALLY at display time
++    // (elapsed 5-min slots since midnight − ineligible − gated; see `dailySlotStats`). The old
++    // timer-accumulated `expectedSlotsToday` froze during background suspension — exactly the
++    // outage the ratio exists to expose. The only tracked quantity is ineligible wall-clock
++    // time, and its one trigger is `expectedSensorName` nil/non-nil (every terminal sensor path
++    // funnels through `performEndOfSessionTeardown`, and the adapter has no stop() since
++    // C-208-1). Edge-event-driven — no timer to suspend. DRIFT: warmup counts as eligible
++    // (identity present, readings arriving but unreliable) — bounded ~25 min per sensor cycle.
 +    private var gatedSlotsToday: Int = 0 // mirror of gatedSlotEpochsToday.count for display
-+    private var lastExpectedSlotEpoch: Int = -1
 +    private var gatedSlotEpochsToday: Set<Int> = []
++    private var ineligibleSecondsToday: Double = 0
++    private var ineligibleSince: Date? // open ineligible interval start (nil while eligible)
 +
 +    // C1 runtime gate: scans are allowed only when the scene is active OR a runtime session is
 +    // confirmed `.running`; otherwise the scan is deferred (kind preserved) and the slot recorded as
@@ -494,10 +509,10 @@ index 000000000..405fd60a0
 +        static let calendarDay = "G7WatchAdapter.bleCountersCalendarDay"
 +        static let connects = "G7WatchAdapter.bleConnectsToday"
 +        static let egvs = "G7WatchAdapter.bleEGVsToday"
-+        // W7 slot accounting.
-+        static let expectedSlots = "G7WatchAdapter.expectedSlotsToday"
-+        static let lastExpectedSlotEpoch = "G7WatchAdapter.lastExpectedSlotEpoch"
++        // W7 slot accounting (C-209-1: analytical denominator — only gated slots + ineligible time persist).
 +        static let gatedSlotEpochs = "G7WatchAdapter.gatedSlotEpochsToday" // persisted as [Int]
++        static let ineligibleSeconds = "G7WatchAdapter.ineligibleSecondsToday"
++        static let ineligibleSinceEpoch = "G7WatchAdapter.ineligibleSinceEpoch" // Double epoch; 0 = none
 +        // C2: bound sensor activation epoch (Int64 seconds), persisted so a post-restart swap is detectable.
 +        static let activationEpochSeconds = "G7WatchAdapter.activationEpochSeconds"
 +        // Legacy key for the one-time W13 sensorName migration only.
@@ -551,22 +566,22 @@ index 000000000..405fd60a0
 +        super.init()
 +        sensor.delegate = self
 +        loadDailyCounters()
++        syncTelemetryRingContext() // C-208-9: seed emit-time context before any BLE callback
 +    }
 +
 +    /// Begin (or no-op resume) the G7 BLE pipeline.
 +    ///
 +    /// **Re-entry invariant:** `isStarted` guards the body so multiple foreground re-entries
 +    /// (scene-phase flicker, redundant `applyForegroundActiveEntry` calls) collapse into a single
-+    /// setup pass per stop/start cycle. The retroactive `expected_window` replay is further
-+    /// gated by `hasAnchored` so it runs once per process / stop-recovery cycle.
++    /// setup pass per process. (C-209-1: the old retroactive `expected_window` replay and its
++    /// `hasAnchored` gate are gone — the tick is pure telemetry, wall-aligned.)
 +    func start() {
 +        guard !isStarted else { return }
 +        isStarted = true
-+        stopTimers()
-+        isStopped = false
-+        recoveryScheduled = false
++        stopTimers() // defensive only — start() is one-shot per process as of build 208
 +        loadDailyCountersIfNewCalendarDay()
 +        startHeartbeatTimer()
++        refreshIneligibilityClock() // C-209-1: seed the clock (covers launching with no identity)
 +        guard let name = expectedSensorName else {
 +            log("start_skipped_no_sensor")
 +            return
@@ -580,49 +595,38 @@ index 000000000..405fd60a0
 +        if boundSensorName != name {
 +            beginScanIfEligible(.newSensor)
 +        }
-+        if !hasAnchored, let epoch = UserDefaults.standard.object(forKey: Keys.lastEGVEpoch) as? Int {
-+            reanchorExpectedWindowTimer(fromEpoch: epoch, coldStart: true)
-+            hasAnchored = true
-+        }
++        // C-209-1: the expected-window tick is pure telemetry now (no slot counting, no
++        // retroactive replay) — align to the next wall-clock 5-min boundary and free-run.
++        scheduleNextExpectedWindowTick()
 +        beginScanIfEligible(.resume)
++        drainPendingEGVTailIfAny() // C-208-10: launch replay (process died mid-tail)
++        // Status publish AFTER the replay (verification finding): the replayed snapshot sets
++        // `.active` inside applyG7DirectBleSnapshot; publishing the real fork state afterwards
++        // corrects a stale-replay `.active` immediately instead of letting it stand.
 +        publishConnectionStatus()
 +    }
 +
-+    /// Tear down the G7 BLE pipeline.
-+    ///
-+    /// **Invariant:** clearing `hasAnchored` here ensures the next `start()` after a real stop
-+    /// re-runs the retroactive `expected_window` tick replay (e.g., post-recovery from an
-+    /// extended-runtime invalidation error). Foreground re-entries that did **not** go through
-+    /// `stop()` continue to skip the replay.
-+    func stop() {
-+        isStopped = true
-+        isStarted = false
-+        lastKnownExtSessionActive = false
-+        hasAnchored = false
-+        if let s = extendedSession {
-+            invalidatingSessionIDs.insert(ObjectIdentifier(s))
-+            s.invalidate()
-+        }
-+        if let s = sessionPendingDidStart {
-+            invalidatingSessionIDs.insert(ObjectIdentifier(s))
-+            s.invalidate()
-+        }
-+        extendedSession = nil
-+        sessionPendingDidStart = nil
-+        stopTimers()
-+        sensor.stopScanning()
-+        WatchState.shared.applyG7DirectBleStatus(.off)
-+    }
++    // Build 208: `stop()` removed. Its only caller was the session-invalidation error branch
++    // (see `extendedRuntimeSession(_:didInvalidateWith:)`), there is no user-facing BLE-off
++    // feature on the watch, and the teardown was half-effective anyway — the fork's
++    // `scanAfterDelay()` auto-rescan resurrected scanning while the adapter's timers/status
++    // stayed dead. The watch now mirrors the iPhone model: the BLE pipeline, once started,
++    // runs for the life of the process.
 +
 +    func applyForegroundActiveEntry() {
 +        lastKnownScenePhase = "active"
++        G7BackgroundHints.isHostBackgrounded = false // C-209-11: resume full GATT config in foreground
 +        start()
 +        renewSessionIfNeeded()
 +        consumeDeferredScanIfNeeded() // C1: scene-active is a runtime-eligible transition
++        drainPendingEGVTailIfAny() // C-208-10: foreground replay (suspension hit mid-tail)
 +    }
 +
 +    func noteForegroundInactiveOrBackground(_ phase: String) {
 +        lastKnownScenePhase = phase
++        // C-209-11: tell the fork to skip non-essential GATT round-trips (backfill subscribe,
++        // extended-version request) while not frontmost — scene phase isn't visible to the fork.
++        G7BackgroundHints.isHostBackgrounded = true
 +    }
 +
 +    /// D8: a `WKExtendedRuntimeSession` is only granted while the app is frontmost. This previously
@@ -634,7 +638,13 @@ index 000000000..405fd60a0
 +            log("ext_session_renew_skipped", "reason=not_active scene=\(lastKnownScenePhase)")
 +            return
 +        }
-+        guard extendedSession?.state != .running, sessionPendingDidStart == nil else { return }
++        guard extendedSession?.state != .running else { return }
++        guard sessionPendingDidStart == nil else {
++            // C-208-2/5.4: previously a silent return, indistinguishable from the debounce —
++            // which made the pending-start wedge (3.1) invisible in telemetry.
++            log("ext_session_renew_skipped", "reason=pending_start scene=\(lastKnownScenePhase)")
++            return
++        }
 +        if let last = lastStartRequestAt, Date().timeIntervalSince(last) < 30 {
 +            log("ext_session_renew_skipped", "reason=debounced scene=\(lastKnownScenePhase)")
 +            return
@@ -645,6 +655,30 @@ index 000000000..405fd60a0
 +        sessionPendingDidStart = session
 +        session.start()
 +        log("ext_session_start_requested_foreground", "scene_phase=\(lastKnownScenePhase)")
++        // C-208-2 (3.1): pending-start watchdog. If watchOS never delivers didStart OR
++        // didInvalidate for this start() (request silently dropped during a rapid scene flip),
++        // `sessionPendingDidStart` would block all future renewals for the life of the process.
++        // Identity-guarded — didStart / the pending-invalidation branch clear the field, making
++        // this a no-op in every normal flow.
++        Task { @MainActor [weak self] in
++            try? await Task.sleep(nanoseconds: 15_000_000_000)
++            guard !Task.isCancelled, let self else { return }
++            guard self.sessionPendingDidStart === session else { return }
++            if session.state == .running {
++                // Verification finding: running-but-still-pending means the session IS live but
++                // `didStart` was never delivered — the exact pathological class this watchdog
++                // targets. Adopt it (mirror `extendedRuntimeSessionDidStart`) instead of leaving
++                // the pending slot wedged for process life.
++                self.sessionPendingDidStart = nil
++                self.extendedSession = session
++                self.lastKnownExtSessionActive = true
++                self.log("ext_session_start_timeout", "state=running adopted=true")
++                self.consumeDeferredScanIfNeeded()
++            } else {
++                self.sessionPendingDidStart = nil
++                self.log("ext_session_start_timeout", "state=\(self.describeState(session.state))")
++            }
++        }
 +    }
 +
 +    /// Phone relay (WatchConnectivity): persist peripheral name and rescan. Logs **`sensor_name_set_from_phone`** when the stored name changes (dedupes overlapping WC paths).
@@ -722,7 +756,7 @@ index 000000000..405fd60a0
 +    }
 +
 +    /// Called when WatchConnectivity (or another owner) pushes a new Dexcom peripheral name.
-+    /// Updates `expectedSensorName`; if the name changed and the adapter is not stopped, drops
++    /// Updates `expectedSensorName`; if the name changed, drops
 +    /// any current binding and starts a fresh scan via `sensor.scanForNewSensor()`. The single
 +    /// `G7Sensor` instance is preserved across name changes (mirrors phone `G7CGMManager`).
 +    func applyNewSensorName(_ name: String?, force: Bool = false) {
@@ -731,6 +765,9 @@ index 000000000..405fd60a0
 +        loadDailyCountersIfNewCalendarDay()
 +        let wasNil = (oldName == nil)
 +        expectedSensorName = name
++        syncTelemetryRingContext() // C-208-9
++        refreshIneligibilityClock() // C-209-1: identity arrived/changed/cleared — flip the clock
++        if isStarted, expectedWindowTimer == nil { scheduleNextExpectedWindowTick() } // C-209-1: identity-after-launch
 +        if name == nil { storedActivationEpochSeconds = nil } // C2: clearing the binding clears its epoch
 +        consecutivePreEGVDisconnects = 0
 +        // Clear session-scoped EGV state so the first reading from the new sensor is not
@@ -744,13 +781,11 @@ index 000000000..405fd60a0
 +        lastSavedGlucoseValue = nil
 +        sessionActivationDate = nil
 +        mirrorDailyCountersToWatchState()
-+        if !isStopped {
-+            // C2 accepted swap: the old binding is definitively dead — tear it down NOW even if the
-+            // scan is gated (deferred). Routine rebind leaves boundSensorName for performScanForNewSensor.
-+            if pendingSensorSwap { boundSensorName = nil }
-+            beginScanIfEligible(.newSensor) // C1-gated; performScanForNewSensor clears boundSensorName when it runs
-+            if wasNil, name != nil { log("start_recovered_from_nil_sensor") }
-+        }
++        // C2 accepted swap: the old binding is definitively dead — tear it down NOW even if the
++        // scan is gated (deferred). Routine rebind leaves boundSensorName for performScanForNewSensor.
++        if pendingSensorSwap { boundSensorName = nil }
++        beginScanIfEligible(.newSensor) // C1-gated; performScanForNewSensor clears boundSensorName when it runs
++        if wasNil, name != nil { log("start_recovered_from_nil_sensor") }
 +        if name == nil {
 +            log("sensor_name_cleared")
 +        }
@@ -762,16 +797,26 @@ index 000000000..405fd60a0
 +    private func log(_ eventName: String, _ fields: String = "") {
 +        let sid = adapterSessionID ?? "nil"
 +        let sensorName = expectedSensorName ?? "nil"
-+        Task {
-+            await WatchLogger.shared.log(
-+                G7StructuredTelemetryLogLine.formatBleModule(
-+                    sensorName: sensorName,
-+                    event: eventName,
-+                    fields: fields,
-+                    g7Session: sid
-+                )
++        // C-208-9: synchronous ring enqueue — no Task spawn / actor suspension per event on the
++        // hot path. The ring's drainer feeds WatchLogger downstream.
++        WatchTelemetryRing.shared.enqueue(
++            G7StructuredTelemetryLogLine.formatBleModule(
++                sensorName: sensorName,
++                event: eventName,
++                fields: fields,
++                g7Session: sid
 +            )
-+        }
++        )
++    }
++
++    /// C-208-9: keep the ring's emit-time context (used for fork `module=g7_core` lines) in
++    /// sync with the adapter's session identity. Called wherever `adapterSessionID` or the
++    /// expected sensor name changes.
++    private func syncTelemetryRingContext() {
++        WatchTelemetryRing.shared.setContext(
++            sensorName: expectedSensorName ?? "nil",
++            g7Session: adapterSessionID ?? "nil"
++        )
 +    }
 +
 +    // MARK: - Timers
@@ -801,7 +846,7 @@ index 000000000..405fd60a0
 +    private func emitHeartbeat() {
 +        let extStateRaw: String
 +        if let s = extendedSession {
-+            extStateRaw = String(describing: s.state)
++            extStateRaw = describeState(s.state)
 +        } else {
 +            extStateRaw = "nil"
 +        }
@@ -809,49 +854,18 @@ index 000000000..405fd60a0
 +        log("heartbeat", "ext_session_active=\(active) ext_session_state=\(extStateRaw)")
 +    }
 +
-+    private func reanchorExpectedWindowTimer(fromEpoch lastEpoch: Int, coldStart: Bool) {
-+        let nowEpoch = Int(Date().timeIntervalSince1970)
-+        var missedCount = 0
-+        var lastMissed: Int?
-+        var e = lastEpoch + 300
-+        while e < nowEpoch {
-+            missedCount += 1
-+            lastMissed = e
-+            e += 300
-+        }
-+
-+        let retro: [Int]
-+        if coldStart, missedCount > 50 {
-+            let skip = missedCount - 50
-+            let startEpoch = lastEpoch + 300 + skip * 300
-+            retro = Array(stride(from: startEpoch, to: nowEpoch, by: 300))
-+        } else if missedCount > 0 {
-+            retro = Array(stride(from: lastEpoch + 300, to: nowEpoch, by: 300))
-+        } else {
-+            retro = []
-+        }
-+        for epoch in retro {
-+            emitExpectedWindowTick(epoch: epoch, retroactive: true)
-+        }
-+
-+        var nextEpoch: Int
-+        if let lm = lastMissed {
-+            nextEpoch = lm + 300
-+        } else {
-+            nextEpoch = lastEpoch + 300
-+        }
-+        while nextEpoch < nowEpoch {
-+            nextEpoch += 300
-+        }
-+        let delay = max(1.0, Double(nextEpoch) - Date().timeIntervalSince1970)
-+        scheduleWindowTick(deadline: .now() + delay, nextEpoch: nextEpoch)
-+    }
-+
-+    private func scheduleWindowTick(deadline: DispatchTime, nextEpoch: Int) {
++    /// C-209-1: schedule the next `expected_window` telemetry tick at the next wall-clock
++    /// 5-min boundary. Pure telemetry — slot counting is analytical now (`dailySlotStats`), so
++    /// the old EGV-anchored re-anchor / retroactive-replay machinery (with its `>50` cap and
++    /// `hasAnchored` gate) is deleted.
++    private func scheduleNextExpectedWindowTick() {
 +        expectedWindowTimer?.cancel()
++        let nowEpoch = Int(Date().timeIntervalSince1970)
++        let nextEpoch = nowEpoch - (nowEpoch % 300) + 300
 +        expectedWindowNextEpoch = nextEpoch
++        let delay = max(1.0, Double(nextEpoch) - Date().timeIntervalSince1970)
 +        let timer = DispatchSource.makeTimerSource(queue: timerQueue)
-+        timer.schedule(deadline: deadline, leeway: .seconds(2))
++        timer.schedule(deadline: .now() + delay, leeway: .seconds(2))
 +        timer.setEventHandler { [weak self] in
 +            Task { @MainActor [weak self] in
 +                self?.fireExpectedWindowTick()
@@ -863,33 +877,21 @@ index 000000000..405fd60a0
 +
 +    private func fireExpectedWindowTick() {
 +        guard let epoch = expectedWindowNextEpoch else { return }
-+        emitExpectedWindowTick(epoch: epoch, retroactive: false)
-+        reanchorExpectedWindowTimer(fromEpoch: epoch, coldStart: false)
++        emitExpectedWindowTick(epoch: epoch)
++        scheduleNextExpectedWindowTick()
 +    }
 +
-+    private func emitExpectedWindowTick(epoch: Int, retroactive: Bool) {
++    /// C-209-1: pure telemetry — per-5-min eligibility sampling for the COV dashboards. The
++    /// `retroactive=` field is gone with the replay machinery; consumers keyed on
++    /// reason/eligible are unaffected. Slot counting lives in `dailySlotStats`.
++    private func emitExpectedWindowTick(epoch: Int) {
 +        let lastSuccess = UserDefaults.standard.object(forKey: Keys.lastEGVEpoch) as? Int ?? -1
-+        let eligible = !isStopped && expectedSensorName != nil
-+        let reason = eligible ? "ok" : (isStopped ? "stopped" : "no_sensor")
-+
-+        if eligible {
-+            advanceDayIfNeeded() // forward-only, keyed on real time
-+            let startOfToday = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
-+            let slotEpoch = epoch - (epoch % 300)
-+            // Monotonic high-water (`>`, not `!=`): cold-start replays re-emit already-counted slots;
-+            // `>` skips them so they aren't double-counted. Today-only so a cross-midnight replay
-+            // counts only post-midnight slots.
-+            if slotEpoch >= startOfToday, slotEpoch > lastExpectedSlotEpoch {
-+                expectedSlotsToday += 1
-+                lastExpectedSlotEpoch = slotEpoch
-+                persistDailyCounters()
-+                mirrorDailyCountersToWatchState()
-+            }
-+        }
-+
++        let eligible = expectedSensorName != nil
++        let reason = eligible ? "ok" : "no_sensor"
++        advanceDayIfNeeded() // forward-only, keyed on real time
 +        log(
 +            "expected_window",
-+            "tick_epoch=\(epoch) last_success_epoch=\(lastSuccess) eligible=\(eligible) reason=\(reason) retroactive=\(retroactive) ext_session_active=\(lastKnownExtSessionActive)"
++            "tick_epoch=\(epoch) last_success_epoch=\(lastSuccess) eligible=\(eligible) reason=\(reason) ext_session_active=\(lastKnownExtSessionActive)"
 +        )
 +    }
 +
@@ -905,10 +907,11 @@ index 000000000..405fd60a0
 +        } else {
 +            bleConnectsToday = UserDefaults.standard.integer(forKey: Keys.connects)
 +            bleEGVsToday = UserDefaults.standard.integer(forKey: Keys.egvs)
-+            expectedSlotsToday = UserDefaults.standard.integer(forKey: Keys.expectedSlots)
-+            lastExpectedSlotEpoch = (UserDefaults.standard.object(forKey: Keys.lastExpectedSlotEpoch) as? Int) ?? -1
 +            gatedSlotEpochsToday = Set((UserDefaults.standard.array(forKey: Keys.gatedSlotEpochs) as? [Int]) ?? [])
 +            gatedSlotsToday = gatedSlotEpochsToday.count
++            ineligibleSecondsToday = UserDefaults.standard.double(forKey: Keys.ineligibleSeconds)
++            let sinceEpoch = UserDefaults.standard.double(forKey: Keys.ineligibleSinceEpoch)
++            ineligibleSince = sinceEpoch > 0 ? Date(timeIntervalSince1970: sinceEpoch) : nil
 +        }
 +        mirrorDailyCountersToWatchState()
 +    }
@@ -918,18 +921,19 @@ index 000000000..405fd60a0
 +    private func resetDailyCountersInMemory() {
 +        bleConnectsToday = 0
 +        bleEGVsToday = 0
-+        expectedSlotsToday = 0
-+        lastExpectedSlotEpoch = -1
 +        gatedSlotEpochsToday = []
 +        gatedSlotsToday = 0
++        // C-209-1: zero the closed ineligible time; keep `ineligibleSince` — an open ineligible
++        // stretch continues across midnight and clamps to startOfToday at read time.
++        ineligibleSecondsToday = 0
 +    }
 +
 +    private func persistDailyCounters() {
 +        UserDefaults.standard.set(bleConnectsToday, forKey: Keys.connects)
 +        UserDefaults.standard.set(bleEGVsToday, forKey: Keys.egvs)
-+        UserDefaults.standard.set(expectedSlotsToday, forKey: Keys.expectedSlots)
-+        UserDefaults.standard.set(lastExpectedSlotEpoch, forKey: Keys.lastExpectedSlotEpoch)
 +        UserDefaults.standard.set(Array(gatedSlotEpochsToday), forKey: Keys.gatedSlotEpochs)
++        UserDefaults.standard.set(ineligibleSecondsToday, forKey: Keys.ineligibleSeconds)
++        UserDefaults.standard.set(ineligibleSince?.timeIntervalSince1970 ?? 0, forKey: Keys.ineligibleSinceEpoch)
 +    }
 +
 +    /// Forward-only daily rollover keyed on real wall-clock. Resets all daily counters + the slot
@@ -953,8 +957,52 @@ index 000000000..405fd60a0
 +    private func mirrorDailyCountersToWatchState() {
 +        WatchState.shared.bleConnectsToday = bleConnectsToday
 +        WatchState.shared.bleEGVsToday = bleEGVsToday
-+        WatchState.shared.expectedSlotsToday = expectedSlotsToday
 +        WatchState.shared.gatedSlotsToday = gatedSlotsToday
++    }
++
++    /// C-209-1 (B1): edge-event ineligibility clock. Called whenever `expectedSensorName`
++    /// flips nil/non-nil (identity push, EOS teardown) and once at start(). No timer — correct
++    /// across any background suspension.
++    private func refreshIneligibilityClock() {
++        advanceDayIfNeeded()
++        let eligible = expectedSensorName != nil
++        if eligible, let since = ineligibleSince {
++            let startOfToday = Calendar.current.startOfDay(for: Date())
++            let from = max(since, startOfToday)
++            ineligibleSecondsToday += max(0, Date().timeIntervalSince(from))
++            ineligibleSince = nil
++            persistDailyCounters()
++        } else if !eligible, ineligibleSince == nil {
++            ineligibleSince = Date()
++            persistDailyCounters()
++        }
++    }
++
++    /// C-209-1 (B1): analytical inputs for the debug view's "captured / possible" ratio.
++    /// `elapsedSlots` is pure wall-clock (correct across suspension); ineligible and gated
++    /// subtract from it. `eligibleSlots` clamps ≥0 by construction.
++    struct DailySlotStats {
++        let egvs: Int
++        let elapsedSlots: Int
++        let ineligibleSlots: Int
++        let gatedSlots: Int
++        var eligibleSlots: Int { max(0, elapsedSlots - ineligibleSlots - gatedSlots) }
++    }
++
++    func dailySlotStats(now: Date = Date()) -> DailySlotStats {
++        let startOfToday = Calendar.current.startOfDay(for: now)
++        let elapsed = max(0, Int(now.timeIntervalSince(startOfToday)) / 300)
++        var ineligible = ineligibleSecondsToday
++        if let since = ineligibleSince {
++            let from = max(since, startOfToday)
++            ineligible += max(0, now.timeIntervalSince(from))
++        }
++        return DailySlotStats(
++            egvs: bleEGVsToday,
++            elapsedSlots: elapsed,
++            ineligibleSlots: Int(ineligible) / 300,
++            gatedSlots: gatedSlotsToday
++        )
 +    }
 +
 +    /// Minutes since the last persisted EGV epoch (`Keys.lastEGVEpoch`). Returns -1 when no EGV
@@ -974,18 +1022,25 @@ index 000000000..405fd60a0
 +    /// peripheral exists. When we initiate a rescan while not connected (cold start, inside a
 +    /// disconnect-driven path), no callback comes and a sticky `true` flag would suppress the
 +    /// next legitimate disconnect. Clearing after a short timeout bounds that window.
-+    /// C1 — the ONLY way the adapter starts scanning/connecting. Every scan entry routes here.
++    /// C1 — the only way the **adapter** initiates scanning/connecting; every adapter-side scan
++    /// entry routes here. C-209-10 (review 2.4): this is NOT the only scan source overall — the
++    /// fork's `scanAfterDelay()` self-reschedules scans after disconnects (visible as
++    /// `rescan_scheduled` since build 208), so `ble_gated`-derived denominators must not assume
++    /// C1 sees every scan.
 +    /// Allows the scan when scene-active or runtime `.running`; otherwise defers it (preserving the
 +    /// kind) and records the slot as gated. Timers/counters keep running outside this — `start()`
 +    /// is never gated wholesale. "Gate, don't recover-harder": the only deferral is
 +    /// background-with-no-session, exactly when a scan would fail with `reason=-1` anyway.
-+    private func beginScanIfEligible(_ kind: ScanKind) {
++    /// Returns `true` if a scan actually started, `false` if it was C1-gated/deferred (lets callers
++    /// avoid advertising `.scanning` when nothing started — UI-207-2).
++    @discardableResult
++    private func beginScanIfEligible(_ kind: ScanKind) -> Bool {
 +        advanceDayIfNeeded() // gate can be the first counter activity after midnight (timers suspended)
 +        guard isRuntimeEligible else {
 +            // Preserve the kind across the deferral — a pending .newSensor must not be downgraded.
 +            deferredScanKind = (deferredScanKind == .newSensor || kind == .newSensor) ? .newSensor : .resume
 +            // Count the slot as gated only when also identity-eligible (same predicate as expected).
-+            let identityEligible = !isStopped && expectedSensorName != nil
++            let identityEligible = expectedSensorName != nil
 +            let startOfToday = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
 +            let nowSlot = Int(Date().timeIntervalSince1970)
 +            let slotEpoch = nowSlot - (nowSlot % 300)
@@ -998,15 +1053,16 @@ index 000000000..405fd60a0
 +                "ble_gated",
 +                "reason=no_runtime kind=\(kind) slot=\(slotEpoch) identity_eligible=\(identityEligible) "
 +                    + "scene_phase=\(lastKnownScenePhase) runtime_eligible=false "
-+                    + "ext_session_state=\(extendedSession.map { String($0.state.rawValue) } ?? "nil") "
++                    + "ext_session_state=\(extendedSession.map { describeState($0.state) } ?? "nil") "
 +                    + "last_known_ext_session_active=\(lastKnownExtSessionActive)"
 +            )
-+            return
++            return false
 +        }
 +        switch kind {
 +        case .resume: sensor.resumeScanning()
 +        case .newSensor: performScanForNewSensor()
 +        }
++        return true
 +    }
 +
 +    /// Consume a deferred scan when runtime becomes eligible (scene-active or session `.running`).
@@ -1036,10 +1092,12 @@ index 000000000..405fd60a0
 +            status = .active
 +        } else if s.isScanning {
 +            status = .scanning
-+        } else if isStopped {
-+            status = .off
 +        } else {
-+            status = .retrieving
++            // UI-207-2: armed but not connected/scanning — the idle wait between G7
++            // advertisements (incl. the fork's 2s post-disconnect settle and a C1-deferred scan),
++            // not an OS-cache "retrieving" operation. Build 208: `.off` is no longer reachable
++            // from here (`stop()` removed); it remains only as WatchState's pre-first-event default.
++            status = .waiting
 +        }
 +        WatchState.shared.applyG7DirectBleStatus(status)
 +    }
@@ -1075,6 +1133,8 @@ index 000000000..405fd60a0
 +        }
 +        expectedSensorName = nil
 +        storedActivationEpochSeconds = nil
++        syncTelemetryRingContext() // C-208-9
++        refreshIneligibilityClock() // C-209-1: identity cleared — ineligible until the phone re-pushes
 +        boundSensorName = nil
 +        consecutivePreEGVDisconnects = 0
 +        lastReadingSequence = nil
@@ -1082,8 +1142,10 @@ index 000000000..405fd60a0
 +        sessionActivationDate = nil
 +        mirrorDailyCountersToWatchState()
 +        sessionPhase = .preEGV
-+        beginScanIfEligible(.newSensor) // C1-gated
-+        WatchState.shared.applyG7DirectBleStatus(.scanning)
++        // UI-207-2: only advertise `.scanning` if the C1-gated scan actually started; otherwise the
++        // adapter is armed-but-waiting (deferred until runtime-eligible), not scanning.
++        let didStartScan = beginScanIfEligible(.newSensor) // C1-gated
++        WatchState.shared.applyG7DirectBleStatus(didStartScan ? .scanning : .waiting)
 +    }
 +}
 +
@@ -1166,6 +1228,7 @@ index 000000000..405fd60a0
 +        boundSensorName = name
 +        sessionPhase = .preEGV
 +        adapterSessionID = String(UUID().uuidString.prefix(8))
++        syncTelemetryRingContext() // C-208-9
 +        sessionConnectAt = Date()
 +        hadEGVThisSession = false
 +        loggedTimeToFirstEGVForSession = false
@@ -1182,6 +1245,26 @@ index 000000000..405fd60a0
 +        // request is denied before `didStart` (and hammering it invites throttling). Session
 +        // renewal is driven solely by the foreground-active entry (`renewSessionIfNeeded`).
 +        publishConnectionStatus()
++        startEGVWatchdog(sessionToken: adapterSessionID)
++    }
++
++    /// C-208-4 (2.3): connected-but-silent backstop. **15s** > max-ever observed connect→EGV
++    /// (13s across 1,400+ sessions); normal connections are ended by the transmitter at 6–10s,
++    /// so on a healthy build this never fires. It exists for the configuration-dead-end class
++    /// (~600s zombie connections on builds 204/205; C3 fixed the cause, C-208-11 escalates the
++    /// residual) and doubles as that class's regression detector. NOT a connect timeout — the
++    /// CoreBluetooth connect attempt is untouched (prohibited per AGENTS.md); this covers the
++    /// post-`did_connect`→EGV span only. Identity-guarded by `adapterSessionID`; an EGV or a
++    /// disconnect invalidates it implicitly (no cancellation bookkeeping needed).
++    private func startEGVWatchdog(sessionToken: String?) {
++        guard let token = sessionToken else { return }
++        Task { @MainActor [weak self] in
++            try? await Task.sleep(nanoseconds: 15_000_000_000)
++            guard !Task.isCancelled, let self else { return }
++            guard self.adapterSessionID == token, !self.hadEGVThisSession else { return }
++            self.log("egv_watchdog_fired", "since_connect_s=15")
++            self.sensor.stopScanning() // disconnect; the fork re-attaches via its normal path
++        }
 +    }
 +
 +    private func handleSensorDisconnected(suspectedEndOfSession: Bool) {
@@ -1256,6 +1339,7 @@ index 000000000..405fd60a0
 +
 +        sessionPhase = .preEGV
 +        adapterSessionID = nil
++        syncTelemetryRingContext() // C-208-9
 +        sessionConnectAt = nil
 +        hadEGVThisSession = false
 +        loggedTimeToFirstEGVForSession = false
@@ -1263,6 +1347,9 @@ index 000000000..405fd60a0
 +    }
 +
 +    private func handleSensorDidRead(glucose: G7GlucoseMessage) {
++        // C-208-10: drain any undrained tail from a previous (suspended) cycle BEFORE this
++        // reading can overwrite the single-record slot — its history entry must not be lost.
++        drainPendingEGVTailIfAny()
 +        // First-read connect bootstrap. On the initial discovery cycle for a new sensor identity,
 +        // `G7Sensor` accepts the peripheral via `didDiscoverNewSensor` and calls `didRead` without
 +        // firing `sensorDidConnect` (see `recordSessionConnect` docs). Detect that case via
@@ -1297,6 +1384,10 @@ index 000000000..405fd60a0
 +        }
 +
 +        if let lastSeq = lastReadingSequence, lastSeq == glucose.sequence {
++            // C-208-4 guard (verification finding): the sensor demonstrably delivered an EGV on
++            // this connection even though it's a duplicate — mark it so the 15s connect→EGV
++            // watchdog cannot false-fire on a healthy duplicate-only reconnection.
++            hadEGVThisSession = true
 +            log("egv_dedup", "glucose=\(glucose.glucose.map(String.init) ?? "nil") sequence=\(glucose.sequence)")
 +            return
 +        }
@@ -1321,7 +1412,7 @@ index 000000000..405fd60a0
 +        let readingDate = activation.addingTimeInterval(TimeInterval(glucose.glucoseTimestamp))
 +        let readingEpoch = Int(readingDate.timeIntervalSince1970)
 +        UserDefaults.standard.set(readingEpoch, forKey: Keys.lastEGVEpoch)
-+        reanchorExpectedWindowTimer(fromEpoch: readingEpoch, coldStart: false)
++        scheduleNextExpectedWindowTick() // C-209-1: tick re-alignment only (slot counting is analytical now)
 +
 +        // W7: if C1 gated this 5-min slot in the background but we then captured an EGV in it, it is
 +        // NOT a gated loss — remove it from the set so the denominator (expected − gated) doesn't
@@ -1361,30 +1452,89 @@ index 000000000..405fd60a0
 +            )
 +        }
 +
-+        // Persist to the rolling history store (W1) BEFORE the snapshot apply, so the chart refresh
-+        // inside applyG7DirectBleSnapshot includes this reading. BLE readings are always valid mg/dL.
++        // C-208-10: "first write secures the capture." The hot path ends here — the reading is
++        // already durable (`Keys.lastEGVEpoch` above) and the full display/persistence cascade
++        // (history JSON write, complication bake + WidgetKit reload, WC context send) becomes a
++        // replayable tail. If the OS suspends us anywhere in the tail, the pending record
++        // replays on the next wake (launch / foreground entry / next EGV); the failure mode is
++        // one cycle of display staleness, never a lost capture.
++        persistPendingEGVTail(PendingEGVTail(
++            readingEpoch: readingEpoch,
++            glucoseMgDl: glucoseValue,
++            sequence: currentSequence,
++            trend: trend,
++            delta: delta
++        ))
++        drainPendingEGVTailIfAny()
++
++        publishConnectionStatus()
++    }
++
++    // MARK: - C-208-10: deferred EGV tail
++
++    /// Everything needed to replay the post-capture cascade after a suspension or process death.
++    struct PendingEGVTail: Codable {
++        let readingEpoch: Int
++        let glucoseMgDl: Int
++        let sequence: Int
++        let trend: String
++        let delta: String
++    }
++
++    private static let pendingTailKey = "G7WatchAdapter.pendingEGVTail"
++
++    private func persistPendingEGVTail(_ tail: PendingEGVTail) {
++        // Single-record slot. A previous undrained tail is drained by the caller BEFORE the new
++        // record is written (`handleSensorDidRead` calls drain → persist → drain), so overwrite
++        // here can only race process death — in which case the newer reading wins, which is the
++        // intended coalescing policy for display; history receives whatever drains.
++        if let data = try? JSONEncoder().encode(tail) {
++            UserDefaults.standard.set(data, forKey: Self.pendingTailKey)
++        }
++    }
++
++    /// Drains the pending post-capture cascade, preserving the W1/W2 ordering invariant
++    /// (history insert BEFORE the snapshot apply so the chart refresh includes the reading).
++    /// Idempotent: complication-store dedup and the history store's sequence/epoch dedup make a
++    /// double-replay harmless. Call sites: end of `handleSensorDidRead` (immediate attempt),
++    /// `start()` (launch replay), `applyForegroundActiveEntry()`, and the top of the next
++    /// `handleSensorDidRead` via `start()`'s ordering — the slot never holds more than one.
++    private func drainPendingEGVTailIfAny() {
++        guard let data = UserDefaults.standard.data(forKey: Self.pendingTailKey),
++              let tail = try? JSONDecoder().decode(PendingEGVTail.self, from: data)
++        else { return }
++
++        let readingDate = Date(timeIntervalSince1970: TimeInterval(tail.readingEpoch))
++
++        // History first (W1), so the chart rebuild inside applyG7DirectBleSnapshot sees it (W2).
 +        WatchGlucoseHistoryStore.shared.insert(
-+            StoredGlucoseReading(epochSeconds: readingEpoch, glucoseMgDl: glucoseValue, sequence: currentSequence, source: "ble")
++            StoredGlucoseReading(
++                epochSeconds: tail.readingEpoch,
++                glucoseMgDl: tail.glucoseMgDl,
++                sequence: tail.sequence,
++                source: "ble"
++            )
 +        )
 +
 +        let snapshot = TrioComplicationSnapshot(
-+            glucose: "\(glucoseValue)",
-+            trend: trend,
-+            delta: delta,
++            glucose: "\(tail.glucoseMgDl)",
++            trend: tail.trend,
++            delta: tail.delta,
 +            readingDate: readingDate,
 +            date: Date(),
 +            state: nil,
-+            glucoseColor: WatchGlucoseColorComputer.shared.bubbleColorHex(for: glucoseValue), // W5: bake bubble hex
++            glucoseColor: WatchGlucoseColorComputer.shared.bubbleColorHex(for: tail.glucoseMgDl), // W5
 +            source: .g7DirectBLE,
-+            sequence: Int(glucose.sequence)
++            sequence: tail.sequence
 +        )
 +
 +        TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
 +        WatchState.shared.applyG7DirectBleSnapshot(snapshot)
 +        WatchState.shared.bleLastEGVDate = readingDate
-+        WatchState.shared.bleLastEGVValue = glucoseValue
++        WatchState.shared.bleLastEGVValue = tail.glucoseMgDl
 +
-+        publishConnectionStatus()
++        // Clear AFTER the cascade so a mid-tail death replays on the next wake (idempotent).
++        UserDefaults.standard.removeObject(forKey: Self.pendingTailKey)
 +    }
 +
 +    private func handleSensorDidReadBackfill(backfill: [G7BackfillMessage]) {
@@ -1410,6 +1560,20 @@ index 000000000..405fd60a0
 +        case .resignedFrontmost: return "resignedFrontmost(3)"
 +        case .suppressedBySystem: return "suppressedBySystem(4)"
 +        @unknown default: return "unknown(\(r.rawValue))"
++        }
++    }
++
++    /// DS1: human-readable `WKExtendedRuntimeSessionState`. `String(describing:)` on the imported
++    /// NS_ENUM prints the opaque `WKExtendedRuntimeSessionState(rawValue: N)`, so the debug row and
++    /// heartbeat showed e.g. `rawValue: 2` instead of `running`. Raw values per the watchOS SDK header:
++    /// notStarted=0, scheduled=1, running=2, invalid=3.
++    private func describeState(_ s: WKExtendedRuntimeSessionState) -> String {
++        switch s {
++        case .notStarted: return "notStarted"
++        case .scheduled: return "scheduled"
++        case .running: return "running"
++        case .invalid: return "invalid"
++        @unknown default: return "unknown(\(s.rawValue))"
 +        }
 +    }
 +
@@ -1449,13 +1613,30 @@ index 000000000..405fd60a0
 +    ) {
 +        let id = ObjectIdentifier(session)
 +        let detail = "reason=\(reason.rawValue) reason_name=\(describeReason(reason)) error=\(describeError(error))"
++        // C-208-3 (3.2): never act on sessions we don't currently own. A superseded session's
++        // late/duplicate callback previously fell through to the error branch; post-C-208-1 the
++        // blast radius is only state/log noise, but the guard is correct hygiene and insurance
++        // against any future reintroduction of action in this handler. Ownership is computed
++        // BEFORE the reference clear below.
++        let isCurrentSession = session === extendedSession
++        let isPendingSession = session === sessionPendingDidStart
++        if !isCurrentSession, !isPendingSession, !invalidatingSessionIDs.contains(id) {
++            log("ext_session_unowned_invalidation", detail)
++            return
++        }
 +        // D2: a session that invalidates is no longer the live session — clear the held reference so
 +        // the debug UI reflects reality instead of pinning to a stale `invalid` object.
-+        if session === extendedSession { extendedSession = nil }
++        if isCurrentSession { extendedSession = nil }
 +
 +        if invalidatingSessionIDs.contains(id) {
 +            invalidatingSessionIDs.remove(id)
 +            lastKnownExtSessionActive = false
++            // Verification finding: a session that is BOTH pending and intentionally
++            // invalidated must release the pending slot here too, or renewals stay blocked
++            // (reason=pending_start) until the 15s watchdog clears it. Dormant today (no
++            // invalidate() insertion sites remain) but required for the handler's stated
++            // future-caller hygiene.
++            if isPendingSession { sessionPendingDidStart = nil }
 +            log("ext_session_intentional_invalidation", detail)
 +            return
 +        }
@@ -1471,20 +1652,26 @@ index 000000000..405fd60a0
 +        }
 +
 +        if hasError {
-+            log("ext_session_unexpected_invalidation", "triggering_teardown=true \(detail)")
-+            stop()
-+            guard !recoveryScheduled else { return }
-+            recoveryScheduled = true
-+            Task { @MainActor [weak self] in
-+                try? await Task.sleep(nanoseconds: 5_000_000_000)
-+                guard let self else { return }
-+                guard self.lastKnownScenePhase == "active" else {
-+                    self.log("recovery_skipped", "reason=not_active scene=\(self.lastKnownScenePhase)")
-+                    self.recoveryScheduled = false
-+                    return
-+                }
-+                self.log("post_stop_recovery_attempt")
-+                self.start()
++            // Build 208: session invalidation no longer tears down BLE. The error branch
++            // previously called stop() here — but that teardown was half-effective (the fork's
++            // scanAfterDelay() auto-rescan resurrected scanning while the adapter's timers and
++            // status stayed dead), its 5s foreground-gated recovery was skipped in 58 of 59
++            // firings (builds 204–206 telemetry), and 73% of EGV captures arrive with no active
++            // session at all (build 206) — the session is wakeup substrate, not the delivery
++            // path. Session invalidation now means session cleanup only: the references were
++            // cleared above, renewal happens on the next foreground entry via
++            // renewSessionIfNeeded(), and BLE + timers run on (iPhone model).
++            //
++            // C-207-1's RBS distinction survives as telemetry labeling only. RunningBoard kills
++            // the foreground-only session every time the app leaves the active scene, so a
++            // background RBS error is routine, not a failure. Match on the NSError domain, not
++            // reason.rawValue (lastKnownScenePhase is a String).
++            let isBackgroundRBSAssertion = (error as NSError?)?.domain == "RBSAssertionErrorDomain"
++                && lastKnownScenePhase != "active"
++            if isBackgroundRBSAssertion {
++                log("ext_session_bg_invalidation_ble_kept", detail)
++            } else {
++                log("ext_session_unexpected_invalidation", "triggering_teardown=false \(detail)")
 +            }
 +        } else {
 +            log("ext_session_natural_or_unknown_expiry", detail)
@@ -1492,10 +1679,10 @@ index 000000000..405fd60a0
 +    }
 +}
 diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
-index 3650c066e..0a7caeb11 100644
+index 3650c066e..5d2972efe 100644
 --- a/Trio Watch App Extension/TrioWatchApp.swift	
 +++ b/Trio Watch App Extension/TrioWatchApp.swift	
-@@ -25,7 +25,7 @@ import WatchKit
+@@ -25,11 +25,14 @@ import WatchKit
              if newPhase == .active {
                  WatchState.shared.handleForegroundActiveEntry()
              } else if newPhase == .background || newPhase == .inactive {
@@ -1504,8 +1691,15 @@ index 3650c066e..0a7caeb11 100644
              }
  
              let forceFlush = newPhase != .active
+             Task {
++                // C-209-4: slow WC log shipping to 10 min while backgrounded. Set BEFORE the
++                // forced flush below so the new cadence applies from this transition onward.
++                await WatchLogger.shared.setBackgrounded(newPhase != .active)
+                 await WatchLogger.shared.log(
+                     "event=watch_scene_phase_transition old=\(oldToken) new=\(newToken) source=swiftui_environment",
+                     force: forceFlush
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
-index ff9c6637f..7f0397026 100644
+index ff9c6637f..9bb759e33 100644
 --- a/Trio Watch App Extension/Views/ComplicationDebugView.swift	
 +++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
 @@ -5,7 +5,7 @@ struct ComplicationDebugView: View {
@@ -2045,8 +2239,16 @@ index ff9c6637f..7f0397026 100644
          if age < 300 { return .green }
          if age < 900 { return .yellow }
          return .red
-@@ -494,13 +456,218 @@ struct ComplicationDebugView: View {
-         return .green
+@@ -489,18 +451,250 @@ struct ComplicationDebugView: View {
+ 
+     private func glucoseColor(for value: String) -> Color {
+         guard let glucose = Double(value) else { return .secondary }
+-        if glucose < 70 { return .red }
+-        if glucose > 180 { return .orange }
+-        return .green
++        // UI-207-3: match the main bubble — use the shared user-threshold / dynamic-color computer (W5)
++        // instead of hard-coded 70/180, so the debug header color tracks the user's settings.
++        return WatchGlucoseColorComputer.shared.bubbleColor(for: Int(glucose.rounded()))
      }
  
 -    private func truncatePath(_ path: String?) -> String {
@@ -2150,8 +2352,11 @@ index ff9c6637f..7f0397026 100644
 +                    .monospacedDigit()
 +            }
 +            // W8: high-value diagnostics that already exist in code but weren't displayed.
++            // UI-207-3: relabeled from "Last BLE event" — `g7DirectBleLastEventAt` is bumped on status
++            // changes AND scene-phase transitions (WatchState.applyG7DirectBleScenePhase), not just BLE
++            // activity, so it's a status-event timestamp, not a BLE-activity one.
 +            HStack {
-+                Text("Last BLE event:")
++                Text("Last status event:")
 +                Spacer()
 +                Text(formatG7Time(WatchState.shared.g7DirectBleLastEventAt)) // section-local helper (Date?) — handles nil
 +                    .foregroundColor(.secondary)
@@ -2171,16 +2376,31 @@ index ff9c6637f..7f0397026 100644
 +                    .foregroundColor(G7WatchSensorAdapter.shared.consecutivePreEGVDisconnectsCount > 2 ? .red : .secondary)
 +                    .monospacedDigit()
 +            }
++            // UI-207-1: raw daily totals (Connects is event-based — multiple per slot — so it must
++            // NOT be shown over a slot denominator). Slot capture rate is a separate, clearly-labeled row.
 +            HStack {
 +                Text("Connects:")
 +                Spacer()
-+                Text(countWithDenominator(WatchState.shared.bleConnectsToday))
++                Text("\(WatchState.shared.bleConnectsToday)")
 +                    .monospacedDigit()
 +            }
 +            HStack {
 +                Text("EGVs:")
 +                Spacer()
-+                Text(countWithDenominator(WatchState.shared.bleEGVsToday))
++                Text("\(WatchState.shared.bleEGVsToday)")
++                    .monospacedDigit()
++            }
++            HStack {
++                Text("Capture (slots):")
++                Spacer()
++                Text(slotCaptureText)
++                    .monospacedDigit()
++            }
++            HStack {
++                Text("Windows:")
++                Spacer()
++                Text("\(eligibleSlots) elig · \(WatchState.shared.gatedSlotsToday) gated")
++                    .foregroundColor(.secondary)
 +                    .monospacedDigit()
 +            }
 +            // Phone-relay sensor name (UserDefaults via adapter) — must match WC `g7_active_sensor_name` sync.
@@ -2212,8 +2432,10 @@ index ff9c6637f..7f0397026 100644
 +                Text(WatchState.shared.displayedReadingSource.watchBadgeText)
 +                    .foregroundColor(.cyan)
 +            }
-+            // item 15: Was Restored removed — structurally dead (observer pattern,
-+            // willRestoreState never fires for Trio's non-owning central)
++            // UI-207-3: "Was restored" row pending — willRestoreState now emits `will_restore_state`
++            // telemetry (G7SensorKit@40b5871) and the watch adapter DOES own the central (D6), so the
++            // old "never fires for a non-owning central" claim was wrong. Re-add a `Was restored` row
++            // once `bleWasRestored` is wired to that signal and confirmed firing in BetterStack.
 +        }
 +        .font(.caption)
 +    }
@@ -2253,20 +2475,27 @@ index ff9c6637f..7f0397026 100644
 +        return "\(remaining)s"
 +    }
 +
-+    /// Format a daily counter as "X / Y" where Y is the number of EGVs the G7 sensor has
-+    /// produced since the first one observed today (sequence-anchored, not wall-clock anchored).
-+    /// Falls back to "X" alone when no EGV has been received today (denominator unknown) or
-+    /// when the latest sequence is somehow older than the anchor.
-+    private func countWithDenominator(_ count: Int) -> String {
-+        // W7: denominator is attempted windows = expected slots minus the ones C1 deliberately gated
-+        // (and didn't later capture). Accumulates across sensor swaps; never resets mid-day. Clamp at
-+        // 0 — `gated` can momentarily lead `expected` if a slot is gated live before its tick replays.
-+        let denom = max(0, WatchState.shared.expectedSlotsToday - WatchState.shared.gatedSlotsToday)
-+        guard denom > 0 else { return "\(count)" }
-+        // Cap the displayed numerator at the denominator so the ratio can never exceed 100% (review #3).
-+        // The numerator is event-based (multiple connects per slot) while the denominator is slot-based,
-+        // and a deferred-then-captured slot can momentarily remain gated; both can push count > denom.
-+        return "\(min(count, denom)) / \(denom)"
++    /// C-209-1 (B1): analytical eligible windows — elapsed wall-clock slots since midnight minus
++    /// ineligible (no sensor identity) minus C1-gated. Computed at display time, so it cannot
++    /// freeze during background suspension the way the old timer-accumulated counter did.
++    private var slotStats: G7WatchSensorAdapter.DailySlotStats {
++        G7WatchSensorAdapter.shared.dailySlotStats()
++    }
++
++    private var eligibleSlots: Int {
++        slotStats.eligibleSlots
++    }
++
++    /// UI-207-1: honest slot capture "EGVs / eligibleWindows", **un-clamped** so a >100% ratio (backfill
++    /// or multiple reads per slot) stays visible. Falls back to the raw EGV count when no eligible
++    /// windows are known yet. Replaces the old `countWithDenominator`, which clamped the numerator with
++    /// `min(count, denom)` and was wrongly applied to the event-based Connects row too — making both
++    /// rows read e.g. `61/61` and hiding the real totals.
++    private var slotCaptureText: String {
++        let stats = slotStats
++        let denom = stats.eligibleSlots
++        guard denom > 0 else { return "\(stats.egvs)" }
++        return "\(stats.egvs) / \(denom)"
      }
  }
  
@@ -2875,10 +3104,10 @@ index 000000000..8c31eaa04
 +}
 diff --git a/Trio Watch App Extension/WatchGlucoseHistoryStore.swift b/Trio Watch App Extension/WatchGlucoseHistoryStore.swift
 new file mode 100644
-index 000000000..3ca514577
+index 000000000..3257860e0
 --- /dev/null
 +++ b/Trio Watch App Extension/WatchGlucoseHistoryStore.swift	
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,202 @@
 +import Foundation
 +import SwiftUI
 +
@@ -2960,8 +3189,11 @@ index 000000000..3ca514577
 +    // MARK: - Inserts
 +
 +    /// Single-reading insert — BLE / HK (they arrive one at a time; one disk write each).
++    /// C-209-9 (review 6.8): `queue.async` — callers (often main / the BLE path) no longer
++    /// block on the JSON encode + atomic write. Reads stay `queue.sync`, so a read issued
++    /// after an insert still observes it (serial queue ordering).
 +    func insert(_ reading: StoredGlucoseReading) {
-+        queue.sync {
++        queue.async { [self] in
 +            canary(reading)
 +            let didAppend = mergeInMemory(reading)
 +            pruneAndCap()
@@ -2971,9 +3203,10 @@ index 000000000..3ca514577
 +    }
 +
 +    /// Batch insert — WC delivery (up to 24 readings at once; one prune/sort/write for the batch).
++    /// C-209-9 (review 6.8): async, same rationale as the single-reading insert.
 +    func insert(_ readings: [StoredGlucoseReading]) {
 +        guard !readings.isEmpty else { return }
-+        queue.sync {
++        queue.async { [self] in
 +            var appended = 0
 +            for r in readings {
 +                canary(r)
@@ -3078,7 +3311,7 @@ index 000000000..3ca514577
 +    }
 +}
 diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
-index d97e07b5f..c439455f5 100644
+index d97e07b5f..0d762697b 100644
 --- a/Trio Watch App Extension/WatchLogger.swift	
 +++ b/Trio Watch App Extension/WatchLogger.swift	
 @@ -72,6 +72,13 @@ actor WatchLogger {
@@ -3095,8 +3328,146 @@ index d97e07b5f..c439455f5 100644
      private let session = WCSession.default
      private var timerTask: Task<Void, Never>?
  
-@@ -326,17 +333,61 @@ actor WatchLogger {
-         let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
+@@ -84,6 +91,34 @@ actor WatchLogger {
+     private var cachedDrainFiles: Int = 0
+     private var cachedCountsTimestamp: Date = .distantPast
+ 
++    // C-209-2: daily-log lines buffer in-actor and write as one batch per drain — the per-line
++    // open/seek/write/close (plus createDirectory) was the #2 measured battery driver. Local
++    // debug file only; worst case on a hard kill is losing the last `dailyLogBatchSize` lines
++    // of watch_log_daily.txt (the in-memory `logs` ring and the WC pipeline are unaffected).
++    private var dailyLogBuffer: [String] = []
++    private let dailyLogBatchSize = 40
++
++    // C-209-3: routine pipeline narration (ack cleanups, queued-bg notices, confirm batches)
++    // is counted here and emitted as ONE `log_pipeline_summary` line per flush. These sites
++    // were ~70% of all watch log volume on build 208 (logCleanup alone: 12.2k lines/40h).
++    // Error paths still emit full diagnostic lines.
++    private var pipelineQueuedBackground = 0
++    private var pipelineCleanupOk = 0
++    private var pipelineConfirmFiles = 0
++
++    // C-209-4: WC log shipping slows to 10 min while backgrounded — the 3-min cadence is a
++    // radio/battery tax with no reader benefit when the app is off-screen. Set from the
++    // TrioWatchApp scene-phase hook.
++    private var isBackgrounded = false
++    private let backgroundFlushInterval: TimeInterval = 10 * 60
++    private var currentFlushInterval: TimeInterval {
++        isBackgrounded ? backgroundFlushInterval : flushInterval
++    }
++
++    // C-209-3: process-local inventory guard — the persisted 24h gate demonstrably fails
++    // across watch process churn (1.5k [INVENTORY] lines in 40h on build 208).
++    private var didLogInventoryThisProcess = false
++
+     /// Wall-clock cap for how long **this actor** waits on `sendMessage`’s reply/error callbacks.
+     /// This does **not** cancel in-flight `WCSession` delivery; a late `replyHandler` may still run.
+     /// Keep conservative on watchOS: long waits serialize the actor behind other lifecycle/flush work.
+@@ -98,6 +133,11 @@ actor WatchLogger {
+ 
+     private static let dateFormatter: DateFormatter = {
+         let formatter = DateFormatter()
++        // C-208-8 (6.5): pin locale + calendar — an unpinned DateFormatter follows the device's
++        // settings, so a watch on the Buddhist/Japanese calendar would stamp shifted years into
++        // every log line, silently breaking time correlation in BetterStack.
++        formatter.locale = Locale(identifier: "en_US_POSIX")
++        formatter.calendar = Calendar(identifier: .gregorian)
+         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+         return formatter
+     }()
+@@ -191,6 +231,11 @@ actor WatchLogger {
+             let gate = WCSessionReplyGate()
+             let timeoutTask = Task {
+                 try? await Task.sleep(nanoseconds: Self.wcSessionSendTimeoutNs)
++                // C-208-5 (1.6): `try?` swallows CancellationError, so without this guard the
++                // reply/error handlers' `timeoutTask.cancel()` *woke* this task, which then
++                // logged a phantom "timed out" line on every ACKed send — corrupting the
++                // WC-delivery telemetry used to debug actual delivery problems.
++                guard !Task.isCancelled else { return }
+                 await WatchLogger.shared.log(
+                     "⌚️ WCSession sendMessage timed out context=\(context)"
+                         + " note=payload_still_pending no_auto_transferUserInfo"
+@@ -253,14 +298,17 @@ actor WatchLogger {
+     private var lastBatteryRefreshEpoch: TimeInterval = 0
+     private var batteryRefreshTask: Task<String, Never>?
+ 
++    /// C-209-5 (B6): TTL 60s → 15s. The 60s cache smeared `battery_state` for up to a minute
++    /// around plug/unplug transitions; a state-only fresh read would cost the same MainActor
++    /// hop as refreshing both fields, so the whole context refreshes at 15s (≤4 hops/min).
+     private func batteryContextCached(now: TimeInterval = Date().timeIntervalSince1970) async -> String {
+-        if now - lastBatteryRefreshEpoch < 60 {
++        if now - lastBatteryRefreshEpoch < 15 {
+             return lastBatteryContext
+         }
+         if let existing = batteryRefreshTask {
+             let result = await existing.value
+             let currentNow = Date().timeIntervalSince1970
+-            if currentNow - lastBatteryRefreshEpoch >= 60 {
++            if currentNow - lastBatteryRefreshEpoch >= 15 {
+                 lastBatteryContext = result
+                 lastBatteryRefreshEpoch = currentNow
+             }
+@@ -281,7 +329,8 @@ actor WatchLogger {
+     private func startFlushTimer() async {
+         timerTask = Task {
+             while true {
+-                try? await Task.sleep(nanoseconds: UInt64(flushInterval * 1_000_000_000))
++                // C-209-4: re-read each cycle so background entry/exit changes the cadence.
++                try? await Task.sleep(nanoseconds: UInt64(currentFlushInterval * 1_000_000_000))
+                 await flushIfNeeded(force: false)
+             }
+         }
+@@ -306,51 +355,126 @@ actor WatchLogger {
+             logs.removeFirst(logs.count - maxEntries)
+         }
+ 
+-        print(entry)
++        #if DEBUG
++            print(entry)
++        #endif
+ 
+-        await appendToDailyLog(entry)
++        bufferDailyLogLine(entry)
+ 
+         await flushIfNeeded(force: force)
+     }
+ 
+-    /// Appends text to the daily local debug log (never sent to phone).
+-    func appendToDailyLog(_ text: String) async {
++    /// C-209-2: directory resolution + creation hoisted to once-per-process — it previously ran
++    /// on every single log line.
++    private static let dailyLogFileURL: URL = {
+         let logDir = FileManager.default.urls(
+             for: .documentDirectory, in: .userDomainMask
+         ).first!.appendingPathComponent("logs", isDirectory: true)
+-
+         try? FileManager.default.createDirectory(
+             at: logDir, withIntermediateDirectories: true
+         )
++        return logDir.appendingPathComponent("watch_log_daily.txt")
++    }()
++
++    /// C-209-2: buffer a line; one batched disk write per `dailyLogBatchSize` lines or per
++    /// flush-cadence drain (see `flushIfNeeded`).
++    private func bufferDailyLogLine(_ text: String) {
++        dailyLogBuffer.append(text)
++        if dailyLogBuffer.count >= dailyLogBatchSize {
++            drainDailyLogBuffer()
++        }
++    }
+ 
+-        let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
++    /// C-209-2: single open/seek/write/close for the whole buffered batch.
++    private func drainDailyLogBuffer() {
++        guard !dailyLogBuffer.isEmpty else { return }
++        let batch = dailyLogBuffer.joined(separator: "\n")
++        dailyLogBuffer.removeAll(keepingCapacity: true)
++        appendToDailyLog(batch)
++    }
++
++    /// Appends text to the daily local debug log (never sent to phone).
++    private func appendToDailyLog(_ text: String) {
++        let dailyLogFile = Self.dailyLogFileURL
          let logEntry = text + "\n"
  
 -        if let data = logEntry.data(using: .utf8) {
@@ -3165,8 +3536,143 @@ index d97e07b5f..c439455f5 100644
      // MARK: - Flush
  
      func flushIfNeeded(force: Bool = false) async {
+         let now = Date()
+         let shouldFlush = force
+-            || now.timeIntervalSince(lastFlush) >= flushInterval
++            || now.timeIntervalSince(lastFlush) >= currentFlushInterval // C-209-4
+             || logs.count >= flushSizeThreshold
+ 
+         if shouldFlush {
++            drainDailyLogBuffer() // C-209-2: the local file rides the same cadence
+             guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
+             await flushToPhone()
+         }
+     }
+ 
++    /// C-209-4: scene-phase hook (TrioWatchApp). Entering background gets one last forced flush
++    /// from the existing scene-transition log call; after that, shipping runs at
++    /// `backgroundFlushInterval` until the app is active again.
++    func setBackgrounded(_ backgrounded: Bool) {
++        isBackgrounded = backgrounded
++    }
++
+     private func flushToPhone() async {
+         guard !logs.isEmpty else { return }
+         guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
+@@ -366,6 +490,21 @@ actor WatchLogger {
+         logs.removeAll()
+         lastFlush = Date()
+ 
++        // C-209-3: one summary line per flush replaces the demoted per-event pipeline
++        // narration, and carries the live E3 counts that per-flush [INVENTORY] used to spam.
++        // log() here is safe: lastFlush was just reset, so the nested flushIfNeeded no-ops.
++        let summary = "event=log_pipeline_summary"
++            + " lines_flushed=\(totalLineCount)"
++            + " queued_bg=\(pipelineQueuedBackground)"
++            + " cleanup_ok=\(pipelineCleanupOk)"
++            + " confirm_files=\(pipelineConfirmFiles)"
++            + " watch_log_files=\(cachedWatchLogFiles)"
++            + " drain_files=\(cachedDrainFiles)"
++        pipelineQueuedBackground = 0
++        pipelineCleanupOk = 0
++        pipelineConfirmFiles = 0
++        await log(summary)
++
+         // Single payload fits within cap — send directly
+         if originalUTF8Count <= logSizeCap {
+             await sendLogPayload(allContent)
+@@ -539,12 +678,8 @@ actor WatchLogger {
+                 filePath: perPayloadFile.path
+             )
+             _ = session.transferUserInfo(envelope)
+-            await log(
+-                "⌚️ Logs queued for background delivery"
+-                    + " (payloadId: \(payloadId))"
+-                    + " watch_log_files=\(cachedWatchLogFiles)"
+-                    + " drain_files=\(cachedDrainFiles)"
+-            )
++            // C-209-3: was a full line per payload (3.3k lines/40h); counted into the summary.
++            pipelineQueuedBackground += 1
+         }
+     }
+ 
+@@ -920,29 +1055,23 @@ actor WatchLogger {
+             }
+         }
+ 
+-        let sampleIds = ids.prefix(3).joined(separator: "|")
+-        if watchLogOk + watchLogErr > 0 {
+-            let result = watchLogErr > 0 ? "err" : "ok"
++        // C-209-3: routine confirm cleanups (≈2.9k lines/40h across three sites) fold into the
++        // flush summary; only failures emit lines.
++        pipelineConfirmFiles += watchLogOk + pendingRecordCount + drainOk
++        if watchLogErr > 0 {
++            let sampleIds = ids.prefix(3).joined(separator: "|")
+             await log(
+                 "⌚️ [CLEANUP] path=confirm artifact=watch_log"
+                     + " count=\(watchLogOk + watchLogErr)"
+                     + " sample_ids=\(sampleIds)"
+-                    + " result=\(result)"
++                    + " result=err"
+             )
+         }
+-        if pendingRecordCount > 0 {
+-            await log(
+-                "⌚️ [CLEANUP] path=confirm"
+-                    + " artifact=pending_record"
+-                    + " count=\(pendingRecordCount) result=ok"
+-            )
+-        }
+-        if drainOk + drainErr > 0 {
+-            let result = drainErr > 0 ? "err" : "ok"
++        if drainErr > 0 {
+             await log(
+                 "⌚️ [CLEANUP] path=confirm artifact=drain"
+                     + " count=\(drainOk + drainErr)"
+-                    + " result=\(result)"
++                    + " result=err"
+             )
+         }
+     }
+@@ -1186,16 +1315,18 @@ actor WatchLogger {
+         path: String, flow: String, artifact: String,
+         payloadId: String, result res: RemoveResult
+     ) async {
+-        var msg = "⌚️ [CLEANUP] path=\(path) flow=\(flow)"
+-        msg += " artifact=\(artifact)"
+-        msg += " payloadId=\(payloadId)"
+-        msg += " outcome=\(res.outcome)"
++        // C-209-3: successful cleanups are counted into the flush summary — this single site
++        // emitted 12.2k lines in 40h (61% of all watch log volume). Failures keep the full line.
+         if let err = res.error {
++            var msg = "⌚️ [CLEANUP] path=\(path) flow=\(flow)"
++            msg += " artifact=\(artifact)"
++            msg += " payloadId=\(payloadId)"
++            msg += " outcome=\(res.outcome)"
+             msg += " result=err error=\(err)"
++            await log(msg)
+         } else {
+-            msg += " result=ok"
++            pipelineCleanupOk += 1
+         }
+-        await log(msg)
+     }
+ 
+     // MARK: - Observability (E2, E3)
+@@ -1242,6 +1373,11 @@ actor WatchLogger {
+ 
+     /// E2: Best-effort daily inventory of log files and pending payloads.
+     private func logFileInventory() async {
++        // C-209-3: process-local guard added — the persisted 24h gate demonstrably failed
++        // across watch process churn (1.5k [INVENTORY] lines in 40h on build 208). Worst case
++        // is now one line per process launch; live counts ride `log_pipeline_summary`.
++        guard !didLogInventoryThisProcess else { return }
++        didLogInventoryThisProcess = true
+         let lastInventory = UserDefaults.standard.double(
+             forKey: lastInventoryKey
+         )
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 5b72af7de..5d28d4781 100644
+index 5b72af7de..1c7e7015f 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -32,6 +32,46 @@ enum BackgroundTaskWindowCounter {
@@ -3178,7 +3684,7 @@ index 5b72af7de..5d28d4781 100644
 +// .fastRetry / .moderateWait added for scheduler states (wired in future build).
 +enum G7DirectBLEStatus: String, Equatable {
 +    case off           // IDLE: no active session or timer
-+    case retrieving    // RETRIEVING: checking OS peripheral cache
++    case waiting       // WAITING: armed between G7 advertisements; no active scan/connection (also the fork's post-disconnect settle and a C1-deferred-in-background scan). Renamed from `retrieving` (UI-207-2) — it almost never meant "checking OS peripheral cache".
 +    case scanning      // SCANNING: active BLE scan; no cached peripheral found
 +    case connecting    // CONNECTING: centralManager.connect() in flight
 +    case active        // WINDOW_ACTIVE: inside a live sensor session
@@ -3189,7 +3695,7 @@ index 5b72af7de..5d28d4781 100644
 +    var badgeText: String {
 +        switch self {
 +        case .off:          return "off"
-+        case .retrieving:   return "retr"
++        case .waiting:      return "wait"
 +        case .scanning:     return "scan"
 +        case .connecting:   return "conn"
 +        case .active:       return "ok"
@@ -3228,7 +3734,7 @@ index 5b72af7de..5d28d4781 100644
      var trend: String? = ""
      var delta: String? = "--"
      var glucoseValues: [(date: Date, glucose: Double, color: Color)] = []
-@@ -53,6 +97,29 @@ enum BackgroundTaskWindowCounter {
+@@ -53,6 +97,28 @@ enum BackgroundTaskWindowCounter {
      var cob: String? = "--"
      var iob: String? = "--"
      var lastLoopTime: String? = "--"
@@ -3251,14 +3757,13 @@ index 5b72af7de..5d28d4781 100644
 +    var bleLastEGVDate: Date?
 +    var bleLastEGVValue: Int?
 +    /// W7 slot accounting mirrored from `G7WatchSensorAdapter` for the debug denominator `N / (expected − gated)`.
-+    var expectedSlotsToday: Int = 0
 +    var gatedSlotsToday: Int = 0
 +    /// True when `CBCentralManager` had state restored this process (willRestoreState).
 +    var bleWasRestored: Bool = false
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
-@@ -113,6 +180,18 @@ enum BackgroundTaskWindowCounter {
+@@ -113,6 +179,18 @@ enum BackgroundTaskWindowCounter {
      private var lastUserInfoReceiveTimestamp: Date?
      private var quietWindowWorkItem: DispatchWorkItem?
  
@@ -3277,7 +3782,7 @@ index 5b72af7de..5d28d4781 100644
      private var activationTimestamp: Date?
      private var forcedSinceActivation = false
  
-@@ -153,6 +232,23 @@ enum BackgroundTaskWindowCounter {
+@@ -153,6 +231,23 @@ enum BackgroundTaskWindowCounter {
  
      private var backgroundRefreshCount = 0
      private var lastBackgroundRefreshDate: Date?
@@ -3301,7 +3806,7 @@ index 5b72af7de..5d28d4781 100644
      private var lastConnectivityTerminalAt: Date?
      private var lastConnectivityTerminalPath: String?
      private var deferredConnectivityCompletionWorkItem: DispatchWorkItem?
-@@ -178,6 +274,7 @@ enum BackgroundTaskWindowCounter {
+@@ -178,6 +273,7 @@ enum BackgroundTaskWindowCounter {
      override init() {
          super.init()
          setupSession()
@@ -3309,7 +3814,7 @@ index 5b72af7de..5d28d4781 100644
  
          DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
              self.forceComplicationUpdate()
-@@ -185,6 +282,20 @@ enum BackgroundTaskWindowCounter {
+@@ -185,6 +281,20 @@ enum BackgroundTaskWindowCounter {
          }
      }
  
@@ -3330,7 +3835,7 @@ index 5b72af7de..5d28d4781 100644
      func noteAppBecameActive() {
          assert(Thread.isMainThread, "noteAppBecameActive must be called on main thread")
          activationTimestamp = Date()
-@@ -215,6 +326,7 @@ enum BackgroundTaskWindowCounter {
+@@ -215,6 +325,7 @@ enum BackgroundTaskWindowCounter {
          DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
      }
  
@@ -3338,7 +3843,7 @@ index 5b72af7de..5d28d4781 100644
      func handleForegroundActiveEntry() {
          assert(Thread.isMainThread, "handleForegroundActiveEntry must be called on main thread")
          guard !startupIsForegroundActive else { return }
-@@ -231,8 +343,14 @@ enum BackgroundTaskWindowCounter {
+@@ -231,8 +342,14 @@ enum BackgroundTaskWindowCounter {
          startupBackgroundLaunchDisarmWorkItem = nil
          WatchStartupTransportGate.arm(activationSequence: activationSequence)
          noteAppBecameActive()
@@ -3353,7 +3858,7 @@ index 5b72af7de..5d28d4781 100644
  
          Task {
              await WatchLogger.shared.log(
-@@ -242,12 +360,22 @@ enum BackgroundTaskWindowCounter {
+@@ -242,12 +359,22 @@ enum BackgroundTaskWindowCounter {
                      + " healthkit_delay_s=\(Int(startupHealthKitDelaySeconds))"
                      + " flush_delay_s=\(Int(startupFlushDelaySeconds))"
              )
@@ -3378,7 +3883,7 @@ index 5b72af7de..5d28d4781 100644
          guard startupIsForegroundActive else { return }
  
          pendingResidentSampleFirstMainView = false
-@@ -653,7 +781,8 @@ enum BackgroundTaskWindowCounter {
+@@ -653,7 +780,8 @@ enum BackgroundTaskWindowCounter {
          dataStore.setHKLastReceivedGlucoseValueMgDl(latestMgDl)
  
          let readingDate = latest.startDate
@@ -3388,7 +3893,7 @@ index 5b72af7de..5d28d4781 100644
          let syncLag = Int(Date().timeIntervalSince(readingDate))
  
          // Stable tokens for validation / Better Stack: batch lines use `hk_sample_query_batch` | `hk_anchored_query_batch` above; `query_type` uses `sampleQuery_bootstrap` | `anchoredQuery`. Do not rename casually.
-@@ -670,11 +799,22 @@ enum BackgroundTaskWindowCounter {
+@@ -670,11 +798,22 @@ enum BackgroundTaskWindowCounter {
              delta: deltaString,
              readingDate: readingDate,
              date: Date(),
@@ -3413,7 +3918,7 @@ index 5b72af7de..5d28d4781 100644
              completionHandler()
          }
      }
-@@ -842,6 +982,160 @@ enum BackgroundTaskWindowCounter {
+@@ -842,6 +981,160 @@ enum BackgroundTaskWindowCounter {
          }
      }
  
@@ -3574,7 +4079,7 @@ index 5b72af7de..5d28d4781 100644
      /// Path B1 — Summarize inbound WC messages without stringifying nested `glucoseValues` (avoids large transient `String` allocations).
      private static func watchConnectivityInboundSummary(_ message: [String: Any]) -> String {
          let topKeys = message.keys.sorted().joined(separator: ",")
-@@ -959,7 +1253,15 @@ enum BackgroundTaskWindowCounter {
+@@ -959,7 +1252,15 @@ enum BackgroundTaskWindowCounter {
          }
  
          // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
@@ -3591,7 +4096,7 @@ index 5b72af7de..5d28d4781 100644
             let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
          {
              if date >= Date().addingTimeInterval(-15 * 60) {
-@@ -1047,6 +1349,10 @@ enum BackgroundTaskWindowCounter {
+@@ -1047,6 +1348,10 @@ enum BackgroundTaskWindowCounter {
  
          let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
  
@@ -3602,7 +4107,19 @@ index 5b72af7de..5d28d4781 100644
          let readingDate: Date
          switch resolveEffectiveCGMReadingDate(from: payload) {
          case let .found(date):
-@@ -1097,7 +1403,9 @@ enum BackgroundTaskWindowCounter {
+@@ -1083,7 +1388,10 @@ enum BackgroundTaskWindowCounter {
+ 
+         // Log using already-decoded readingDate (no extra decode); epoch only when we have it.
+         let readingDateEpoch = Int(readingDate.timeIntervalSince1970)
+-        lastUserInfoReceiveTimestamp = Date()
++        // C-208-6 (1.7): capture the wall clock here (WC delegate queue) but assign the
++        // main-confined property inside the main hop below — the previous direct write raced
++        // main-thread reads/clears of the same field.
++        let userInfoReceiveWallClock = Date()
+         Task {
+             await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
+         }
+@@ -1097,7 +1405,9 @@ enum BackgroundTaskWindowCounter {
              trend: payload[WatchMessageKeys.trend] as? String ?? "",
              delta: payload[WatchMessageKeys.delta] as? String ?? "",
              readingDate: readingDate,
@@ -3613,16 +4130,30 @@ index 5b72af7de..5d28d4781 100644
          )
          if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: tempSnapshot, handler: "userInfo") {
              DispatchQueue.main.async { [weak self] in
-@@ -1109,7 +1417,7 @@ enum BackgroundTaskWindowCounter {
+@@ -1109,7 +1419,8 @@ enum BackgroundTaskWindowCounter {
              return
          }
  
 -        DispatchQueue.main.async { [self] in
 +        DispatchQueue.main.async { @MainActor [self] in
++            lastUserInfoReceiveTimestamp = userInfoReceiveWallClock // C-208-6: main-confined write
              // R5d: compute gap BEFORE updating timestamp
              let gap = lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
              let isSleepGap = gap > 600
-@@ -1217,8 +1525,9 @@ enum BackgroundTaskWindowCounter {
+@@ -1182,7 +1493,11 @@ enum BackgroundTaskWindowCounter {
+                 DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: retryWorkItem!)
+             } else {
+                 transferRetryCount = 0
+-                loadFallbackDataFromComplication()
++                // C-208-6 (1.7): this delegate runs on the WC queue; the fallback reads
++                // main-confined attribution state before its own internal main hop.
++                DispatchQueue.main.async {
++                    self.loadFallbackDataFromComplication()
++                }
+             }
+         } else {
+             transferRetryCount = 0
+@@ -1217,8 +1532,9 @@ enum BackgroundTaskWindowCounter {
              return
          }
          let readingResolution = resolveEffectiveCGMReadingDate(from: payload)
@@ -3633,7 +4164,7 @@ index 5b72af7de..5d28d4781 100644
              let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
              self.saveComplicationSnapshot(from: payload)
              if case .found = readingResolution {
-@@ -1485,8 +1794,66 @@ enum BackgroundTaskWindowCounter {
+@@ -1485,8 +1801,66 @@ enum BackgroundTaskWindowCounter {
          return pendingCount
      }
  
@@ -3701,7 +4232,7 @@ index 5b72af7de..5d28d4781 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -1531,6 +1898,7 @@ enum BackgroundTaskWindowCounter {
+@@ -1531,6 +1905,7 @@ enum BackgroundTaskWindowCounter {
          }
      }
  
@@ -3709,7 +4240,7 @@ index 5b72af7de..5d28d4781 100644
      private func scheduleUIUpdate(
          with newData: [String: Any],
          fromUserInfo: Bool = false,
-@@ -1538,7 +1906,7 @@ enum BackgroundTaskWindowCounter {
+@@ -1538,7 +1913,7 @@ enum BackgroundTaskWindowCounter {
          pendingConnectivityCompletionPath: String? = nil
      ) {
          guard Thread.isMainThread else {
@@ -3718,7 +4249,7 @@ index 5b72af7de..5d28d4781 100644
                  scheduleUIUpdate(
                      with: newData,
                      fromUserInfo: fromUserInfo,
-@@ -1549,6 +1917,8 @@ enum BackgroundTaskWindowCounter {
+@@ -1549,6 +1924,8 @@ enum BackgroundTaskWindowCounter {
              return
          }
  
@@ -3727,7 +4258,7 @@ index 5b72af7de..5d28d4781 100644
          guard let incomingDate = dateValue(from: newData[WatchMessageKeys.date]) else {
              Task {
                  await WatchLogger.shared.log("Invalid date format in WatchState data")
-@@ -1607,6 +1977,14 @@ enum BackgroundTaskWindowCounter {
+@@ -1607,6 +1984,14 @@ enum BackgroundTaskWindowCounter {
          DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
      }
  
@@ -3742,7 +4273,7 @@ index 5b72af7de..5d28d4781 100644
      private func finalizePendingData(
          fromUserInfo: Bool = false,
          userInfoReceiveTimestamp: Date? = nil,
-@@ -1644,6 +2022,21 @@ enum BackgroundTaskWindowCounter {
+@@ -1644,6 +2029,21 @@ enum BackgroundTaskWindowCounter {
              await WatchLogger.shared.log("Watch UI update complete")
          }
  
@@ -3764,7 +4295,7 @@ index 5b72af7de..5d28d4781 100644
          guard let pendingConnectivityCompletionPath else { return }
          let pendingCountBeforeCompletion = pendingConnectivityTasks.count
          let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
-@@ -1677,28 +2070,60 @@ enum BackgroundTaskWindowCounter {
+@@ -1677,28 +2077,60 @@ enum BackgroundTaskWindowCounter {
  
          startupFirstRefreshInFlight = false
  
@@ -3839,7 +4370,7 @@ index 5b72af7de..5d28d4781 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -1714,17 +2139,14 @@ enum BackgroundTaskWindowCounter {
+@@ -1714,17 +2146,14 @@ enum BackgroundTaskWindowCounter {
          }
  
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
@@ -3865,7 +4396,7 @@ index 5b72af7de..5d28d4781 100644
          }
  
          if let minYAxisValue = message[WatchMessageKeys.minYAxisValue],
-@@ -1791,6 +2213,14 @@ enum BackgroundTaskWindowCounter {
+@@ -1791,6 +2220,14 @@ enum BackgroundTaskWindowCounter {
              self.confirmBolusFaster = confirmBolusFaster
          }
  
@@ -3880,7 +4411,7 @@ index 5b72af7de..5d28d4781 100644
          saveComplicationSnapshot(from: message, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
  
          emitResidentMemorySample(
-@@ -1799,11 +2229,29 @@ enum BackgroundTaskWindowCounter {
+@@ -1799,11 +2236,29 @@ enum BackgroundTaskWindowCounter {
          )
      }
  
@@ -3910,7 +4441,7 @@ index 5b72af7de..5d28d4781 100644
          // R3: effective CGM reading time (shared resolver; see `resolveEffectiveCGMReadingDate`)
          let readingDate: Date
          switch resolveEffectiveCGMReadingDate(from: message) {
-@@ -1830,7 +2278,14 @@ enum BackgroundTaskWindowCounter {
+@@ -1830,7 +2285,14 @@ enum BackgroundTaskWindowCounter {
          let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
          let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
          let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
@@ -3926,7 +4457,7 @@ index 5b72af7de..5d28d4781 100644
  
          Task {
              await WatchLogger.shared.log("📸 Saving snapshot: glucose=\(glucoseValue), trend=\(trendValue), delta=\(deltaValue), readingDate=\(readingDate)")
-@@ -1843,7 +2298,9 @@ enum BackgroundTaskWindowCounter {
+@@ -1843,7 +2305,9 @@ enum BackgroundTaskWindowCounter {
              delta: deltaValue,
              readingDate: readingDate,
              date: Date(),
@@ -3937,7 +4468,7 @@ index 5b72af7de..5d28d4781 100644
          )
  
          // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
-@@ -1883,7 +2340,13 @@ enum BackgroundTaskWindowCounter {
+@@ -1883,7 +2347,13 @@ enum BackgroundTaskWindowCounter {
          }
  
          if let glucoseValue = Double(currentGlucose.replacingOccurrences(of: " mg/dL", with: "")) {
@@ -3952,7 +4483,7 @@ index 5b72af7de..5d28d4781 100644
                  Task {
                      await WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
                  }
-@@ -1904,7 +2367,10 @@ enum BackgroundTaskWindowCounter {
+@@ -1904,7 +2374,10 @@ enum BackgroundTaskWindowCounter {
              delta: delta ?? "",
              readingDate: effectiveReadingDate,
              date: Date(),
@@ -3964,7 +4495,7 @@ index 5b72af7de..5d28d4781 100644
          )
  
          Task {
-@@ -1996,9 +2462,27 @@ enum BackgroundTaskWindowCounter {
+@@ -1996,9 +2469,27 @@ enum BackgroundTaskWindowCounter {
                      lastBackgroundRefreshDate = Date()
  
                      if isReachable {
@@ -3994,7 +4525,7 @@ index 5b72af7de..5d28d4781 100644
                          }
                      } else {
                          loadFallbackDataFromComplication()
-@@ -2060,6 +2544,16 @@ enum BackgroundTaskWindowCounter {
+@@ -2060,6 +2551,16 @@ enum BackgroundTaskWindowCounter {
              return
          }
  
@@ -4011,7 +4542,7 @@ index 5b72af7de..5d28d4781 100644
          if let lastUpdate = lastWatchStateUpdate,
             Date().timeIntervalSince(lastUpdate) <= 15
          {
-@@ -2070,6 +2564,13 @@ enum BackgroundTaskWindowCounter {
+@@ -2070,6 +2571,13 @@ enum BackgroundTaskWindowCounter {
          }
  
          DispatchQueue.main.async {
@@ -4025,7 +4556,7 @@ index 5b72af7de..5d28d4781 100644
              self.currentGlucose = snapshot.glucose
              self.trend = snapshot.trend
              self.delta = snapshot.delta
-@@ -2077,6 +2578,7 @@ enum BackgroundTaskWindowCounter {
+@@ -2077,6 +2585,7 @@ enum BackgroundTaskWindowCounter {
                  self.currentGlucoseColorString = glucoseColor
              }
              self.lastWatchStateUpdate = snapshot.readingDate
@@ -4033,6 +4564,131 @@ index 5b72af7de..5d28d4781 100644
              self.showSyncingAnimation = false
              self.syncTimeoutWorkItem?.cancel()
          }
+diff --git a/Trio Watch App Extension/WatchTelemetryRing.swift b/Trio Watch App Extension/WatchTelemetryRing.swift
+new file mode 100644
+index 000000000..5359b5bc7
+--- /dev/null
++++ b/Trio Watch App Extension/WatchTelemetryRing.swift	
+@@ -0,0 +1,119 @@
++import Foundation
++import G7SensorKit
++
++/// C-208-9: producer-side telemetry ring.
++///
++/// BLE-path emitters (`G7Telemetry.emit` from the fork's queues, the adapter's `log()` on
++/// MainActor) enqueue formatted lines **synchronously** — no per-event `Task` spawn, no
++/// MainActor hop, no actor suspension on the timing-sensitive paths. A single long-lived
++/// drainer feeds the existing `WatchLogger` transport, which keeps all of its
++/// buffering / flush / persistence / BetterStack semantics unchanged.
++///
++/// Semantics:
++/// - **Bounded (512), drop-oldest:** the enqueue path can never block or grow unboundedly.
++///   Drops are counted and surfaced **at drain time** (`ring_dropped=` window count +
++///   `ring_dropped_total=` cumulative) on a line that is being handed directly to WatchLogger —
++///   so an annotated line can never itself be evicted. Residual: drops occurring after the
++///   final drain of a process die with the process (cumulative counter restarts at relaunch).
++/// - **`seq=` ordering:** a monotonic per-process sequence stamped at enqueue restores true
++///   emission order in BetterStack regardless of downstream interleaving (review 5.6).
++/// - **Lock-guarded (`NSLock`):** event rates are tens/sec worst case; the critical section is
++///   an array append/remove. Deliberately not "lock-free" — simpler is safer here.
++/// - **Suspension:** lines not yet drained die with the process. Acceptable: the ring carries
++///   diagnostics; the capture-critical EGV path persists its own state independently
++///   (C-208-10's secure-write).
++final class WatchTelemetryRing: @unchecked Sendable {
++    static let shared = WatchTelemetryRing()
++
++    private let lock = NSLock()
++    private var buffer: [String] = []
++    private var seq: UInt64 = 0
++    private var dropped: UInt64 = 0
++    private var totalDropped: UInt64 = 0
++    private let capacity = 512
++    private var signal: AsyncStream<Void>.Continuation?
++
++    /// Session context captured at emit time for fork (`module=g7_core`) lines. Updated by the
++    /// adapter (MainActor) on connect / disconnect / identity changes; read under the lock from
++    /// any queue. Attribution note: fork events emitted between a physical connect and the
++    /// adapter's MainActor connect bookkeeping (e.g. `gatt_ready`, early `auth_*`) carry the
++    /// PRIOR session id by design — emit-time context is the honest semantics; log readers
++    /// should expect the session boundary on the adapter's `did_connect` line.
++    private var contextSensorName = "nil"
++    private var contextSession = "nil"
++
++    private init() {}
++
++    /// Adapter-driven context sync (sensor name + adapter session id).
++    func setContext(sensorName: String, g7Session: String) {
++        lock.lock()
++        contextSensorName = sensorName
++        contextSession = g7Session
++        lock.unlock()
++    }
++
++    /// Fork telemetry -> formatted `module=g7_core` line using emit-time context.
++    func enqueueCoreTelemetry(payload: G7TelemetryPayload) {
++        lock.lock()
++        let name = contextSensorName
++        let sid = contextSession
++        lock.unlock()
++        enqueue(G7StructuredTelemetryLogLine.formatCoreTelemetry(
++            sensorName: name,
++            payload: payload,
++            g7Session: sid
++        ))
++    }
++
++    /// Pre-formatted line (the adapter formats its own `module=g7_ble` lines on MainActor where
++    /// its state is directly readable).
++    func enqueue(_ line: String) {
++        lock.lock()
++        seq += 1
++        if buffer.count >= capacity {
++            buffer.removeFirst()
++            dropped += 1
++            totalDropped += 1
++        }
++        buffer.append("\(line) seq=\(seq)")
++        let continuation = signal
++        lock.unlock()
++        continuation?.yield()
++    }
++
++    /// Started once from `ExtensionDelegate.applicationDidFinishLaunching`.
++    func startDrainer() {
++        let stream = AsyncStream<Void> { continuation in
++            lock.lock()
++            signal = continuation
++            lock.unlock()
++            continuation.yield() // drain anything enqueued before the drainer existed
++        }
++        Task.detached(priority: .utility) { [weak self] in
++            for await _ in stream {
++                await self?.drainOnce()
++            }
++        }
++    }
++
++    /// Synchronous locked dequeue (NSLock is unavailable from async contexts in the Swift 6
++    /// language mode — keep all locking in sync helpers). Drop counts are surfaced here, on a
++    /// line that is being handed straight to WatchLogger, so the annotation can never be evicted.
++    private func dequeueLine() -> String? {
++        lock.lock()
++        defer { lock.unlock() }
++        guard buffer.isEmpty == false else { return nil }
++        var line = buffer.removeFirst()
++        if dropped > 0 {
++            line += " ring_dropped=\(dropped) ring_dropped_total=\(totalDropped)"
++            dropped = 0
++        }
++        return line
++    }
++
++    private func drainOnce() async {
++        while let line = dequeueLine() {
++            await WatchLogger.shared.log(line)
++        }
++    }
++}
 diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
 index 80d6438ea..244892dc7 100644
 --- a/Trio Watch App/Info.plist	
@@ -4062,7 +4718,7 @@ index 80d6438ea..244892dc7 100644
  </dict>
  </plist>
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
-index 1ee4b80a6..9b0197a49 100644
+index 1ee4b80a6..9152d7023 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
 +++ b/Trio Watch Complication/TrioWatchComplication.swift	
 @@ -17,6 +17,7 @@ struct TrioWatchComplicationEntry: TimelineEntry {
@@ -4101,7 +4757,17 @@ index 1ee4b80a6..9b0197a49 100644
          )
      }
  
-@@ -209,10 +213,10 @@ struct TrioWatchComplicationProvider: TimelineProvider {
+@@ -194,6 +198,9 @@ struct TrioWatchComplicationProvider: TimelineProvider {
+ 
+         if appGroupAvailable {
+             ProviderProcessState.lastSeenGeneration = observedGeneration
++            // C-209-7 (review 5.9): persist the serviced generation so the app side can detect
++            // reloads WidgetKit dropped and re-request once. Widget-owned key, app reads only.
++            store.recordWidgetObservedGeneration(observedGeneration)
+         }
+ 
+         let latencyValid: Bool
+@@ -209,10 +216,10 @@ struct TrioWatchComplicationProvider: TimelineProvider {
  
          let reloadId = store.newestReloadRecord()?.id.uuidString ?? "none"
  
@@ -4114,7 +4780,7 @@ index 1ee4b80a6..9b0197a49 100644
              if rd == .distantPast || rd.timeIntervalSince1970 <= 0 { return -1 }
              return max(0, Int(Date().timeIntervalSince(rd)))
          }()
-@@ -238,12 +242,13 @@ struct TrioWatchComplicationProvider: TimelineProvider {
+@@ -238,12 +245,13 @@ struct TrioWatchComplicationProvider: TimelineProvider {
              let entryDate = now.addingTimeInterval(TimeInterval(minuteOffset * 60))
              let entry = TrioWatchComplicationEntry(
                  date: entryDate,
@@ -4134,7 +4800,7 @@ index 1ee4b80a6..9b0197a49 100644
              )
              entries.append(entry)
          }
-@@ -307,7 +312,8 @@ struct TrioAccessoryCornerView: View {
+@@ -307,7 +315,8 @@ struct TrioAccessoryCornerView: View {
                      timeText: timeText,
                      recencyColor: recencyColor,
                      hasDelta: hasDelta,
@@ -4144,7 +4810,7 @@ index 1ee4b80a6..9b0197a49 100644
                  ))
                  .font(.system(size: 10, weight: .medium, design: .rounded))
                  .lineLimit(1)
-@@ -349,7 +355,8 @@ struct TrioAccessoryCornerView: View {
+@@ -349,7 +358,8 @@ struct TrioAccessoryCornerView: View {
          timeText: String,
          recencyColor: Color,
          hasDelta: Bool,
@@ -4154,7 +4820,7 @@ index 1ee4b80a6..9b0197a49 100644
      ) -> AttributedString {
          var result = AttributedString()
  
-@@ -375,6 +382,12 @@ struct TrioAccessoryCornerView: View {
+@@ -375,6 +385,12 @@ struct TrioAccessoryCornerView: View {
              result.append(fallbackAttr)
          }
  
@@ -4168,7 +4834,7 @@ index 1ee4b80a6..9b0197a49 100644
      }
  }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
-index 1cc2a5535..255a397ab 100644
+index 1cc2a5535..125583ab1 100644
 --- a/Trio Watch Shared/TrioComplicationDataStore.swift	
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
 @@ -5,6 +5,35 @@ import WatchConnectivity
@@ -4237,7 +4903,34 @@ index 1cc2a5535..255a397ab 100644
      }
  
      private static func sanitizedGlucose(from value: String) -> String {
-@@ -89,6 +125,7 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
+@@ -44,12 +80,25 @@ struct TrioComplicationSnapshot: Equatable, Codable {
+         guard !trimmed.isEmpty else { return Constants.fallbackGlucose }
+         if trimmed == Constants.fallbackGlucose { return Constants.fallbackGlucose }
+ 
++        // C-209-6 (review 1.10): normalize comma decimals BEFORE extracting the numeric
++        // portion — without this, comma-locale mmol "5,6" concatenated to "56". Mirrors
++        // sanitizedDelta, which always had this normalization.
++        let normalized = trimmed.replacingOccurrences(of: ",", with: ".")
+         let digitsAndSeparators = CharacterSet(charactersIn: "0123456789.")
+-        let numericPortion = trimmed
++        let numericPortion = normalized
+             .components(separatedBy: digitsAndSeparators.inverted)
+             .joined()
+ 
+         if let doubleValue = Double(numericPortion), doubleValue > 0 {
++            // C-209-6 (review 1.10): mmol/L-range values keep one decimal — integer rounding
++            // turned "5.6" into "6". mg/dL values (≥ 40 by CGM display floor) keep integer
++            // rounding, and whole-number mmol values still collapse to the bare integer.
++            if doubleValue < 40 {
++                let tenths = (doubleValue * 10).rounded() / 10
++                return tenths == tenths.rounded()
++                    ? String(Int(tenths))
++                    : String(format: "%.1f", tenths)
++            }
+             let rounded = Int(doubleValue.rounded())
+             return String(rounded)
+         }
+@@ -89,6 +138,7 @@ struct ComplicationSnapshotFingerprint: Codable, Equatable {
      let trend: String
      let delta: String
      let state: String
@@ -4245,7 +4938,7 @@ index 1cc2a5535..255a397ab 100644
  }
  
  extension ComplicationSnapshotFingerprint {
-@@ -100,6 +137,7 @@ extension ComplicationSnapshotFingerprint {
+@@ -100,6 +150,7 @@ extension ComplicationSnapshotFingerprint {
          // Sentinel for nil: state is always optional in the model; sentinel ensures
          // nil and non-nil are always distinguishable in Equatable comparison.
          state = snapshot.state ?? "<nil>"
@@ -4253,7 +4946,36 @@ index 1cc2a5535..255a397ab 100644
      }
  }
  
-@@ -569,14 +607,48 @@ final class TrioComplicationDataStore {
+@@ -202,6 +253,9 @@ final class TrioComplicationDataStore {
+     private static let reloadGenerationTokenKey = "TrioComplication_reloadGenerationToken"
+     private static let reloadGenerationKey = "TrioComplication_reloadGeneration"
+     private static let lastReloadRequestEpochSecondsKey = "TrioComplication_lastReloadRequestEpochSeconds"
++    /// C-209-7 (review 5.9): the generation the widget last serviced at getTimeline.
++    /// Widget-owned key — the app only reads it (the no-widget-writes rule is ring-specific).
++    private static let widgetObservedGenerationKey = "TrioComplication_widgetObservedReloadGeneration"
+     private static let fingerprintKey = "complication_last_saved_fingerprint"
+     // R5d — last time any data channel delivered data to the watch (persisted for sleep-gap detection)
+     private static let lastDataReceivedAtKey = "TrioComplication_lastDataReceivedAt"
+@@ -312,6 +366,18 @@ final class TrioComplicationDataStore {
+     /// Remaining cold-start seeding attempts (hydrates inMemorySavedSnapshot from disk)
+     private var seedAttemptsRemaining = 2
+ 
++    /// C-209-8 (6.10): saves since the last `.bak` refresh. Starts ≥10 so the first save of
++    /// each process refreshes the backup.
++    private var savesSinceBackup = 10
++
++    /// C-209-7 (review 5.9): unserviced-reload detector state. Main-thread confined, like the
++    /// retry machinery. The rate limit bounds the retry chain to one extra reload request per
++    /// window during a true WidgetKit budget blackout (or when no complication is on the face).
++    private var unservicedCheckWorkItem: DispatchWorkItem?
++    private var lastUnservicedRetryAt: Date = .distantPast
++    private static let unservicedCheckDelay: TimeInterval = 120
++    private static let unservicedRetryMinInterval: TimeInterval = 15 * 60
++
+     /// Burst window ID — increments each time a reload is triggered (Phase 2.1). In-memory only.
+     private var burstWindowId = 0
+     /// Number of reload calls debounced in the current burst window; reset to 0 when a reload fires (Phase 2.1).
+@@ -569,14 +635,48 @@ final class TrioComplicationDataStore {
      //   Same timestamp, different glucose → true
      //   Newer timestamp (>1s)            → true
      //   Older timestamp (<-1s)           → false
@@ -4302,7 +5024,36 @@ index 1cc2a5535..255a397ab 100644
      }
  
      // MARK: - Phase 3.0 Pre-dispatch Dedup
-@@ -682,8 +754,14 @@ final class TrioComplicationDataStore {
+@@ -614,25 +714,9 @@ final class TrioComplicationDataStore {
+ 
+     // MARK: - Save Methods
+ 
+-    func save(
+-        glucose: String,
+-        trend: String?,
+-        delta: String?,
+-        readingDate: Date,
+-        date: Date,
+-        glucoseColor: String? = nil,
+-        triggerReload: Bool = true
+-    ) {
+-        let snapshot = TrioComplicationSnapshot(
+-            glucose: glucose,
+-            trend: trend ?? "",
+-            delta: delta ?? "",
+-            readingDate: readingDate,
+-            date: date,
+-            glucoseColor: glucoseColor
+-        )
+-        save(snapshot, triggerReload: triggerReload)
+-    }
++    // C-209-8 (6.11): the source-less convenience `save(glucose:trend:...)` was deleted — it
++    // had zero callers and built `source: nil` (priority 0) snapshots that lose every ±1s
++    // arbitration. Construct a TrioComplicationSnapshot with an explicit `source` instead.
+ 
+     /// Saves a snapshot to disk. Main-thread confined.
+     /// - Parameters:
+@@ -682,9 +766,23 @@ final class TrioComplicationDataStore {
                  return
              }
          } else if let lastTS = Self.lastValidTimestamp {
@@ -4314,12 +5065,57 @@ index 1cc2a5535..255a397ab 100644
 +            // in telemetry / log streams. The read path (`latestSnapshot`) no longer logs this.
 +            if snapshot.readingDate < lastTS {
 +                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(snapshot.readingDate) < \(lastTS))")
-+                return
-+            } else if snapshot.readingDate == lastTS {
                  return
++            } else if snapshot.readingDate == lastTS {
++                // C-209-8 (5.10): same timestamp is only a duplicate if the CONTENT matches —
++                // the primary shouldUpdate path accepts same-ts-different-glucose (corrected
++                // readings); this rare fallback (failed seed) now agrees. The disk read happens
++                // only on the cold-start-equal-timestamp path.
++                if let existing = latestSnapshot(), shouldUpdate(new: snapshot, current: existing) {
++                    inMemorySavedSnapshot = existing
++                } else {
++                    return
++                }
              }
          }
-@@ -782,8 +860,15 @@ final class TrioComplicationDataStore {
+ 
+@@ -706,10 +804,15 @@ final class TrioComplicationDataStore {
+                 attributes: nil
+             )
+ 
++            // C-209-8 (6.10): .bak refresh every 10th save — the per-save remove+copy was two
++            // extra file ops per reading guarding a corruption mode the atomic write already
++            // mostly prevents. Counter starts ≥10 so the first save of each process refreshes.
++            savesSinceBackup += 1
+             let backupURL = containerDir.appendingPathComponent("snapshot.bak")
+-            if fileManager.fileExists(atPath: fileURL.path) {
++            if savesSinceBackup >= 10, fileManager.fileExists(atPath: fileURL.path) {
+                 _ = try? fileManager.removeItem(at: backupURL)
+                 _ = try? fileManager.copyItem(at: fileURL, to: backupURL)
++                savesSinceBackup = 0
+             }
+ 
+             try data.write(to: fileURL, options: [.atomic])
+@@ -777,13 +880,34 @@ final class TrioComplicationDataStore {
+             : nil
+     }
+ 
++    /// C-209-7 (review 5.9): widget-side write at getTimeline — records the generation the
++    /// provider actually serviced, so the app can detect dropped reloads.
++    func recordWidgetObservedGeneration(_ generation: Int) {
++        appGroupDefaults?.set(generation, forKey: Self.widgetObservedGenerationKey)
++    }
++
++    /// C-209-7: app-side read of the widget's last serviced generation.
++    func widgetObservedGeneration() -> Int? {
++        guard let defaults = appGroupDefaults else { return nil }
++        return defaults.object(forKey: Self.widgetObservedGenerationKey) != nil
++            ? defaults.integer(forKey: Self.widgetObservedGenerationKey)
++            : nil
++    }
++
+     func isAppGroupAvailable() -> Bool {
+         appGroupDefaults != nil
      }
  
      /// Loads the latest complication snapshot from disk.
@@ -4337,24 +5133,25 @@ index 1cc2a5535..255a397ab 100644
      func latestSnapshot() -> TrioComplicationSnapshot? {
          guard let fileURL = snapshotFileURL else {
              log("❌ Snapshot load FAILED: no App Group container URL")
-@@ -803,16 +888,16 @@ final class TrioComplicationDataStore {
+@@ -803,16 +927,17 @@ final class TrioComplicationDataStore {
              guard !data.isEmpty else { throw NSError(domain: "EmptySnapshot", code: -1) }
              let snapshot = try decoder.decode(TrioComplicationSnapshot.self, from: data)
              let readingDate = snapshot.readingDate
 -            if let currentTS = Self.lastValidTimestamp, readingDate.timeIntervalSince(currentTS) <= 0 {
 -                log("⏭️ lastValidTimestamp: skipped non-monotonic write (\(readingDate) <= \(currentTS))")
 -            } else if appGroupDefaults == nil {
--                onMain {
 +            if Self.lastValidTimestamp == nil {
-+                if appGroupDefaults == nil {
-+                    onMain {
++                // C-209-8 (6.9): always hop to main — the old direct-write branch (taken in the
++                // common appGroupDefaults-present case) raced saveOnMain's main-thread writes;
++                // the onMain wrap was on the wrong branch. Re-check nil inside the hop so a
++                // save that lands first isn't overwritten by stale disk state.
+                 onMain {
+-                    Self.lastValidTimestamp = readingDate
+-                    self.log("✅ lastValidTimestamp updated (main): \(readingDate)")
++                    if Self.lastValidTimestamp == nil {
 +                        Self.lastValidTimestamp = readingDate
 +                        self.log("✅ lastValidTimestamp hydrated from disk (main): \(readingDate)")
 +                    }
-+                } else {
-                     Self.lastValidTimestamp = readingDate
--                    self.log("✅ lastValidTimestamp updated (main): \(readingDate)")
-+                    log("✅ lastValidTimestamp hydrated from disk: \(readingDate)")
                  }
 -            } else {
 -                Self.lastValidTimestamp = readingDate
@@ -4362,6 +5159,64 @@ index 1cc2a5535..255a397ab 100644
              }
              return snapshot
          }
+@@ -873,8 +998,11 @@ final class TrioComplicationDataStore {
+         }
+         if !isRetry {
+             let freshnessThreshold: TimeInterval = 60
+-            if let snapshot = latestSnapshot(), Date().timeIntervalSince(snapshot.readingDate) < freshnessThreshold {
+-                let age = String(format: "%.1f", Date().timeIntervalSince(snapshot.readingDate))
++            // C-209-8 (6.10): use the in-memory snapshot — this was a disk read + JSON decode
++            // on the main thread per reload, just to decide retry-skip.
++            let freshDate = inMemorySavedSnapshot?.readingDate ?? Self.lastValidTimestamp
++            if let freshDate, Date().timeIntervalSince(freshDate) < freshnessThreshold {
++                let age = String(format: "%.1f", Date().timeIntervalSince(freshDate))
+                 log("⏭️ Retry skipped: snapshot fresh (age=\(age)s < \(Int(freshnessThreshold))s)")
+                 return
+             }
+@@ -919,6 +1047,11 @@ final class TrioComplicationDataStore {
+                 defaults.set(reloadGeneration, forKey: Self.reloadGenerationKey)
+                 defaults.set(requestedAtEpochSeconds, forKey: Self.lastReloadRequestEpochSecondsKey)
+             }
++            // C-209-7 (review 5.9): a reload WidgetKit drops on budget grounds was previously
++            // invisible and never re-asked (save-path reloads skip retries; fresh snapshots skip
++            // the coalesced retry). Check the widget's serviced generation after a grace period
++            // and re-request once, rate-limited.
++            scheduleUnservicedReloadCheck(generation: reloadGeneration)
+             #endif
+             log("event=complication_reload_requested reload_generation=\(reloadGeneration) reload_requested_at_epoch_seconds=\(record.requestedAtEpochSeconds) reload_id=\(record.id.uuidString)")
+ 
+@@ -942,6 +1075,31 @@ final class TrioComplicationDataStore {
+                 DispatchQueue.main.async(execute: reloadBlock)
+             }
+         }
++
++        /// C-209-7 (review 5.9): re-request once if the widget hasn't serviced `generation`
++        /// within `unservicedCheckDelay`. Each new reload supersedes the pending check, so the
++        /// check always covers the most recent generation. Rate-limited so a true WidgetKit
++        /// budget blackout (or an empty watch face) costs at most one extra request per
++        /// `unservicedRetryMinInterval`.
++        private func scheduleUnservicedReloadCheck(generation: Int) {
++            guard generation > 0 else { return } // -1/0 = no app-group defaults; nothing to compare
++            unservicedCheckWorkItem?.cancel()
++            let work = DispatchWorkItem { [weak self] in
++                guard let self else { return }
++                self.unservicedCheckWorkItem = nil
++                let observed = self.widgetObservedGeneration() ?? -1
++                guard observed < generation else { return } // serviced — the common, silent case
++                guard Date().timeIntervalSince(self.lastUnservicedRetryAt) >= Self.unservicedRetryMinInterval else {
++                    self.log("event=complication_reload_unserviced generation=\(generation) observed=\(observed) action=rate_limited")
++                    return
++                }
++                self.lastUnservicedRetryAt = Date()
++                self.log("event=complication_reload_unserviced generation=\(generation) observed=\(observed) action=re_request")
++                self.forceReloadOnMain(scheduleRetry: false)
++            }
++            unservicedCheckWorkItem = work
++            DispatchQueue.main.asyncAfter(deadline: .now() + Self.unservicedCheckDelay, execute: work)
++        }
+     #endif
+ 
+     // MARK: - Private Helpers (Main-Thread Confined)
 diff --git a/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift b/Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
 new file mode 100644
 index 000000000..fba604016

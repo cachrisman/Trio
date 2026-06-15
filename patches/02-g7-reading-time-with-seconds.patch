@@ -22,12 +22,12 @@ index 640982671..c344f7474 100644
  	path = OmniKit
  	url = https://github.com/loopandlearn/OmniKit.git
 diff --git a/G7SensorKit b/G7SensorKit
-index 4d0780db0..b791cf56c 160000
+index 4d0780db0..cd879d59a 160000
 --- a/G7SensorKit
 +++ b/G7SensorKit
 @@ -1 +1 @@
 -Subproject commit 4d0780db06c7c95b3a3bf3cdb2f2838d521e411a
-+Subproject commit 3a0b2acbf810317aa208f056b554010e77d3d718
++Subproject commit cd879d59a5c3bd92ed95b3473ca54d00221e2e16
 -- 
 2.50.1 (Apple Git-155)
 
