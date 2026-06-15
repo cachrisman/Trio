@@ -1,0 +1,52 @@
+From 9106e92f4f24ec19f5149a8d1bb60b3c06ba0681 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Mon, 15 Jun 2026 23:09:52 +0200
+Subject: [PATCH] feat: temp-target-default-tab
+
+Trio-Patch-Source-Branch: feature/temp-target-default-tab
+---
+ Trio/Sources/Modules/Adjustments/AdjustmentsDataFlow.swift  | 6 +++---
+ .../Sources/Modules/Adjustments/AdjustmentsStateModel.swift | 2 +-
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/Trio/Sources/Modules/Adjustments/AdjustmentsDataFlow.swift b/Trio/Sources/Modules/Adjustments/AdjustmentsDataFlow.swift
+index 93f3e920d..fc55772d2 100644
+--- a/Trio/Sources/Modules/Adjustments/AdjustmentsDataFlow.swift
++++ b/Trio/Sources/Modules/Adjustments/AdjustmentsDataFlow.swift
+@@ -5,17 +5,17 @@ enum Adjustments {
+     enum Config {}
+ 
+     enum Tab: String, Hashable, Identifiable, CaseIterable {
+-        case overrides
+         case tempTargets
++        case overrides
+ 
+         var id: String { rawValue }
+ 
+         var name: String {
+             switch self {
+-            case .overrides:
+-                return String(localized: "Overrides", comment: "Selected Tab")
+             case .tempTargets:
+                 return String(localized: "Temp Targets", comment: "Selected Tab")
++            case .overrides:
++                return String(localized: "Overrides", comment: "Selected Tab")
+             }
+         }
+     }
+diff --git a/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel.swift b/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel.swift
+index b303d13b6..23d04500d 100644
+--- a/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel.swift
++++ b/Trio/Sources/Modules/Adjustments/AdjustmentsStateModel.swift
+@@ -41,7 +41,7 @@ extension Adjustments {
+         var uamMinutes: Decimal = 0
+         var defaultSmbMinutes: Decimal = 0
+         var defaultUamMinutes: Decimal = 0
+-        var selectedTab: Tab = .overrides
++        var selectedTab: Tab = .tempTargets
+         var activeOverrideName: String = ""
+         var currentActiveOverride: OverrideStored?
+         var activeTempTargetName: String = ""
+-- 
+2.50.1 (Apple Git-155)
+

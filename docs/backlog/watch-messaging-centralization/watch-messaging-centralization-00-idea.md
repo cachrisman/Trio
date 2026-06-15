@@ -1,9 +1,9 @@
 # Backlog idea: Watch / phone messaging architecture centralization
 
-**Version:** v1.6  
+**Version:** v1.7  
 **Status:** Backlog (candidate feature)  
 **Created:** 2026-04-06 17:41 CET  
-**Last updated:** 2026-04-08 09:31 CET  
+**Last updated:** 2026-06-16 00:15 CET  
 
 **Design:** [watch-messaging-centralization-01-design.md](../../in-progress/watch-messaging-centralization/watch-messaging-centralization-01-design.md)  
 **Implementation plan:** [watch-messaging-centralization-02-implementation-plan.md](../../in-progress/watch-messaging-centralization/watch-messaging-centralization-02-implementation-plan.md)
@@ -79,7 +79,17 @@ Complication delivery today uses **dedicated** WC surfaces (`transferCurrentComp
 
 ---
 
+## Upstream precedent (noted 2026-06-16)
+
+During the dev-sync (`upstream/dev` → `dev`), upstream's commit **`a965e056b` ("Fix watch app back-sync after long staleness")** introduced a **unified `handleIncomingWatchStatePayload(_:)`** on watchOS that routes both `didReceiveMessage` and `didReceiveUserInfo` through one path — with the explicit justification "enforces the freshness contract in one place so the two delivery paths can't drift." This is a narrow, embryonic realization of **proposal point #3 (central inbound dispatch)** — roughly ~5% of this initiative's scope (one payload family, freshness gate + monotonicity dedup only; no shared contracts, decode/validation layer, transport policy, or typed senders, and on upstream's far simpler codebase).
+
+In the dev-sync we chose **not** to adopt upstream's unified handler into the fork (it would have meant doing a slice of this refactor under merge-conflict pressure — exactly the "schedule/regression risk" called out above). The fork kept its richer 209-shipped receive path (patch `09-watch-g7`), a functional superset. **When this initiative is executed, `a965e056b`'s `handleIncomingWatchStatePayload` is a clean reference point for point #3, and the merged watch patch is one of its refactor inputs.**
+
+---
+
 ## Changelog
+### v1.7 (2026-06-16 00:15 CET)
+- **Upstream precedent** section added: upstream `a965e056b` ships a unified watchOS inbound handler (a narrow slice of proposal #3); recorded as a reference for when this initiative runs. No scope change.
 
 ### v1.6 (2026-04-08 09:31 CET)
 - **R1 (ChatGPT):** **Traceability** subsection — pointers to design/plan for **dedupe**, **queue verification**, **fixtures**, **gate taxonomy** (this backlog remains summary-level).

@@ -3,6 +3,7 @@ From: Trio Patch Bot <patch-bot@users.noreply.github.com>
 Date: Sun, 11 Jan 2026 20:24:25 +0000
 Subject: [PATCH] feat: patch-metadata
 
+Trio-Patch-Source-Branch: feature/patch-metadata
 ---
  Trio/Sources/Helpers/BuildDetails.swift       | 13 ++++++
  .../View/Subviews/SubmodulesView.swift        | 43 +++++++++++++++++++

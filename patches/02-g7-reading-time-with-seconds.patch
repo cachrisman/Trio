@@ -1,26 +1,27 @@
-From 9cfde4a8e68b4eea43998302f3274bcdb68a01e9 Mon Sep 17 00:00:00 2001
+From d6ae456caafd7136d37af0f34fad902fe5db8ea6 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 14 Apr 2026 00:24:02 +0200
-Subject: [PATCH] Update G7SensorKit (show reading timestamp with seconds)
+Date: Mon, 15 Jun 2026 23:12:29 +0200
+Subject: [PATCH] feat: g7-reading-time-with-seconds
 
+Trio-Patch-Source-Branch: feature/g7sensorkit-timestamp-seconds
 ---
  .gitmodules | 2 +-
  G7SensorKit | 2 +-
  2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/.gitmodules b/.gitmodules
-index 640982671..c344f7474 100644
+index 556b37d33..fc04255b4 100644
 --- a/.gitmodules
 +++ b/.gitmodules
-@@ -15,7 +15,7 @@
- 	url = https://github.com/loopandlearn/OmniBLE.git
+@@ -12,7 +12,7 @@
+ 	url = https://github.com/loopandlearn/RileyLinkKit
  [submodule "G7SensorKit"]
  	path = G7SensorKit
 -	url = https://github.com/loopandlearn/G7SensorKit.git
 +	url = https://github.com/cachrisman/G7SensorKit.git
- [submodule "OmniKit"]
- 	path = OmniKit
- 	url = https://github.com/loopandlearn/OmniKit.git
+ [submodule "MinimedKit"]
+ 	path = MinimedKit
+ 	url = https://github.com/loopandlearn/MinimedKit.git
 diff --git a/G7SensorKit b/G7SensorKit
 index 4d0780db0..cd879d59a 160000
 --- a/G7SensorKit

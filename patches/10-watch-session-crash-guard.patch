@@ -3,6 +3,7 @@ From: Trio Patch Bot <patch-bot@users.noreply.github.com>
 Date: Tue, 31 Mar 2026 23:47:00 +0200
 Subject: [PATCH] feat: watch-session-crash-guard
 
+Trio-Patch-Source-Branch: feature/watch-session-crash-guard
 ---
  Trio/Sources/Application/TrioApp.swift        |  46 ++++----
  .../WatchManager/AppleWatchManager.swift      | 101 +++++++++---------

@@ -3,6 +3,7 @@ From: Trio Patch Bot <patch-bot@users.noreply.github.com>
 Date: Sun, 31 May 2026 08:26:11 +0200
 Subject: [PATCH] feat: treatments-fixed-bottom-action
 
+Trio-Patch-Source-Branch: feature/treatments-fixed-bottom-action
 ---
  .../Treatments/View/TreatmentsRootView.swift  | 187 ++++++++++--------
  1 file changed, 100 insertions(+), 87 deletions(-)

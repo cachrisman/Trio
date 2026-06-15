@@ -9,6 +9,7 @@ Subject: [PATCH] feat: watch error reporting
 - Fix: queryAcks envelope no longer rejected by iPhone-side guard (split type/payloadId checks)
 
 Co-authored-by: Cursor <cursoragent@cursor.com>
+Trio-Patch-Source-Branch: feature/watch-error-reporting
 ---
  Trio Watch App Extension/TrioWatchApp.swift   |  10 +-
  .../WatchErrorReporter.swift                  | 363 ++++++++++++++++

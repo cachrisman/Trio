@@ -3,6 +3,7 @@ From: Trio Build Bot <patch-bot@users.noreply.github.com>
 Date: Wed, 1 Apr 2026 00:36:24 +0200
 Subject: [PATCH] feat: chart-height-fix
 
+Trio-Patch-Source-Branch: fix/chart-height-bug
 ---
  .../View/Chart/ChartElements/BasalChart.swift |  61 ++---
  .../Chart/ChartElements/CobIobChart.swift     |   4 +-

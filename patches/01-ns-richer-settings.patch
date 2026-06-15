@@ -3,6 +3,7 @@ From: Trio Build Bot <build-bot@users.noreply.github.com>
 Date: Sat, 21 Mar 2026 23:54:24 +0100
 Subject: [PATCH] feat: ns-richer-settings
 
+Trio-Patch-Source-Branch: feature/ns-richer-settings
 ---
  .../Models/NightscoutAlgorithmSettings.swift  | 87 +++++++++++++++++++
  Trio/Sources/Models/NightscoutStatus.swift    |  2 +

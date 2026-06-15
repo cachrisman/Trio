@@ -3,6 +3,7 @@ From: Trio Patch Bot <patch-bot@users.noreply.github.com>
 Date: Sun, 31 May 2026 09:29:33 +0200
 Subject: [PATCH] feat: cloud-logging
 
+Trio-Patch-Source-Branch: feature/cloud-logging
 ---
  .../WatchConnectivityPayloadIds.swift         |   59 +
  Trio Watch App Extension/WatchLogger.swift    | 1208 ++++++++++++++---
