@@ -25,11 +25,14 @@ import WatchKit
             if newPhase == .active {
                 WatchState.shared.handleForegroundActiveEntry()
             } else if newPhase == .background || newPhase == .inactive {
-                WatchState.shared.handleForegroundInactiveOrBackground()
+                WatchState.shared.handleForegroundInactiveOrBackground(phase: watchScenePhaseToken(newPhase))
             }
 
             let forceFlush = newPhase != .active
             Task {
+                // C-209-4: slow WC log shipping to 10 min while backgrounded. Set BEFORE the
+                // forced flush below so the new cadence applies from this transition onward.
+                await WatchLogger.shared.setBackgrounded(newPhase != .active)
                 await WatchLogger.shared.log(
                     "event=watch_scene_phase_transition old=\(oldToken) new=\(newToken) source=swiftui_environment",
                     force: forceFlush

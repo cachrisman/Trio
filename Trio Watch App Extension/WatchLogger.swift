@@ -72,6 +72,13 @@ actor WatchLogger {
     private let maxPerPayloadFiles = 10
     private let maxFileAge: TimeInterval = 48 * 60 * 60 // 48 hours
 
+    /// Hard ceiling for `watch_log_daily.txt`. Past this, `appendToDailyLog` rewrites the file
+    /// keeping only the newest `dailyLogTruncateKeepBytes`. Bounded so the rewrite read stays
+    /// well under the watchOS per-process memory limit that previously triggered Jetsam when
+    /// `WatchErrorReporter.readRecentLogs` slurped an unbounded daily log via `Data(contentsOf:)`.
+    private let dailyLogSizeCap: UInt64 = 2 * 1024 * 1024 // 2 MB
+    private let dailyLogTruncateKeepBytes: UInt64 = 1 * 1024 * 1024 // 1 MB
+
     private let session = WCSession.default
     private var timerTask: Task<Void, Never>?
 
@@ -83,6 +90,34 @@ actor WatchLogger {
     private var cachedWatchLogFiles: Int = 0
     private var cachedDrainFiles: Int = 0
     private var cachedCountsTimestamp: Date = .distantPast
+
+    // C-209-2: daily-log lines buffer in-actor and write as one batch per drain — the per-line
+    // open/seek/write/close (plus createDirectory) was the #2 measured battery driver. Local
+    // debug file only; worst case on a hard kill is losing the last `dailyLogBatchSize` lines
+    // of watch_log_daily.txt (the in-memory `logs` ring and the WC pipeline are unaffected).
+    private var dailyLogBuffer: [String] = []
+    private let dailyLogBatchSize = 40
+
+    // C-209-3: routine pipeline narration (ack cleanups, queued-bg notices, confirm batches)
+    // is counted here and emitted as ONE `log_pipeline_summary` line per flush. These sites
+    // were ~70% of all watch log volume on build 208 (logCleanup alone: 12.2k lines/40h).
+    // Error paths still emit full diagnostic lines.
+    private var pipelineQueuedBackground = 0
+    private var pipelineCleanupOk = 0
+    private var pipelineConfirmFiles = 0
+
+    // C-209-4: WC log shipping slows to 10 min while backgrounded — the 3-min cadence is a
+    // radio/battery tax with no reader benefit when the app is off-screen. Set from the
+    // TrioWatchApp scene-phase hook.
+    private var isBackgrounded = false
+    private let backgroundFlushInterval: TimeInterval = 10 * 60
+    private var currentFlushInterval: TimeInterval {
+        isBackgrounded ? backgroundFlushInterval : flushInterval
+    }
+
+    // C-209-3: process-local inventory guard — the persisted 24h gate demonstrably fails
+    // across watch process churn (1.5k [INVENTORY] lines in 40h on build 208).
+    private var didLogInventoryThisProcess = false
 
     /// Wall-clock cap for how long **this actor** waits on `sendMessage`’s reply/error callbacks.
     /// This does **not** cancel in-flight `WCSession` delivery; a late `replyHandler` may still run.
@@ -98,6 +133,11 @@ actor WatchLogger {
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        // C-208-8 (6.5): pin locale + calendar — an unpinned DateFormatter follows the device's
+        // settings, so a watch on the Buddhist/Japanese calendar would stamp shifted years into
+        // every log line, silently breaking time correlation in BetterStack.
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
         return formatter
     }()
@@ -191,6 +231,11 @@ actor WatchLogger {
             let gate = WCSessionReplyGate()
             let timeoutTask = Task {
                 try? await Task.sleep(nanoseconds: Self.wcSessionSendTimeoutNs)
+                // C-208-5 (1.6): `try?` swallows CancellationError, so without this guard the
+                // reply/error handlers' `timeoutTask.cancel()` *woke* this task, which then
+                // logged a phantom "timed out" line on every ACKed send — corrupting the
+                // WC-delivery telemetry used to debug actual delivery problems.
+                guard !Task.isCancelled else { return }
                 await WatchLogger.shared.log(
                     "⌚️ WCSession sendMessage timed out context=\(context)"
                         + " note=payload_still_pending no_auto_transferUserInfo"
@@ -253,14 +298,17 @@ actor WatchLogger {
     private var lastBatteryRefreshEpoch: TimeInterval = 0
     private var batteryRefreshTask: Task<String, Never>?
 
+    /// C-209-5 (B6): TTL 60s → 15s. The 60s cache smeared `battery_state` for up to a minute
+    /// around plug/unplug transitions; a state-only fresh read would cost the same MainActor
+    /// hop as refreshing both fields, so the whole context refreshes at 15s (≤4 hops/min).
     private func batteryContextCached(now: TimeInterval = Date().timeIntervalSince1970) async -> String {
-        if now - lastBatteryRefreshEpoch < 60 {
+        if now - lastBatteryRefreshEpoch < 15 {
             return lastBatteryContext
         }
         if let existing = batteryRefreshTask {
             let result = await existing.value
             let currentNow = Date().timeIntervalSince1970
-            if currentNow - lastBatteryRefreshEpoch >= 60 {
+            if currentNow - lastBatteryRefreshEpoch >= 15 {
                 lastBatteryContext = result
                 lastBatteryRefreshEpoch = currentNow
             }
@@ -281,7 +329,8 @@ actor WatchLogger {
     private func startFlushTimer() async {
         timerTask = Task {
             while true {
-                try? await Task.sleep(nanoseconds: UInt64(flushInterval * 1_000_000_000))
+                // C-209-4: re-read each cycle so background entry/exit changes the cadence.
+                try? await Task.sleep(nanoseconds: UInt64(currentFlushInterval * 1_000_000_000))
                 await flushIfNeeded(force: false)
             }
         }
@@ -306,35 +355,102 @@ actor WatchLogger {
             logs.removeFirst(logs.count - maxEntries)
         }
 
-        print(entry)
+        #if DEBUG
+            print(entry)
+        #endif
 
-        await appendToDailyLog(entry)
+        bufferDailyLogLine(entry)
 
         await flushIfNeeded(force: force)
     }
 
-    /// Appends text to the daily local debug log (never sent to phone).
-    func appendToDailyLog(_ text: String) async {
+    /// C-209-2: directory resolution + creation hoisted to once-per-process — it previously ran
+    /// on every single log line.
+    private static let dailyLogFileURL: URL = {
         let logDir = FileManager.default.urls(
             for: .documentDirectory, in: .userDomainMask
         ).first!.appendingPathComponent("logs", isDirectory: true)
-
         try? FileManager.default.createDirectory(
             at: logDir, withIntermediateDirectories: true
         )
+        return logDir.appendingPathComponent("watch_log_daily.txt")
+    }()
 
-        let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
+    /// C-209-2: buffer a line; one batched disk write per `dailyLogBatchSize` lines or per
+    /// flush-cadence drain (see `flushIfNeeded`).
+    private func bufferDailyLogLine(_ text: String) {
+        dailyLogBuffer.append(text)
+        if dailyLogBuffer.count >= dailyLogBatchSize {
+            drainDailyLogBuffer()
+        }
+    }
+
+    /// C-209-2: single open/seek/write/close for the whole buffered batch.
+    private func drainDailyLogBuffer() {
+        guard !dailyLogBuffer.isEmpty else { return }
+        let batch = dailyLogBuffer.joined(separator: "\n")
+        dailyLogBuffer.removeAll(keepingCapacity: true)
+        appendToDailyLog(batch)
+    }
+
+    /// Appends text to the daily local debug log (never sent to phone).
+    private func appendToDailyLog(_ text: String) {
+        let dailyLogFile = Self.dailyLogFileURL
         let logEntry = text + "\n"
 
-        if let data = logEntry.data(using: .utf8) {
-            if let handle = try? FileHandle(forWritingTo: dailyLogFile) {
-                _ = try? handle.seekToEnd()
-                handle.write(data)
-                try? handle.close()
-            } else {
-                try? data.write(to: dailyLogFile)
-            }
+        guard let data = logEntry.data(using: .utf8) else { return }
+
+        var postWriteSize: UInt64?
+
+        if let handle = try? FileHandle(forWritingTo: dailyLogFile) {
+            _ = try? handle.seekToEnd()
+            handle.write(data)
+            postWriteSize = try? handle.offset()
+            try? handle.close()
+        } else {
+            try? data.write(to: dailyLogFile)
+            postWriteSize = UInt64(data.count)
         }
+
+        if let size = postWriteSize, size > dailyLogSizeCap {
+            truncateDailyLogKeepingNewest(at: dailyLogFile)
+        }
+    }
+
+    /// Rewrites `watch_log_daily.txt` keeping only the newest `dailyLogTruncateKeepBytes`,
+    /// aligned to a newline boundary so the head of the file stays line-clean.
+    ///
+    /// Streaming tail read via `FileHandle` so peak allocation is bounded by
+    /// `dailyLogTruncateKeepBytes` (~1 MB) regardless of how large the on-disk file is —
+    /// `Data(contentsOf:)` would re-introduce the Jetsam risk this fix exists to prevent.
+    private func truncateDailyLogKeepingNewest(at url: URL) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+
+        guard let fileSize = try? handle.seekToEnd(), fileSize > 0 else { return }
+        let keepBytes = min(fileSize, dailyLogTruncateKeepBytes)
+        let startOffset = fileSize - keepBytes
+        try? handle.seek(toOffset: startOffset)
+
+        guard let data = try? handle.readToEnd(), !data.isEmpty else { return }
+
+        // If we tailed from mid-file, drop any bytes before the first newline so we don't
+        // leave a partial line at the head of the rewritten file.
+        let aligned: Data = {
+            guard startOffset > 0, let nlIndex = data.firstIndex(of: UInt8(ascii: "\n")) else {
+                return data
+            }
+            let after = data.index(after: nlIndex)
+            return after < data.endIndex ? data.subdata(in: after ..< data.endIndex) : Data()
+        }()
+
+        guard !aligned.isEmpty else { return }
+
+        let marker = "[truncated daily log: kept newest \(aligned.count) bytes]\n"
+        var output = Data(marker.utf8)
+        output.append(aligned)
+
+        try? output.write(to: url, options: .atomic)
     }
 
     // MARK: - Flush
@@ -342,13 +458,21 @@ actor WatchLogger {
     func flushIfNeeded(force: Bool = false) async {
         let now = Date()
         let shouldFlush = force
-            || now.timeIntervalSince(lastFlush) >= flushInterval
+            || now.timeIntervalSince(lastFlush) >= currentFlushInterval // C-209-4
             || logs.count >= flushSizeThreshold
 
         if shouldFlush {
+            drainDailyLogBuffer() // C-209-2: the local file rides the same cadence
             guard !WatchStartupTransportGate.snapshot().isSuppressed else { return }
             await flushToPhone()
         }
+    }
+
+    /// C-209-4: scene-phase hook (TrioWatchApp). Entering background gets one last forced flush
+    /// from the existing scene-transition log call; after that, shipping runs at
+    /// `backgroundFlushInterval` until the app is active again.
+    func setBackgrounded(_ backgrounded: Bool) {
+        isBackgrounded = backgrounded
     }
 
     private func flushToPhone() async {
@@ -365,6 +489,21 @@ actor WatchLogger {
 
         logs.removeAll()
         lastFlush = Date()
+
+        // C-209-3: one summary line per flush replaces the demoted per-event pipeline
+        // narration, and carries the live E3 counts that per-flush [INVENTORY] used to spam.
+        // log() here is safe: lastFlush was just reset, so the nested flushIfNeeded no-ops.
+        let summary = "event=log_pipeline_summary"
+            + " lines_flushed=\(totalLineCount)"
+            + " queued_bg=\(pipelineQueuedBackground)"
+            + " cleanup_ok=\(pipelineCleanupOk)"
+            + " confirm_files=\(pipelineConfirmFiles)"
+            + " watch_log_files=\(cachedWatchLogFiles)"
+            + " drain_files=\(cachedDrainFiles)"
+        pipelineQueuedBackground = 0
+        pipelineCleanupOk = 0
+        pipelineConfirmFiles = 0
+        await log(summary)
 
         // Single payload fits within cap — send directly
         if originalUTF8Count <= logSizeCap {
@@ -539,12 +678,8 @@ actor WatchLogger {
                 filePath: perPayloadFile.path
             )
             _ = session.transferUserInfo(envelope)
-            await log(
-                "⌚️ Logs queued for background delivery"
-                    + " (payloadId: \(payloadId))"
-                    + " watch_log_files=\(cachedWatchLogFiles)"
-                    + " drain_files=\(cachedDrainFiles)"
-            )
+            // C-209-3: was a full line per payload (3.3k lines/40h); counted into the summary.
+            pipelineQueuedBackground += 1
         }
     }
 
@@ -920,29 +1055,23 @@ actor WatchLogger {
             }
         }
 
-        let sampleIds = ids.prefix(3).joined(separator: "|")
-        if watchLogOk + watchLogErr > 0 {
-            let result = watchLogErr > 0 ? "err" : "ok"
+        // C-209-3: routine confirm cleanups (≈2.9k lines/40h across three sites) fold into the
+        // flush summary; only failures emit lines.
+        pipelineConfirmFiles += watchLogOk + pendingRecordCount + drainOk
+        if watchLogErr > 0 {
+            let sampleIds = ids.prefix(3).joined(separator: "|")
             await log(
                 "⌚️ [CLEANUP] path=confirm artifact=watch_log"
                     + " count=\(watchLogOk + watchLogErr)"
                     + " sample_ids=\(sampleIds)"
-                    + " result=\(result)"
+                    + " result=err"
             )
         }
-        if pendingRecordCount > 0 {
-            await log(
-                "⌚️ [CLEANUP] path=confirm"
-                    + " artifact=pending_record"
-                    + " count=\(pendingRecordCount) result=ok"
-            )
-        }
-        if drainOk + drainErr > 0 {
-            let result = drainErr > 0 ? "err" : "ok"
+        if drainErr > 0 {
             await log(
                 "⌚️ [CLEANUP] path=confirm artifact=drain"
                     + " count=\(drainOk + drainErr)"
-                    + " result=\(result)"
+                    + " result=err"
             )
         }
     }
@@ -1186,16 +1315,18 @@ actor WatchLogger {
         path: String, flow: String, artifact: String,
         payloadId: String, result res: RemoveResult
     ) async {
-        var msg = "⌚️ [CLEANUP] path=\(path) flow=\(flow)"
-        msg += " artifact=\(artifact)"
-        msg += " payloadId=\(payloadId)"
-        msg += " outcome=\(res.outcome)"
+        // C-209-3: successful cleanups are counted into the flush summary — this single site
+        // emitted 12.2k lines in 40h (61% of all watch log volume). Failures keep the full line.
         if let err = res.error {
+            var msg = "⌚️ [CLEANUP] path=\(path) flow=\(flow)"
+            msg += " artifact=\(artifact)"
+            msg += " payloadId=\(payloadId)"
+            msg += " outcome=\(res.outcome)"
             msg += " result=err error=\(err)"
+            await log(msg)
         } else {
-            msg += " result=ok"
+            pipelineCleanupOk += 1
         }
-        await log(msg)
     }
 
     // MARK: - Observability (E2, E3)
@@ -1242,6 +1373,11 @@ actor WatchLogger {
 
     /// E2: Best-effort daily inventory of log files and pending payloads.
     private func logFileInventory() async {
+        // C-209-3: process-local guard added — the persisted 24h gate demonstrably failed
+        // across watch process churn (1.5k [INVENTORY] lines in 40h on build 208). Worst case
+        // is now one line per process launch; live counts ride `log_pipeline_summary`.
+        guard !didLogInventoryThisProcess else { return }
+        didLogInventoryThisProcess = true
         let lastInventory = UserDefaults.standard.double(
             forKey: lastInventoryKey
         )

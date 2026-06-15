@@ -17,6 +17,7 @@ struct TrioWatchComplicationEntry: TimelineEntry {
     let delta: String
     let state: String?
     let glucoseColor: String?
+    let source: TrioComplicationDataSource?
 
     init(
         date: Date,
@@ -25,7 +26,8 @@ struct TrioWatchComplicationEntry: TimelineEntry {
         trend: String,
         delta: String,
         state: String? = nil,
-        glucoseColor: String? = nil
+        glucoseColor: String? = nil,
+        source: TrioComplicationDataSource? = nil
     ) {
         self.date = date
         self.readingDate = readingDate ?? date
@@ -34,6 +36,7 @@ struct TrioWatchComplicationEntry: TimelineEntry {
         self.delta = delta
         self.state = state
         self.glucoseColor = glucoseColor
+        self.source = source
     }
 
     init(snapshot: TrioComplicationSnapshot) {
@@ -44,7 +47,8 @@ struct TrioWatchComplicationEntry: TimelineEntry {
             trend: snapshot.trend,
             delta: snapshot.delta,
             state: snapshot.state,
-            glucoseColor: snapshot.glucoseColor
+            glucoseColor: snapshot.glucoseColor,
+            source: snapshot.source
         )
     }
 
@@ -194,6 +198,9 @@ struct TrioWatchComplicationProvider: TimelineProvider {
 
         if appGroupAvailable {
             ProviderProcessState.lastSeenGeneration = observedGeneration
+            // C-209-7 (review 5.9): persist the serviced generation so the app side can detect
+            // reloads WidgetKit dropped and re-request once. Widget-owned key, app reads only.
+            store.recordWidgetObservedGeneration(observedGeneration)
         }
 
         let latencyValid: Bool
@@ -209,10 +216,10 @@ struct TrioWatchComplicationProvider: TimelineProvider {
 
         let reloadId = store.newestReloadRecord()?.id.uuidString ?? "none"
 
-        let snapshot = loadLatestEntry()
+        let timelineBase = loadLatestEntry()
         let getTimelineAtEpochSeconds = Int(Date().timeIntervalSince1970)
         let dataAgeSeconds: Int = {
-            let rd = snapshot.readingDate
+            let rd = timelineBase.readingDate
             if rd == .distantPast || rd.timeIntervalSince1970 <= 0 { return -1 }
             return max(0, Int(Date().timeIntervalSince(rd)))
         }()
@@ -238,12 +245,13 @@ struct TrioWatchComplicationProvider: TimelineProvider {
             let entryDate = now.addingTimeInterval(TimeInterval(minuteOffset * 60))
             let entry = TrioWatchComplicationEntry(
                 date: entryDate,
-                readingDate: snapshot.readingDate,
-                glucose: snapshot.glucose,
-                trend: snapshot.trend,
-                delta: snapshot.delta,
-                state: snapshot.state,
-                glucoseColor: snapshot.glucoseColor
+                readingDate: timelineBase.readingDate,
+                glucose: timelineBase.glucose,
+                trend: timelineBase.trend,
+                delta: timelineBase.delta,
+                state: timelineBase.state,
+                glucoseColor: timelineBase.glucoseColor,
+                source: timelineBase.source
             )
             entries.append(entry)
         }
@@ -307,7 +315,8 @@ struct TrioAccessoryCornerView: View {
                     timeText: timeText,
                     recencyColor: recencyColor,
                     hasDelta: hasDelta,
-                    hasReading: hasReading
+                    hasReading: hasReading,
+                    snapshotSource: entry.source
                 ))
                 .font(.system(size: 10, weight: .medium, design: .rounded))
                 .lineLimit(1)
@@ -349,7 +358,8 @@ struct TrioAccessoryCornerView: View {
         timeText: String,
         recencyColor: Color,
         hasDelta: Bool,
-        hasReading: Bool
+        hasReading: Bool,
+        snapshotSource: TrioComplicationDataSource?
     ) -> AttributedString {
         var result = AttributedString()
 
@@ -373,6 +383,12 @@ struct TrioAccessoryCornerView: View {
             var fallbackAttr = AttributedString(ComplicationDefaults.fallbackDelta)
             fallbackAttr.foregroundColor = .white
             result.append(fallbackAttr)
+        }
+
+        if snapshotSource == .g7DirectBLE {
+            var bleAttr = AttributedString(" · BLE")
+            bleAttr.foregroundColor = .white
+            result.append(bleAttr)
         }
 
         return result
