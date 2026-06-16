@@ -1086,8 +1086,12 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         persistDailyCounters()
         mirrorDailyCountersToWatchState()
         let delta: String = {
-            guard let previous = lastSavedGlucoseValue else { return "--" }
-            // C-210-1: format in the user's display unit (mmol users were seeing raw mg/dL deltas).
+            // C-210-2 (#2b): prefer the in-memory baseline; fall back to the cross-source history store
+            // so a cold start / sensor swap (lastSavedGlucoseValue == nil) still yields a real delta
+            // instead of "--". C-210-1: format in the user's display unit.
+            let previous = lastSavedGlucoseValue
+                ?? WatchGlucoseHistoryStore.shared.mostRecentMgDl(before: readingEpoch)
+            guard let previous else { return "--" }
             return WatchGlucoseColorComputer.shared.displayDeltaString(previousMgDl: previous, currentMgDl: glucoseValue)
         }()
         lastSavedGlucoseValue = glucoseValue

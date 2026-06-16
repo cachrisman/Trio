@@ -637,6 +637,8 @@ final class TrioComplicationDataStore {
     //   Older timestamp (<-1s)           → false
     //   Within ±1s, same glucose+trend, higher-priority source → true (MOD-D synthesis)
     //   Within ±1s, same g7Sequence (regardless of display fields), lower-priority source → false
+    //   Within ±1s, barer payload (empty trend / "--" delta) vs complete    → keep the complete one
+    //   Within ±1s, equal completeness, lower-priority source               → false (higher wins)
     func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
         let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
         if timeDiff > 1.0  { return true }
@@ -658,13 +660,20 @@ final class TrioComplicationDataStore {
             // no-op even if display fields differ (shouldn't happen in practice but defensive).
             return false
         }
-        let sameCore = new.glucose == current.glucose && new.trend == current.trend
-        if sameCore {
-            let newP = Self.sourcePriority(new.source)
-            let curP = Self.sourcePriority(current.source)
-            if newP > curP { return true }
-            if newP < curP { return false }
-        }
+        // C-210-2 (scan #2): within the +/-1s window the two snapshots are the SAME CGM reading
+        // arriving via different channels (distinct readings are >= 1 min apart for every supported
+        // CGM). Decide by completeness, then source priority - recency is already a tie. This stops
+        // a barer payload (empty trend / "--" delta) from overwriting a more complete one, and stops
+        // a lower-priority channel from overwriting a higher-priority one for the same reading.
+        let newP = Self.sourcePriority(new.source)
+        let curP = Self.sourcePriority(current.source)
+        let newComplete = Self.isComplete(new)
+        let curComplete = Self.isComplete(current)
+        // 1) Completeness wins (prefer the populated representation).
+        if newComplete != curComplete { return newComplete }
+        // 2) Equal completeness -> higher-priority source wins (direct BLE > WC > HealthKit).
+        if newP != curP { return newP > curP }
+        // 3) Equal completeness and priority -> same representation; accept only on a real change.
         return new.glucose != current.glucose
             || new.trend   != current.trend
             || new.delta   != current.delta
@@ -677,6 +686,13 @@ final class TrioComplicationDataStore {
     /// live UI attribution path in `WatchState.tryAttributeDisplayedReadingSource`.
     private static func sourcePriority(_ source: TrioComplicationDataSource?) -> Int {
         source?.priority ?? 0
+    }
+
+    /// A snapshot is "complete" when it carries real (non-fallback) display fields. Used by
+    /// `shouldUpdate` so a barer payload never clobbers a populated one within the dedup window.
+    /// Fallbacks: glucose/delta sanitize to "--", trend trims to "" (see TrioComplicationSnapshot).
+    private static func isComplete(_ s: TrioComplicationSnapshot) -> Bool {
+        s.glucose != "--" && !s.trend.isEmpty && s.delta != "--"
     }
 
     // MARK: - Phase 3.0 Pre-dispatch Dedup

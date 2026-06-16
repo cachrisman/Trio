@@ -127,4 +127,45 @@ import XCTest
         #expect(watchState.showAcknowledgmentBanner)
         #expect(watchState.acknowledgmentMessage == "Error")
     }
+
+    // MARK: - C-210-2: completeness-aware arbitration (shouldUpdate)
+
+    private func snap(
+        _ glucose: String, _ trend: String, _ delta: String,
+        at date: Date, source: TrioComplicationDataSource
+    ) -> TrioComplicationSnapshot {
+        TrioComplicationSnapshot(
+            glucose: glucose, trend: trend, delta: delta, readingDate: date, date: date,
+            state: nil, glucoseColor: nil, source: source, sequence: nil
+        )
+    }
+
+    @Test("shouldUpdate: a barer payload never clobbers a complete one within the dedup window")
+    func testArbitrationAntiClobber() throws {
+        let store = TrioComplicationDataStore.shared
+        let t = Date()
+        let completeBLE = snap("120", "Flat", "+2", at: t, source: .g7DirectBLE)
+        let barerWC = snap("120", "", "", at: t, source: .watchConnectivity) // delta "" -> "--", trend ""
+        #expect(store.shouldUpdate(new: barerWC, current: completeBLE) == false) // barer must not win
+        #expect(store.shouldUpdate(new: completeBLE, current: barerWC) == true) //  complete replaces barer
+    }
+
+    @Test("shouldUpdate: equal completeness -> higher-priority source wins, lower loses")
+    func testArbitrationPriority() throws {
+        let store = TrioComplicationDataStore.shared
+        let t = Date()
+        let bleC = snap("120", "Flat", "+2", at: t, source: .g7DirectBLE)
+        let wcC = snap("120", "FortyFiveUp", "+3", at: t, source: .watchConnectivity)
+        #expect(store.shouldUpdate(new: bleC, current: wcC) == true) //  BLE(3) > WC(2)
+        #expect(store.shouldUpdate(new: wcC, current: bleC) == false) // WC(2) < BLE(3)
+    }
+
+    @Test("shouldUpdate: a newer reading (>1s) wins even if barer")
+    func testArbitrationRecency() throws {
+        let store = TrioComplicationDataStore.shared
+        let t = Date()
+        let older = snap("120", "Flat", "+2", at: t, source: .g7DirectBLE)
+        let newer = snap("126", "", "", at: t.addingTimeInterval(300), source: .watchConnectivity)
+        #expect(store.shouldUpdate(new: newer, current: older) == true)
+    }
 }

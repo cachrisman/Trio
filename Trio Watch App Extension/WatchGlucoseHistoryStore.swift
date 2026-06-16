@@ -159,6 +159,17 @@ final class WatchGlucoseHistoryStore {
         }
     }
 
+    /// Most recent stored reading (any source) strictly before `epochSeconds`, or nil if none.
+    /// Used to seed a cross-source delta baseline (C-210-2 / scan #2b) when a per-channel in-memory
+    /// baseline is unavailable (cold start / sensor swap). Entries are epoch-ascending after prune,
+    /// so `last(where:)` is the immediate predecessor. On-queue (mirrors `loadAsDisplayValues`).
+    func mostRecentMgDl(before epochSeconds: Int) -> Int? {
+        queue.sync {
+            pruneAndCap()
+            return entries.last(where: { $0.epochSeconds < epochSeconds })?.glucoseMgDl
+        }
+    }
+
     // MARK: - Persistence (assume on-queue, except init)
 
     private func loadFromDisk() {
