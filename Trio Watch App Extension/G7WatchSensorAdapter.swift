@@ -134,6 +134,8 @@ final class G7WatchSensorAdapter: NSObject {
         }
     }
     private var sessionConnectAt: Date?
+    /// C-210-5: true once we've notified for the current direct-BLE stall episode (reset on recovery).
+    private var stallNotifiedThisEpisode = false
 
     /// Set on `sensorDidConnect`, cleared on `sensorDisconnected`; read from telemetry / ExtensionDelegate.
     var adapterSessionID: String?
@@ -533,7 +535,68 @@ final class G7WatchSensorAdapter: NSObject {
     private func fireExpectedWindowTick() {
         guard let epoch = expectedWindowNextEpoch else { return }
         emitExpectedWindowTick(epoch: epoch)
+        evaluateDirectBleStall()
         scheduleNextExpectedWindowTick()
+    }
+
+    // MARK: - C-210-4/5/8: direct-BLE stall detection (cross-source freshness)
+
+    private enum StallThreshold {
+        static let softMin = 12      // soft stall: direct stale > 12 min
+        static let hardMin = 30      // hard stall: direct stale > 30 min
+        static let phoneFreshSec = 7 * 60  // phone counts as "fresh" within 7 min
+        static let connectRecentSec = 15 * 60 // a connect window within 15 min => Trio-side (has windows)
+    }
+
+    /// C-210-4: classify a direct-BLE stall from cross-source freshness and surface it (UI tier +
+    /// telemetry + a conservative notification). Direct path stale while the phone path is fresh =>
+    /// the complication is silently riding the phone relay. Both stale => system-wide (not flagged).
+    /// Runs on the ~300s expected-window tick (@MainActor).
+    private func evaluateDirectBleStall(now: Date = Date()) {
+        guard isStarted else { return }
+        // No expected sensor => warmup / sessionEnded / no-sensor: ineligible, not a stall.
+        guard expectedSensorName != nil else { clearDirectBleStallIfNeeded(); return }
+        let staleMin = minutesSinceLastEGV()
+        guard staleMin >= 0 else { return } // never had a direct EGV (cold launch) — nothing to compare
+
+        let phoneFresh: Bool = {
+            guard let p = WatchState.shared.lastPhoneEGVDate else { return false }
+            return now.timeIntervalSince(p) < Double(StallThreshold.phoneFreshSec)
+        }()
+
+        // Direct still fresh, or phone also stale (system-wide gap) => not a direct-BLE stall.
+        guard staleMin >= StallThreshold.softMin, phoneFresh else { clearDirectBleStallIfNeeded(); return }
+
+        let tier: DirectBleStallTier = staleMin >= StallThreshold.hardMin ? .unavailable : .stalled
+
+        // C-210-8: fault classification via connection-event recency. Recent connect window but no
+        // EGV => Trio-side (extraction wedged; self-healable). No recent window => Dexcom-side (its
+        // direct link is down; Trio can only observe). sessionConnectAt is the last did_connect.
+        let sinceConnectS: Int = sessionConnectAt.map { Int(now.timeIntervalSince($0)) } ?? -1
+        let dexcomSide = sinceConnectS < 0 || sinceConnectS > StallThreshold.connectRecentSec
+
+        log(
+            "direct_ble_stall_detected",
+            "tier=\(tier.rawValue) direct_stale_min=\(staleMin) phone_fresh=\(phoneFresh) fault=\(dexcomSide ? "dexcom_side" : "trio_side") since_connect_s=\(sinceConnectS)"
+        )
+
+        if WatchState.shared.directBleStall != tier { WatchState.shared.directBleStall = tier }
+
+        // C-210-5: notify ONLY on a sustained HARD Dexcom-side stall (Trio cannot self-heal that),
+        // once per episode. Trio-side stalls self-recover; soft stalls stay silent. Alarm-fatigue
+        // guards are non-negotiable for a glucose app.
+        if tier == .unavailable, dexcomSide, !stallNotifiedThisEpisode {
+            stallNotifiedThisEpisode = true
+            WatchNotificationHandler.shared.postDirectBleStallNotification()
+            log("direct_ble_stall_notified", "tier=\(tier.rawValue) since_connect_s=\(sinceConnectS)")
+        }
+    }
+
+    /// Reset the stall indicator and the per-episode notification latch once the direct path recovers
+    /// (or becomes ineligible). A later genuine stall can then notify again.
+    private func clearDirectBleStallIfNeeded() {
+        stallNotifiedThisEpisode = false
+        if WatchState.shared.directBleStall != .none { WatchState.shared.directBleStall = .none }
     }
 
     /// C-209-1: pure telemetry — per-5-min eligibility sampling for the COV dashboards. The

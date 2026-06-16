@@ -35,6 +35,15 @@ enum BackgroundTaskWindowCounter {
 // Aligned with build 191 state machine (item 12).
 // .stalled removed (was never called). .searching renamed .scanning.
 // .fastRetry / .moderateWait added for scheduler states (wired in future build).
+/// C-210-4: cross-source direct-BLE stall tier for the watch face. Distinct from `G7DirectBLEStatus`
+/// (which reflects the BLE *engine* state); this reflects *freshness* — the direct EGV path is stale
+/// while the phone path is fresh (so the complication is silently riding the phone relay).
+enum DirectBleStallTier: String, Equatable {
+    case none        // direct path fresh (or not enough info)
+    case stalled     // soft: direct stale > ~12 min while phone fresh
+    case unavailable // hard: direct stale > ~30 min while phone fresh
+}
+
 enum G7DirectBLEStatus: String, Equatable {
     case off           // IDLE: no active session or timer
     case waiting       // WAITING: armed between G7 advertisements; no active scan/connection (also the fork's post-disconnect settle and a C1-deferred-in-background scan). Renamed from `retrieving` (UI-207-2) — it almost never meant "checking OS peripheral cache".
@@ -99,6 +108,11 @@ extension TrioComplicationDataSource {
     var lastLoopTime: String? = "--"
     var displayedReadingSource: TrioComplicationDataSource = .unknown
     var g7DirectBleStatus: G7DirectBLEStatus = .off
+    /// C-210-4: cross-source direct-BLE stall tier (UI indicator). Updated by the adapter's tick.
+    var directBleStall: DirectBleStallTier = .none
+    /// C-210-4: last time a phone/WatchConnectivity EGV was applied (phone-path freshness signal,
+    /// independent of BLE/HK). Used to distinguish a direct-BLE stall from a system-wide gap.
+    var lastPhoneEGVDate: Date?
     var g7DirectBleLastEventAt: Date?
     var g7DirectBleLastReadingAt: Date?
     var g7DirectBleLastEventAgeText: String {
@@ -2324,6 +2338,7 @@ extension TrioComplicationDataSource {
         }
 
         TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
+        lastPhoneEGVDate = readingDate // C-210-4: phone-path freshness for direct-BLE stall detection
 
         // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
         // Use only the threaded userInfoReceiveTimestamp; no fallback to instance state so attribution stays unambiguous.

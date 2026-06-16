@@ -46,15 +46,27 @@ struct GlucoseTrendView: View {
         let egvs = stats.egvs
         let fromBle = state.displayedReadingSource == .g7DirectBLE
 
-        if conns > 0 {
-            let denom = stats.eligibleSlots
-            let ratio = denom > 0 ? "\(egvs) / \(denom)" : "\(egvs)"
-            let suffixColor: Color = egvs > 0 ? .primary : .secondary
-            Text(recency) + Text(" · BLE · \(ratio)").foregroundStyle(suffixColor)
-        } else if fromBle {
-            Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
-        } else {
-            Text(recency) + Text(" · Phone").foregroundStyle(.secondary)
+        let base: Text = {
+            if conns > 0 {
+                let denom = stats.eligibleSlots
+                let ratio = denom > 0 ? "\(egvs) / \(denom)" : "\(egvs)"
+                let suffixColor: Color = egvs > 0 ? .primary : .secondary
+                return Text(recency) + Text(" · BLE · \(ratio)").foregroundStyle(suffixColor)
+            } else if fromBle {
+                return Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
+            } else {
+                return Text(recency) + Text(" · Phone").foregroundStyle(.secondary)
+            }
+        }()
+
+        // C-210-4: surface a direct-BLE stall (direct path stale while phone fresh => on phone relay).
+        switch state.directBleStall {
+        case .none:
+            base
+        case .stalled:
+            base + Text(" · stalled").foregroundStyle(Color.loopYellow)
+        case .unavailable:
+            base + Text(" · no direct").foregroundStyle(Color.loopRed)
         }
     }
 
