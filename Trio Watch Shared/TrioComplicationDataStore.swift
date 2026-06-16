@@ -1118,6 +1118,28 @@ final class TrioComplicationDataStore {
         }
     #endif
 
+    #if !WIDGET_EXTENSION
+    /// C-210-9 (scan #3): launch/resume reconciliation. The in-memory unserviced-reload timer
+    /// (`scheduleUnservicedReloadCheck`) dies if the app is suspended before its grace period fires,
+    /// so an unserviced reload could otherwise never recover. Both generations are persisted in the
+    /// App Group, so compare them on launch/foreground and re-request once (rate-limited) when the
+    /// widget never serviced the most recent reload. Watch-app only (never the widget process).
+    func reconcileUnservicedReloadOnLaunch() {
+        guard let defaults = appGroupDefaults else { return }
+        let requested = defaults.integer(forKey: Self.reloadGenerationKey)
+        guard requested > 0 else { return }
+        let observed = widgetObservedGeneration() ?? -1
+        guard observed < requested else { return } // serviced — the common case
+        guard Date().timeIntervalSince(lastUnservicedRetryAt) >= Self.unservicedRetryMinInterval else {
+            log("event=complication_reload_unserviced_launch requested=\(requested) observed=\(observed) action=rate_limited")
+            return
+        }
+        lastUnservicedRetryAt = Date()
+        log("event=complication_reload_unserviced_launch requested=\(requested) observed=\(observed) action=re_request")
+        forceReload(scheduleRetry: false)
+    }
+    #endif
+
     // MARK: - Private Helpers (Main-Thread Confined)
 
     private func onMain(_ block: @escaping () -> Void) {

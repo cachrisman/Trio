@@ -50,6 +50,10 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
 
     func applicationDidBecomeActive() {
         WatchState.shared.handleForegroundActiveEntry()
+        // C-210-9 (scan #3): recover an unserviced complication reload that the in-memory grace
+        // timer missed because the app was suspended before it fired. Cheap App-Group generation
+        // compare; re-requests at most once per rate-limit window.
+        TrioComplicationDataStore.shared.reconcileUnservicedReloadOnLaunch()
         Task {
             await WatchLogger.shared.log(
                 "event=watch_app_became_active source=wk_application_delegate "

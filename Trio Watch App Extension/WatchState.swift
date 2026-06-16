@@ -739,7 +739,12 @@ extension TrioComplicationDataSource {
         let latestEpoch = latest.startDate.timeIntervalSince1970
         let latestMgDl = latest.quantity.doubleValue(for: mgDlUnit)
 
-        if latestEpoch == dataStore.hkLastReceivedGlucoseEpoch() {
+        // C-210-10 (scan #6): skip only a true duplicate (same epoch AND same value). A same-epoch
+        // *correction* (different value) must still be processed, not dropped. Preserves the
+        // idempotency guard for the common re-fire of the newest already-seen sample.
+        let knownEpoch = latestEpoch == dataStore.hkLastReceivedGlucoseEpoch()
+        let sameValue = Int(latestMgDl.rounded()) == Int(dataStore.hkLastReceivedGlucoseValueMgDl().rounded())
+        if knownEpoch, sameValue {
             Task {
                 await WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
             }
