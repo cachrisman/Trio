@@ -35,16 +35,22 @@ struct GlucoseTrendView: View {
         }
     }
 
-    /// Single status line under the glucose bubble: recency, optional `· BLE · egvs/conns` (daily totals).
+    /// Single status line under the glucose bubble: recency, optional `· BLE · captures / slots` (the
+    /// honest background capture-success rate since midnight). C-210-3 (D210-1): replaced the old
+    /// `egvs/connects` — connects/readings can look healthy during a dormancy because they don't
+    /// surface *missed* slots; the captures/eligible-slots ratio (e.g. `67 / 248`) makes a stall visible.
     @ViewBuilder
     private func bleRecencyStatusLine(recency: String) -> some View {
         let conns = state.bleConnectsToday
-        let egvs = state.bleEGVsToday
+        let stats = G7WatchSensorAdapter.shared.dailySlotStats()
+        let egvs = stats.egvs
         let fromBle = state.displayedReadingSource == .g7DirectBLE
 
         if conns > 0 {
+            let denom = stats.eligibleSlots
+            let ratio = denom > 0 ? "\(egvs) / \(denom)" : "\(egvs)"
             let suffixColor: Color = egvs > 0 ? .primary : .secondary
-            Text(recency) + Text(" · BLE · \(egvs)/\(conns)").foregroundStyle(suffixColor)
+            Text(recency) + Text(" · BLE · \(ratio)").foregroundStyle(suffixColor)
         } else if fromBle {
             Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
         } else {
