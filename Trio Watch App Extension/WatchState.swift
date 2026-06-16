@@ -771,7 +771,11 @@ extension TrioComplicationDataSource {
         if let prev = previousMgDl, plausibilityOK {
             let rawDeltaMgDl = latestMgDl - prev
             let deltaInt = Int(rawDeltaMgDl.rounded())
-            deltaString = String(format: "%+d", deltaInt)
+            // C-210-1: display the delta in the user's unit; keep the mg/dL deltaInt for the trend bucket.
+            deltaString = WatchGlucoseColorComputer.shared.displayDeltaString(
+                previousMgDl: Int(prev.rounded()),
+                currentMgDl: Int(latestMgDl.rounded())
+            )
             trendString = Self.hkTrendString(fromDeltaMgDl: deltaInt)
             trendDerived = true
         }
@@ -793,7 +797,8 @@ extension TrioComplicationDataSource {
         }
 
         let snapshot = TrioComplicationSnapshot(
-            glucose: glucoseString,
+            // C-210-1: bake the unit-correct display string (mmol users were seeing raw mg/dL).
+            glucose: WatchGlucoseColorComputer.shared.displayString(forMgDl: hkMgDl),
             trend: trendString,
             delta: deltaString,
             readingDate: readingDate,
@@ -813,7 +818,7 @@ extension TrioComplicationDataSource {
                 )
             )
             TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
-            self?.applyHKSnapshot(snapshot)
+            self?.applyHKSnapshot(snapshot, glucoseMgDl: hkMgDl)
             completionHandler()
         }
     }
@@ -1036,7 +1041,7 @@ extension TrioComplicationDataSource {
         displayedReadingAttributedSequence = snapshot.sequence
     }
 
-    func applyG7DirectBleSnapshot(_ snapshot: TrioComplicationSnapshot) {
+    func applyG7DirectBleSnapshot(_ snapshot: TrioComplicationSnapshot, glucoseMgDl: Int) {
         assert(Thread.isMainThread, "applyG7DirectBleSnapshot must be called on main thread")
         g7DirectBleLastEventAt = Date()
         g7DirectBleLastReadingAt = snapshot.readingDate
@@ -1059,19 +1064,18 @@ extension TrioComplicationDataSource {
         if let glucoseColor = snapshot.glucoseColor {
             currentGlucoseColorString = glucoseColor
         }
-        // BLE snapshot.glucose is the integer mg/dL string; track it so the bubble/complication bake
-        // stays consistent with the displayed reading (build 205 / P2). Refresh the chart from the
+        // C-210-1: snapshot.glucose is now the unit-formatted display string (mmol → "5.6"), so it
+        // can't be parsed back to mg/dL. Track the canonical mg/dL passed in by the producer instead,
+        // so the bubble/complication bake stays consistent (build 205 / P2). Refresh the chart from the
         // store (W2) — the adapter inserted this reading just before calling us, so it's included.
-        if let mgDl = Int(snapshot.glucose) {
-            currentGlucoseMgDl = mgDl
-        }
+        currentGlucoseMgDl = glucoseMgDl
         glucoseValues = WatchGlucoseHistoryStore.shared.loadAsDisplayValues(
             colorComputer: WatchGlucoseColorComputer.shared
         )
         lastWatchStateUpdate = snapshot.readingDate
     }
 
-    func applyHKSnapshot(_ snapshot: TrioComplicationSnapshot) {
+    func applyHKSnapshot(_ snapshot: TrioComplicationSnapshot, glucoseMgDl: Int) {
         assert(Thread.isMainThread, "applyHKSnapshot must be called on main thread")
         guard tryAttributeDisplayedReadingSource(
             .healthKit,
@@ -1081,14 +1085,13 @@ extension TrioComplicationDataSource {
         currentGlucose = snapshot.glucose
         trend = snapshot.trend
         delta = snapshot.delta
-        // P2/W5: HK snapshot carries the baked bubble hex + integer mg/dL string; track both and
-        // refresh the chart from the store (the reading was inserted just before this call).
+        // P2/W5: HK snapshot carries the baked bubble hex; track it.
         if let glucoseColor = snapshot.glucoseColor {
             currentGlucoseColorString = glucoseColor
         }
-        if let mgDl = Int(snapshot.glucose) {
-            currentGlucoseMgDl = mgDl
-        }
+        // C-210-1: snapshot.glucose is now the unit-formatted display string; track the canonical
+        // mg/dL passed in by the producer instead of parsing the string.
+        currentGlucoseMgDl = glucoseMgDl
         glucoseValues = WatchGlucoseHistoryStore.shared.loadAsDisplayValues(
             colorComputer: WatchGlucoseColorComputer.shared
         )

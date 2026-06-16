@@ -1087,7 +1087,8 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         mirrorDailyCountersToWatchState()
         let delta: String = {
             guard let previous = lastSavedGlucoseValue else { return "--" }
-            return String(format: "%+d", glucoseValue - previous)
+            // C-210-1: format in the user's display unit (mmol users were seeing raw mg/dL deltas).
+            return WatchGlucoseColorComputer.shared.displayDeltaString(previousMgDl: previous, currentMgDl: glucoseValue)
         }()
         lastSavedGlucoseValue = glucoseValue
 
@@ -1172,7 +1173,8 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         )
 
         let snapshot = TrioComplicationSnapshot(
-            glucose: "\(tail.glucoseMgDl)",
+            // C-210-1: bake the unit-correct display string (mmol users were seeing raw mg/dL).
+            glucose: WatchGlucoseColorComputer.shared.displayString(forMgDl: tail.glucoseMgDl),
             trend: tail.trend,
             delta: tail.delta,
             readingDate: readingDate,
@@ -1184,7 +1186,7 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         )
 
         TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
-        WatchState.shared.applyG7DirectBleSnapshot(snapshot)
+        WatchState.shared.applyG7DirectBleSnapshot(snapshot, glucoseMgDl: tail.glucoseMgDl)
         WatchState.shared.bleLastEGVDate = readingDate
         WatchState.shared.bleLastEGVValue = tail.glucoseMgDl
 

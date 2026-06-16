@@ -151,4 +151,29 @@ final class WatchGlucoseColorComputer {
         NSDecimalRound(&rounded, &product, 1, .plain)
         return NSDecimalNumber(decimal: rounded).doubleValue
     }
+
+    // MARK: - Display strings (current-glucose bubble + delta)
+
+    /// Display-ready string for a glucose value, matching the phone's `Int.formatted(for:)`:
+    /// mmol/L → "5.6" (one decimal); mg/dL → "100" (bare integer). The snapshot sanitizer
+    /// (`TrioComplicationSnapshot.sanitizedGlucose`) collapses whole-number mmol (e.g. "10.0" → "10").
+    func displayString(forMgDl mgDl: Int) -> String {
+        guard isMmolL else { return String(mgDl) }
+        return String(format: "%.1f", displayValue(forMgDl: mgDl))
+    }
+
+    /// Display-ready signed string for a glucose delta. mmol/L → "+0.1"/"-0.2"; mg/dL → "+5"/"-3".
+    /// mmol converts EACH operand to scale-1 mmol (matching the phone's per-reading `asMmolL`
+    /// rounding, which subtracts the two rounded values) so watch and phone can't disagree on a
+    /// half-boundary. The snapshot sanitizer normalizes sign/precision (e.g. "+0.0" → "+0").
+    func displayDeltaString(previousMgDl prev: Int, currentMgDl curr: Int) -> String {
+        guard isMmolL else { return String(format: "%+d", curr - prev) }
+        var prevProduct = Decimal(prev) * exchangeRate
+        var prevRounded = Decimal()
+        NSDecimalRound(&prevRounded, &prevProduct, 1, .plain)
+        var currProduct = Decimal(curr) * exchangeRate
+        var currRounded = Decimal()
+        NSDecimalRound(&currRounded, &currProduct, 1, .plain)
+        return String(format: "%+.1f", NSDecimalNumber(decimal: currRounded - prevRounded).doubleValue)
+    }
 }

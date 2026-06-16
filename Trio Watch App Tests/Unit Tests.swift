@@ -80,6 +80,36 @@ import XCTest
         #expect(!watchState.isMealBolusCombo)
     }
 
+    // MARK: - C-210-1: unit-aware display formatting parity (mmol users must see "5.6", not "100")
+
+    @Test("displayString: mg/dL integer vs mmol/L one-decimal") func testDisplayStringUnits() throws {
+        let c = WatchGlucoseColorComputer.shared
+        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mg/dL")
+        #expect(c.displayString(forMgDl: 100) == "100")
+        #expect(c.displayString(forMgDl: 200) == "200")
+
+        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mmol/L")
+        #expect(c.displayString(forMgDl: 200) == "11.1") // 200 * 0.0555 = 11.1
+        #expect(c.displayString(forMgDl: 100) == "5.6") //  100 * 0.0555 = 5.55 -> 5.6 (half away from zero)
+
+        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mg/dL") // restore global state
+    }
+
+    @Test("displayDeltaString: signed, unit-aware, mmol converts each operand then subtracts")
+    func testDisplayDeltaStringUnits() throws {
+        let c = WatchGlucoseColorComputer.shared
+        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mg/dL")
+        #expect(c.displayDeltaString(previousMgDl: 100, currentMgDl: 110) == "+10")
+        #expect(c.displayDeltaString(previousMgDl: 110, currentMgDl: 100) == "-10")
+        #expect(c.displayDeltaString(previousMgDl: 100, currentMgDl: 100) == "+0")
+
+        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mmol/L")
+        #expect(c.displayDeltaString(previousMgDl: 100, currentMgDl: 200) == "+5.5") // 11.1 - 5.6
+        #expect(c.displayDeltaString(previousMgDl: 200, currentMgDl: 100) == "-5.5") // 5.6 - 11.1
+
+        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mg/dL") // restore global state
+    }
+
     @Test("Acknowledgment states transition correctly") func testAcknowledgmentStates() throws {
         // Given - Initial state
         #expect(watchState.acknowledgementStatus == .pending)
