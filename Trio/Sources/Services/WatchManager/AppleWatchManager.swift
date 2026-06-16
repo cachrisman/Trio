@@ -2,6 +2,7 @@ import Combine
 import CoreData
 import FirebaseCrashlytics
 import Foundation
+import G7SensorKit
 import Swinject
 import UIKit
 import WatchConnectivity
@@ -23,6 +24,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
     @Injected() private var settingsManager: SettingsManager!
     @Injected() private var fileStorage: FileStorage!
     @Injected() private var glucoseStorage: GlucoseStorage!
+    @Injected() private var fetchGlucoseManager: FetchGlucoseManager!
     @Injected() private var determinationStorage: DeterminationStorage!
     @Injected() private var overrideStorage: OverrideStorage!
     @Injected() private var tempTargetStorage: TempTargetsStorage!
@@ -304,6 +306,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     watchState.currentGlucose = "\(latestGlucoseValue)"
                 }
 
+                // C-210-2 (#2a): stamp the active G7's EGV sequence when it lines up with this
+                // reading (within ~1.5 min; readings are 5 min apart), so the watch complication
+                // arbitration can dedup the direct-BLE vs phone-WC race by sequence. Direct-G7 only.
+                if !latestGlucose.isManual,
+                   let g7 = self.fetchGlucoseManager?.cgmManager as? G7CGMManager,
+                   let seq = g7.latestReading?.sequence,
+                   let seqDate = g7.latestReadingTimestamp,
+                   let glucoseDate = latestGlucose.date,
+                   abs(seqDate.timeIntervalSince(glucoseDate)) < 90 {
+                    watchState.g7Sequence = Int(seq)
+                }
+
                 /// Calculate latest color
                 let hardCodedLow = Decimal(55)
                 let hardCodedHigh = Decimal(220)
@@ -539,6 +553,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             dict[WatchMessageKeys.readingEpoch] = newestReading.date.timeIntervalSince1970
         }
 
+        // C-210-2 (#2a): G7 EGV sequence for the watch's complication arbitration (nil for non-G7).
+        if let g7Sequence = state.g7Sequence {
+            dict[WatchMessageKeys.g7Sequence] = g7Sequence
+        }
+
         return dict
     }
 
@@ -768,6 +787,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             (WatchMessageKeys.readingEpoch, "readingEpoch"),
             (WatchMessageKeys.transferEnqueuedAt, "transferEnqueuedAt"),
             (WatchMessageKeys.date, "date"),
+            (WatchMessageKeys.g7Sequence, "g7Sequence"), // C-210-2 (#2a): dedup BLE/WC by sequence
         ]
         for (key, name) in complicationAllowlist {
             if let value = fullMessage[key] {
