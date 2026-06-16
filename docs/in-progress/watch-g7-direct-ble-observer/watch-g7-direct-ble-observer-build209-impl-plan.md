@@ -72,6 +72,13 @@ Note: each EGV emits two `egv_received` rows (`module=g7_core` + `g7_ble`) — f
 | A5. Reconnect-storm tripwire | **FIRES** | Multiple ≥4 `did_connect`/5-min windows on clean days, incl. **two 16-connect bursts** (06-11 06:10, 06-12 06:15) | **Un-shelve and build** the connect-gate delegate (review 2.2) |
 
 ### A6 (NEW). Watch direct-BLE outage — 06-13, full day — upstream Dexcom-session dependency
+> **✅ SETTLED — pass (2026-06-16).** The first worn deep-background overnight soak on build 209 (the
+> exact 06-13 condition) showed **no dormancy recurrence**: ~6.4h worn, 52 g7_ble EGVs (~68% of
+> slots), `connect_called` healthy ~21/hr throughout, **0** watchdog fires — vs 06-13's 0 EGVs /
+> dormant connects / 14 watchdog fires. The ~32% misses were sleep-position occlusion, not software.
+> See the [build-209 impl log](watch-g7-direct-ble-observer-build209-impl-log.md) "Overnight soak
+> result." Residual risk is Dexcom-side (the root cause), addressed by A7 stall-detection in 210.
+
 **Symptom:** on 06-13 the watch captured **zero direct-BLE EGVs for the entire day** (iOS steady
 ~285/day throughout). The watch was **worn** (battery `unplugged` 14,239 vs `charging` 1,069) and
 the app was **alive** (complication bgtask path 300–800 events/hr on phone-WC) — so the outage was

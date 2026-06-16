@@ -47,14 +47,43 @@
 | **C-209-1** analytical denominator | ✅ **CLOSED** | On-device `67 / 248` at 20:54 CEST; `248 = 250 elapsed slots − 2 ineligible` — correct. Display-time computation, soak-independent. |
 | **A2** CB restore on watchOS | ✅ **CONFIRMED on 209** | `will_restore_state` fired at launch — the path we *kept* (vs the planned delete). One-shot event, valid regardless of window. |
 | C-209-3 logging-tax demotion | ⏳ mechanism live (`log_pipeline_summary` present); the ~60–70% volume drop needs a clean soak day to quantify | |
-| A4 watchdogs quiet | ⏳ 0 fires so far, but 10 min proves nothing — needs soak | |
-| Capture health | 🟢 heartbeat: g7_ble EGVs capturing on cadence, 0 errors/timeouts/stalls, clean bootstrap | |
-| A1 / A3 / A5 / **A6 dormancy** | ⏳ **soak-gated** — rate comparisons + deep-background dormancy need a day+; A6 is the headline question | |
+| A4 watchdogs quiet | ✅ **CONFIRMED** | **0** `egv_watchdog_fired` / `ext_session_start_timeout` across the full ~6.4h worn overnight soak — it only fires on real stalls (14× during the 06-13 outage). |
+| **A6 dormancy** | ✅ **SETTLED — pass (2026-06-16 overnight soak)** | No recurrence in the worn deep-background overnight stretch. See "Overnight soak result" below. |
+| A1 / A3 / A5 | 🟢 clean overnight — no `command_timeout`/`configure_block_skipped` spikes, no reconnect storms, no `did_fail_to_connect` — consistent with the resolved 208 verdicts |
+| Capture health | 🟢 sustained over the worn overnight stretch (~68% of slots; misses are position, not software — see below) |
+
+## Overnight soak result — A6 SETTLED (2026-06-16)
+
+First worn + deep-background overnight stretch — the exact condition that produced 208's full-day
+06-13 dormancy. **Build 209 handled it cleanly: no dormancy recurrence.**
+
+Worn window 21:46→04:10 UTC (~6.4h, ~77 possible 5-min slots):
+
+| Metric | 209 (this night) | 06-13 (208 — the failure) |
+|---|---|---|
+| g7_ble EGVs captured | **52 (~68% of slots)** | **0 all day** |
+| `connect_called` | 136 (~21/hr, healthy throughout) | collapsed to ≤2/hr (dormant) |
+| `egv_watchdog_fired` | **0** | 14 |
+| `did_fail_to_connect` | 0 | high |
+| `stale_sensor_binding_suspected` | 2 | ~50 |
+
+The ~32% missed slots were **sleep-position occlusion** (arm/body blocking the 2.4 GHz link to the
+body-worn sensor) — every gap recovered, connects stayed healthy, the watchdog never fired. That's
+the environmental ceiling of worn-overnight direct BLE, not a software defect, and it costs no data
+(the phone/WC path covers those slots). The pattern all night was oscillation between clean 5-min
+stretches and 10–30 min position gaps, always recovering — the opposite of 06-13's monotonic collapse.
+
+**Caveats:** (1) one night isn't statistical proof — the 06-13 root cause was the *Dexcom app*
+losing its sensor session (Dexcom-side, independent of Trio's code), so a clean night shows 209
+handles the normal case well, not that the Dexcom app can never drop again. (2) The real safeguard
+against a future 06-13 is the **A7 direct-BLE-stall detection (210)** — detect + notify, since Trio
+cannot prevent a Dexcom-side drop.
 
 ## Follow-ups
 
-- **Soak loop** running to track the capture ratio + A6 dormancy + watchdog/error counts on 209.
-- **Section A close-out** (A1/A3/A5/A6 + logging-volume quantification) after the soak read.
+- **Soak loop STOPPED 2026-06-16** — A6 settled; watchdog/error counts stayed at 0 all night.
+- **Section A: largely closed** — A6 settled (pass), A4 confirmed; C-209-1 + A2 closed at install.
+  Only remaining nicety: rigorous logging-volume quantification (C-209-3) over a clean day, if wanted.
 - **Build-209 milestone committed** (patches 02 + 12) → makes the committed patch-12 baseline =
   build-209, which keeps future regens clean and unblocks the dev-sync + branch-cleanup track.
 - Build-210 candidates collected in [build-210 budding list](watch-g7-direct-ble-observer-build210-budding-list.md).
