@@ -662,8 +662,9 @@ def already_in_phase?(phase, file_ref)
 end
 
 def dedupe_build_phase(phase)
-  removed_paths = []
-  seen = {}
+  # Group build files by normalized real path. Ruby preserves first-seen
+  # insertion order, so the kept entry is deterministic.
+  groups = {}
 
   phase.files.to_a.each do |bf|
     next unless bf.file_ref
@@ -674,18 +675,33 @@ def dedupe_build_phase(phase)
     normalized = normalize_path_for_comparison(real_path)
     next unless normalized
 
-    if seen.key?(normalized)
-      removed_paths << [normalized, bf]
-    else
-      seen[normalized] = true
-    end
+    (groups[normalized] ||= []) << bf
   end
 
-  removed_paths.each do |(_, bf)|
-    phase.remove_build_file(bf)
+  removed_paths = []
+
+  groups.each do |normalized, bfs|
+    next if bfs.size <= 1
+
+    # A path can be referenced more than once in a phase either as distinct
+    # PBXBuildFile objects (same file) or as the SAME object listed twice —
+    # the latter is cruft an upstream pbxproj can carry (e.g. the 0.8.2 bump
+    # listed WatchConfigRootView.swift twice in Trio's Sources phase).
+    #
+    # We can't just remove the "extra" build files: remove_build_file deletes
+    # the shared PBXBuildFile object, so removing the second reference to a
+    # doubly-listed single object deletes the only entry and the file silently
+    # drops out of compilation. Instead remove ALL references for this path and
+    # re-add exactly one — the PBXFileReference survives remove_build_file, so
+    # the file stays in the target with a single Sources entry.
+    file_ref = bfs.first.file_ref
+    bfs.uniq(&:uuid).each { |bf| phase.remove_build_file(bf) }
+    phase.add_file_reference(file_ref, true)
+
+    removed_paths.concat([normalized] * (bfs.size - 1))
   end
 
-  removed_paths.map(&:first)
+  removed_paths
 end
 
 def dedupe_project_build_phases(project)
