@@ -1,19 +1,18 @@
-From 42c43140c183fe8dc1eb44b7e53d76eb2e9d926b Mon Sep 17 00:00:00 2001
+From 78ca69de7808413e3641763a5ae3f218fde14a3b Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Mon, 15 Jun 2026 23:47:29 +0200
+Date: Thu, 18 Jun 2026 07:56:46 +0100
 Subject: [PATCH] feat: phone-ble-observer-telemetry
 
-Trio-Patch-Source-Branch: feature/phone-ble-observer-telemetry
 ---
  Model/Helper/GlucoseStored+helper.swift       |   7 +
  Trio/Sources/APS/CGM/PluginSource.swift       |   2 +
- Trio/Sources/APS/DeviceDataManager.swift      |  58 +-----
+ Trio/Sources/APS/DeviceDataManager.swift      |   1 +
  Trio/Sources/Application/TrioApp.swift        |  57 +++---
  .../Sources/Helpers/DynamicGlucoseColor.swift |  39 ++--
  Trio/Sources/Helpers/GlucoseHueColor.swift    |  41 +++++
  Trio/Sources/Models/WatchGlucoseObject.swift  |   2 +-
  .../WatchManager/AppleWatchManager.swift      | 170 ++++++++++++------
- 8 files changed, 214 insertions(+), 162 deletions(-)
+ 8 files changed, 213 insertions(+), 106 deletions(-)
  create mode 100644 Trio/Sources/Helpers/GlucoseHueColor.swift
 
 diff --git a/Model/Helper/GlucoseStored+helper.swift b/Model/Helper/GlucoseStored+helper.swift
@@ -35,7 +34,7 @@ index ecc94d089..826ebdc82 100644
          let date = Date.oneDayAgo
          return NSPredicate(format: "isManual == %@ AND date >= %@", true as NSNumber, date as NSDate)
 diff --git a/Trio/Sources/APS/CGM/PluginSource.swift b/Trio/Sources/APS/CGM/PluginSource.swift
-index 304d6800c..5717665d9 100644
+index 705867096..c14eb4713 100644
 --- a/Trio/Sources/APS/CGM/PluginSource.swift
 +++ b/Trio/Sources/APS/CGM/PluginSource.swift
 @@ -19,6 +19,8 @@ final class PluginSource: GlucoseSource {
@@ -48,54 +47,10 @@ index 304d6800c..5717665d9 100644
          cgmManager?.delegateQueue = processQueue
          cgmManager?.cgmManagerDelegate = self
 diff --git a/Trio/Sources/APS/DeviceDataManager.swift b/Trio/Sources/APS/DeviceDataManager.swift
-index d3444ea34..ba242f6af 100644
+index d3444ea34..bda5b9fdd 100644
 --- a/Trio/Sources/APS/DeviceDataManager.swift
 +++ b/Trio/Sources/APS/DeviceDataManager.swift
-@@ -123,13 +123,6 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
-                         pumpActivatedAtDate.send(medtrumPump.state.patchActivatedAt)
-                     }
-                 }
--                if let omni = pumpManager as? OmniPumpManager {
--                    guard let endTime = omni.state.podState?.expiresAt else {
--                        pumpExpiresAtDate.send(nil)
--                        return
--                    }
--                    pumpExpiresAtDate.send(endTime)
--                }
-                 if let simulatorPump = pumpManager as? MockPumpManager {
-                     pumpDisplayState.value = PumpDisplayState(name: simulatorPump.localizedTitle, image: simulatorPump.smallImage)
-                     pumpName.send(simulatorPump.localizedTitle)
-@@ -280,10 +273,6 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
-         self.recommendsLoop.send()
-     }
- 
--    public func pumpManagerTypeByIdentifier(_ identifier: String) -> PumpManagerUI.Type? {
--        staticPumpManagersByIdentifier[identifier]
--    }
--
-     private func pumpManagerFromRawValue(_ rawValue: [String: Any]) -> PumpManagerUI? {
-         guard let rawState = rawValue["state"] as? PumpManager.RawStateValue,
-               let Manager = pumpManagerTypeFromRawValue(rawValue)
-@@ -299,24 +288,14 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
-             return nil
-         }
- 
--        if let pumpManager = pumpManagerTypeByIdentifier(managerIdentifier) {
--            return pumpManager
--        }
--
--        /// The pumpManager was not found for managerIdentifier. If this was for an "Omnipod" (OmniKit) or
--        /// "Omnipod-DASH" (OmniBLE), have the universal "Omni" pumpManager (OmnipodKit) handle instead.
--        let OmniStr = "Omni"
--        if managerIdentifier.hasPrefix(OmniStr) {
--            return pumpManagerTypeByIdentifier(OmniStr)
--        }
--
--        return nil
-+        return staticPumpManagersByIdentifier[managerIdentifier]
-     }
- 
-     // MARK: - GlucoseSource
+@@ -317,6 +317,7 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
  
      @Persisted(key: "BaseDeviceDataManager.lastFetchGlucoseDate") private var lastFetchGlucoseDate: Date = .distantPast
  
@@ -103,46 +58,6 @@ index d3444ea34..ba242f6af 100644
      var glucoseManager: FetchGlucoseManager?
      var cgmManager: CGMManagerUI?
      var cgmType: CGMType = .enlite
-@@ -490,39 +469,6 @@ extension BaseDeviceDataManager: PumpManagerDelegate {
-             }
-         }
- 
--        if let omni = pumpManager as? OmniPumpManager {
--            let reservoirVal = omni.state.podState?.lastInsulinMeasurements?.reservoirLevel ?? 0xDEAD_BEEF
--            // TODO: find the value Pod.maximumReservoirReading
--            let reservoir = Decimal(reservoirVal) > 50.0 ? 0xDEAD_BEEF : reservoirVal
--
--            storage.save(Decimal(reservoir), as: OpenAPS.Monitor.reservoir)
--            broadcaster.notify(PumpReservoirObserver.self, on: processQueue) {
--                $0.pumpReservoirDidChange(Decimal(reservoir))
--            }
--
--            // manual temp basal on
--            if let tempBasal = omni.state.podState?.unfinalizedTempBasal, !tempBasal.isFinished(),
--               !tempBasal.automatic
--            {
--                // the manual basal temp is launch - block every thing
--                debug(.deviceManager, "manual temp basal")
--                manualTempBasal.send(true)
--            } else {
--                // no more manual Temp Basal !
--                manualTempBasal.send(false)
--            }
--
--            guard let endTime = omni.state.podState?.expiresAt else {
--                pumpExpiresAtDate.send(nil)
--                return
--            }
--            pumpExpiresAtDate.send(endTime)
--
--            if let startTime = omni.state.podState?.activatedAt {
--                storage.save(startTime, as: OpenAPS.Monitor.podAge)
--            }
--        }
--
-         if let simulatorPump = pumpManager as? MockPumpManager {
-             broadcaster.notify(PumpReservoirObserver.self, on: processQueue) {
-                 $0.pumpReservoirDidChange(Decimal(simulatorPump.state.reservoirUnitsRemaining))
 diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
 index d7e078b70..933a0522c 100644
 --- a/Trio/Sources/Application/TrioApp.swift
