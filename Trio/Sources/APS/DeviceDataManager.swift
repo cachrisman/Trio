@@ -343,6 +343,7 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
 
     @Persisted(key: "BaseDeviceDataManager.lastFetchGlucoseDate") private var lastFetchGlucoseDate: Date = .distantPast
 
+    // Plugin CGM uses FetchGlucoseManager; glucoseManager / cgmManager here stay unset - do not use them for plugin identity.
     var glucoseManager: FetchGlucoseManager?
     var cgmManager: CGMManagerUI?
     var cgmType: CGMType = .enlite
