@@ -700,9 +700,12 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
   cd "$ROOT_DIR"
 
   stage_start "TestFlight Upload"
-  if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step"; then
-    release_exit_code=$?
-    exit $release_exit_code
+  # `cmd || rc=$?` captures the real exit code; `if ! cmd; then rc=$?` would
+  # capture the negation's status (0) and exit success on a failed upload.
+  release_exit_code=0
+  capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step" || release_exit_code=$?
+  if [[ $release_exit_code -ne 0 ]]; then
+    exit "$release_exit_code"
   fi
   stage_end
 
@@ -1324,7 +1327,12 @@ stage_ipa_for_release() {
       cp -f "$ipa_source" "$ROOT_DIR/Trio.ipa"
     fi
   else
-    echo "[build] Warning: IPA not found at $ipa_source"
+    # A fastlane run that "succeeded" but produced no IPA is NOT a success —
+    # treat it as a hard failure rather than printing a warning and continuing
+    # to the success summary. See docs/process/patch-clobber-guardrails.md.
+    echo "[build] ❌ ERROR: expected IPA not found at $ipa_source"
+    echo "[build] The archive/export step did not produce an IPA; failing the build."
+    exit 1
   fi
 }
 
@@ -1392,9 +1400,13 @@ fi
 
 stage_start "Build IPA"
 
-if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane build_trio" "Build step"; then
-  build_exit_code=$?
-  exit $build_exit_code
+# NB: `if ! cmd; then rc=$?` captures the status of the *negation* (always 0 on
+# failure), so the old form exited 0 on a failed build. Use `cmd || rc=$?` to
+# capture the command's real exit code under set -e.
+build_exit_code=0
+capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane build_trio" "Build step" || build_exit_code=$?
+if [[ $build_exit_code -ne 0 ]]; then
+  exit "$build_exit_code"
 fi
 
 stage_ipa_for_release
@@ -1427,9 +1439,12 @@ echo "[build] Ready to upload to TestFlight."
 
 stage_start "TestFlight Upload"
 
-if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step"; then
-  release_exit_code=$?
-  exit $release_exit_code
+# `cmd || rc=$?` captures the real exit code; `if ! cmd; then rc=$?` would
+# capture the negation's status (0) and exit success on a failed upload.
+release_exit_code=0
+capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step" || release_exit_code=$?
+if [[ $release_exit_code -ne 0 ]]; then
+  exit "$release_exit_code"
 fi
 
 stage_end

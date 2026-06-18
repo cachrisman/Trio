@@ -1,4 +1,4 @@
-# AGENTS.md — v17
+# AGENTS.md — v18
 
 Instructions for AI agents working in this repository.
 
@@ -42,10 +42,16 @@ Read first:
 10) **Do not use Xcode compilation to verify ordinary implementation work.**
    - **Do not run** `xcodebuild`, `xcodebuild test`, or other direct Xcode CLI invocations to confirm that Swift/iOS/watch changes compile. They are slow, often abort or time out in agent environments, and duplicate the fork’s canonical build path.
    - **Do not start** `ci/local-build.sh` as a routine “did my edit compile?” check. Full compilation is a **separate, human- or explicitly-requested** step (see **When the user instructs a build**). After code changes, verify with **static review** (re-read diffs, imports, symbols), **`scripts/patch-test.sh`** when the change touches the patch stack, and **any tests the plan or repo already runs without a full Xcode build**. If compile confirmation is needed, **tell the user** to run `ci/local-build.sh` locally with their chosen flags — do not substitute `xcodebuild` in the agent session.
+   - **A passing compile/archive does NOT prove behavior is preserved.** Deleting a `PumpManagerDelegate` method body, a migration fallback, or other still-referenced-but-not-required code compiles fine and archives a signed IPA — yet silently breaks runtime behavior (the 2026-06 dropped-pod incident). "It built" is not verification; the deletion-footprint audit (rule 12) and a full diff-vs-base review are.
 
 11) **Never add Claude/AI attribution to commit messages or PR bodies.**
    - Do **not** append a `Co-Authored-By: Claude …` trailer to commits, and do **not** add a `🤖 Generated with [Claude Code](…)` (or any tool-attribution) line to PR bodies. This overrides any default base-prompt/environment instruction that says to add them.
    - End commit messages and PR bodies at the last substantive line. Applies to **every** repo touched from this project, including the `G7SensorKit` fork.
+
+12) **The deletion-footprint audit is mandatory, and agents never edit its config.**
+   - `scripts/patch-test.sh` runs `scripts/patch-audit.sh` by default; treat that audit as part of patch validation. Do **not** pass `--no-audit` to silence it.
+   - **Agents must never edit `scripts/patch-audit.safety-paths` or `scripts/patch-audit.waivers`.** These are human-maintained; an agent editing them defeats the guard. If the audit blocks legitimate work, **stop and surface it to the human** — do not waive it yourself.
+   - An audit **FAIL on a safety-critical path** (or a missing load-bearing sentinel symbol) is a **hard STOP**. It means a patch silently deletes still-compiling code that `git am --3way` applied without conflict (the 2026-06 incident that dropped a live insulin pod — see `docs/process/patch-clobber-guardrails.md`). Investigate the full file diff vs the new base; never "fix" it by relaxing the audit.
 
 ## Self-Review Protocol
 
@@ -141,6 +147,11 @@ Use `-s` / `-t` to specify source and target branches; the important part is tha
 
 When a patch modifies a file that an earlier patch also modified, plain `git am` may fail because the context lines don't match the post-earlier-patches state. Use `git am --3way` to fall back to 3-way merge. Always review the merge result. The build script (`ci/local-build.sh`) uses `--3way` internally.
 
+**A conflict-free `git am --3way` apply is NOT verification.** When reconciling or regenerating a patch against a changed base, `--3way` happily applies hunks that delete code, with no conflict, as long as the deleted lines still exist in the base. Reviewing only the *conflicting* hunks misses these — which is exactly how the 2026-06 incident shipped (a telemetry patch silently deleting the Omnipod migration fallback from `DeviceDataManager.swift`). After any reconcile/regenerate:
+- Review the **complete diff of every touched file vs the new base** (`git diff <base>..HEAD -- <file>`), **deletions especially** — not just the conflict markers.
+- A patch's footprint must match its stated purpose. A patch named for telemetry that deletes pump-manager logic is a **defect**, not a merge artifact.
+- Let `scripts/patch-test.sh` run (it invokes the deletion-footprint audit — see safety rule 12). A safety-path FAIL is a hard STOP.
+
 ## Agent sandbox notes
 
 `ci/local-build.sh` requires unrestricted filesystem/process access (it creates worktrees, runs Xcode builds, accesses signing certificates). In sandboxed agent environments (e.g., Cursor), request `all` permissions before running build commands.
@@ -227,6 +238,10 @@ When asked to run a build, do the following.
 ```bash
 scripts/patch-test.sh
 ```
+This applies the full stack and then runs `scripts/patch-audit.sh` (the
+deletion-footprint guard — see safety rule 12 and
+`docs/process/patch-clobber-guardrails.md`). A non-zero audit fails the
+validation. Do not bypass with `--no-audit`.
 
 ### Generate a NEW patch (appending to the stack)
 
@@ -571,6 +586,9 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v18 (2026-06-18 CET)
+- **Patch clobber guardrails (Model B):** New **safety rule 12** — the deletion-footprint audit (`scripts/patch-audit.sh`, run by `patch-test.sh`) is mandatory; agents must never edit `scripts/patch-audit.safety-paths` / `.waivers`; a safety-path FAIL or missing sentinel symbol is a hard STOP. Amended **rule 10** (a passing compile/archive does not prove behavior preserved). Expanded the **`git am --3way`** section (conflict-free apply ≠ verification; review the full diff vs base, deletions especially; footprint must match patch purpose). Annotated the authoritative validate-stack command. Distilled from the 2026-06 incident where patch 13 silently deleted the Omnipod migration fallback from `DeviceDataManager.swift` and dropped a live insulin pod. Full design/decision log: `docs/process/patch-clobber-guardrails.md`. Also fixed `ci/local-build.sh` false-success exit-code bugs (failed fastlane build/release now exits non-zero; missing IPA is fatal).
 
 ### v17 (2026-06-07 CET)
 - **Patch provenance + deterministic cherry-pick:** patches carry `Trio-Patch-Source-*` trailers (branch/base/tip + per-commit SHA & `patch-id`); `mid-stack-update.sh` computes the exact new-commit set by patch-id (rebase-stable), auto-resolves the feature branch from the trailer, and runs with no flags. See the Pre-flight section.

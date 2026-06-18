@@ -20,6 +20,7 @@ Options:
   --include-submodules <list>     Comma-separated submodules to init; excludes others.
   --skip-patch <id|filename>      Skip a patch by number (e.g. 02) or full filename.
   --preserve-worktree             Keep test worktree on failure for manual debugging.
+  --no-audit                      Skip the deletion-footprint audit (patch-audit.sh).
   -h, --help                      Show this help.
 
 By default, submodules are skipped to speed up patch validation.
@@ -30,11 +31,15 @@ with_submodules=false
 include_submodules=()
 skip_patches=()
 preserve_worktree=false
+run_audit=true
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-submodules)
       with_submodules=true
+      ;;
+    --no-audit)
+      run_audit=false
       ;;
     --include-submodules)
       shift
@@ -307,7 +312,33 @@ echo ""
 if [ "$failed" = true ]; then
   echo "❌ Patch validation failed at: $(basename "$failed_patch")"
   exit 1
-else
-  echo "✅ All patches applied successfully"
-  exit 0
 fi
+
+echo "✅ All patches applied successfully"
+
+# Deletion-footprint audit (Model B guardrail). Surfaces silent out-of-scope
+# deletions that git am --3way applies without conflict. Run against the
+# canonical patches in REPO_ROOT (not the temp worktree copies).
+# See docs/process/patch-clobber-guardrails.md.
+if [ "$run_audit" = true ]; then
+  AUDIT_SH="$REPO_ROOT/scripts/patch-audit.sh"
+  if [ -x "$AUDIT_SH" ]; then
+    echo ""
+    echo "=========================================="
+    echo "Running deletion-footprint audit (patch-audit.sh)"
+    echo "=========================================="
+    if ( cd "$REPO_ROOT" && "$AUDIT_SH" ); then
+      echo "✅ patch-audit passed"
+    else
+      echo "❌ patch-audit FAILED — a patch deletes from a safety-critical path"
+      echo "   (or a load-bearing symbol is missing). This is a hard STOP:"
+      echo "   review the full file diff vs base; do NOT edit safety-paths/waivers"
+      echo "   to silence it. See docs/process/patch-clobber-guardrails.md."
+      exit 1
+    fi
+  else
+    echo "⚠️  patch-audit.sh not found/executable at $AUDIT_SH — skipping audit"
+  fi
+fi
+
+exit 0

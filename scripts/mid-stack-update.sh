@@ -1205,12 +1205,18 @@ else
         done
     fi
 
+    # patch-test.sh also runs the deletion-footprint audit (patch-audit.sh) by
+    # default, so a regenerated patch that silently deletes from a safety-critical
+    # path (e.g. the DeviceDataManager Omni migration — see
+    # docs/process/patch-clobber-guardrails.md) fails here, not just at build time.
     if ! "$REPO_ROOT/scripts/patch-test.sh"; then
-        die "Patch validation failed! The updated patch does not apply cleanly in the full stack.
-  Check the output above for which patch failed and why."
+        die "Patch validation failed! The updated patch either does not apply cleanly
+  in the full stack, or the deletion-footprint audit flagged a safety-critical
+  deletion. Check the output above. Do NOT silence the audit by editing
+  scripts/patch-audit.safety-paths or .waivers — surface it to a human."
     fi
 
-    print_success "All ${#ALL_PATCHES[@]} patches apply cleanly"
+    print_success "All ${#ALL_PATCHES[@]} patches apply cleanly (audit passed)"
 fi
 
 # Clean up re-restored dirty baseline patches now that validation is done.
