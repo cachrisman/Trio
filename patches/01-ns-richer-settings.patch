@@ -1,22 +1,31 @@
-From cfe61bf21324acf4f6990a12a8fc16abd9d41956 Mon Sep 17 00:00:00 2001
+From 7beb00bec72116030f1dbcbc1dd9ba732ea8b78e Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sat, 21 Mar 2026 23:54:24 +0100
+Date: Thu, 18 Jun 2026 21:53:14 +0200
 Subject: [PATCH] feat: ns-richer-settings
 
 Trio-Patch-Source-Branch: feature/ns-richer-settings
+Trio-Patch-Base: 3191d6296f8a3857bf15f5bd90db45f358bf163e
+Trio-Patch-Feature-Tip: 26d560d0040aaaa153a435a191a38046423eb9e5
+Trio-Patch-Generated: 2026-06-18T19:53:08Z
+Trio-Patch-Source-Commits:
+ 53ac829f5ef436c0f39e72d97eaff2a9da665b98 feat: ns-richer-settings
+ 26d560d0040aaaa153a435a191a38046423eb9e5 Extend Nightscout trioSettings with remaining treatment prefs.
+Trio-Patch-Source-PatchIds:
+ ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
+ 81b01addc8d4ef227d05cb28521816e521cfc3f9
 ---
- .../Models/NightscoutAlgorithmSettings.swift  | 87 +++++++++++++++++++
- Trio/Sources/Models/NightscoutStatus.swift    |  2 +
- .../Nightscout/NightscoutManager.swift        | 85 +++++++++++++++++-
- 3 files changed, 173 insertions(+), 1 deletion(-)
+ .../Models/NightscoutAlgorithmSettings.swift  |  93 ++++++++++++++
+ Trio/Sources/Models/NightscoutStatus.swift    |   2 +
+ .../Nightscout/NightscoutManager.swift        | 114 +++++++++++++++++-
+ 3 files changed, 208 insertions(+), 1 deletion(-)
  create mode 100644 Trio/Sources/Models/NightscoutAlgorithmSettings.swift
 
 diff --git a/Trio/Sources/Models/NightscoutAlgorithmSettings.swift b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
 new file mode 100644
-index 000000000..e187db792
+index 000000000..88ddb6d0e
 --- /dev/null
 +++ b/Trio/Sources/Models/NightscoutAlgorithmSettings.swift
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,93 @@
 +import Foundation
 +
 +struct NightscoutAlgorithmSettings: Codable {
@@ -34,6 +43,8 @@ index 000000000..e187db792
 +    let enableSMBAfterCarbs: Bool?
 +    let enableSMBWithTemptarget: Bool?
 +    let allowSMBWithHighTemptarget: Bool?
++    let enableSMB_high_bg: Bool?
++    let enableSMB_high_bg_target: Decimal?
 +    let smbDeliveryRatio: Decimal?
 +    let smbInterval: Decimal?
 +    let maxSMBBasalMinutes: Decimal?
@@ -48,6 +59,8 @@ index 000000000..e187db792
 +    let sensitivityRaisesTarget: Bool?
 +    let resistanceLowersTarget: Bool?
 +    let advTargetAdjustments: Bool?
++    let wideBGTargetRange: Bool?
++    let a52RiskEnable: Bool?
 +
 +    // Safety rails
 +    let maxIOB: Decimal?
@@ -60,6 +73,7 @@ index 000000000..e187db792
 +    let useCustomPeakTime: Bool?
 +    let insulinPeakTime: Decimal?
 +    let insulinActionCurve: Decimal? // Pump reality
++    let bolusIncrement: Decimal?
 +
 +    // Exercise / temp targets
 +    let exerciseMode: Bool?
@@ -87,6 +101,7 @@ index 000000000..e187db792
 +    let suspendZerosIOB: Bool?
 +    let unsuspendIfNoTemp: Bool?
 +    let skipNeutralTemps: Bool?
++    let autotuneISFAdjustmentFraction: Decimal?
 +
 +    // Food processing helpers
 +    let useFPUconversion: Bool?
@@ -118,10 +133,10 @@ index 6212c61b0..2ca345b96 100644
  
  struct OpenAPSStatus: JSON {
 diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
-index 70dfbb3ca..760228ab1 100644
+index bd4d51ce3..31a72a36b 100644
 --- a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
 +++ b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
-@@ -551,11 +551,94 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
+@@ -550,11 +550,100 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
              battery: Int(batteryLevel * 100),
              isCharging: batteryState == .charging || batteryState == .full
          )
@@ -143,6 +158,8 @@ index 70dfbb3ca..760228ab1 100644
 +            enableSMBAfterCarbs: p.enableSMBAfterCarbs,
 +            enableSMBWithTemptarget: p.enableSMBWithTemptarget,
 +            allowSMBWithHighTemptarget: p.allowSMBWithHighTemptarget,
++            enableSMB_high_bg: p.enableSMB_high_bg,
++            enableSMB_high_bg_target: p.enableSMB_high_bg_target,
 +            smbDeliveryRatio: p.smbDeliveryRatio,
 +            smbInterval: p.smbInterval,
 +            maxSMBBasalMinutes: p.maxSMBBasalMinutes,
@@ -156,6 +173,8 @@ index 70dfbb3ca..760228ab1 100644
 +            sensitivityRaisesTarget: p.sensitivityRaisesTarget,
 +            resistanceLowersTarget: p.resistanceLowersTarget,
 +            advTargetAdjustments: p.advTargetAdjustments,
++            wideBGTargetRange: p.wideBGTargetRange,
++            a52RiskEnable: p.a52RiskEnable,
 +
 +            maxIOB: p.maxIOB,
 +            maxCOB: p.maxCOB,
@@ -166,6 +185,7 @@ index 70dfbb3ca..760228ab1 100644
 +            useCustomPeakTime: p.useCustomPeakTime,
 +            insulinPeakTime: p.insulinPeakTime,
 +            insulinActionCurve: ps.insulinActionCurve,
++            bolusIncrement: p.bolusIncrement,
 +
 +            exerciseMode: p.exerciseMode,
 +            halfBasalExerciseTarget: p.halfBasalExerciseTarget,
@@ -190,6 +210,7 @@ index 70dfbb3ca..760228ab1 100644
 +            suspendZerosIOB: p.suspendZerosIOB,
 +            unsuspendIfNoTemp: p.unsuspendIfNoTemp,
 +            skipNeutralTemps: p.skipNeutralTemps,
++            autotuneISFAdjustmentFraction: autotuneISFAdjustmentFractionForNightscout(),
 +
 +            useFPUconversion: s.useFPUconversion,
 +            fattyMeals: s.fattyMeals,
@@ -217,6 +238,36 @@ index 70dfbb3ca..760228ab1 100644
          )
  
          do {
+@@ -1175,6 +1264,29 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
+ //            await uploadTreatments([noteTreatment], fileToSave: OpenAPS.Nightscout.uploadedNotes)
+         }
+     }
++
++    /// `autotune_isf_adjustmentFraction` lives in bundled/stored `preferences.json` but is not modeled on `Preferences`.
++    private func autotuneISFAdjustmentFractionForNightscout() -> Decimal? {
++        if let stored = storage.retrieveRaw(OpenAPS.Settings.preferences),
++           let fraction = Self.decimalJSONKey("autotune_isf_adjustmentFraction", in: stored)
++        {
++            return fraction
++        }
++        return Self.decimalJSONKey(
++            "autotune_isf_adjustmentFraction",
++            in: OpenAPS.defaults(for: OpenAPS.Settings.preferences)
++        )
++    }
++
++    private static func decimalJSONKey(_ key: String, in rawJSON: String) -> Decimal? {
++        guard let data = rawJSON.data(using: .utf8),
++              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
++              let number = object[key] as? NSNumber
++        else {
++            return nil
++        }
++        return number.decimalValue
++    }
+ }
+ 
+ extension Array {
 -- 
 2.50.1 (Apple Git-155)
 
