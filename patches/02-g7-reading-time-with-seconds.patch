@@ -23,12 +23,12 @@ index 556b37d33..fc04255b4 100644
  	path = MinimedKit
  	url = https://github.com/loopandlearn/MinimedKit.git
 diff --git a/G7SensorKit b/G7SensorKit
-index 4d0780db0..cd879d59a 160000
+index 4d0780db0..c5eb6684c 160000
 --- a/G7SensorKit
 +++ b/G7SensorKit
 @@ -1 +1 @@
 -Subproject commit 4d0780db06c7c95b3a3bf3cdb2f2838d521e411a
-+Subproject commit cd879d59a5c3bd92ed95b3473ca54d00221e2e16
++Subproject commit c5eb6684c4104f0914adcef752e054e201c189ae
 -- 
 2.50.1 (Apple Git-155)
 

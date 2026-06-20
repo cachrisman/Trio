@@ -1,24 +1,62 @@
-From 2ac415ba78f46b673e45557cbf05eadd2cfa3386 Mon Sep 17 00:00:00 2001
+From 587625ccdf8c9a4fe0df4e16f5f42bc9eeab7faf Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Mon, 15 Jun 2026 23:35:38 +0200
+Date: Tue, 16 Jun 2026 23:36:30 +0100
 Subject: [PATCH] feat: watch-g7
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
+Trio-Patch-Base: 3191d6296f8a3857bf15f5bd90db45f358bf163e
+Trio-Patch-Feature-Tip: 37d4882af824b79a9be116e8df309ba54dd1d9ab
+Trio-Patch-Generated: 2026-06-16T22:36:22Z
+Trio-Patch-Source-Commits:
+ aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
+ 0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
+ da6a106b293a721390451ca6b38b1f3497955461 feat: treatments-fixed-bottom-action
+ 0a91d6d8c8b4c9b3a437208302b10b9438401533 feat: watch error reporting
+ a62b3873bb8ab2170380f5f3e93e10aafb6a3ea7 feat: cloud-logging
+ d0eebcba326cbe6269125bf0699081fb8aeeaa5b feat: chart-height-fix
+ f6dc91393591b3531e9f01baea65782f1f016032 feat: patch-metadata
+ 9546444a59d2ce29e1291184e89a6eecba8501d7 feat: watch-g7 — merged watch-complication + direct-BLE-observer (Flavor B)
+ ca156912cda390bf40d2135dd872231ff88e1a6f feat(watch): C-210-1 unit-aware complication display (mmol P0)
+ 16839948a2973493b68e3318c5e4b1db98bec71f feat(watch): C-210-2 completeness-aware complication arbitration + cross-source delta baseline
+ 89ac1de250d996c84c11d68b69398dc41dd3b38a feat(watch): C-210-2 #2a — send G7 EGV sequence from phone to arm complication dedup
+ 8d849bcbe9335a7b2970722d55ede50975dc2d0c feat(watch): C-210-3 main face shows capture success rate (captures/eligible-slots)
+ 130fcbfe645fd74e439c61aa3efacebca614ab35 feat(watch): C-210-9 launch reload reconciliation + C-210-10 HK same-epoch correction
+ 37d4882af824b79a9be116e8df309ba54dd1d9ab feat(watch): C-210-4/5/8 direct-BLE stall detection, indicator, notification, instrumentation
+Trio-Patch-Source-PatchIds:
+ ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
+ ed97df36e4b18886dc68346ea67ceb00ed61b72f
+ f26f8a63ea5839d8752cf9cbf1f95741a89a958c
+ 5092c2d3231574f24a9fe35f2f7443bff6dde870
+ 144d35d86a5aab6ceb2e65d3415dac000bfd7898
+ c9bd65095aea882a70f1093d556a39886b5bb532
+ e1ee5b50a3acd77eb9b5d4218dcf038b1b753f1e
+ 564b656c60381878745dde363170cb92df2f52d7
+ abba07d6f8bc5c2e5b0582af19a83944a8faf7b9
+ 447f3f2c50ce7b571b034b11f1fa6e92060a30c1
+ 19f122b6cae502b097b5363128d33fe3db88bc04
+ 428f2519d68d308e9cc21b19d572afc26539bbf8
+ f8f682827e56730f7b1741a7834ea9aa4b822ce7
+ 6d32ef9dc34eb15deaf08123ceb5b6b6f65fc6a5
 ---
- .../ExtensionDelegate.swift                   |   84 +
- .../G7WatchSensorAdapter.swift                | 1335 +++++++++
+ .../ExtensionDelegate.swift                   |   88 +
+ .../G7WatchSensorAdapter.swift                | 1404 +++++++++
+ .../Helper/WatchNotificationHandler.swift     |   30 +
  .../Helper/WatchResidentTelemetry.swift       |  139 +
  Trio Watch App Extension/TrioWatchApp.swift   |   47 +-
  .../Views/ComplicationDebugView.swift         |  705 +++++
- .../Views/GlucoseTrendView.swift              |   41 +-
+ .../Views/GlucoseTrendView.swift              |   59 +-
  .../Views/TrioMainWatchView.swift             |  202 +-
  .../WatchErrorReporter.swift                  |  108 +-
- .../WatchGlucoseColorComputer.swift           |  154 +
- .../WatchGlucoseHistoryStore.swift            |  202 ++
+ .../WatchGlucoseColorComputer.swift           |  179 ++
+ .../WatchGlucoseHistoryStore.swift            |  213 ++
  Trio Watch App Extension/WatchLogger.swift    |  337 ++-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 2532 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2555 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  119 +
+ Trio Watch App Tests/Unit Tests.swift         |   71 +
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |   14 +
  Trio Watch Complication/Info.plist            |    2 +
@@ -26,13 +64,13 @@ Trio-Patch-Source-Branch: feature/watch-g7
  .../TrioWatchComplication.swift               |  458 ++-
  .../TrioWatchComplicationPreview.swift        |  124 +
  Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
- .../TrioComplicationDataStore.swift           | 1240 ++++++++
+ .../TrioComplicationDataStore.swift           | 1278 +++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  593 +++-
- 27 files changed, 8398 insertions(+), 542 deletions(-)
+ 29 files changed, 8687 insertions(+), 542 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -50,10 +88,10 @@ Trio-Patch-Source-Branch: feature/watch-g7
 
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
 new file mode 100644
-index 000000000..9c06e62ef
+index 000000000..83907a7bb
 --- /dev/null
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,88 @@
 +import G7SensorKit
 +import WatchKit
 +
@@ -106,6 +144,10 @@ index 000000000..9c06e62ef
 +
 +    func applicationDidBecomeActive() {
 +        WatchState.shared.handleForegroundActiveEntry()
++        // C-210-9 (scan #3): recover an unserviced complication reload that the in-memory grace
++        // timer missed because the app was suspended before it fired. Cheap App-Group generation
++        // compare; re-requests at most once per rate-limit window.
++        TrioComplicationDataStore.shared.reconcileUnservicedReloadOnLaunch()
 +        Task {
 +            await WatchLogger.shared.log(
 +                "event=watch_app_became_active source=wk_application_delegate "
@@ -140,10 +182,10 @@ index 000000000..9c06e62ef
 +}
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..a8d695d1b
+index 000000000..02fee4c9c
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,1335 @@
+@@ -0,0 +1,1404 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -280,6 +322,8 @@ index 000000000..a8d695d1b
 +        }
 +    }
 +    private var sessionConnectAt: Date?
++    /// C-210-5: true once we've notified for the current direct-BLE stall episode (reset on recovery).
++    private var stallNotifiedThisEpisode = false
 +
 +    /// Set on `sensorDidConnect`, cleared on `sensorDisconnected`; read from telemetry / ExtensionDelegate.
 +    var adapterSessionID: String?
@@ -679,7 +723,68 @@ index 000000000..a8d695d1b
 +    private func fireExpectedWindowTick() {
 +        guard let epoch = expectedWindowNextEpoch else { return }
 +        emitExpectedWindowTick(epoch: epoch)
++        evaluateDirectBleStall()
 +        scheduleNextExpectedWindowTick()
++    }
++
++    // MARK: - C-210-4/5/8: direct-BLE stall detection (cross-source freshness)
++
++    private enum StallThreshold {
++        static let softMin = 12      // soft stall: direct stale > 12 min
++        static let hardMin = 30      // hard stall: direct stale > 30 min
++        static let phoneFreshSec = 7 * 60  // phone counts as "fresh" within 7 min
++        static let connectRecentSec = 15 * 60 // a connect window within 15 min => Trio-side (has windows)
++    }
++
++    /// C-210-4: classify a direct-BLE stall from cross-source freshness and surface it (UI tier +
++    /// telemetry + a conservative notification). Direct path stale while the phone path is fresh =>
++    /// the complication is silently riding the phone relay. Both stale => system-wide (not flagged).
++    /// Runs on the ~300s expected-window tick (@MainActor).
++    private func evaluateDirectBleStall(now: Date = Date()) {
++        guard isStarted else { return }
++        // No expected sensor => warmup / sessionEnded / no-sensor: ineligible, not a stall.
++        guard expectedSensorName != nil else { clearDirectBleStallIfNeeded(); return }
++        let staleMin = minutesSinceLastEGV()
++        guard staleMin >= 0 else { return } // never had a direct EGV (cold launch) — nothing to compare
++
++        let phoneFresh: Bool = {
++            guard let p = WatchState.shared.lastPhoneEGVDate else { return false }
++            return now.timeIntervalSince(p) < Double(StallThreshold.phoneFreshSec)
++        }()
++
++        // Direct still fresh, or phone also stale (system-wide gap) => not a direct-BLE stall.
++        guard staleMin >= StallThreshold.softMin, phoneFresh else { clearDirectBleStallIfNeeded(); return }
++
++        let tier: DirectBleStallTier = staleMin >= StallThreshold.hardMin ? .unavailable : .stalled
++
++        // C-210-8: fault classification via connection-event recency. Recent connect window but no
++        // EGV => Trio-side (extraction wedged; self-healable). No recent window => Dexcom-side (its
++        // direct link is down; Trio can only observe). sessionConnectAt is the last did_connect.
++        let sinceConnectS: Int = sessionConnectAt.map { Int(now.timeIntervalSince($0)) } ?? -1
++        let dexcomSide = sinceConnectS < 0 || sinceConnectS > StallThreshold.connectRecentSec
++
++        log(
++            "direct_ble_stall_detected",
++            "tier=\(tier.rawValue) direct_stale_min=\(staleMin) phone_fresh=\(phoneFresh) fault=\(dexcomSide ? "dexcom_side" : "trio_side") since_connect_s=\(sinceConnectS)"
++        )
++
++        if WatchState.shared.directBleStall != tier { WatchState.shared.directBleStall = tier }
++
++        // C-210-5: notify ONLY on a sustained HARD Dexcom-side stall (Trio cannot self-heal that),
++        // once per episode. Trio-side stalls self-recover; soft stalls stay silent. Alarm-fatigue
++        // guards are non-negotiable for a glucose app.
++        if tier == .unavailable, dexcomSide, !stallNotifiedThisEpisode {
++            stallNotifiedThisEpisode = true
++            WatchNotificationHandler.shared.postDirectBleStallNotification()
++            log("direct_ble_stall_notified", "tier=\(tier.rawValue) since_connect_s=\(sinceConnectS)")
++        }
++    }
++
++    /// Reset the stall indicator and the per-episode notification latch once the direct path recovers
++    /// (or becomes ineligible). A later genuine stall can then notify again.
++    private func clearDirectBleStallIfNeeded() {
++        stallNotifiedThisEpisode = false
++        if WatchState.shared.directBleStall != .none { WatchState.shared.directBleStall = .none }
 +    }
 +
 +    /// C-209-1: pure telemetry — per-5-min eligibility sampling for the COV dashboards. The
@@ -1232,8 +1337,13 @@ index 000000000..a8d695d1b
 +        persistDailyCounters()
 +        mirrorDailyCountersToWatchState()
 +        let delta: String = {
-+            guard let previous = lastSavedGlucoseValue else { return "--" }
-+            return String(format: "%+d", glucoseValue - previous)
++            // C-210-2 (#2b): prefer the in-memory baseline; fall back to the cross-source history store
++            // so a cold start / sensor swap (lastSavedGlucoseValue == nil) still yields a real delta
++            // instead of "--". C-210-1: format in the user's display unit.
++            let previous = lastSavedGlucoseValue
++                ?? WatchGlucoseHistoryStore.shared.mostRecentMgDl(before: readingEpoch)
++            guard let previous else { return "--" }
++            return WatchGlucoseColorComputer.shared.displayDeltaString(previousMgDl: previous, currentMgDl: glucoseValue)
 +        }()
 +        lastSavedGlucoseValue = glucoseValue
 +
@@ -1318,7 +1428,8 @@ index 000000000..a8d695d1b
 +        )
 +
 +        let snapshot = TrioComplicationSnapshot(
-+            glucose: "\(tail.glucoseMgDl)",
++            // C-210-1: bake the unit-correct display string (mmol users were seeing raw mg/dL).
++            glucose: WatchGlucoseColorComputer.shared.displayString(forMgDl: tail.glucoseMgDl),
 +            trend: tail.trend,
 +            delta: tail.delta,
 +            readingDate: readingDate,
@@ -1330,7 +1441,7 @@ index 000000000..a8d695d1b
 +        )
 +
 +        TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
-+        WatchState.shared.applyG7DirectBleSnapshot(snapshot)
++        WatchState.shared.applyG7DirectBleSnapshot(snapshot, glucoseMgDl: tail.glucoseMgDl)
 +        WatchState.shared.bleLastEGVDate = readingDate
 +        WatchState.shared.bleLastEGVValue = tail.glucoseMgDl
 +
@@ -1479,6 +1590,50 @@ index 000000000..a8d695d1b
 +        }
 +    }
 +}
+diff --git a/Trio Watch App Extension/Helper/WatchNotificationHandler.swift b/Trio Watch App Extension/Helper/WatchNotificationHandler.swift
+index 7a76bd881..be0431498 100644
+--- a/Trio Watch App Extension/Helper/WatchNotificationHandler.swift	
++++ b/Trio Watch App Extension/Helper/WatchNotificationHandler.swift	
+@@ -12,9 +12,39 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
+     func configure() {
+         let center = UNUserNotificationCenter.current()
+         center.delegate = self
++        // C-210-5: request alert/sound auth so the watch can fire its own inferred direct-BLE stall
++        // notification (the Dexcom app notifies from a CB callback; Trio must infer + notify).
++        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
++            if let error {
++                Task { await WatchLogger.shared.log("event=notification_auth_failed error=\(error.localizedDescription)") }
++            } else {
++                Task { await WatchLogger.shared.log("event=notification_auth granted=\(granted)") }
++            }
++        }
+         registerCategories(on: center)
+     }
+ 
++    /// C-210-5: inferred direct-BLE stall notification. Trio is observer-only — it cannot restart the
++    /// Dexcom Watch app, so on a sustained Dexcom-side stall it nudges the user to do so. The caller
++    /// (`G7WatchSensorAdapter`) enforces the alarm-fatigue guards (hard stall, Dexcom-side, once per
++    /// episode); this just posts.
++    func postDirectBleStallNotification() {
++        let content = UNMutableNotificationContent()
++        content.title = "Watch sensor link interrupted"
++        content.body = "On phone relay. If glucose stops updating on your watch, reopen the Dexcom Watch app."
++        content.sound = .default
++        let request = UNNotificationRequest(
++            identifier: "trio_direct_ble_stall",
++            content: content,
++            trigger: nil // deliver now
++        )
++        UNUserNotificationCenter.current().add(request) { error in
++            if let error {
++                Task { await WatchLogger.shared.log("event=direct_ble_stall_notification_failed error=\(error.localizedDescription)") }
++            }
++        }
++    }
++
+     private func registerCategories(on center: UNUserNotificationCenter) {
+         center.getNotificationCategories { existingCategories in
+             let glucoseCategory = NotificationCategoryFactory.createGlucoseCategory()
 diff --git a/Trio Watch App Extension/Helper/WatchResidentTelemetry.swift b/Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
 new file mode 100644
 index 000000000..dfff34c68
@@ -2406,34 +2561,52 @@ index 000000000..9bb759e33
 +    }
 +}
 diff --git a/Trio Watch App Extension/Views/GlucoseTrendView.swift b/Trio Watch App Extension/Views/GlucoseTrendView.swift
-index 20b50f21f..38337a82a 100644
+index 20b50f21f..0a7115014 100644
 --- a/Trio Watch App Extension/Views/GlucoseTrendView.swift	
 +++ b/Trio Watch App Extension/Views/GlucoseTrendView.swift	
-@@ -35,6 +35,23 @@ struct GlucoseTrendView: View {
+@@ -35,6 +35,41 @@ struct GlucoseTrendView: View {
          }
      }
  
-+    /// Single status line under the glucose bubble: recency, optional `· BLE · egvs/conns` (daily totals).
++    /// Single status line under the glucose bubble: recency, optional `· BLE · captures / slots` (the
++    /// honest background capture-success rate since midnight). C-210-3 (D210-1): replaced the old
++    /// `egvs/connects` — connects/readings can look healthy during a dormancy because they don't
++    /// surface *missed* slots; the captures/eligible-slots ratio (e.g. `67 / 248`) makes a stall visible.
 +    @ViewBuilder
 +    private func bleRecencyStatusLine(recency: String) -> some View {
 +        let conns = state.bleConnectsToday
-+        let egvs = state.bleEGVsToday
++        let stats = G7WatchSensorAdapter.shared.dailySlotStats()
++        let egvs = stats.egvs
 +        let fromBle = state.displayedReadingSource == .g7DirectBLE
 +
-+        if conns > 0 {
-+            let suffixColor: Color = egvs > 0 ? .primary : .secondary
-+            Text(recency) + Text(" · BLE · \(egvs)/\(conns)").foregroundStyle(suffixColor)
-+        } else if fromBle {
-+            Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
-+        } else {
-+            Text(recency) + Text(" · Phone").foregroundStyle(.secondary)
++        let base: Text = {
++            if conns > 0 {
++                let denom = stats.eligibleSlots
++                let ratio = denom > 0 ? "\(egvs) / \(denom)" : "\(egvs)"
++                let suffixColor: Color = egvs > 0 ? .primary : .secondary
++                return Text(recency) + Text(" · BLE · \(ratio)").foregroundStyle(suffixColor)
++            } else if fromBle {
++                return Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
++            } else {
++                return Text(recency) + Text(" · Phone").foregroundStyle(.secondary)
++            }
++        }()
++
++        // C-210-4: surface a direct-BLE stall (direct path stale while phone fresh => on phone relay).
++        switch state.directBleStall {
++        case .none:
++            base
++        case .stalled:
++            base + Text(" · stalled").foregroundStyle(Color.loopYellow)
++        case .unavailable:
++            base + Text(" · no direct").foregroundStyle(Color.loopRed)
 +        }
 +    }
 +
      var circleSize: CGFloat {
          switch state.deviceType {
          case .watch40mm:
-@@ -132,10 +149,13 @@ struct GlucoseTrendView: View {
+@@ -132,10 +167,13 @@ struct GlucoseTrendView: View {
                  .shadow(color: Color.black.opacity(0.5), radius: 5)
  
                  VStack(alignment: .center) {
@@ -2448,7 +2621,7 @@ index 20b50f21f..38337a82a 100644
  
                      if let delta = state.delta {
                          Text(isWatchStateDated ? "--" : delta)
-@@ -148,14 +168,17 @@ struct GlucoseTrendView: View {
+@@ -148,14 +186,17 @@ struct GlucoseTrendView: View {
  
              Spacer()
  
@@ -2937,10 +3110,10 @@ index a5bcabd57..9d29d26f8 100644
  
 diff --git a/Trio Watch App Extension/WatchGlucoseColorComputer.swift b/Trio Watch App Extension/WatchGlucoseColorComputer.swift
 new file mode 100644
-index 000000000..8c31eaa04
+index 000000000..6555f44c9
 --- /dev/null
 +++ b/Trio Watch App Extension/WatchGlucoseColorComputer.swift	
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,179 @@
 +import Foundation
 +import SwiftUI
 +
@@ -3094,13 +3267,38 @@ index 000000000..8c31eaa04
 +        NSDecimalRound(&rounded, &product, 1, .plain)
 +        return NSDecimalNumber(decimal: rounded).doubleValue
 +    }
++
++    // MARK: - Display strings (current-glucose bubble + delta)
++
++    /// Display-ready string for a glucose value, matching the phone's `Int.formatted(for:)`:
++    /// mmol/L → "5.6" (one decimal); mg/dL → "100" (bare integer). The snapshot sanitizer
++    /// (`TrioComplicationSnapshot.sanitizedGlucose`) collapses whole-number mmol (e.g. "10.0" → "10").
++    func displayString(forMgDl mgDl: Int) -> String {
++        guard isMmolL else { return String(mgDl) }
++        return String(format: "%.1f", displayValue(forMgDl: mgDl))
++    }
++
++    /// Display-ready signed string for a glucose delta. mmol/L → "+0.1"/"-0.2"; mg/dL → "+5"/"-3".
++    /// mmol converts EACH operand to scale-1 mmol (matching the phone's per-reading `asMmolL`
++    /// rounding, which subtracts the two rounded values) so watch and phone can't disagree on a
++    /// half-boundary. The snapshot sanitizer normalizes sign/precision (e.g. "+0.0" → "+0").
++    func displayDeltaString(previousMgDl prev: Int, currentMgDl curr: Int) -> String {
++        guard isMmolL else { return String(format: "%+d", curr - prev) }
++        var prevProduct = Decimal(prev) * exchangeRate
++        var prevRounded = Decimal()
++        NSDecimalRound(&prevRounded, &prevProduct, 1, .plain)
++        var currProduct = Decimal(curr) * exchangeRate
++        var currRounded = Decimal()
++        NSDecimalRound(&currRounded, &currProduct, 1, .plain)
++        return String(format: "%+.1f", NSDecimalNumber(decimal: currRounded - prevRounded).doubleValue)
++    }
 +}
 diff --git a/Trio Watch App Extension/WatchGlucoseHistoryStore.swift b/Trio Watch App Extension/WatchGlucoseHistoryStore.swift
 new file mode 100644
-index 000000000..3257860e0
+index 000000000..ef5ef3c28
 --- /dev/null
 +++ b/Trio Watch App Extension/WatchGlucoseHistoryStore.swift	
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,213 @@
 +import Foundation
 +import SwiftUI
 +
@@ -3259,6 +3457,17 @@ index 000000000..3257860e0
 +                    color: colorComputer.chartColor(for: e.glucoseMgDl)
 +                )
 +            }
++        }
++    }
++
++    /// Most recent stored reading (any source) strictly before `epochSeconds`, or nil if none.
++    /// Used to seed a cross-source delta baseline (C-210-2 / scan #2b) when a per-channel in-memory
++    /// baseline is unavailable (cold start / sensor swap). Entries are epoch-ascending after prune,
++    /// so `last(where:)` is the immediate predecessor. On-queue (mirrors `loadAsDisplayValues`).
++    func mostRecentMgDl(before epochSeconds: Int) -> Int? {
++        queue.sync {
++            pruneAndCap()
++            return entries.last(where: { $0.epochSeconds < epochSeconds })?.glucoseMgDl
 +        }
 +    }
 +
@@ -3867,10 +4076,10 @@ index d47a971c9..e6e00e3da 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index b12e1db77..1c7e7015f 100644
+index b12e1db77..5f3f7a1df 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
-@@ -1,22 +1,94 @@
+@@ -1,22 +1,103 @@
  import Foundation
 +import HealthKit
  import SwiftUI
@@ -3908,6 +4117,15 @@ index b12e1db77..1c7e7015f 100644
 +// Aligned with build 191 state machine (item 12).
 +// .stalled removed (was never called). .searching renamed .scanning.
 +// .fastRetry / .moderateWait added for scheduler states (wired in future build).
++/// C-210-4: cross-source direct-BLE stall tier for the watch face. Distinct from `G7DirectBLEStatus`
++/// (which reflects the BLE *engine* state); this reflects *freshness* — the direct EGV path is stale
++/// while the phone path is fresh (so the complication is silently riding the phone relay).
++enum DirectBleStallTier: String, Equatable {
++    case none        // direct path fresh (or not enough info)
++    case stalled     // soft: direct stale > ~12 min while phone fresh
++    case unavailable // hard: direct stale > ~30 min while phone fresh
++}
++
 +enum G7DirectBLEStatus: String, Equatable {
 +    case off           // IDLE: no active session or timer
 +    case waiting       // WAITING: armed between G7 advertisements; no active scan/connection (also the fork's post-disconnect settle and a C1-deferred-in-background scan). Renamed from `retrieving` (UI-207-2) — it almost never meant "checking OS peripheral cache".
@@ -3972,12 +4190,17 @@ index b12e1db77..1c7e7015f 100644
      var trend: String? = ""
      var delta: String? = "--"
      var glucoseValues: [(date: Date, glucose: Double, color: Color)] = []
-@@ -25,67 +97,522 @@ import WatchConnectivity
+@@ -25,67 +106,527 @@ import WatchConnectivity
      var cob: String? = "--"
      var iob: String? = "--"
      var lastLoopTime: String? = "--"
 +    var displayedReadingSource: TrioComplicationDataSource = .unknown
 +    var g7DirectBleStatus: G7DirectBLEStatus = .off
++    /// C-210-4: cross-source direct-BLE stall tier (UI indicator). Updated by the adapter's tick.
++    var directBleStall: DirectBleStallTier = .none
++    /// C-210-4: last time a phone/WatchConnectivity EGV was applied (phone-path freshness signal,
++    /// independent of BLE/HK). Used to distinguish a direct-BLE stall from a system-wide gap.
++    var lastPhoneEGVDate: Date?
 +    var g7DirectBleLastEventAt: Date?
 +    var g7DirectBleLastReadingAt: Date?
 +    var g7DirectBleLastEventAgeText: String {
@@ -4516,7 +4739,7 @@ index b12e1db77..1c7e7015f 100644
      private func setupSession() {
          if WCSession.isSupported() {
              let session = WCSession.default
-@@ -93,16 +620,546 @@ import WatchConnectivity
+@@ -93,16 +634,554 @@ import WatchConnectivity
              session.activate()
              self.session = session
              Task {
@@ -4642,7 +4865,12 @@ index b12e1db77..1c7e7015f 100644
 +        let latestEpoch = latest.startDate.timeIntervalSince1970
 +        let latestMgDl = latest.quantity.doubleValue(for: mgDlUnit)
 +
-+        if latestEpoch == dataStore.hkLastReceivedGlucoseEpoch() {
++        // C-210-10 (scan #6): skip only a true duplicate (same epoch AND same value). A same-epoch
++        // *correction* (different value) must still be processed, not dropped. Preserves the
++        // idempotency guard for the common re-fire of the newest already-seen sample.
++        let knownEpoch = latestEpoch == dataStore.hkLastReceivedGlucoseEpoch()
++        let sameValue = Int(latestMgDl.rounded()) == Int(dataStore.hkLastReceivedGlucoseValueMgDl().rounded())
++        if knownEpoch, sameValue {
 +            Task {
 +                await WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
 +            }
@@ -4674,7 +4902,11 @@ index b12e1db77..1c7e7015f 100644
 +        if let prev = previousMgDl, plausibilityOK {
 +            let rawDeltaMgDl = latestMgDl - prev
 +            let deltaInt = Int(rawDeltaMgDl.rounded())
-+            deltaString = String(format: "%+d", deltaInt)
++            // C-210-1: display the delta in the user's unit; keep the mg/dL deltaInt for the trend bucket.
++            deltaString = WatchGlucoseColorComputer.shared.displayDeltaString(
++                previousMgDl: Int(prev.rounded()),
++                currentMgDl: Int(latestMgDl.rounded())
++            )
 +            trendString = Self.hkTrendString(fromDeltaMgDl: deltaInt)
 +            trendDerived = true
 +        }
@@ -4696,7 +4928,8 @@ index b12e1db77..1c7e7015f 100644
 +        }
 +
 +        let snapshot = TrioComplicationSnapshot(
-+            glucose: glucoseString,
++            // C-210-1: bake the unit-correct display string (mmol users were seeing raw mg/dL).
++            glucose: WatchGlucoseColorComputer.shared.displayString(forMgDl: hkMgDl),
 +            trend: trendString,
 +            delta: deltaString,
 +            readingDate: readingDate,
@@ -4716,7 +4949,7 @@ index b12e1db77..1c7e7015f 100644
 +                )
 +            )
 +            TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
-+            self?.applyHKSnapshot(snapshot)
++            self?.applyHKSnapshot(snapshot, glucoseMgDl: hkMgDl)
 +            completionHandler()
 +        }
 +    }
@@ -4939,7 +5172,7 @@ index b12e1db77..1c7e7015f 100644
 +        displayedReadingAttributedSequence = snapshot.sequence
 +    }
 +
-+    func applyG7DirectBleSnapshot(_ snapshot: TrioComplicationSnapshot) {
++    func applyG7DirectBleSnapshot(_ snapshot: TrioComplicationSnapshot, glucoseMgDl: Int) {
 +        assert(Thread.isMainThread, "applyG7DirectBleSnapshot must be called on main thread")
 +        g7DirectBleLastEventAt = Date()
 +        g7DirectBleLastReadingAt = snapshot.readingDate
@@ -4962,19 +5195,18 @@ index b12e1db77..1c7e7015f 100644
 +        if let glucoseColor = snapshot.glucoseColor {
 +            currentGlucoseColorString = glucoseColor
 +        }
-+        // BLE snapshot.glucose is the integer mg/dL string; track it so the bubble/complication bake
-+        // stays consistent with the displayed reading (build 205 / P2). Refresh the chart from the
++        // C-210-1: snapshot.glucose is now the unit-formatted display string (mmol → "5.6"), so it
++        // can't be parsed back to mg/dL. Track the canonical mg/dL passed in by the producer instead,
++        // so the bubble/complication bake stays consistent (build 205 / P2). Refresh the chart from the
 +        // store (W2) — the adapter inserted this reading just before calling us, so it's included.
-+        if let mgDl = Int(snapshot.glucose) {
-+            currentGlucoseMgDl = mgDl
-+        }
++        currentGlucoseMgDl = glucoseMgDl
 +        glucoseValues = WatchGlucoseHistoryStore.shared.loadAsDisplayValues(
 +            colorComputer: WatchGlucoseColorComputer.shared
 +        )
 +        lastWatchStateUpdate = snapshot.readingDate
 +    }
 +
-+    func applyHKSnapshot(_ snapshot: TrioComplicationSnapshot) {
++    func applyHKSnapshot(_ snapshot: TrioComplicationSnapshot, glucoseMgDl: Int) {
 +        assert(Thread.isMainThread, "applyHKSnapshot must be called on main thread")
 +        guard tryAttributeDisplayedReadingSource(
 +            .healthKit,
@@ -4984,14 +5216,13 @@ index b12e1db77..1c7e7015f 100644
 +        currentGlucose = snapshot.glucose
 +        trend = snapshot.trend
 +        delta = snapshot.delta
-+        // P2/W5: HK snapshot carries the baked bubble hex + integer mg/dL string; track both and
-+        // refresh the chart from the store (the reading was inserted just before this call).
++        // P2/W5: HK snapshot carries the baked bubble hex; track it.
 +        if let glucoseColor = snapshot.glucoseColor {
 +            currentGlucoseColorString = glucoseColor
 +        }
-+        if let mgDl = Int(snapshot.glucose) {
-+            currentGlucoseMgDl = mgDl
-+        }
++        // C-210-1: snapshot.glucose is now the unit-formatted display string; track the canonical
++        // mg/dL passed in by the producer instead of parsing the string.
++        currentGlucoseMgDl = glucoseMgDl
 +        glucoseValues = WatchGlucoseHistoryStore.shared.loadAsDisplayValues(
 +            colorComputer: WatchGlucoseColorComputer.shared
 +        )
@@ -5066,7 +5297,7 @@ index b12e1db77..1c7e7015f 100644
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
          Task {
-@@ -111,21 +1168,17 @@ import WatchConnectivity
+@@ -111,21 +1190,17 @@ import WatchConnectivity
  
          if success {
              Task {
@@ -5090,7 +5321,7 @@ index b12e1db77..1c7e7015f 100644
              DispatchQueue.main.async {
                  self.showCommsAnimation = false
              }
-@@ -140,7 +1193,7 @@ import WatchConnectivity
+@@ -140,7 +1215,7 @@ import WatchConnectivity
  
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                  self.showAcknowledgmentBanner = false
@@ -5099,7 +5330,7 @@ index b12e1db77..1c7e7015f 100644
                  Task {
                      await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                  }
-@@ -150,14 +1203,12 @@ import WatchConnectivity
+@@ -150,14 +1225,12 @@ import WatchConnectivity
  
      // MARK: - WCSessionDelegate
  
@@ -5116,7 +5347,7 @@ index b12e1db77..1c7e7015f 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -165,165 +1216,651 @@ import WatchConnectivity
+@@ -165,165 +1238,651 @@ import WatchConnectivity
  
              if activationState == .activated {
                  Task {
@@ -5870,7 +6101,7 @@ index b12e1db77..1c7e7015f 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -334,7 +1871,7 @@ import WatchConnectivity
+@@ -334,7 +1893,7 @@ import WatchConnectivity
                  }
  
                  Task {
@@ -5879,7 +6110,7 @@ index b12e1db77..1c7e7015f 100644
                  }
  
                  switch ackCode {
-@@ -357,26 +1894,66 @@ import WatchConnectivity
+@@ -357,26 +1916,66 @@ import WatchConnectivity
                  }
              }
  
@@ -5955,7 +6186,7 @@ index b12e1db77..1c7e7015f 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -385,84 +1962,175 @@ import WatchConnectivity
+@@ -385,84 +1984,175 @@ import WatchConnectivity
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -6164,7 +6395,7 @@ index b12e1db77..1c7e7015f 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -478,31 +2146,26 @@ import WatchConnectivity
+@@ -478,31 +2168,26 @@ import WatchConnectivity
          }
  
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
@@ -6212,7 +6443,7 @@ index b12e1db77..1c7e7015f 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -523,41 +2186,456 @@ import WatchConnectivity
+@@ -523,41 +2208,457 @@ import WatchConnectivity
              }
          }
  
@@ -6349,6 +6580,7 @@ index b12e1db77..1c7e7015f 100644
 +        }
 +
 +        TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
++        lastPhoneEGVDate = readingDate // C-210-4: phone-path freshness for direct-BLE stall detection
 +
 +        // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
 +        // Use only the threaded userInfoReceiveTimestamp; no fallback to instance state so attribution stays unambiguous.
@@ -6813,6 +7045,93 @@ index 000000000..5359b5bc7
 +        }
 +    }
 +}
+diff --git a/Trio Watch App Tests/Unit Tests.swift b/Trio Watch App Tests/Unit Tests.swift
+index 0d0cde0eb..84228ecc2 100644
+--- a/Trio Watch App Tests/Unit Tests.swift	
++++ b/Trio Watch App Tests/Unit Tests.swift	
+@@ -80,6 +80,36 @@ import XCTest
+         #expect(!watchState.isMealBolusCombo)
+     }
+ 
++    // MARK: - C-210-1: unit-aware display formatting parity (mmol users must see "5.6", not "100")
++
++    @Test("displayString: mg/dL integer vs mmol/L one-decimal") func testDisplayStringUnits() throws {
++        let c = WatchGlucoseColorComputer.shared
++        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mg/dL")
++        #expect(c.displayString(forMgDl: 100) == "100")
++        #expect(c.displayString(forMgDl: 200) == "200")
++
++        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mmol/L")
++        #expect(c.displayString(forMgDl: 200) == "11.1") // 200 * 0.0555 = 11.1
++        #expect(c.displayString(forMgDl: 100) == "5.6") //  100 * 0.0555 = 5.55 -> 5.6 (half away from zero)
++
++        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mg/dL") // restore global state
++    }
++
++    @Test("displayDeltaString: signed, unit-aware, mmol converts each operand then subtracts")
++    func testDisplayDeltaStringUnits() throws {
++        let c = WatchGlucoseColorComputer.shared
++        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mg/dL")
++        #expect(c.displayDeltaString(previousMgDl: 100, currentMgDl: 110) == "+10")
++        #expect(c.displayDeltaString(previousMgDl: 110, currentMgDl: 100) == "-10")
++        #expect(c.displayDeltaString(previousMgDl: 100, currentMgDl: 100) == "+0")
++
++        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mmol/L")
++        #expect(c.displayDeltaString(previousMgDl: 100, currentMgDl: 200) == "+5.5") // 11.1 - 5.6
++        #expect(c.displayDeltaString(previousMgDl: 200, currentMgDl: 100) == "-5.5") // 5.6 - 11.1
++
++        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mg/dL") // restore global state
++    }
++
+     @Test("Acknowledgment states transition correctly") func testAcknowledgmentStates() throws {
+         // Given - Initial state
+         #expect(watchState.acknowledgementStatus == .pending)
+@@ -97,4 +127,45 @@ import XCTest
+         #expect(watchState.showAcknowledgmentBanner)
+         #expect(watchState.acknowledgmentMessage == "Error")
+     }
++
++    // MARK: - C-210-2: completeness-aware arbitration (shouldUpdate)
++
++    private func snap(
++        _ glucose: String, _ trend: String, _ delta: String,
++        at date: Date, source: TrioComplicationDataSource
++    ) -> TrioComplicationSnapshot {
++        TrioComplicationSnapshot(
++            glucose: glucose, trend: trend, delta: delta, readingDate: date, date: date,
++            state: nil, glucoseColor: nil, source: source, sequence: nil
++        )
++    }
++
++    @Test("shouldUpdate: a barer payload never clobbers a complete one within the dedup window")
++    func testArbitrationAntiClobber() throws {
++        let store = TrioComplicationDataStore.shared
++        let t = Date()
++        let completeBLE = snap("120", "Flat", "+2", at: t, source: .g7DirectBLE)
++        let barerWC = snap("120", "", "", at: t, source: .watchConnectivity) // delta "" -> "--", trend ""
++        #expect(store.shouldUpdate(new: barerWC, current: completeBLE) == false) // barer must not win
++        #expect(store.shouldUpdate(new: completeBLE, current: barerWC) == true) //  complete replaces barer
++    }
++
++    @Test("shouldUpdate: equal completeness -> higher-priority source wins, lower loses")
++    func testArbitrationPriority() throws {
++        let store = TrioComplicationDataStore.shared
++        let t = Date()
++        let bleC = snap("120", "Flat", "+2", at: t, source: .g7DirectBLE)
++        let wcC = snap("120", "FortyFiveUp", "+3", at: t, source: .watchConnectivity)
++        #expect(store.shouldUpdate(new: bleC, current: wcC) == true) //  BLE(3) > WC(2)
++        #expect(store.shouldUpdate(new: wcC, current: bleC) == false) // WC(2) < BLE(3)
++    }
++
++    @Test("shouldUpdate: a newer reading (>1s) wins even if barer")
++    func testArbitrationRecency() throws {
++        let store = TrioComplicationDataStore.shared
++        let t = Date()
++        let older = snap("120", "Flat", "+2", at: t, source: .g7DirectBLE)
++        let newer = snap("126", "", "", at: t.addingTimeInterval(300), source: .watchConnectivity)
++        #expect(store.shouldUpdate(new: newer, current: older) == true)
++    }
+ }
 diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
 index 8d15acbed..244892dc7 100644
 --- a/Trio Watch App/Info.plist	
@@ -7926,10 +8245,10 @@ index 000000000..b85a47a93
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..125583ab1
+index 000000000..faa3b35b4
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,1240 @@
+@@ -0,0 +1,1278 @@
 +import Foundation
 +import os
 +#if os(watchOS)
@@ -8569,6 +8888,8 @@ index 000000000..125583ab1
 +    //   Older timestamp (<-1s)           → false
 +    //   Within ±1s, same glucose+trend, higher-priority source → true (MOD-D synthesis)
 +    //   Within ±1s, same g7Sequence (regardless of display fields), lower-priority source → false
++    //   Within ±1s, barer payload (empty trend / "--" delta) vs complete    → keep the complete one
++    //   Within ±1s, equal completeness, lower-priority source               → false (higher wins)
 +    func shouldUpdate(new: TrioComplicationSnapshot, current: TrioComplicationSnapshot) -> Bool {
 +        let timeDiff = new.readingDate.timeIntervalSince(current.readingDate)
 +        if timeDiff > 1.0  { return true }
@@ -8590,13 +8911,20 @@ index 000000000..125583ab1
 +            // no-op even if display fields differ (shouldn't happen in practice but defensive).
 +            return false
 +        }
-+        let sameCore = new.glucose == current.glucose && new.trend == current.trend
-+        if sameCore {
-+            let newP = Self.sourcePriority(new.source)
-+            let curP = Self.sourcePriority(current.source)
-+            if newP > curP { return true }
-+            if newP < curP { return false }
-+        }
++        // C-210-2 (scan #2): within the +/-1s window the two snapshots are the SAME CGM reading
++        // arriving via different channels (distinct readings are >= 1 min apart for every supported
++        // CGM). Decide by completeness, then source priority - recency is already a tie. This stops
++        // a barer payload (empty trend / "--" delta) from overwriting a more complete one, and stops
++        // a lower-priority channel from overwriting a higher-priority one for the same reading.
++        let newP = Self.sourcePriority(new.source)
++        let curP = Self.sourcePriority(current.source)
++        let newComplete = Self.isComplete(new)
++        let curComplete = Self.isComplete(current)
++        // 1) Completeness wins (prefer the populated representation).
++        if newComplete != curComplete { return newComplete }
++        // 2) Equal completeness -> higher-priority source wins (direct BLE > WC > HealthKit).
++        if newP != curP { return newP > curP }
++        // 3) Equal completeness and priority -> same representation; accept only on a real change.
 +        return new.glucose != current.glucose
 +            || new.trend   != current.trend
 +            || new.delta   != current.delta
@@ -8609,6 +8937,13 @@ index 000000000..125583ab1
 +    /// live UI attribution path in `WatchState.tryAttributeDisplayedReadingSource`.
 +    private static func sourcePriority(_ source: TrioComplicationDataSource?) -> Int {
 +        source?.priority ?? 0
++    }
++
++    /// A snapshot is "complete" when it carries real (non-fallback) display fields. Used by
++    /// `shouldUpdate` so a barer payload never clobbers a populated one within the dedup window.
++    /// Fallbacks: glucose/delta sanitize to "--", trend trims to "" (see TrioComplicationSnapshot).
++    private static func isComplete(_ s: TrioComplicationSnapshot) -> Bool {
++        s.glucose != "--" && !s.trend.isEmpty && s.delta != "--"
 +    }
 +
 +    // MARK: - Phase 3.0 Pre-dispatch Dedup
@@ -9032,6 +9367,28 @@ index 000000000..125583ab1
 +            unservicedCheckWorkItem = work
 +            DispatchQueue.main.asyncAfter(deadline: .now() + Self.unservicedCheckDelay, execute: work)
 +        }
++    #endif
++
++    #if !WIDGET_EXTENSION
++    /// C-210-9 (scan #3): launch/resume reconciliation. The in-memory unserviced-reload timer
++    /// (`scheduleUnservicedReloadCheck`) dies if the app is suspended before its grace period fires,
++    /// so an unserviced reload could otherwise never recover. Both generations are persisted in the
++    /// App Group, so compare them on launch/foreground and re-request once (rate-limited) when the
++    /// widget never serviced the most recent reload. Watch-app only (never the widget process).
++    func reconcileUnservicedReloadOnLaunch() {
++        guard let defaults = appGroupDefaults else { return }
++        let requested = defaults.integer(forKey: Self.reloadGenerationKey)
++        guard requested > 0 else { return }
++        let observed = widgetObservedGeneration() ?? -1
++        guard observed < requested else { return } // serviced — the common case
++        guard Date().timeIntervalSince(lastUnservicedRetryAt) >= Self.unservicedRetryMinInterval else {
++            log("event=complication_reload_unserviced_launch requested=\(requested) observed=\(observed) action=rate_limited")
++            return
++        }
++        lastUnservicedRetryAt = Date()
++        log("event=complication_reload_unserviced_launch requested=\(requested) observed=\(observed) action=re_request")
++        forceReload(scheduleRetry: false)
++    }
 +    #endif
 +
 +    // MARK: - Private Helpers (Main-Thread Confined)
