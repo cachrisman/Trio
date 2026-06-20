@@ -454,13 +454,26 @@ final class G7WatchSensorAdapter: NSObject {
     private func log(_ eventName: String, _ fields: String = "") {
         let sid = adapterSessionID ?? "nil"
         let sensorName = expectedSensorName ?? "nil"
+        // C-212-4 (BUG-F): every g7_ble event carries scene_phase + ext_session_active so
+        // foreground/background attribution is exact. Several call sites previously omitted one or
+        // both (e.g. pre_egv_disconnect had ext_session_active but not scene_phase). Append here only
+        // when the caller did not already include the field inline (avoids duplicate tokens).
+        var stamped = fields
+        // Token-boundary guard (review): match the field only at start-of-string or after a space, so
+        // a value like `last_known_ext_session_active=` doesn't suppress the canonical stamp.
+        if !(stamped.hasPrefix("scene_phase=") || stamped.contains(" scene_phase=")) {
+            stamped += (stamped.isEmpty ? "" : " ") + "scene_phase=\(lastKnownScenePhase)"
+        }
+        if !(stamped.hasPrefix("ext_session_active=") || stamped.contains(" ext_session_active=")) {
+            stamped += " ext_session_active=\(lastKnownExtSessionActive)"
+        }
         // C-208-9: synchronous ring enqueue — no Task spawn / actor suspension per event on the
         // hot path. The ring's drainer feeds WatchLogger downstream.
         WatchTelemetryRing.shared.enqueue(
             G7StructuredTelemetryLogLine.formatBleModule(
                 sensorName: sensorName,
                 event: eventName,
-                fields: fields,
+                fields: stamped,
                 g7Session: sid
             )
         )
