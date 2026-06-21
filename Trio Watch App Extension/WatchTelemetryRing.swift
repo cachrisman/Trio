@@ -41,14 +41,20 @@ final class WatchTelemetryRing: @unchecked Sendable {
     /// should expect the session boundary on the adapter's `did_connect` line.
     private var contextSensorName = "nil"
     private var contextSession = "nil"
+    // C-212-4 pt2 (BUG-F): scene/ext context for fork (`module=g7_core`) lines, which can't know the
+    // watch app's scene phase. Synced by the adapter at BLE-lifecycle points (where fork events cluster).
+    private var contextScenePhase = "unknown"
+    private var contextExtSessionActive = false
 
     private init() {}
 
-    /// Adapter-driven context sync (sensor name + adapter session id).
-    func setContext(sensorName: String, g7Session: String) {
+    /// Adapter-driven context sync (sensor name + adapter session id + scene/ext for fork lines).
+    func setContext(sensorName: String, g7Session: String, scenePhase: String, extSessionActive: Bool) {
         lock.lock()
         contextSensorName = sensorName
         contextSession = g7Session
+        contextScenePhase = scenePhase
+        contextExtSessionActive = extSessionActive
         lock.unlock()
     }
 
@@ -57,12 +63,14 @@ final class WatchTelemetryRing: @unchecked Sendable {
         lock.lock()
         let name = contextSensorName
         let sid = contextSession
+        let scene = contextScenePhase
+        let extActive = contextExtSessionActive
         lock.unlock()
         enqueue(G7StructuredTelemetryLogLine.formatCoreTelemetry(
             sensorName: name,
             payload: payload,
             g7Session: sid
-        ))
+        ) + " scene_phase=\(scene) ext_session_active=\(extActive)")
     }
 
     /// Pre-formatted line (the adapter formats its own `module=g7_ble` lines on MainActor where

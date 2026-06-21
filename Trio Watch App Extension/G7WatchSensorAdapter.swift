@@ -150,9 +150,9 @@ final class G7WatchSensorAdapter: NSObject {
     private var hadEGVThisSession = false
     private var loggedTimeToFirstEGVForSession = false
 
-    private var lastKnownScenePhase: String = "unknown"
+    private var lastKnownScenePhase: String = "unknown" { didSet { syncTelemetryRingContext() } }
 
-    private var lastKnownExtSessionActive = false
+    private var lastKnownExtSessionActive = false { didSet { syncTelemetryRingContext() } }
 
     private var lastReadingSequence: UInt16?
     private var lastSavedGlucoseValue: Int?
@@ -479,13 +479,16 @@ final class G7WatchSensorAdapter: NSObject {
         )
     }
 
-    /// C-208-9: keep the ring's emit-time context (used for fork `module=g7_core` lines) in
-    /// sync with the adapter's session identity. Called wherever `adapterSessionID` or the
-    /// expected sensor name changes.
+    /// C-208-9 / C-212-4 pt2: keep the ring's emit-time context (used for fork `module=g7_core`
+    /// lines) in sync with the adapter — session identity (sensor name + adapter session id) AND
+    /// scene_phase + ext_session_active. Called wherever `adapterSessionID`/sensor name change, and
+    /// (via `didSet`) whenever `lastKnownScenePhase`/`lastKnownExtSessionActive` change.
     private func syncTelemetryRingContext() {
         WatchTelemetryRing.shared.setContext(
             sensorName: expectedSensorName ?? "nil",
-            g7Session: adapterSessionID ?? "nil"
+            g7Session: adapterSessionID ?? "nil",
+            scenePhase: lastKnownScenePhase,
+            extSessionActive: lastKnownExtSessionActive
         )
     }
 
