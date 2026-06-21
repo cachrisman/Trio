@@ -41,6 +41,17 @@ final class G7WatchSensorAdapter: NSObject {
     /// D8: timestamp of the last foreground session-start request, used to debounce repeat requests
     /// (rapid `.start()` churn invites watchOS throttling).
     private var lastStartRequestAt: Date?
+    /// C-212-5 (BUG-E): wall-clock the current extended session started. Drives the near-expiry
+    /// re-anchor: a foreground-active open while the running session is older than `sessionReanchorAge`
+    /// invalidates it and starts a fresh ~1h session, so coverage re-anchors from the open instead of
+    /// lapsing minutes later (often in the background, where it cannot restart). Set on didStart / adopt;
+    /// cleared whenever the session reference is cleared.
+    private var sessionStartedAt: Date?
+    /// C-212-5: only re-anchor a running session at least this old (a fresh one already covers ~1h).
+    private static let sessionReanchorAge: TimeInterval = 45 * 60
+    /// C-212-5: set when a near-expiry session was invalidated for a re-anchor. The intentional-
+    /// invalidation callback starts the replacement (sequential — watchOS rejects overlapping starts).
+    private var pendingReanchor = false
 
     /// Identities of `WKExtendedRuntimeSession`s that the adapter intentionally invalidated and
     /// whose `didInvalidateWith` callback has not yet been delivered. The delegate consults this
@@ -48,10 +59,9 @@ final class G7WatchSensorAdapter: NSObject {
     /// `ext_session_intentional_invalidation` log if the incoming `session` matches.
     ///
     /// Insertion sites — every place that calls `invalidate()` on a session we owned must add the
-    /// session's `ObjectIdentifier` here first. Build 208: **no insertion sites remain** — the
-    /// sole inserter was `stop()`, removed with the session-invalidation teardown. The set (and
-    /// its early-return branch) is retained so any future intentional `invalidate()` gets its
-    /// callback classified correctly instead of falling through to the error branch.
+    /// session's `ObjectIdentifier` here first. C-212-5 (BUG-E) is the current inserter: the
+    /// near-expiry re-anchor in `renewSessionIfNeeded()`. The set classifies the resulting callback
+    /// as intentional (clean-up + restart) instead of falling through to the error/teardown branch.
     ///
     /// Removal sites: the early-return in `extendedRuntimeSession(_:didInvalidateWith:)`
     /// (consumes the entry) and a defensive `remove` in `extendedRuntimeSessionDidStart`
@@ -295,7 +305,51 @@ final class G7WatchSensorAdapter: NSObject {
             log("ext_session_renew_skipped", "reason=not_active scene=\(lastKnownScenePhase)")
             return
         }
-        guard extendedSession?.state != .running else { return }
+        // C-212-5 (BUG-E): a re-anchor invalidate is in flight (we're waiting for didInvalidate to
+        // start the replacement) — do NOT start a second session now; that re-creates the overlap (D1).
+        guard !pendingReanchor else {
+            log("ext_session_renew_skipped", "reason=reanchor_in_flight scene=\(lastKnownScenePhase)")
+            return
+        }
+        // C-212-5 (BUG-E): re-anchor a near-expiry running session. A running-but-fresh session already
+        // covers the next ~hour, so it is left alone (restarting gains nothing and re-courts throttling,
+        // D8). A near-expiry one is invalidated here; the replacement is NOT started inline because
+        // watchOS rejects OVERLAPPING extended-runtime requests (D1) — the intentional-invalidation
+        // callback re-enters to start it once the old session is fully gone (sequential).
+        if let current = extendedSession, current.state == .running {
+            guard let startedAt = sessionStartedAt else {
+                // No start stamp (shouldn't happen — didStart/adopt set it). Seed it now so the session
+                // ages toward the threshold on subsequent opens instead of being skipped for its life.
+                sessionStartedAt = Date()
+                log("ext_session_renew_skipped", "reason=running_no_start_ts_seeded scene=\(lastKnownScenePhase)")
+                return
+            }
+            guard Date().timeIntervalSince(startedAt) >= Self.sessionReanchorAge else {
+                log("ext_session_renew_skipped", "reason=running_not_near_expiry scene=\(lastKnownScenePhase)")
+                return
+            }
+            guard sessionPendingDidStart == nil else {
+                log("ext_session_renew_skipped", "reason=pending_start scene=\(lastKnownScenePhase)")
+                return
+            }
+            pendingReanchor = true
+            invalidatingSessionIDs.insert(ObjectIdentifier(current))
+            current.invalidate()
+            extendedSession = nil
+            sessionStartedAt = nil
+            log("ext_session_reanchor", "age_s=\(Int(Date().timeIntervalSince(startedAt))) phase=invalidate")
+            // Watchdog: if didInvalidate never arrives for this intentional invalidate, clear the flag
+            // so renewals aren't blocked for the rest of the process (mirrors the 15s start watchdog),
+            // and retry once. A normal invalidate callback clears pendingReanchor first, making this a no-op.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard let self, self.pendingReanchor else { return }
+                self.pendingReanchor = false
+                self.log("ext_session_reanchor_timeout", "")
+                if self.lastKnownScenePhase == "active" { self.renewSessionIfNeeded() }
+            }
+            return
+        }
         guard sessionPendingDidStart == nil else {
             // C-208-2/5.4: previously a silent return, indistinguishable from the debounce —
             // which made the pending-start wedge (3.1) invisible in telemetry.
@@ -328,6 +382,7 @@ final class G7WatchSensorAdapter: NSObject {
                 // the pending slot wedged for process life.
                 self.sessionPendingDidStart = nil
                 self.extendedSession = session
+                self.sessionStartedAt = Date() // C-212-5
                 self.lastKnownExtSessionActive = true
                 self.log("ext_session_start_timeout", "state=running adopted=true")
                 self.consumeDeferredScanIfNeeded()
@@ -1339,6 +1394,7 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
         invalidatingSessionIDs.remove(ObjectIdentifier(session))
         lastKnownExtSessionActive = true
         extendedSession = session
+        sessionStartedAt = Date() // C-212-5
         if session === sessionPendingDidStart {
             sessionPendingDidStart = nil
         }
@@ -1366,18 +1422,23 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
         }
         // D2: a session that invalidates is no longer the live session — clear the held reference so
         // the debug UI reflects reality instead of pinning to a stale `invalid` object.
-        if isCurrentSession { extendedSession = nil }
+        if isCurrentSession { extendedSession = nil; sessionStartedAt = nil } // C-212-5
 
         if invalidatingSessionIDs.contains(id) {
             invalidatingSessionIDs.remove(id)
             lastKnownExtSessionActive = false
             // Verification finding: a session that is BOTH pending and intentionally
             // invalidated must release the pending slot here too, or renewals stay blocked
-            // (reason=pending_start) until the 15s watchdog clears it. Dormant today (no
-            // invalidate() insertion sites remain) but required for the handler's stated
-            // future-caller hygiene.
+            // (reason=pending_start) until the 15s watchdog clears it. C-212-5's near-expiry
+            // re-anchor is the intentional-invalidate caller that exercises this path.
             if isPendingSession { sessionPendingDidStart = nil }
             log("ext_session_intentional_invalidation", detail)
+            // C-212-5 (BUG-E): re-anchor — the old session is now fully gone, so start the replacement
+            // here (sequential avoids the overlapping-request rejection). Only if still foreground-active.
+            if pendingReanchor {
+                pendingReanchor = false
+                if lastKnownScenePhase == "active" { renewSessionIfNeeded() }
+            }
             return
         }
         lastKnownExtSessionActive = false
