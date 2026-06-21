@@ -17,6 +17,12 @@ import WatchKit
     var body: some Scene {
         WindowGroup {
             TrioMainWatchView()
+                // C-212-6: desaturate the whole face when NOT foreground-active, so a passive
+                // Return-to-Clock glance (.inactive — where the OS won't start an extended session,
+                // `blocked_app_inactive`) is visually distinct from an active open (.active). A grey
+                // face reads as "passive — tap to interact (and let a session start)."
+                .grayscale(scenePhase == .active ? 0 : 1)
+                .animation(.easeInOut(duration: 0.2), value: scenePhase)
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             let oldToken = watchScenePhaseToken(oldPhase)
