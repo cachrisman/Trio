@@ -49,9 +49,23 @@ final class G7WatchSensorAdapter: NSObject {
     private var sessionStartedAt: Date?
     /// C-212-5: only re-anchor a running session at least this old (a fresh one already covers ~1h).
     private static let sessionReanchorAge: TimeInterval = 45 * 60
-    /// C-212-5: set when a near-expiry session was invalidated for a re-anchor. The intentional-
-    /// invalidation callback starts the replacement (sequential — watchOS rejects overlapping starts).
-    private var pendingReanchor = false
+    /// C-212-5 v2: compile-time flag for the inline re-anchor experiment (default on for soak; flip + rebuild to disable).
+    private static let reanchorEnabled = true
+    /// C-212-5 v2: the replacement session started INLINE by the re-anchor. Object-identity attribution
+    /// in the delegate callbacks (`WKExtendedRuntimeSession` has no userTag; subclassing it is unstable).
+    private var pendingReanchorSession: WKExtendedRuntimeSession?
+    /// C-212-5 v2: true while a swap is between invalidate() and the replacement resolving — blocks re-entry.
+    private var reanchorSwapInFlight = false
+    /// C-212-5 v2: per-attempt context for the in-flight swap (logged + drives the single 200ms retry).
+    private var reanchorSid: String?
+    private var reanchorArmDelayMs: Int = 0
+    private var reanchorDidRetry = false
+    /// C-212-5 v2: consecutive arm-A (0ms) TRUE failures (first attempt AND retry both failed); 5 → disable A.
+    private var armAConsecFailures = 0
+    private var armADisabled = false
+    /// C-212-5 v2 UserDefaults keys: A/B/C round-robin counter + persisted true session-start epoch (§8.7).
+    private static let reanchorCounterKey = "C212.reanchorAttemptCounter"
+    private static let sessionStartEpochKey = "C212.sessionStartEpoch"
 
     /// Identities of `WKExtendedRuntimeSession`s that the adapter intentionally invalidated and
     /// whose `didInvalidateWith` callback has not yet been delivered. The delegate consults this
@@ -305,48 +319,66 @@ final class G7WatchSensorAdapter: NSObject {
             log("ext_session_renew_skipped", "reason=not_active scene=\(lastKnownScenePhase)")
             return
         }
-        // C-212-5 (BUG-E): a re-anchor invalidate is in flight (we're waiting for didInvalidate to
-        // start the replacement) — do NOT start a second session now; that re-creates the overlap (D1).
-        guard !pendingReanchor else {
-            log("ext_session_renew_skipped", "reason=reanchor_in_flight scene=\(lastKnownScenePhase)")
+        // C-212-5 v2: a swap is in flight (between invalidate() and the replacement resolving) — block
+        // re-entry so a delayed (B/C) start or the 200ms retry can't collide with a fresh normal start.
+        guard !reanchorSwapInFlight else {
+            log("ext_session_renew_skipped", "reason=reanchor_swap_in_flight scene=\(lastKnownScenePhase)")
             return
         }
-        // C-212-5 (BUG-E): re-anchor a near-expiry running session. A running-but-fresh session already
-        // covers the next ~hour, so it is left alone (restarting gains nothing and re-courts throttling,
-        // D8). A near-expiry one is invalidated here; the replacement is NOT started inline because
-        // watchOS rejects OVERLAPPING extended-runtime requests (D1) — the intentional-invalidation
-        // callback re-enters to start it once the old session is fully gone (sequential).
+        // C-212-5 v2 (BUG-E): re-anchor a near-expiry running session with an INLINE swap — invalidate the
+        // old session and start the replacement immediately (arm A) or after a small A/B/C delay (B/C),
+        // WITHOUT waiting on the slow/unreliable didInvalidate callback that broke v1 (see the v2 design doc).
         if let current = extendedSession, current.state == .running {
-            guard let startedAt = sessionStartedAt else {
-                // No start stamp (shouldn't happen — didStart/adopt set it). Seed it now so the session
-                // ages toward the threshold on subsequent opens instead of being skipped for its life.
-                sessionStartedAt = Date()
-                log("ext_session_renew_skipped", "reason=running_no_start_ts_seeded scene=\(lastKnownScenePhase)")
-                return
-            }
-            guard Date().timeIntervalSince(startedAt) >= Self.sessionReanchorAge else {
-                log("ext_session_renew_skipped", "reason=running_not_near_expiry scene=\(lastKnownScenePhase)")
-                return
-            }
-            guard sessionPendingDidStart == nil else {
+            guard Self.reanchorEnabled else { log("ext_session_renew_skipped", "reason=reanchor_disabled scene=\(lastKnownScenePhase)"); return }
+            guard sessionPendingDidStart == nil, pendingReanchorSession == nil else {
                 log("ext_session_renew_skipped", "reason=pending_start scene=\(lastKnownScenePhase)")
                 return
             }
-            pendingReanchor = true
+            guard let age = trueSessionAge() else {
+                // No start stamp — seed it so the session ages toward the threshold instead of being skipped.
+                let now = Date(); sessionStartedAt = now; persistSessionStart(now)
+                log("ext_session_renew_skipped", "reason=running_no_start_ts_seeded scene=\(lastKnownScenePhase)")
+                return
+            }
+            guard age >= Self.sessionReanchorAge else {
+                log("ext_session_renew_skipped", "reason=running_not_near_expiry scene=\(lastKnownScenePhase)")
+                return
+            }
+            let counter = bumpReanchorCounter()
+            let delayMs = armADisabled ? [100, 300][counter % 2] : [0, 100, 300][counter % 3]
+            let sid = shortReanchorID()
+            reanchorSid = sid
+            reanchorArmDelayMs = delayMs
+            reanchorDidRetry = false
+            reanchorSwapInFlight = true
+            log("reanchor_attempt", "delay_ms=\(delayMs) sid=\(sid) age_s=\(Int(age)) old_state_before=\(describeState(current.state)) arm_a_disabled=\(armADisabled)")
+            // #4: global swap backstop — force-clear swap-in-flight if the whole sequence ever stalls, so
+            // renewals can't wedge behind reason=reanchor_swap_in_flight for the life of the process.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard let self, self.reanchorSwapInFlight, self.reanchorSid == sid else { return }
+                self.log("reanchor_swap_backstop_cleared", "sid=\(sid)")
+                self.clearReanchorContext()
+                self.recoverSessionAfterFailedReanchor()
+            }
+
             invalidatingSessionIDs.insert(ObjectIdentifier(current))
             current.invalidate()
+            let oldStateAfter = current.state
             extendedSession = nil
             sessionStartedAt = nil
-            log("ext_session_reanchor", "age_s=\(Int(Date().timeIntervalSince(startedAt))) phase=invalidate")
-            // Watchdog: if didInvalidate never arrives for this intentional invalidate, clear the flag
-            // so renewals aren't blocked for the rest of the process (mirrors the 15s start watchdog),
-            // and retry once. A normal invalidate callback clears pendingReanchor first, making this a no-op.
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
-                guard let self, self.pendingReanchor else { return }
-                self.pendingReanchor = false
-                self.log("ext_session_reanchor_timeout", "")
-                if self.lastKnownScenePhase == "active" { self.renewSessionIfNeeded() }
+            clearPersistedSessionStart()
+            log("reanchor_invalidated", "delay_ms=\(delayMs) sid=\(sid) old_state_after=\(describeState(oldStateAfter))")
+            // Marks the no-session window; correlate with the EGV stream for BLE-sever (#10 / design §6).
+            log("reanchor_in_swap", "delay_ms=\(delayMs) sid=\(sid)")
+
+            if delayMs == 0 {
+                issueReanchorStart(delayMs: delayMs, sid: sid)
+            } else {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+                    self?.issueReanchorStart(delayMs: delayMs, sid: sid)
+                }
             }
             return
         }
@@ -382,7 +414,7 @@ final class G7WatchSensorAdapter: NSObject {
                 // the pending slot wedged for process life.
                 self.sessionPendingDidStart = nil
                 self.extendedSession = session
-                self.sessionStartedAt = Date() // C-212-5
+                let adoptedAt = Date(); self.sessionStartedAt = adoptedAt; self.persistSessionStart(adoptedAt) // C-212-5 v2
                 self.lastKnownExtSessionActive = true
                 self.log("ext_session_start_timeout", "state=running adopted=true")
                 self.consumeDeferredScanIfNeeded()
@@ -391,6 +423,118 @@ final class G7WatchSensorAdapter: NSObject {
                 self.log("ext_session_start_timeout", "state=\(self.describeState(session.state))")
             }
         }
+    }
+
+    // MARK: - C-212-5 v2 inline re-anchor helpers
+
+    /// Issue the replacement session for an inline re-anchor (arm A immediately; B/C after the delay).
+    /// `start()` called while `.active` is the only OS requirement; `scene_at_start` is logged to measure it.
+    private func issueReanchorStart(delayMs: Int, sid: String) {
+        guard reanchorSwapInFlight, reanchorSid == sid else { // #4: a stale delayed task whose swap was cleared
+            log("reanchor_start_stale", "delay_ms=\(delayMs) sid=\(sid)")
+            return
+        }
+        guard lastKnownScenePhase == "active" else {
+            lastKnownExtSessionActive = false
+            log("reanchor_abandoned", "reason=left_active phase=start delay_ms=\(delayMs) sid=\(sid)")
+            recordReanchorFailure(delayMs: delayMs)
+            clearReanchorContext()
+            recoverSessionAfterFailedReanchor()
+            return
+        }
+        let s = WKExtendedRuntimeSession()
+        s.delegate = self
+        pendingReanchorSession = s
+        sessionPendingDidStart = s
+        s.start()
+        log("reanchor_start_issued", "delay_ms=\(delayMs) sid=\(sid) scene_at_start=\(lastKnownScenePhase)")
+        startReanchorPendingWatchdog(s, sid: sid, delayMs: delayMs)
+    }
+
+    /// 15s backstop for a re-anchor replacement: watchOS IPC can black-hole start() (no didStart/didInvalidate).
+    /// Identity-guarded; adopts a running-but-silent session, else clears the slot so renewals aren't wedged.
+    private func startReanchorPendingWatchdog(_ session: WKExtendedRuntimeSession, sid: String, delayMs: Int) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard let self, self.pendingReanchorSession === session else { return }
+            if session.state == .running {
+                self.extendedSession = session
+                let now = Date(); self.sessionStartedAt = now; self.persistSessionStart(now)
+                self.lastKnownExtSessionActive = true
+                self.armAConsecFailures = 0
+                self.log("reanchor_replacement_started", "delay_ms=\(delayMs) sid=\(sid) adopted=true")
+            } else {
+                self.lastKnownExtSessionActive = false
+                self.log("reanchor_pending_timeout", "state=\(self.describeState(session.state)) delay_ms=\(delayMs) sid=\(sid)")
+                self.recordReanchorFailure(delayMs: delayMs)
+            }
+            self.pendingReanchorSession = nil
+            if self.sessionPendingDidStart === session { self.sessionPendingDidStart = nil }
+            self.clearReanchorContext()
+            self.recoverSessionAfterFailedReanchor()
+        }
+    }
+
+    /// Arm-A circuit-breaker: only the 0ms arm feeds it, on any true failure of an attempt — an overlap
+    /// rejection that survives the 200ms retry, a black-holed start (pending-timeout), or an abandon.
+    /// 5 consecutive → drop arm A from rotation for the rest of this process (resets on any A success).
+    private func recordReanchorFailure(delayMs: Int) {
+        guard delayMs == 0 else { return }
+        armAConsecFailures += 1
+        if armAConsecFailures >= 5, !armADisabled {
+            armADisabled = true
+            log("reanchor_armA_disabled", "consec_failures=\(armAConsecFailures)")
+        }
+    }
+
+    private func clearReanchorContext() {
+        reanchorSid = nil
+        reanchorArmDelayMs = 0
+        reanchorDidRetry = false
+        reanchorSwapInFlight = false
+    }
+
+    /// #2: after a re-anchor swap fails (old session already gone), start a fresh normal session in the
+    /// SAME foreground visit instead of waiting for the next open. No-op if a session is live/pending or
+    /// the app is no longer active.
+    private func recoverSessionAfterFailedReanchor() {
+        guard lastKnownScenePhase == "active", extendedSession == nil,
+              pendingReanchorSession == nil, sessionPendingDidStart == nil else { return }
+        log("reanchor_recover_session", "")
+        lastStartRequestAt = nil // #3: bypass the 30s start debounce — coverage was just lost, start now
+        renewSessionIfNeeded()
+    }
+
+    /// True session age from the persisted didStart epoch (survives adoption/resurrection, §8.7),
+    /// falling back to the in-memory stamp. nil when neither is known.
+    private func trueSessionAge() -> TimeInterval? {
+        let epoch = UserDefaults.standard.double(forKey: Self.sessionStartEpochKey)
+        if epoch > 0 {
+            let age = Date().timeIntervalSince1970 - epoch
+            if age >= 0, age < 2 * 3600 { return age } // a real session never exceeds ~1h; discard a stale epoch
+            clearPersistedSessionStart()
+        }
+        if let started = sessionStartedAt { return Date().timeIntervalSince(started) }
+        return nil
+    }
+
+    private func persistSessionStart(_ date: Date) {
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Self.sessionStartEpochKey)
+    }
+
+    private func clearPersistedSessionStart() {
+        UserDefaults.standard.removeObject(forKey: Self.sessionStartEpochKey)
+    }
+
+    /// A/B/C round-robin counter, persisted so the arm sequence survives restarts.
+    private func bumpReanchorCounter() -> Int {
+        let next = UserDefaults.standard.integer(forKey: Self.reanchorCounterKey) &+ 1
+        UserDefaults.standard.set(next, forKey: Self.reanchorCounterKey)
+        return next
+    }
+
+    private func shortReanchorID() -> String {
+        String(UUID().uuidString.prefix(8))
     }
 
     /// Phone relay (WatchConnectivity): persist peripheral name and rescan. Logs **`sensor_name_set_from_phone`** when the stored name changes (dedupes overlapping WC paths).
@@ -1384,7 +1528,9 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
     /// Just note the expiry and let the session end; a new one is started on the next foreground
     /// entry via `renewSessionIfNeeded`. The held reference is cleared in `didInvalidate` (D2).
     func extendedRuntimeSessionWillExpire(_ session: WKExtendedRuntimeSession) {
-        lastKnownExtSessionActive = false
+        // C-212-5 v2 #4: only the *current* live session expiring flips the flag; a late willExpire on an
+        // old (re-anchored) session must not clear it while the replacement is running or mid-swap.
+        if session === extendedSession { lastKnownExtSessionActive = false }
         log("ext_session_will_expire")
     }
 
@@ -1394,7 +1540,21 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
         invalidatingSessionIDs.remove(ObjectIdentifier(session))
         lastKnownExtSessionActive = true
         extendedSession = session
-        sessionStartedAt = Date() // C-212-5
+        let now = Date()
+        sessionStartedAt = now
+        persistSessionStart(now) // C-212-5 v2 true-age clock (§8.7)
+        // C-212-5 v2: attribute the inline re-anchor's replacement by object identity.
+        if session === pendingReanchorSession {
+            let sid = reanchorSid ?? "?"
+            if reanchorDidRetry {
+                log("reanchor_retry_succeeded", "delay_ms=\(reanchorArmDelayMs) sid=\(sid)")
+            } else {
+                log("reanchor_replacement_started", "delay_ms=\(reanchorArmDelayMs) sid=\(sid)")
+            }
+            armAConsecFailures = 0 // any success resets the breaker
+            pendingReanchorSession = nil
+            clearReanchorContext()
+        }
         if session === sessionPendingDidStart {
             sessionPendingDidStart = nil
         }
@@ -1422,23 +1582,61 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
         }
         // D2: a session that invalidates is no longer the live session — clear the held reference so
         // the debug UI reflects reality instead of pinning to a stale `invalid` object.
-        if isCurrentSession { extendedSession = nil; sessionStartedAt = nil } // C-212-5
+        if isCurrentSession { extendedSession = nil; sessionStartedAt = nil; clearPersistedSessionStart() } // C-212-5 v2
+
+        // C-212-5 v2: the inline re-anchor's replacement session, attributed by object identity.
+        if session === pendingReanchorSession {
+            let sid = reanchorSid ?? "?"
+            let delayMs = reanchorArmDelayMs
+            if isPendingSession { sessionPendingDidStart = nil }
+            pendingReanchorSession = nil
+            if reason == .sessionInProgress, !reanchorDidRetry {
+                // Overlap: the daemon hadn't finished tearing down the old session. Retry start() once
+                // ~200ms later (the old session is gone by then). The first-attempt signal stays distinct.
+                reanchorDidRetry = true
+                log("reanchor_replacement_rejected", "\(detail) delay_ms=\(delayMs) sid=\(sid)")
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    guard let self else { return }
+                    guard self.reanchorSid == sid, self.reanchorDidRetry else { return } // #4: stale retry guard
+                    guard self.lastKnownScenePhase == "active" else {
+                        self.lastKnownExtSessionActive = false
+                        self.log("reanchor_abandoned", "reason=left_active phase=retry delay_ms=\(delayMs) sid=\(sid)")
+                        self.recordReanchorFailure(delayMs: delayMs)
+                        self.clearReanchorContext()
+                        self.recoverSessionAfterFailedReanchor()
+                        return
+                    }
+                    let s2 = WKExtendedRuntimeSession()
+                    s2.delegate = self
+                    self.pendingReanchorSession = s2
+                    self.sessionPendingDidStart = s2
+                    s2.start()
+                    self.log("reanchor_retry", "delay_ms=\(delayMs) sid=\(sid)")
+                    self.startReanchorPendingWatchdog(s2, sid: sid, delayMs: delayMs)
+                }
+            } else {
+                // Retry also rejected, or a non-overlap invalidation of the replacement → a real gap.
+                lastKnownExtSessionActive = false
+                log(reason == .sessionInProgress ? "reanchor_retry_rejected" : "reanchor_replacement_invalidated",
+                    "\(detail) delay_ms=\(delayMs) sid=\(sid)")
+                recordReanchorFailure(delayMs: delayMs)
+                clearReanchorContext()
+                recoverSessionAfterFailedReanchor()
+            }
+            return
+        }
 
         if invalidatingSessionIDs.contains(id) {
             invalidatingSessionIDs.remove(id)
-            lastKnownExtSessionActive = false
-            // Verification finding: a session that is BOTH pending and intentionally
-            // invalidated must release the pending slot here too, or renewals stay blocked
-            // (reason=pending_start) until the 15s watchdog clears it. C-212-5's near-expiry
-            // re-anchor is the intentional-invalidate caller that exercises this path.
+            // C-212-5 v2 (#7): during an inline swap, don't flip the continuity flag on the OLD session's
+            // teardown — the replacement's didStart sets it true (or its failure sets it false), keeping
+            // the baseline ext_session_active metric clean across the swap window.
+            if !reanchorSwapInFlight, extendedSession?.state != .running { lastKnownExtSessionActive = false } // C-212-5 v2 #1/#5: don't flip during a swap or when the replacement is already running
             if isPendingSession { sessionPendingDidStart = nil }
             log("ext_session_intentional_invalidation", detail)
-            // C-212-5 (BUG-E): re-anchor — the old session is now fully gone, so start the replacement
-            // here (sequential avoids the overlapping-request rejection). Only if still foreground-active.
-            if pendingReanchor {
-                pendingReanchor = false
-                if lastKnownScenePhase == "active" { renewSessionIfNeeded() }
-            }
+            // C-212-5 v2: the replacement was already started INLINE (not here) — this is just the old
+            // session's teardown confirmation; no restart on this path anymore.
             return
         }
         lastKnownExtSessionActive = false
