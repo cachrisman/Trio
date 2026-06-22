@@ -93,10 +93,28 @@ actor WatchLogger {
 
     // C-209-2: daily-log lines buffer in-actor and write as one batch per drain — the per-line
     // open/seek/write/close (plus createDirectory) was the #2 measured battery driver. Local
-    // debug file only; worst case on a hard kill is losing the last `dailyLogBatchSize` lines
-    // of watch_log_daily.txt (the in-memory `logs` ring and the WC pipeline are unaffected).
+    // debug file only; worst case on a hard kill is losing up to `dailyLogBufferMaxLines` buffered
+    // lines of watch_log_daily.txt (writes now confirm before clearing + retry on failure).
     private var dailyLogBuffer: [String] = []
     private let dailyLogBatchSize = 40
+
+    /// Loss accounting. The ring (`WatchTelemetryRing`) counts its own evictions; WatchLogger
+    /// previously counted nothing, so on-device drops (a swallowed daily-log write, a `logs`
+    /// drop-oldest) were silent. Window counters reset on each `log_pipeline_summary`; totals
+    /// are cumulative for the process. Surfaced on the summary line so a lost batch leaves a trace.
+    private var logsDropped = 0
+    private var logsDroppedTotal = 0
+    private var dailyWriteFailures = 0
+    private var dailyWriteFailuresTotal = 0
+    private var dailyLogDropped = 0
+    private var dailyLogDroppedTotal = 0
+    /// Bound on the daily-log retry buffer so repeated write failures can't grow it unboundedly.
+    private let dailyLogBufferMaxLines = 2000
+    /// Buffer size after the last daily-log drain attempt — throttles size-triggered retries to once
+    /// per fresh batch (not on every log()) while a failed batch is still buffered.
+    private var lastDailyDrainCount = 0
+    /// Cause of the most recent daily-log write failure (sanitized, truncated); surfaced on the summary.
+    private var lastDailyWriteError: String?
 
     // C-209-3: routine pipeline narration (ack cleanups, queued-bg notices, confirm batches)
     // is counted here and emitted as ONE `log_pipeline_summary` line per flush. These sites
@@ -352,7 +370,10 @@ actor WatchLogger {
 
         logs.append(entry)
         if logs.count > maxEntries {
-            logs.removeFirst(logs.count - maxEntries)
+            let over = logs.count - maxEntries
+            logs.removeFirst(over)
+            logsDropped += over          // surfaced on the next log_pipeline_summary (mirrors ring_dropped)
+            logsDroppedTotal += over
         }
 
         #if DEBUG
@@ -380,41 +401,71 @@ actor WatchLogger {
     /// flush-cadence drain (see `flushIfNeeded`).
     private func bufferDailyLogLine(_ text: String) {
         dailyLogBuffer.append(text)
-        if dailyLogBuffer.count >= dailyLogBatchSize {
+        // Drain once per fresh batch since the last attempt — not on every line while a failed batch
+        // is still buffered (that previously turned every log() into a disk-write retry). The flush
+        // cadence retries the stuck batch separately.
+        if dailyLogBuffer.count - lastDailyDrainCount >= dailyLogBatchSize {
             drainDailyLogBuffer()
         }
     }
 
-    /// C-209-2: single open/seek/write/close for the whole buffered batch.
+    /// C-209-2: single open/seek/write/close for the whole buffered batch. Confirm the write before
+    /// clearing the buffer (previously it cleared first and swallowed write errors → silent batch loss).
     private func drainDailyLogBuffer() {
-        guard !dailyLogBuffer.isEmpty else { return }
+        guard !dailyLogBuffer.isEmpty else { lastDailyDrainCount = 0; return }
         let batch = dailyLogBuffer.joined(separator: "\n")
-        dailyLogBuffer.removeAll(keepingCapacity: true)
-        appendToDailyLog(batch)
+        if appendToDailyLog(batch) {
+            dailyLogBuffer.removeAll(keepingCapacity: true)
+            lastDailyWriteError = nil // recovered — don't let a stale cause ride the next summary
+        } else {
+            // Write failed — keep the batch for the next drain instead of silently dropping it.
+            dailyWriteFailures += 1
+            dailyWriteFailuresTotal += 1
+            if dailyLogBuffer.count > dailyLogBufferMaxLines {
+                let over = dailyLogBuffer.count - dailyLogBufferMaxLines
+                dailyLogBuffer.removeFirst(over)
+                dailyLogDropped += over
+                dailyLogDroppedTotal += over
+            }
+        }
+        lastDailyDrainCount = dailyLogBuffer.count // 0 after success; retained count throttles retries
     }
 
     /// Appends text to the daily local debug log (never sent to phone).
-    private func appendToDailyLog(_ text: String) {
+    /// Returns whether the append succeeded (no throw — not fsync-verified); the caller keeps the
+    /// buffer on `false` so a swallowed write failure can no longer silently lose the batch.
+    @discardableResult
+    private func appendToDailyLog(_ text: String) -> Bool {
         let dailyLogFile = Self.dailyLogFileURL
         let logEntry = text + "\n"
 
-        guard let data = logEntry.data(using: .utf8) else { return }
+        guard let data = logEntry.data(using: .utf8) else { return false }
 
         var postWriteSize: UInt64?
-
-        if let handle = try? FileHandle(forWritingTo: dailyLogFile) {
-            _ = try? handle.seekToEnd()
-            handle.write(data)
-            postWriteSize = try? handle.offset()
-            try? handle.close()
-        } else {
-            try? data.write(to: dailyLogFile)
-            postWriteSize = UInt64(data.count)
+        do {
+            if FileManager.default.fileExists(atPath: dailyLogFile.path) {
+                // File exists → append. If it can't be opened for writing, FAIL — never overwrite the
+                // log with just this batch (the old `data.write(to:)` fallback silently truncated it).
+                let handle = try FileHandle(forWritingTo: dailyLogFile)
+                defer { try? handle.close() }
+                _ = try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                postWriteSize = try? handle.offset()
+            } else {
+                try data.write(to: dailyLogFile) // first write — create the file
+                postWriteSize = UInt64(data.count)
+            }
+        } catch {
+            // Domain+code only — never the path/filename, which could ride the summary line to BetterStack.
+            let nsErr = error as NSError
+            lastDailyWriteError = "\(nsErr.domain)#\(nsErr.code)".replacingOccurrences(of: " ", with: "_").prefix(40).description
+            return false // batch is retried (not dropped); cause surfaced on the summary line
         }
 
         if let size = postWriteSize, size > dailyLogSizeCap {
             truncateDailyLogKeepingNewest(at: dailyLogFile)
         }
+        return true
     }
 
     /// Rewrites `watch_log_daily.txt` keeping only the newest `dailyLogTruncateKeepBytes`,
@@ -500,9 +551,17 @@ actor WatchLogger {
             + " confirm_files=\(pipelineConfirmFiles)"
             + " watch_log_files=\(cachedWatchLogFiles)"
             + " drain_files=\(cachedDrainFiles)"
+            + " logs_dropped=\(logsDropped) logs_dropped_total=\(logsDroppedTotal)"
+            + " daily_write_failures=\(dailyWriteFailures) daily_write_failures_total=\(dailyWriteFailuresTotal)"
+            + " daily_lines_dropped=\(dailyLogDropped) daily_lines_dropped_total=\(dailyLogDroppedTotal)"
+            + (lastDailyWriteError.map { " daily_write_err=\($0)" } ?? "")
         pipelineQueuedBackground = 0
         pipelineCleanupOk = 0
         pipelineConfirmFiles = 0
+        logsDropped = 0
+        dailyWriteFailures = 0
+        dailyLogDropped = 0
+        lastDailyWriteError = nil
         await log(summary)
 
         // Single payload fits within cap — send directly
