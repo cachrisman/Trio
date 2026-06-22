@@ -606,9 +606,11 @@ actor WatchLogger {
                     if remainingContent.utf8.count <= contentBudget {
                         chunks.append((content: remainingContent, lineCount: remaining.count))
                     } else {
-                        // 4A truncation on the last chunk
-                        let truncMarker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(totalLineCount)"
-                        let truncMarkerBytes = truncMarker.utf8.count + 1
+                        // 4A truncation on the last chunk — pack what fits, then COUNT + surface the rest.
+                        // Reserve marker width (incl. a worst-case lines_dropped field) so the real count
+                        // can be filled in after packing without busting the byte budget.
+                        let markerTemplate = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(totalLineCount) lines_dropped=\(totalLineCount)"
+                        let truncMarkerBytes = markerTemplate.utf8.count + 1
                         let truncBudget = max(0, contentBudget - truncMarkerBytes)
 
                         var truncLines: [String] = []
@@ -620,6 +622,15 @@ actor WatchLogger {
                             truncBytes += added
                         }
 
+                        // Overflow beyond 4x cap is dropped from the BetterStack ship path ONLY; the lines
+                        // remain in the on-device daily log. Count them (cumulative logs_dropped_total, like
+                        // the ring's evictions) and stamp the per-flush count on the truncation marker.
+                        let droppedInTrunc = remaining.count - truncLines.count
+                        if droppedInTrunc > 0 {
+                            logsDropped += droppedInTrunc
+                            logsDroppedTotal += droppedInTrunc
+                        }
+                        let truncMarker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(totalLineCount) lines_dropped=\(droppedInTrunc)"
                         let truncContent = truncMarker + "\n" + truncLines.joined(separator: "\n")
                         chunks.append((content: truncContent, lineCount: truncLines.count))
                     }
