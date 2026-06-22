@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.10)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.11)
 #
 # CHANGELOG:
+#   v1.11 - Cherry-pick-viability gate: --from-feature-branch is now refused when
+#           recorded provenance shows cherry-pick would apply cleanly (aligned
+#           history) or when the patch has no provenance to verify; it is allowed
+#           automatically only when history has diverged (a recorded commit is no
+#           longer on the branch by patch-id). New --force-from-feature-branch
+#           "<reason>" bypasses the gate with an audited justification. Makes the
+#           lazy path cost more than the correct one (cherry-pick SHAs are
+#           auto-computed). See docs/process/feature-branch-workflow-optimization.md.
 #   v1.10 - --scope-from-extra-files-only (with --from-feature-branch): build patch
 #           scope from --extra-files only, ignoring paths listed in the committed patch.
 #           Use when shrinking patch scope (e.g. drop project.pbxproj from a patch).
@@ -113,6 +121,18 @@
 #       have diverged (e.g. merge into feature, then rebase/amend). Requires
 #       --feature-branch or auto-detect. Ignores --cherry-pick. New files on the
 #       feature branch that belong in this patch must be added via --extra-files.
+#
+#       GATED: without --force-from-feature-branch this is refused when recorded
+#       provenance shows cherry-pick would apply cleanly (aligned history), and
+#       when the patch has no provenance to verify. It is allowed automatically
+#       only when history has genuinely diverged (a recorded commit is no longer
+#       present on the branch by patch-id). cherry-pick is the right tool ~95% of
+#       the time and the script computes its SHAs for you.
+#
+#   --force-from-feature-branch "<reason>"
+#       Bypass the cherry-pick-viability gate and force --from-feature-branch.
+#       Requires a non-empty <reason>, which is echoed to the run log for audit.
+#       Use only when cherry-pick genuinely cannot apply (rebase/squash/amend).
 #
 #   --scope-from-extra-files-only
 #       With --from-feature-branch and --extra-files: use ONLY the --extra-files
@@ -245,6 +265,8 @@ CHERRY_PICKS=""
 EXTRA_FILES=""
 FEATURE_BRANCH=""
 FROM_FEATURE_BRANCH=false
+FORCE_FROM_FEATURE_BRANCH=false   # set by --force-from-feature-branch; bypasses the cherry-pick-viability gate
+FORCE_FFB_REASON=""               # required justification echoed to the run log for audit
 SCOPE_FROM_EXTRA_FILES_ONLY=false
 DRIFT_EXCLUDE_REGEX=""
 NO_DRIFT_CHECK=false
@@ -282,6 +304,15 @@ while [[ $# -gt 0 ]]; do
         --from-feature-branch)
             FROM_FEATURE_BRANCH=true
             shift
+            ;;
+        --force-from-feature-branch)
+            # Bypass the cherry-pick-viability gate. Requires a non-empty reason
+            # (a conscious, audited choice — see "cherry-pick gate" in
+            # docs/process/feature-branch-workflow-optimization.md).
+            FROM_FEATURE_BRANCH=true
+            FORCE_FROM_FEATURE_BRANCH=true
+            FORCE_FFB_REASON="$2"
+            shift 2
             ;;
         --scope-from-extra-files-only)
             SCOPE_FROM_EXTRA_FILES_ONLY=true
@@ -321,6 +352,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 [ -n "$PATCH_NUM" ] || die "Missing required --patch <NN>. Use -h for help."
+
+# --force-from-feature-branch requires a real, non-empty justification (audited).
+# Reject a flag-shaped reason too: `--force-from-feature-branch --dry-run` would
+# otherwise swallow `--dry-run` as the reason and silently bypass both the gate and
+# the intended flag.
+if [ "$FORCE_FROM_FEATURE_BRANCH" = true ]; then
+    case "$FORCE_FFB_REASON" in
+        --*)
+            die "--force-from-feature-branch reason looks like a flag ('$FORCE_FFB_REASON').
+  Provide a quoted reason, e.g.: --force-from-feature-branch \"feature branch was squashed\"" ;;
+    esac
+    if [ -z "${FORCE_FFB_REASON// }" ]; then
+        die "--force-from-feature-branch requires a non-empty reason, e.g.:
+  --force-from-feature-branch \"feature branch was squashed; cherry-pick no longer maps\""
+    fi
+fi
 
 # Normalize patch number to 2 digits
 PATCH_NUM=$(printf '%02d' "$((10#$PATCH_NUM))")
@@ -523,6 +570,125 @@ if [ "$CHERRY_PICK_DEFERRED_CHECK" = true ]; then
 
     die "Missing required --cherry-pick <sha>. Use --dry-run to preview without changes,
   or --from-feature-branch to regenerate from feature branch state."
+fi
+
+# --- Cherry-pick-viability gate for --from-feature-branch ---------------------
+# --from-feature-branch can sweep unrelated tree state into a patch (the failure
+# mode behind the watch Info.plist drops and the patch-13 clobber). When
+# cherry-pick is viable it is the correct, minimal-scope tool — and the script
+# already computes the exact SHAs, so "cherry-pick is more work" is no longer
+# true. This gate makes the lazy path cost more than the correct one: it refuses
+# --from-feature-branch when recorded provenance shows cherry-pick would apply
+# cleanly (aligned history), allows it when history has genuinely diverged
+# (rebase/squash/amend), and otherwise requires an explicit, written override.
+if [ "$FROM_FEATURE_BRANCH" = true ] && [ "$FORCE_FROM_FEATURE_BRANCH" = false ]; then
+    # Resolve the feature branch the same way the auto-detection does.
+    _fb=""
+    if [ -n "$FEATURE_BRANCH" ]; then
+        _fb="$FEATURE_BRANCH"
+    elif git rev-parse --verify "feature/$PATCH_DESC" >/dev/null 2>&1; then
+        _fb="feature/$PATCH_DESC"
+    else
+        _rb=$(_recorded_source_branch "$PATCH_FILE")
+        if [ -n "$_rb" ] && git rev-parse --verify "$_rb" >/dev/null 2>&1; then
+            _fb="$_rb"
+        fi
+    fi
+
+    # Refuse with guidance. $1 = reason; $2 = suggested cherry-pick SHAs (optional).
+    _ffb_block() {
+        echo ""
+        print_error "Refusing --from-feature-branch: $1"
+        echo ""
+        echo "  --from-feature-branch is for rebased/squashed/amended history only."
+        echo "  It can sweep unrelated tree state into the patch (see AGENTS.md"
+        echo "  § Choosing --cherry-pick vs --from-feature-branch)."
+        echo ""
+        if [ -n "$2" ]; then
+            echo "  Use cherry-pick instead (computed from the patch's provenance):"
+            echo "    ./scripts/mid-stack-update.sh --patch $PATCH_NUM --cherry-pick $2"
+            echo ""
+        fi
+        echo "  If history truly diverged and cherry-pick cannot apply, override with:"
+        echo "    --force-from-feature-branch \"<reason>\""
+        die "Cherry-pick is the required path here."
+    }
+
+    if [ -z "$_fb" ]; then
+        _ffb_block "could not resolve a feature branch to verify cherry-pick viability" ""
+    fi
+
+    _mb=$(git merge-base dev "$_fb" 2>/dev/null || true)
+    _shalist=""
+    [ -n "$_mb" ] && _shalist=$(git log --reverse --format='%H' "$_mb..$_fb" 2>/dev/null || true)
+    _rec=$(_recorded_patch_ids "$PATCH_FILE")
+
+    if [ -z "$_rec" ]; then
+        # Legacy patch: no provenance to verify alignment. Block the lazy default
+        # and require a conscious, written override.
+        _ffb_block "patch '$PATCH_BASENAME' has no recorded provenance to verify cherry-pick viability" ""
+    fi
+    if [ -z "$_shalist" ]; then
+        _ffb_block "no commits found on '$_fb' since merge-base with dev" ""
+    fi
+
+    # Are all recorded patch-ids still present on the branch? If any is gone,
+    # history was rewritten (squash/amend/rebase-drop) and cherry-pick cannot
+    # cleanly reproduce the patch — so --from-feature-branch is appropriate.
+    _branch_pids=""
+    while read -r _c; do
+        [ -n "$_c" ] || continue
+        _p=$(_patch_id "$_c")
+        [ -n "$_p" ] && _branch_pids="${_branch_pids}${_p}"$'\n'
+    done <<< "$_shalist"
+
+    # Count how many of the patch's recorded commits are still present on the
+    # branch. "Diverged history" means SOME (not all, not none) are gone.
+    _recorded_total=0
+    _present=0
+    while read -r _rid; do
+        [ -n "$_rid" ] || continue
+        _recorded_total=$((_recorded_total + 1))
+        if printf '%s\n' "$_branch_pids" | grep -qx "$_rid"; then
+            _present=$((_present + 1))
+        fi
+    done <<< "$_rec"
+    _missing=$((_recorded_total - _present))
+
+    if [ "$_present" -eq 0 ]; then
+        # ZERO overlap → this is not divergence, it's the wrong branch (typo, stale
+        # feature/$PATCH_DESC, or a branch that never carried this patch's commits).
+        # Auto-allowing FFB here would sweep unrelated tree state in — the exact
+        # failure the gate exists to prevent. Refuse; require an explicit override.
+        _ffb_block "none of the patch's $_recorded_total recorded commit(s) are present on '$_fb' (by patch-id) — this looks like the WRONG feature branch, not diverged history. Verify --feature-branch / the resolved branch before forcing." ""
+    elif [ "$_missing" -gt 0 ]; then
+        echo ""
+        print_info "Diverged history detected: $_present of $_recorded_total recorded commit(s) still on '$_fb', $_missing rewritten/dropped (squash/amend/rebase). --from-feature-branch is appropriate; proceeding."
+    else
+        # History aligned → cherry-pick is viable. Compute the new commits and refuse.
+        _new=()
+        while read -r _c; do
+            [ -n "$_c" ] || continue
+            _p=$(_patch_id "$_c")
+            if [ -n "$_p" ] && printf '%s\n' "$_rec" | grep -qx "$_p"; then
+                continue
+            fi
+            _new+=("$_c")
+        done <<< "$_shalist"
+
+        if [ "${#_new[@]}" -eq 0 ]; then
+            echo ""
+            print_success "Patch '$PATCH_BASENAME' is already up to date with '$_fb' (0 new commits by patch-id). Nothing to do."
+            exit 0
+        fi
+        _newshas=$(for _c in "${_new[@]}"; do git rev-parse --short "$_c"; done | paste -sd, -)
+        _ffb_block "cherry-pick of the new commit(s) applies cleanly (history is aligned)" "$_newshas"
+    fi
+fi
+
+# Audit trail: record an explicit override and its justification.
+if [ "$FORCE_FROM_FEATURE_BRANCH" = true ]; then
+    print_warning "--force-from-feature-branch override: ${FORCE_FFB_REASON}"
 fi
 
 # Parse cherry-pick SHAs

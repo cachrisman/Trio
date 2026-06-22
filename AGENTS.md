@@ -1,4 +1,4 @@
-# AGENTS.md — v18
+# AGENTS.md — v19
 
 Instructions for AI agents working in this repository.
 
@@ -227,6 +227,13 @@ When asked to run a build, do the following.
 ### 6) If an error is detected
 
 - **Investigate immediately:** Read the relevant part of the log (e.g. around failure messages, ❌ markers, or "error:" / "ARCHIVE FAILED") to identify the cause.
+- **The failed build's worktree is preserved by default** (`ci/local-build.sh`
+  keeps it on any non-zero exit and prints `Preserving worktree at <path>`). It
+  holds the applied patch stack + build state — `cd` there to inspect the actual
+  failure (e.g. `git -C <path> status`, the build log). Remove it when done with
+  `git worktree remove --force <path>`, or prune accumulated leftovers with
+  `scripts/cleanup-build-leftovers.sh` (dry-run by default; `--apply` to delete).
+  Pass `--no-preserve-on-error` to `local-build.sh` to opt out of preservation.
 - **Propose a fix** and, if the fix is **relatively minor** (e.g. a clear typo, one-file change, or small logic fix):
   - Implement the fix on the appropriate branch **in the Trio worktree** (feature branch or, for patch-stack builds, the branch that the patch was generated from).
   - Regenerate the patch using `mid-stack-update.sh --cherry-pick` (see "Update an existing patch (mid-stack)" above). **Important:** the fix commit is rarely the only new commit on the feature branch. Follow the pre-flight step to enumerate ALL commits not yet in the patch and include them all in `--cherry-pick`, earliest first.
@@ -341,6 +348,23 @@ a fix commit while forgetting the feature commit it modifies — this guarantees
 original commits that were cherry-picked into the patch, use `--cherry-pick`.
 If those commits are gone (rebase/amend), use `--from-feature-branch`.
 
+**This is now enforced by the tool (v1.11), not just advice.** When you pass
+`--from-feature-branch`, `mid-stack-update.sh` reconciles the patch's recorded
+patch-id provenance against the feature branch and:
+- **refuses** when cherry-pick would apply cleanly (history aligned) — and prints
+  the exact `--cherry-pick <shas>` command for you;
+- **refuses** when the patch has no provenance to verify (legacy patch);
+- **allows** `--from-feature-branch` automatically only when history has genuinely
+  diverged (a recorded commit is no longer on the branch by patch-id).
+
+Do not reach for `--from-feature-branch` to avoid enumerating commits — the script
+already computes the cherry-pick SHAs, so cherry-pick is *less* work, not more. To
+override the gate (only when cherry-pick genuinely cannot apply), pass
+`--force-from-feature-branch "<reason>"`; the reason is logged for audit. Forcing
+without a real divergence reason is a process violation — it can sweep unrelated
+tree state into the patch (the failure mode behind the watch Info.plist drops and
+the 2026-06 patch-13 clobber).
+
 If the script fails, **fix the script or report the error** — do not fall back
 to the manual workflow. Common failure causes and fixes:
 - **Dirty patch file:** As of v1.7, `mid-stack-update.sh` **auto-restores**
@@ -375,7 +399,10 @@ to the manual workflow. Common failure causes and fixes:
   it when diagnosis confirms the baseline has actually diverged (merge, rebase,
   or amend on the feature branch). Do NOT use it to work around cherry-pick
   conflicts caused by missing intermediate commits — that masks the real
-  problem and skips the cherry-pick workflow's provenance tracking.
+  problem and skips the cherry-pick workflow's provenance tracking. The gate
+  (above) blocks the lazy case automatically; if it blocks you, the right
+  response is almost always to run the `--cherry-pick` command it printed, not to
+  reach for `--force-from-feature-branch`.
 
 #### Patches that ADD new files
 
@@ -433,14 +460,24 @@ conditionals** in the BLE state machine. Two consequences:
   **not** change `scanAfterDelay` (the delayed-rescan path), which is intended shared
   behavior. Prefer fixes that make the watch match the iPhone (e.g. seeding
   `G7Sensor(sensorID:)` from persisted identity, deduping redundant connects).
-- **Submodule change procedure (3 steps, in order):** Trio's build **clones
-  G7SensorKit from GitHub** (the `cachrisman` fork), it is not built from a local
-  tree. So a fork edit only reaches a build after:
-  1. Commit on the fork (`main`) and **push to origin** (`github.com/cachrisman/G7SensorKit`).
-  2. Repin the submodule SHA in **`patches/02-g7-reading-time-with-seconds.patch`**
-     (the `Subproject commit ...` line; `.gitmodules` already points at the fork).
+- **Submodule change procedure — use `scripts/repin-g7.sh`.** Trio's build
+  **clones G7SensorKit from GitHub** (the `cachrisman` fork), it is not built from
+  a local tree. So a fork edit only reaches a build after the fork commit is pushed
+  **and** patch 02 is repinned to the new SHA. **Do this with the script, never by
+  hand-editing patch 02** (the SHA lives in two places that must agree — the
+  `+Subproject commit` line and the `index ..` after-abbrev — and hand-editing a
+  patch is forbidden by the patch rules):
+  1. Commit your change in the **standalone** G7SensorKit clone
+     (`~/Code/personal/health/diabetes/G7SensorKit`, on `main`) — never in the
+     submodule checkout inside Trio/Trio-dev.
+  2. From `Trio-dev`: `./scripts/repin-g7.sh`. It pushes the fork, asserts the new
+     SHA is on origin, rewrites both SHA sites in patch 02, runs `patch-test.sh`,
+     and prints the diff. It does **not** commit — review the diff, then commit
+     patch 02. Use `--dry-run` to preview; `--allow-dirty-patch` if patch 02
+     already has uncommitted repin rounds.
   3. Build (dev + patches). An un-pushed fork commit or un-bumped patch 02 means the
-     build silently uses the **old** G7SensorKit.
+     build silently uses the **old** G7SensorKit — `repin-g7.sh` guards against
+     both (it refuses to pin a SHA that isn't on origin).
 
 ## Watch app Info.plist (generated + merged) — regression guard
 
@@ -586,6 +623,9 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v19 (2026-06-22 CET)
+- **Patch/build tooling hardening.** Cherry-pick gate: `mid-stack-update.sh` (v1.11) now **enforces** the cherry-pick-vs-`--from-feature-branch` choice — `--from-feature-branch` is refused when recorded provenance shows cherry-pick applies cleanly (or when the patch has no provenance), and allowed automatically only when history has genuinely diverged; override with the audited `--force-from-feature-branch "<reason>"`. New **`scripts/repin-g7.sh`** automates the G7SensorKit fork push + patch-02 SHA repin (both SHA sites, validated by `patch-test.sh`) so patch 02 is never hand-edited. `ci/local-build.sh`: derives the submodule-change list from `.gitmodules` (was a drifting hardcoded list that omitted OmnipodKit/MedtrumKit); **preserves the worktree on a failed build** by default for investigation (`--no-preserve-on-error` to opt out). New **`scripts/cleanup-build-leftovers.sh`** prunes stale build worktrees/logs/`ci-build/*` remote branches (dry-run by default; remote deletion opt-in); invoked logs-only after a successful deploy. Design/decision log: `docs/in-progress/patch-build-tooling-hardening/01-design.md`.
 
 ### v18 (2026-06-18 CET)
 - **Patch clobber guardrails (Model B):** New **safety rule 12** — the deletion-footprint audit (`scripts/patch-audit.sh`, run by `patch-test.sh`) is mandatory; agents must never edit `scripts/patch-audit.safety-paths` / `.waivers`; a safety-path FAIL or missing sentinel symbol is a hard STOP. Amended **rule 10** (a passing compile/archive does not prove behavior preserved). Expanded the **`git am --3way`** section (conflict-free apply ≠ verification; review the full diff vs base, deletions especially; footprint must match patch purpose). Annotated the authoritative validate-stack command. Distilled from the 2026-06 incident where patch 13 silently deleted the Omnipod migration fallback from `DeviceDataManager.swift` and dropped a live insulin pod. Full design/decision log: `docs/process/patch-clobber-guardrails.md`. Also fixed `ci/local-build.sh` false-success exit-code bugs (failed fastlane build/release now exits non-zero; missing IPA is fatal).

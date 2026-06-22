@@ -1,4 +1,4 @@
-# Feature branch workflow optimization (fork + patch stack) — v16 (mailbox patches)
+# Feature branch workflow optimization (fork + patch stack) — v17 (mailbox patches)
 
 This repository is a personal fork of an upstream repository.
 
@@ -285,6 +285,22 @@ squash, file list extraction, `generate-patch.sh` invocation (with
 feature branch drift check, and cleanup. It does NOT commit the updated
 patch — do that after reviewing.
 
+#### Cherry-pick vs `--from-feature-branch` is enforced (v1.11)
+
+`--cherry-pick` is correct ~95% of the time, and the script auto-computes the
+SHAs for you (run with no `--cherry-pick` to see them), so cherry-pick is *less*
+work than `--from-feature-branch`, not more. To stop agents reaching for
+`--from-feature-branch` as a shortcut, it is gated: the script reconciles the
+patch's recorded patch-id provenance against the feature branch and **refuses**
+`--from-feature-branch` when cherry-pick would apply cleanly (aligned history) or
+when the patch has no provenance to verify; it **allows** it automatically only
+when history has genuinely diverged (a recorded commit is no longer on the branch
+by patch-id — i.e. rebase/squash/amend). Genuine divergence that the gate can't
+detect can be forced with `--force-from-feature-branch "<reason>"` (the reason is
+logged for audit). Forcing without a real divergence reason can sweep unrelated
+tree state into the patch — the failure mode behind the watch Info.plist drops and
+the 2026-06 patch-13 clobber.
+
 #### Safety guarantees
 
 - **Auto-restores dirty target patches** (v1.7): if the target patch has uncommitted modifications (common after a rolled-back regeneration), the script restores the committed version automatically. Untracked target patches (new files never committed) still error with a clear message.
@@ -415,6 +431,45 @@ If validation fails:
 Avoid using “apply patch A onto feature branch B” as the normal approach; instead, publish both patches and let the stack define the combined state.
 
 ---
+
+## Re-pinning the G7SensorKit submodule (`cachrisman` fork)
+
+Patch `02-g7-reading-time-with-seconds.patch` pins the G7SensorKit submodule to a
+commit on the `cachrisman` fork. The SHA appears in **two** places in the patch
+that must agree (the `+Subproject commit` line and the `index ..` after-abbrev), so
+hand-editing it is both forbidden (never hand-edit patch files) and easy to get
+half-right. Use `scripts/repin-g7.sh`:
+
+```bash
+# 1) Commit your change in the standalone clone (~/Code/.../G7SensorKit, on main).
+# 2) From Trio-dev:
+./scripts/repin-g7.sh                 # pushes fork, repins patch 02, runs patch-test, prints diff
+./scripts/repin-g7.sh --dry-run       # preview (push is the only irreversible step)
+./scripts/repin-g7.sh --allow-dirty-patch   # patch 02 already has uncommitted repin rounds
+# 3) Review the diff, then commit patch 02.
+```
+
+The script asserts the clone's `origin` is the fork, **refuses to pin a SHA that
+isn't on `origin`** (a build would fail to fetch it), rewrites both SHA sites,
+validates with `patch-test.sh`, and does NOT commit. See AGENTS.md
+§ "Shared submodules and the iPhone north star (G7SensorKit)".
+
+## Cleaning up build leftovers
+
+Build worktrees (`../.trio-worktrees/ci-build-*`), build logs
+(`build/artifacts/ci-local-build-*.log`), and `ci-build/*` remote branches (pushed
+by `record-release.sh`) accumulate over time. Prune them with
+`scripts/cleanup-build-leftovers.sh` (dry-run by default):
+
+```bash
+./scripts/cleanup-build-leftovers.sh                          # preview
+./scripts/cleanup-build-leftovers.sh --apply                  # prune worktrees + logs
+./scripts/cleanup-build-leftovers.sh --apply --prune-remote-branches   # also delete stale ci-build/* on origin
+```
+
+`ci/local-build.sh` invokes it (logs only) after a successful deploy. Failed
+builds keep their worktree for investigation (see `--no-preserve-on-error`), so
+worktree pruning is manual — run it once you're done investigating.
 
 ## Local builds (authoritative, mirrors CI state)
 
@@ -549,6 +604,9 @@ git submodule update --init --recursive
 ---
 
 ## Changelog
+
+### v17 (2026-06-22 CET)
+- **Patch/build tooling hardening.** Documented the enforced cherry-pick-vs-`--from-feature-branch` gate in `mid-stack-update.sh` v1.11 (refuse when cherry-pick is viable or provenance is missing; allow only on genuine divergence; `--force-from-feature-branch "<reason>"` override). Added **"Re-pinning the G7SensorKit submodule"** (`scripts/repin-g7.sh`) and **"Cleaning up build leftovers"** (`scripts/cleanup-build-leftovers.sh`, plus worktree-preserved-on-error behavior in `ci/local-build.sh`). Design/decision log: `docs/in-progress/patch-build-tooling-hardening/01-design.md`.
 
 ### v16 (2026-04-03 22:49 CET)
 - **AI agents — no `xcodebuild` for implementation verification:** New subsection under **Local builds** clarifying that agents must not use Xcode CLI or unsolicited `ci/local-build.sh` to verify ordinary code changes; use review + `patch-test.sh` + non–full-build checks, and point users to `local-build.sh` for compile confirmation. Cross-reference **AGENTS.md** v13 rule 10.
