@@ -47,8 +47,17 @@ final class G7WatchSensorAdapter: NSObject {
     /// lapsing minutes later (often in the background, where it cannot restart). Set on didStart / adopt;
     /// cleared whenever the session reference is cleared.
     private var sessionStartedAt: Date?
+    /// Wall-clock of the most recent non-intentional session invalidation. Drives the heartbeat's
+    /// session_dead_since_s. Set in didInvalidateWith (real-death path) and the reanchor-failure
+    /// paths; cleared on every session-start path.
+    private var sessionInvalidatedAt: Date?
+    /// One-shot guard so ext_session_nearing_expiry fires at most once per session across the
+    /// 5-min heartbeat ticks in the 55–60 min window. Reset on every session-start path.
+    private var sessionNearExpiryLogged = false
     /// C-212-5: only re-anchor a running session at least this old (a fresh one already covers ~1h).
-    private static let sessionReanchorAge: TimeInterval = 45 * 60
+    /// Build 215: lowered 45→40 min — widens the reanchor window to 20 min vs 15 min. Coverage is
+    /// app-open-gated, so this only adds reanchor opportunities; the replacement starts a fresh ~1h clock.
+    private static let sessionReanchorAge: TimeInterval = 40 * 60
     /// C-212-5 v2: compile-time flag for the inline re-anchor experiment (default on for soak; flip + rebuild to disable).
     private static let reanchorEnabled = true
     /// C-212-5 v2: the replacement session started INLINE by the re-anchor. Object-identity attribution
@@ -416,6 +425,8 @@ final class G7WatchSensorAdapter: NSObject {
                 self.extendedSession = session
                 let adoptedAt = Date(); self.sessionStartedAt = adoptedAt; self.persistSessionStart(adoptedAt) // C-212-5 v2
                 self.lastKnownExtSessionActive = true
+                self.sessionInvalidatedAt = nil
+                self.sessionNearExpiryLogged = false
                 self.log("ext_session_start_timeout", "state=running adopted=true")
                 self.consumeDeferredScanIfNeeded()
             } else {
@@ -436,6 +447,7 @@ final class G7WatchSensorAdapter: NSObject {
         }
         guard lastKnownScenePhase == "active" else {
             lastKnownExtSessionActive = false
+            sessionInvalidatedAt = Date()
             log("reanchor_abandoned", "reason=left_active phase=start delay_ms=\(delayMs) sid=\(sid)")
             recordReanchorFailure(delayMs: delayMs)
             clearReanchorContext()
@@ -461,10 +473,14 @@ final class G7WatchSensorAdapter: NSObject {
                 self.extendedSession = session
                 let now = Date(); self.sessionStartedAt = now; self.persistSessionStart(now)
                 self.lastKnownExtSessionActive = true
+                self.sessionInvalidatedAt = nil
+                self.sessionNearExpiryLogged = false
                 self.armAConsecFailures = 0
                 self.log("reanchor_replacement_started", "delay_ms=\(delayMs) sid=\(sid) adopted=true")
+                self.consumeDeferredScanIfNeeded() // C-215: C1 parity with didStart + the normal start-timeout watchdog
             } else {
                 self.lastKnownExtSessionActive = false
+                self.sessionInvalidatedAt = Date()
                 self.log("reanchor_pending_timeout", "state=\(self.describeState(session.state)) delay_ms=\(delayMs) sid=\(sid)")
                 self.recordReanchorFailure(delayMs: delayMs)
             }
@@ -722,8 +738,21 @@ final class G7WatchSensorAdapter: NSObject {
         } else {
             extStateRaw = "nil"
         }
-        let active = lastKnownExtSessionActive
-        log("heartbeat", "ext_session_active=\(active) ext_session_state=\(extStateRaw)")
+        let sessionLive = lastKnownExtSessionActive || extendedSession?.state == .running
+        let ageS = sessionLive ? (trueSessionAge().map(Int.init) ?? -1) : -1
+        let deadSinceS = (!sessionLive && sessionInvalidatedAt != nil)
+            ? Int(Date().timeIntervalSince(sessionInvalidatedAt!))
+            : -1
+        log("heartbeat", "ext_session_active=\(lastKnownExtSessionActive) ext_session_state=\(extStateRaw) session_age_s=\(ageS) session_dead_since_s=\(deadSinceS)")
+
+        if !sessionNearExpiryLogged,
+           extendedSession?.state == .running,
+           let age = trueSessionAge(),
+           age >= 55 * 60,
+           lastKnownScenePhase != "active" {
+            sessionNearExpiryLogged = true
+            log("ext_session_nearing_expiry", "age_s=\(Int(age)) scene_phase=\(lastKnownScenePhase)")
+        }
     }
 
     /// C-209-1: schedule the next `expected_window` telemetry tick at the next wall-clock
@@ -1013,7 +1042,7 @@ final class G7WatchSensorAdapter: NSObject {
         isScanningForNewSensor = true
         sensor.scanForNewSensor()
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
             self?.isScanningForNewSensor = false
         }
     }
@@ -1170,9 +1199,10 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         mirrorDailyCountersToWatchState()
         let connectAt = Date()
         WatchState.shared.bleLastConnectAt = connectAt
+        let nameProvenance = (source == "first_discovery_path") ? "expected" : "peripheral"
         log(
             "did_connect",
-            "scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive) source=\(source)"
+            "scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive) source=\(source) name_provenance=\(nameProvenance)"
         )
         // D8: do NOT request a session here. Connects happen mostly in the background, where the
         // request is denied before `didStart` (and hammering it invites throttling). Session
@@ -1535,10 +1565,27 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
     }
 
     func extendedRuntimeSessionDidStart(_ session: WKExtendedRuntimeSession) {
+        // C-215: reject a late didStart we no longer expect when a DIFFERENT session is already live and
+        // running. The pending-watchdog (line ~421) clears the pending slot WITHOUT invalidating an
+        // orphaned start, so without this guard that orphan's late didStart would clobber a newer live
+        // session. Tear the orphan down (mark intentional so its didInvalidate is classified clean).
+        // Mirrors the ownership guard in extendedRuntimeSession(_:didInvalidateWith:).
+        let isExpected = session === sessionPendingDidStart
+            || session === pendingReanchorSession
+            || session === extendedSession
+            || extendedSession == nil
+        if !isExpected, let live = extendedSession, live !== session, live.state == .running {
+            invalidatingSessionIDs.insert(ObjectIdentifier(session))
+            session.invalidate()
+            log("ext_session_unowned_did_start", "state=\(describeState(session.state)) live_state=\(describeState(live.state))")
+            return
+        }
         // Defensive cleanup: a started session should not be in the intentional-invalidation set,
         // but if it somehow is, remove it so the set stays bounded.
         invalidatingSessionIDs.remove(ObjectIdentifier(session))
         lastKnownExtSessionActive = true
+        sessionInvalidatedAt = nil
+        sessionNearExpiryLogged = false
         extendedSession = session
         let now = Date()
         sessionStartedAt = now
@@ -1601,6 +1648,7 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
                     guard self.reanchorSid == sid, self.reanchorDidRetry else { return } // #4: stale retry guard
                     guard self.lastKnownScenePhase == "active" else {
                         self.lastKnownExtSessionActive = false
+                        self.sessionInvalidatedAt = Date()
                         self.log("reanchor_abandoned", "reason=left_active phase=retry delay_ms=\(delayMs) sid=\(sid)")
                         self.recordReanchorFailure(delayMs: delayMs)
                         self.clearReanchorContext()
@@ -1618,6 +1666,7 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
             } else {
                 // Retry also rejected, or a non-overlap invalidation of the replacement → a real gap.
                 lastKnownExtSessionActive = false
+                sessionInvalidatedAt = Date()
                 log(reason == .sessionInProgress ? "reanchor_retry_rejected" : "reanchor_replacement_invalidated",
                     "\(detail) delay_ms=\(delayMs) sid=\(sid)")
                 recordReanchorFailure(delayMs: delayMs)
@@ -1649,6 +1698,8 @@ extension G7WatchSensorAdapter: WKExtendedRuntimeSessionDelegate {
             log("ext_session_pending_start_invalidated", "\(detail) scene_phase=\(lastKnownScenePhase)")
             return
         }
+
+        sessionInvalidatedAt = Date()
 
         if hasError {
             // Build 208: session invalidation no longer tears down BLE. The error branch
