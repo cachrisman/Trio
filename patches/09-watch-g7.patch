@@ -1,6 +1,6 @@
-From 587625ccdf8c9a4fe0df4e16f5f42bc9eeab7faf Mon Sep 17 00:00:00 2001
+From cc6d7dfe022b51f16bb960cee22869b27c835221 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 16 Jun 2026 23:36:30 +0100
+Date: Sat, 4 Jul 2026 09:51:22 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 3191d6296f8a3857bf15f5bd90db45f358bf163e
-Trio-Patch-Feature-Tip: 37d4882af824b79a9be116e8df309ba54dd1d9ab
-Trio-Patch-Generated: 2026-06-16T22:36:22Z
+Trio-Patch-Feature-Tip: 56814e62e7985a31902a29e5516c11fad2a842fb
+Trio-Patch-Generated: 2026-07-04T07:51:12Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -25,6 +25,15 @@ Trio-Patch-Source-Commits:
  8d849bcbe9335a7b2970722d55ede50975dc2d0c feat(watch): C-210-3 main face shows capture success rate (captures/eligible-slots)
  130fcbfe645fd74e439c61aa3efacebca614ab35 feat(watch): C-210-9 launch reload reconciliation + C-210-10 HK same-epoch correction
  37d4882af824b79a9be116e8df309ba54dd1d9ab feat(watch): C-210-4/5/8 direct-BLE stall detection, indicator, notification, instrumentation
+ 29f2d3e502c33ea2794a7207a25640260f0ef766 feat(watch): C-212-4 stamp scene_phase + ext_session_active on all g7_ble events (BUG-F pt1)
+ ff898835fe45391ae67b8091d6e5f3b86bf0f598 feat(watch): C-212-4 pt2 — scene_phase + ext_session_active on fork g7_core events (BUG-F)
+ dfc6c9f2daa48c0472b0ad934287af9d2b7acfc2 feat(watch): C-212-5 near-expiry extended-session re-anchor (BUG-E)
+ 656fd4fae3172d70b19745314dc2cc49a9d9035e feat(watch): C-212-6 grayscale the watch face when not foreground-active
+ d6b5130535b6c812cf2b0150d8f3bcba46293968 feat(watch): C-212-5 v2 inline re-anchor (replaces broken v1)
+ 4973014bf8c887ae3aa089471d6410d8bf48c03f fix(watch): WatchLogger telemetry-loss hardening + drop accounting
+ 177a6c723494a90ef8a5bbb58b1770270eba02dd fix(watch): count + surface log_flush truncation drops
+ 7c9a3d4704a6f8df8c75099913c114eee3a1cda1 watch(build-215): session telemetry, reanchor tuning, didStart guard
+ 56814e62e7985a31902a29e5516c11fad2a842fb watch(build-216): instrumentation — heartbeat BLE diagnostics, phantom-disconnect split, recovery markers
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -40,22 +49,31 @@ Trio-Patch-Source-PatchIds:
  428f2519d68d308e9cc21b19d572afc26539bbf8
  f8f682827e56730f7b1741a7834ea9aa4b822ce7
  6d32ef9dc34eb15deaf08123ceb5b6b6f65fc6a5
+ 9b47385dc4a7c18bb881dbfc4df4ecbc7301567f
+ 694dc322bab82df3b53aa6254487f303d058a4a1
+ 4c80070b55f3a63a85db816f82b1a6755477a50f
+ 96b7682c6468a9be39659324001dc445eaeee0c7
+ 4ee29a310ebe7b7d584f6e9bcb2b8b584d1b589b
+ 1e68a99fe134cfca484e3a394947510276dfed74
+ 7b3953eb145405a7158b2e387d40c82f9d7c2b05
+ d25c8f9e483f932ec06e498d5f12c4ffd7269c57
+ b73c4eeff51e57f17287fee1992d8771bda6dbf0
 ---
  .../ExtensionDelegate.swift                   |   88 +
- .../G7WatchSensorAdapter.swift                | 1404 +++++++++
+ .../G7WatchSensorAdapter.swift                | 1769 ++++++++++++
  .../Helper/WatchNotificationHandler.swift     |   30 +
  .../Helper/WatchResidentTelemetry.swift       |  139 +
- Trio Watch App Extension/TrioWatchApp.swift   |   47 +-
- .../Views/ComplicationDebugView.swift         |  705 +++++
+ Trio Watch App Extension/TrioWatchApp.swift   |   54 +-
+ .../Views/ComplicationDebugView.swift         |  721 +++++
  .../Views/GlucoseTrendView.swift              |   59 +-
  .../Views/TrioMainWatchView.swift             |  202 +-
  .../WatchErrorReporter.swift                  |  108 +-
  .../WatchGlucoseColorComputer.swift           |  179 ++
  .../WatchGlucoseHistoryStore.swift            |  213 ++
- Trio Watch App Extension/WatchLogger.swift    |  337 ++-
+ Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
  Trio Watch App Extension/WatchState.swift     | 2555 +++++++++++++++--
- .../WatchTelemetryRing.swift                  |  119 +
+ .../WatchTelemetryRing.swift                  |  127 +
  Trio Watch App Tests/Unit Tests.swift         |   71 +
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |   14 +
@@ -70,7 +88,7 @@ Trio-Patch-Source-PatchIds:
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  593 +++-
- 29 files changed, 8687 insertions(+), 542 deletions(-)
+ 29 files changed, 9155 insertions(+), 544 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -182,10 +200,10 @@ index 000000000..83907a7bb
 +}
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..02fee4c9c
+index 000000000..ab84c8bf0
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,1404 @@
+@@ -0,0 +1,1769 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -229,6 +247,40 @@ index 000000000..02fee4c9c
 +    /// D8: timestamp of the last foreground session-start request, used to debounce repeat requests
 +    /// (rapid `.start()` churn invites watchOS throttling).
 +    private var lastStartRequestAt: Date?
++    /// C-212-5 (BUG-E): wall-clock the current extended session started. Drives the near-expiry
++    /// re-anchor: a foreground-active open while the running session is older than `sessionReanchorAge`
++    /// invalidates it and starts a fresh ~1h session, so coverage re-anchors from the open instead of
++    /// lapsing minutes later (often in the background, where it cannot restart). Set on didStart / adopt;
++    /// cleared whenever the session reference is cleared.
++    private var sessionStartedAt: Date?
++    /// Wall-clock of the most recent non-intentional session invalidation. Drives the heartbeat's
++    /// session_dead_since_s. Set in didInvalidateWith (real-death path) and the reanchor-failure
++    /// paths; cleared on every session-start path.
++    private var sessionInvalidatedAt: Date?
++    /// One-shot guard so ext_session_nearing_expiry fires at most once per session across the
++    /// 5-min heartbeat ticks in the 55–60 min window. Reset on every session-start path.
++    private var sessionNearExpiryLogged = false
++    /// C-212-5: only re-anchor a running session at least this old (a fresh one already covers ~1h).
++    /// Build 215: lowered 45→40 min — widens the reanchor window to 20 min vs 15 min. Coverage is
++    /// app-open-gated, so this only adds reanchor opportunities; the replacement starts a fresh ~1h clock.
++    private static let sessionReanchorAge: TimeInterval = 40 * 60
++    /// C-212-5 v2: compile-time flag for the inline re-anchor experiment (default on for soak; flip + rebuild to disable).
++    private static let reanchorEnabled = true
++    /// C-212-5 v2: the replacement session started INLINE by the re-anchor. Object-identity attribution
++    /// in the delegate callbacks (`WKExtendedRuntimeSession` has no userTag; subclassing it is unstable).
++    private var pendingReanchorSession: WKExtendedRuntimeSession?
++    /// C-212-5 v2: true while a swap is between invalidate() and the replacement resolving — blocks re-entry.
++    private var reanchorSwapInFlight = false
++    /// C-212-5 v2: per-attempt context for the in-flight swap (logged + drives the single 200ms retry).
++    private var reanchorSid: String?
++    private var reanchorArmDelayMs: Int = 0
++    private var reanchorDidRetry = false
++    /// C-212-5 v2: consecutive arm-A (0ms) TRUE failures (first attempt AND retry both failed); 5 → disable A.
++    private var armAConsecFailures = 0
++    private var armADisabled = false
++    /// C-212-5 v2 UserDefaults keys: A/B/C round-robin counter + persisted true session-start epoch (§8.7).
++    private static let reanchorCounterKey = "C212.reanchorAttemptCounter"
++    private static let sessionStartEpochKey = "C212.sessionStartEpoch"
 +
 +    /// Identities of `WKExtendedRuntimeSession`s that the adapter intentionally invalidated and
 +    /// whose `didInvalidateWith` callback has not yet been delivered. The delegate consults this
@@ -236,10 +288,9 @@ index 000000000..02fee4c9c
 +    /// `ext_session_intentional_invalidation` log if the incoming `session` matches.
 +    ///
 +    /// Insertion sites — every place that calls `invalidate()` on a session we owned must add the
-+    /// session's `ObjectIdentifier` here first. Build 208: **no insertion sites remain** — the
-+    /// sole inserter was `stop()`, removed with the session-invalidation teardown. The set (and
-+    /// its early-return branch) is retained so any future intentional `invalidate()` gets its
-+    /// callback classified correctly instead of falling through to the error branch.
++    /// session's `ObjectIdentifier` here first. C-212-5 (BUG-E) is the current inserter: the
++    /// near-expiry re-anchor in `renewSessionIfNeeded()`. The set classifies the resulting callback
++    /// as intentional (clean-up + restart) instead of falling through to the error/teardown branch.
 +    ///
 +    /// Removal sites: the early-return in `extendedRuntimeSession(_:didInvalidateWith:)`
 +    /// (consumes the entry) and a defensive `remove` in `extendedRuntimeSessionDidStart`
@@ -257,6 +308,13 @@ index 000000000..02fee4c9c
 +
 +    /// Current pre-EGV disconnect streak count (for `ComplicationDebugView`).
 +    var consecutivePreEGVDisconnectsCount: Int { consecutivePreEGVDisconnects }
++
++    /// C-216 (Task D): user-initiated recovery marker, logged when the debug-screen button is
++    /// tapped after the user manually restarts the app/watch to fix a stalled signal. Telemetry-only
++    /// — correlates a self-reported "I restarted to fix it" moment against the surrounding BLE state.
++    func logManualRecoveryMarker() {
++        log("manual_recovery_marker", "source=debug_button")
++    }
 +
 +    /// Human-readable description of `extendedSession.state`
 +    /// (`notStarted`/`scheduled`/`running`/`invalid`) or "nil" when no session is held. Use alongside
@@ -324,6 +382,10 @@ index 000000000..02fee4c9c
 +    private var sessionConnectAt: Date?
 +    /// C-210-5: true once we've notified for the current direct-BLE stall episode (reset on recovery).
 +    private var stallNotifiedThisEpisode = false
++    /// C-216 (W-7a/Task B): consecutive heartbeat ticks observing `activePeripheralStateRaw == 1`
++    /// (CBPeripheralState.connecting). Sizes the duration of the unwatched-wedge fingerprint
++    /// (`active_peripheral_state=1` + `connect_pending_age_s=-1`, 06-30 deep-gap class).
++    private var consecutiveConnectingTicks = 0
 +
 +    /// Set on `sensorDidConnect`, cleared on `sensorDisconnected`; read from telemetry / ExtensionDelegate.
 +    var adapterSessionID: String?
@@ -338,9 +400,9 @@ index 000000000..02fee4c9c
 +    private var hadEGVThisSession = false
 +    private var loggedTimeToFirstEGVForSession = false
 +
-+    private var lastKnownScenePhase: String = "unknown"
++    private var lastKnownScenePhase: String = "unknown" { didSet { syncTelemetryRingContext() } }
 +
-+    private var lastKnownExtSessionActive = false
++    private var lastKnownExtSessionActive = false { didSet { syncTelemetryRingContext() } }
 +
 +    private var lastReadingSequence: UInt16?
 +    private var lastSavedGlucoseValue: Int?
@@ -423,6 +485,9 @@ index 000000000..02fee4c9c
 +    func start() {
 +        guard !isStarted else { return }
 +        isStarted = true
++        // C-216 (Task D): one-shot per process — a recovery marker distinguishing a genuine cold
++        // launch from other events in the telemetry stream.
++        log("cold_launch", "reason=process_start")
 +        stopTimers() // defensive only — start() is one-shot per process as of build 208
 +        loadDailyCountersIfNewCalendarDay()
 +        startHeartbeatTimer()
@@ -483,7 +548,69 @@ index 000000000..02fee4c9c
 +            log("ext_session_renew_skipped", "reason=not_active scene=\(lastKnownScenePhase)")
 +            return
 +        }
-+        guard extendedSession?.state != .running else { return }
++        // C-212-5 v2: a swap is in flight (between invalidate() and the replacement resolving) — block
++        // re-entry so a delayed (B/C) start or the 200ms retry can't collide with a fresh normal start.
++        guard !reanchorSwapInFlight else {
++            log("ext_session_renew_skipped", "reason=reanchor_swap_in_flight scene=\(lastKnownScenePhase)")
++            return
++        }
++        // C-212-5 v2 (BUG-E): re-anchor a near-expiry running session with an INLINE swap — invalidate the
++        // old session and start the replacement immediately (arm A) or after a small A/B/C delay (B/C),
++        // WITHOUT waiting on the slow/unreliable didInvalidate callback that broke v1 (see the v2 design doc).
++        if let current = extendedSession, current.state == .running {
++            guard Self.reanchorEnabled else { log("ext_session_renew_skipped", "reason=reanchor_disabled scene=\(lastKnownScenePhase)"); return }
++            guard sessionPendingDidStart == nil, pendingReanchorSession == nil else {
++                log("ext_session_renew_skipped", "reason=pending_start scene=\(lastKnownScenePhase)")
++                return
++            }
++            guard let age = trueSessionAge() else {
++                // No start stamp — seed it so the session ages toward the threshold instead of being skipped.
++                let now = Date(); sessionStartedAt = now; persistSessionStart(now)
++                log("ext_session_renew_skipped", "reason=running_no_start_ts_seeded scene=\(lastKnownScenePhase)")
++                return
++            }
++            guard age >= Self.sessionReanchorAge else {
++                log("ext_session_renew_skipped", "reason=running_not_near_expiry scene=\(lastKnownScenePhase)")
++                return
++            }
++            let counter = bumpReanchorCounter()
++            let delayMs = armADisabled ? [100, 300][counter % 2] : [0, 100, 300][counter % 3]
++            let sid = shortReanchorID()
++            reanchorSid = sid
++            reanchorArmDelayMs = delayMs
++            reanchorDidRetry = false
++            reanchorSwapInFlight = true
++            log("reanchor_attempt", "delay_ms=\(delayMs) sid=\(sid) age_s=\(Int(age)) old_state_before=\(describeState(current.state)) arm_a_disabled=\(armADisabled)")
++            // #4: global swap backstop — force-clear swap-in-flight if the whole sequence ever stalls, so
++            // renewals can't wedge behind reason=reanchor_swap_in_flight for the life of the process.
++            Task { @MainActor [weak self] in
++                try? await Task.sleep(nanoseconds: 20_000_000_000)
++                guard let self, self.reanchorSwapInFlight, self.reanchorSid == sid else { return }
++                self.log("reanchor_swap_backstop_cleared", "sid=\(sid)")
++                self.clearReanchorContext()
++                self.recoverSessionAfterFailedReanchor()
++            }
++
++            invalidatingSessionIDs.insert(ObjectIdentifier(current))
++            current.invalidate()
++            let oldStateAfter = current.state
++            extendedSession = nil
++            sessionStartedAt = nil
++            clearPersistedSessionStart()
++            log("reanchor_invalidated", "delay_ms=\(delayMs) sid=\(sid) old_state_after=\(describeState(oldStateAfter))")
++            // Marks the no-session window; correlate with the EGV stream for BLE-sever (#10 / design §6).
++            log("reanchor_in_swap", "delay_ms=\(delayMs) sid=\(sid)")
++
++            if delayMs == 0 {
++                issueReanchorStart(delayMs: delayMs, sid: sid)
++            } else {
++                Task { @MainActor [weak self] in
++                    try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
++                    self?.issueReanchorStart(delayMs: delayMs, sid: sid)
++                }
++            }
++            return
++        }
 +        guard sessionPendingDidStart == nil else {
 +            // C-208-2/5.4: previously a silent return, indistinguishable from the debounce —
 +            // which made the pending-start wedge (3.1) invisible in telemetry.
@@ -516,7 +643,10 @@ index 000000000..02fee4c9c
 +                // the pending slot wedged for process life.
 +                self.sessionPendingDidStart = nil
 +                self.extendedSession = session
++                let adoptedAt = Date(); self.sessionStartedAt = adoptedAt; self.persistSessionStart(adoptedAt) // C-212-5 v2
 +                self.lastKnownExtSessionActive = true
++                self.sessionInvalidatedAt = nil
++                self.sessionNearExpiryLogged = false
 +                self.log("ext_session_start_timeout", "state=running adopted=true")
 +                self.consumeDeferredScanIfNeeded()
 +            } else {
@@ -524,6 +654,123 @@ index 000000000..02fee4c9c
 +                self.log("ext_session_start_timeout", "state=\(self.describeState(session.state))")
 +            }
 +        }
++    }
++
++    // MARK: - C-212-5 v2 inline re-anchor helpers
++
++    /// Issue the replacement session for an inline re-anchor (arm A immediately; B/C after the delay).
++    /// `start()` called while `.active` is the only OS requirement; `scene_at_start` is logged to measure it.
++    private func issueReanchorStart(delayMs: Int, sid: String) {
++        guard reanchorSwapInFlight, reanchorSid == sid else { // #4: a stale delayed task whose swap was cleared
++            log("reanchor_start_stale", "delay_ms=\(delayMs) sid=\(sid)")
++            return
++        }
++        guard lastKnownScenePhase == "active" else {
++            lastKnownExtSessionActive = false
++            sessionInvalidatedAt = Date()
++            log("reanchor_abandoned", "reason=left_active phase=start delay_ms=\(delayMs) sid=\(sid)")
++            recordReanchorFailure(delayMs: delayMs)
++            clearReanchorContext()
++            recoverSessionAfterFailedReanchor()
++            return
++        }
++        let s = WKExtendedRuntimeSession()
++        s.delegate = self
++        pendingReanchorSession = s
++        sessionPendingDidStart = s
++        s.start()
++        log("reanchor_start_issued", "delay_ms=\(delayMs) sid=\(sid) scene_at_start=\(lastKnownScenePhase)")
++        startReanchorPendingWatchdog(s, sid: sid, delayMs: delayMs)
++    }
++
++    /// 15s backstop for a re-anchor replacement: watchOS IPC can black-hole start() (no didStart/didInvalidate).
++    /// Identity-guarded; adopts a running-but-silent session, else clears the slot so renewals aren't wedged.
++    private func startReanchorPendingWatchdog(_ session: WKExtendedRuntimeSession, sid: String, delayMs: Int) {
++        Task { @MainActor [weak self] in
++            try? await Task.sleep(nanoseconds: 15_000_000_000)
++            guard let self, self.pendingReanchorSession === session else { return }
++            if session.state == .running {
++                self.extendedSession = session
++                let now = Date(); self.sessionStartedAt = now; self.persistSessionStart(now)
++                self.lastKnownExtSessionActive = true
++                self.sessionInvalidatedAt = nil
++                self.sessionNearExpiryLogged = false
++                self.armAConsecFailures = 0
++                self.log("reanchor_replacement_started", "delay_ms=\(delayMs) sid=\(sid) adopted=true")
++                self.consumeDeferredScanIfNeeded() // C-215: C1 parity with didStart + the normal start-timeout watchdog
++            } else {
++                self.lastKnownExtSessionActive = false
++                self.sessionInvalidatedAt = Date()
++                self.log("reanchor_pending_timeout", "state=\(self.describeState(session.state)) delay_ms=\(delayMs) sid=\(sid)")
++                self.recordReanchorFailure(delayMs: delayMs)
++            }
++            self.pendingReanchorSession = nil
++            if self.sessionPendingDidStart === session { self.sessionPendingDidStart = nil }
++            self.clearReanchorContext()
++            self.recoverSessionAfterFailedReanchor()
++        }
++    }
++
++    /// Arm-A circuit-breaker: only the 0ms arm feeds it, on any true failure of an attempt — an overlap
++    /// rejection that survives the 200ms retry, a black-holed start (pending-timeout), or an abandon.
++    /// 5 consecutive → drop arm A from rotation for the rest of this process (resets on any A success).
++    private func recordReanchorFailure(delayMs: Int) {
++        guard delayMs == 0 else { return }
++        armAConsecFailures += 1
++        if armAConsecFailures >= 5, !armADisabled {
++            armADisabled = true
++            log("reanchor_armA_disabled", "consec_failures=\(armAConsecFailures)")
++        }
++    }
++
++    private func clearReanchorContext() {
++        reanchorSid = nil
++        reanchorArmDelayMs = 0
++        reanchorDidRetry = false
++        reanchorSwapInFlight = false
++    }
++
++    /// #2: after a re-anchor swap fails (old session already gone), start a fresh normal session in the
++    /// SAME foreground visit instead of waiting for the next open. No-op if a session is live/pending or
++    /// the app is no longer active.
++    private func recoverSessionAfterFailedReanchor() {
++        guard lastKnownScenePhase == "active", extendedSession == nil,
++              pendingReanchorSession == nil, sessionPendingDidStart == nil else { return }
++        log("reanchor_recover_session", "")
++        lastStartRequestAt = nil // #3: bypass the 30s start debounce — coverage was just lost, start now
++        renewSessionIfNeeded()
++    }
++
++    /// True session age from the persisted didStart epoch (survives adoption/resurrection, §8.7),
++    /// falling back to the in-memory stamp. nil when neither is known.
++    private func trueSessionAge() -> TimeInterval? {
++        let epoch = UserDefaults.standard.double(forKey: Self.sessionStartEpochKey)
++        if epoch > 0 {
++            let age = Date().timeIntervalSince1970 - epoch
++            if age >= 0, age < 2 * 3600 { return age } // a real session never exceeds ~1h; discard a stale epoch
++            clearPersistedSessionStart()
++        }
++        if let started = sessionStartedAt { return Date().timeIntervalSince(started) }
++        return nil
++    }
++
++    private func persistSessionStart(_ date: Date) {
++        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Self.sessionStartEpochKey)
++    }
++
++    private func clearPersistedSessionStart() {
++        UserDefaults.standard.removeObject(forKey: Self.sessionStartEpochKey)
++    }
++
++    /// A/B/C round-robin counter, persisted so the arm sequence survives restarts.
++    private func bumpReanchorCounter() -> Int {
++        let next = UserDefaults.standard.integer(forKey: Self.reanchorCounterKey) &+ 1
++        UserDefaults.standard.set(next, forKey: Self.reanchorCounterKey)
++        return next
++    }
++
++    private func shortReanchorID() -> String {
++        String(UUID().uuidString.prefix(8))
 +    }
 +
 +    /// Phone relay (WatchConnectivity): persist peripheral name and rescan. Logs **`sensor_name_set_from_phone`** when the stored name changes (dedupes overlapping WC paths).
@@ -642,25 +889,41 @@ index 000000000..02fee4c9c
 +    private func log(_ eventName: String, _ fields: String = "") {
 +        let sid = adapterSessionID ?? "nil"
 +        let sensorName = expectedSensorName ?? "nil"
++        // C-212-4 (BUG-F): every g7_ble event carries scene_phase + ext_session_active so
++        // foreground/background attribution is exact. Several call sites previously omitted one or
++        // both (e.g. pre_egv_disconnect had ext_session_active but not scene_phase). Append here only
++        // when the caller did not already include the field inline (avoids duplicate tokens).
++        var stamped = fields
++        // Token-boundary guard (review): match the field only at start-of-string or after a space, so
++        // a value like `last_known_ext_session_active=` doesn't suppress the canonical stamp.
++        if !(stamped.hasPrefix("scene_phase=") || stamped.contains(" scene_phase=")) {
++            stamped += (stamped.isEmpty ? "" : " ") + "scene_phase=\(lastKnownScenePhase)"
++        }
++        if !(stamped.hasPrefix("ext_session_active=") || stamped.contains(" ext_session_active=")) {
++            stamped += " ext_session_active=\(lastKnownExtSessionActive)"
++        }
 +        // C-208-9: synchronous ring enqueue — no Task spawn / actor suspension per event on the
 +        // hot path. The ring's drainer feeds WatchLogger downstream.
 +        WatchTelemetryRing.shared.enqueue(
 +            G7StructuredTelemetryLogLine.formatBleModule(
 +                sensorName: sensorName,
 +                event: eventName,
-+                fields: fields,
++                fields: stamped,
 +                g7Session: sid
 +            )
 +        )
 +    }
 +
-+    /// C-208-9: keep the ring's emit-time context (used for fork `module=g7_core` lines) in
-+    /// sync with the adapter's session identity. Called wherever `adapterSessionID` or the
-+    /// expected sensor name changes.
++    /// C-208-9 / C-212-4 pt2: keep the ring's emit-time context (used for fork `module=g7_core`
++    /// lines) in sync with the adapter — session identity (sensor name + adapter session id) AND
++    /// scene_phase + ext_session_active. Called wherever `adapterSessionID`/sensor name change, and
++    /// (via `didSet`) whenever `lastKnownScenePhase`/`lastKnownExtSessionActive` change.
 +    private func syncTelemetryRingContext() {
 +        WatchTelemetryRing.shared.setContext(
 +            sensorName: expectedSensorName ?? "nil",
-+            g7Session: adapterSessionID ?? "nil"
++            g7Session: adapterSessionID ?? "nil",
++            scenePhase: lastKnownScenePhase,
++            extSessionActive: lastKnownExtSessionActive
 +        )
 +    }
 +
@@ -695,8 +958,36 @@ index 000000000..02fee4c9c
 +        } else {
 +            extStateRaw = "nil"
 +        }
-+        let active = lastKnownExtSessionActive
-+        log("heartbeat", "ext_session_active=\(active) ext_session_state=\(extStateRaw)")
++        let sessionLive = lastKnownExtSessionActive || extendedSession?.state == .running
++        let ageS = sessionLive ? (trueSessionAge().map(Int.init) ?? -1) : -1
++        let deadSinceS = (!sessionLive && sessionInvalidatedAt != nil)
++            ? Int(Date().timeIntervalSince(sessionInvalidatedAt!))
++            : -1
++
++        // C-216 (W-7a/Task B): BLE diagnostics snapshot on the heartbeat. `active_peripheral_state=1`
++        // (CBPeripheralState.connecting) together with `connect_pending_age_s=-1` is the unwatched-wedge
++        // fingerprint (06-30 deep-gap class) — a connect that never completes and has no this-process
++        // pending-connect marker; `connecting_ticks` sizes how long that state has persisted.
++        let diag = sensor.diagnosticsSnapshot()
++        if diag.activePeripheralStateRaw == 1 {
++            consecutiveConnectingTicks += 1
++        } else {
++            consecutiveConnectingTicks = 0
++        }
++
++        log(
++            "heartbeat",
++            "ext_session_active=\(lastKnownExtSessionActive) ext_session_state=\(extStateRaw) session_age_s=\(ageS) session_dead_since_s=\(deadSinceS) central_state=\(diag.centralStateRaw) scan_active=\(diag.isScanning) active_peripheral_state=\(diag.activePeripheralStateRaw ?? -1) connect_pending_age_s=\(diag.connectPendingAgeS ?? -1) s_since_discover=\(diag.secondsSinceLastDiscover ?? -1) last_rssi=\(diag.lastDiscoverRSSI ?? 127) connecting_ticks=\(consecutiveConnectingTicks)"
++        )
++
++        if !sessionNearExpiryLogged,
++           extendedSession?.state == .running,
++           let age = trueSessionAge(),
++           age >= 55 * 60,
++           lastKnownScenePhase != "active" {
++            sessionNearExpiryLogged = true
++            log("ext_session_nearing_expiry", "age_s=\(Int(age)) scene_phase=\(lastKnownScenePhase)")
++        }
 +    }
 +
 +    /// C-209-1: schedule the next `expected_window` telemetry tick at the next wall-clock
@@ -763,9 +1054,14 @@ index 000000000..02fee4c9c
 +        let sinceConnectS: Int = sessionConnectAt.map { Int(now.timeIntervalSince($0)) } ?? -1
 +        let dexcomSide = sinceConnectS < 0 || sinceConnectS > StallThreshold.connectRecentSec
 +
++        // C-216 (Task A): stamp last-seen RSSI + its age onto the stall event. This tick runs at most
++        // every ~5 min, so one snapshot call here is cheap; `rssi_age_s=-1` means no didDiscover has
++        // happened yet this process (secondsSinceLastDiscover nil), `last_rssi=127` = BT-spec "RSSI not available".
++        let diag = sensor.diagnosticsSnapshot()
++        let rssiAgeS = diag.secondsSinceLastDiscover ?? -1
 +        log(
 +            "direct_ble_stall_detected",
-+            "tier=\(tier.rawValue) direct_stale_min=\(staleMin) phone_fresh=\(phoneFresh) fault=\(dexcomSide ? "dexcom_side" : "trio_side") since_connect_s=\(sinceConnectS)"
++            "tier=\(tier.rawValue) direct_stale_min=\(staleMin) phone_fresh=\(phoneFresh) fault=\(dexcomSide ? "dexcom_side" : "trio_side") since_connect_s=\(sinceConnectS) last_rssi=\(diag.lastDiscoverRSSI ?? 127) rssi_age_s=\(rssiAgeS)"
 +        )
 +
 +        if WatchState.shared.directBleStall != tier { WatchState.shared.directBleStall = tier }
@@ -986,7 +1282,7 @@ index 000000000..02fee4c9c
 +        isScanningForNewSensor = true
 +        sensor.scanForNewSensor()
 +        Task { @MainActor [weak self] in
-+            try? await Task.sleep(nanoseconds: 2_000_000_000)
++            try? await Task.sleep(nanoseconds: 5_000_000_000)
 +            self?.isScanningForNewSensor = false
 +        }
 +    }
@@ -1143,9 +1439,10 @@ index 000000000..02fee4c9c
 +        mirrorDailyCountersToWatchState()
 +        let connectAt = Date()
 +        WatchState.shared.bleLastConnectAt = connectAt
++        let nameProvenance = (source == "first_discovery_path") ? "expected" : "peripheral"
 +        log(
 +            "did_connect",
-+            "scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive) source=\(source)"
++            "scene_phase=\(lastKnownScenePhase) ext_session_active=\(lastKnownExtSessionActive) source=\(source) name_provenance=\(nameProvenance)"
 +        )
 +        // D8: do NOT request a session here. Connects happen mostly in the background, where the
 +        // request is denied before `didStart` (and hammering it invites throttling). Session
@@ -1216,8 +1513,13 @@ index 000000000..02fee4c9c
 +        } else if sessionPhase == .preEGV {
 +            consecutivePreEGVDisconnects += 1
 +            let minutesSinceEGV = minutesSinceLastEGV()
++            // C-216 (W-6): sinceConnectS < 0 means no `sessionConnectAt` existed for this disconnect —
++            // i.e. no preceding adapter-level connect. These are watchdog-cancel fallout (measured at
++            // 67% of the old pre_egv_disconnect metric), not a real pre-EGV auth failure — split the
++            // event name only; all fields and counter/stale-binding logic below are unchanged.
++            let eventName = sinceConnectS < 0 ? "phantom_disconnect" : "pre_egv_disconnect"
 +            log(
-+                "pre_egv_disconnect",
++                eventName,
 +                "since_connect_s=\(sinceConnectS) consecutive_count=\(consecutivePreEGVDisconnects) suspected_eos=\(suspectedEndOfSession) minutes_since_last_egv=\(minutesSinceEGV) ext_session_active=\(lastKnownExtSessionActive)"
 +            )
 +            // Gate the diagnostic / remediation thresholds on `minutesSinceLastEGV` too: a high
@@ -1501,16 +1803,50 @@ index 000000000..02fee4c9c
 +    /// Just note the expiry and let the session end; a new one is started on the next foreground
 +    /// entry via `renewSessionIfNeeded`. The held reference is cleared in `didInvalidate` (D2).
 +    func extendedRuntimeSessionWillExpire(_ session: WKExtendedRuntimeSession) {
-+        lastKnownExtSessionActive = false
++        // C-212-5 v2 #4: only the *current* live session expiring flips the flag; a late willExpire on an
++        // old (re-anchored) session must not clear it while the replacement is running or mid-swap.
++        if session === extendedSession { lastKnownExtSessionActive = false }
 +        log("ext_session_will_expire")
 +    }
 +
 +    func extendedRuntimeSessionDidStart(_ session: WKExtendedRuntimeSession) {
++        // C-215: reject a late didStart we no longer expect when a DIFFERENT session is already live and
++        // running. The pending-watchdog (line ~421) clears the pending slot WITHOUT invalidating an
++        // orphaned start, so without this guard that orphan's late didStart would clobber a newer live
++        // session. Tear the orphan down (mark intentional so its didInvalidate is classified clean).
++        // Mirrors the ownership guard in extendedRuntimeSession(_:didInvalidateWith:).
++        let isExpected = session === sessionPendingDidStart
++            || session === pendingReanchorSession
++            || session === extendedSession
++            || extendedSession == nil
++        if !isExpected, let live = extendedSession, live !== session, live.state == .running {
++            invalidatingSessionIDs.insert(ObjectIdentifier(session))
++            session.invalidate()
++            log("ext_session_unowned_did_start", "state=\(describeState(session.state)) live_state=\(describeState(live.state))")
++            return
++        }
 +        // Defensive cleanup: a started session should not be in the intentional-invalidation set,
 +        // but if it somehow is, remove it so the set stays bounded.
 +        invalidatingSessionIDs.remove(ObjectIdentifier(session))
 +        lastKnownExtSessionActive = true
++        sessionInvalidatedAt = nil
++        sessionNearExpiryLogged = false
 +        extendedSession = session
++        let now = Date()
++        sessionStartedAt = now
++        persistSessionStart(now) // C-212-5 v2 true-age clock (§8.7)
++        // C-212-5 v2: attribute the inline re-anchor's replacement by object identity.
++        if session === pendingReanchorSession {
++            let sid = reanchorSid ?? "?"
++            if reanchorDidRetry {
++                log("reanchor_retry_succeeded", "delay_ms=\(reanchorArmDelayMs) sid=\(sid)")
++            } else {
++                log("reanchor_replacement_started", "delay_ms=\(reanchorArmDelayMs) sid=\(sid)")
++            }
++            armAConsecFailures = 0 // any success resets the breaker
++            pendingReanchorSession = nil
++            clearReanchorContext()
++        }
 +        if session === sessionPendingDidStart {
 +            sessionPendingDidStart = nil
 +        }
@@ -1538,18 +1874,63 @@ index 000000000..02fee4c9c
 +        }
 +        // D2: a session that invalidates is no longer the live session — clear the held reference so
 +        // the debug UI reflects reality instead of pinning to a stale `invalid` object.
-+        if isCurrentSession { extendedSession = nil }
++        if isCurrentSession { extendedSession = nil; sessionStartedAt = nil; clearPersistedSessionStart() } // C-212-5 v2
++
++        // C-212-5 v2: the inline re-anchor's replacement session, attributed by object identity.
++        if session === pendingReanchorSession {
++            let sid = reanchorSid ?? "?"
++            let delayMs = reanchorArmDelayMs
++            if isPendingSession { sessionPendingDidStart = nil }
++            pendingReanchorSession = nil
++            if reason == .sessionInProgress, !reanchorDidRetry {
++                // Overlap: the daemon hadn't finished tearing down the old session. Retry start() once
++                // ~200ms later (the old session is gone by then). The first-attempt signal stays distinct.
++                reanchorDidRetry = true
++                log("reanchor_replacement_rejected", "\(detail) delay_ms=\(delayMs) sid=\(sid)")
++                Task { @MainActor [weak self] in
++                    try? await Task.sleep(nanoseconds: 200_000_000)
++                    guard let self else { return }
++                    guard self.reanchorSid == sid, self.reanchorDidRetry else { return } // #4: stale retry guard
++                    guard self.lastKnownScenePhase == "active" else {
++                        self.lastKnownExtSessionActive = false
++                        self.sessionInvalidatedAt = Date()
++                        self.log("reanchor_abandoned", "reason=left_active phase=retry delay_ms=\(delayMs) sid=\(sid)")
++                        self.recordReanchorFailure(delayMs: delayMs)
++                        self.clearReanchorContext()
++                        self.recoverSessionAfterFailedReanchor()
++                        return
++                    }
++                    let s2 = WKExtendedRuntimeSession()
++                    s2.delegate = self
++                    self.pendingReanchorSession = s2
++                    self.sessionPendingDidStart = s2
++                    s2.start()
++                    self.log("reanchor_retry", "delay_ms=\(delayMs) sid=\(sid)")
++                    self.startReanchorPendingWatchdog(s2, sid: sid, delayMs: delayMs)
++                }
++            } else {
++                // Retry also rejected, or a non-overlap invalidation of the replacement → a real gap.
++                lastKnownExtSessionActive = false
++                sessionInvalidatedAt = Date()
++                log(reason == .sessionInProgress ? "reanchor_retry_rejected" : "reanchor_replacement_invalidated",
++                    "\(detail) delay_ms=\(delayMs) sid=\(sid)")
++                recordReanchorFailure(delayMs: delayMs)
++                clearReanchorContext()
++                recoverSessionAfterFailedReanchor()
++            }
++            return
++        }
 +
 +        if invalidatingSessionIDs.contains(id) {
 +            invalidatingSessionIDs.remove(id)
-+            lastKnownExtSessionActive = false
-+            // Verification finding: a session that is BOTH pending and intentionally
-+            // invalidated must release the pending slot here too, or renewals stay blocked
-+            // (reason=pending_start) until the 15s watchdog clears it. Dormant today (no
-+            // invalidate() insertion sites remain) but required for the handler's stated
-+            // future-caller hygiene.
++            // C-212-5 v2 (#7): during an inline swap, don't flip the continuity flag on the OLD session's
++            // teardown — the replacement's didStart sets it true (or its failure sets it false), keeping
++            // the baseline ext_session_active metric clean across the swap window.
++            if !reanchorSwapInFlight, extendedSession?.state != .running { lastKnownExtSessionActive = false } // C-212-5 v2 #1/#5: don't flip during a swap or when the replacement is already running
 +            if isPendingSession { sessionPendingDidStart = nil }
 +            log("ext_session_intentional_invalidation", detail)
++            // C-212-5 v2: the replacement was already started INLINE (not here) — this is just the old
++            // session's teardown confirmation; no restart on this path anymore.
 +            return
 +        }
 +        lastKnownExtSessionActive = false
@@ -1562,6 +1943,8 @@ index 000000000..02fee4c9c
 +            log("ext_session_pending_start_invalidated", "\(detail) scene_phase=\(lastKnownScenePhase)")
 +            return
 +        }
++
++        sessionInvalidatedAt = Date()
 +
 +        if hasError {
 +            // Build 208: session invalidation no longer tears down BLE. The error branch
@@ -1780,10 +2163,10 @@ index 000000000..dfff34c68
 +    }
 +}
 diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
-index ccc8911ca..5d2972efe 100644
+index ccc8911ca..28bc6aea2 100644
 --- a/Trio Watch App Extension/TrioWatchApp.swift	
 +++ b/Trio Watch App Extension/TrioWatchApp.swift	
-@@ -1,31 +1,52 @@
+@@ -1,31 +1,59 @@
  import SwiftUI
  import UserNotifications
 +import WatchKit
@@ -1796,13 +2179,20 @@ index ccc8911ca..5d2972efe 100644
          WatchNotificationHandler.shared.configure()
 +        Task {
 +            let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
-+            await WatchLogger.shared.log("[DEPLOY] event=watch_app_launch platform=watchos build=\(build)")
++            let osVersion = WKInterfaceDevice.current().systemVersion
++            await WatchLogger.shared.log("[DEPLOY] event=watch_app_launch platform=watchos build=\(build) os_version=\(osVersion)")
 +        }
      }
  
      var body: some Scene {
          WindowGroup {
              TrioMainWatchView()
++                // C-212-6: desaturate the whole face when NOT foreground-active, so a passive
++                // Return-to-Clock glance (.inactive — where the OS won't start an extended session,
++                // `blocked_app_inactive`) is visually distinct from an active open (.active). A grey
++                // face reads as "passive — tap to interact (and let a session start)."
++                .grayscale(scenePhase == .active ? 0 : 1)
++                .animation(.easeInOut(duration: 0.2), value: scenePhase)
          }
 -        .onChange(of: scenePhase) { _, newScenePhase in
 -            if newScenePhase == .active {
@@ -1851,10 +2241,10 @@ index ccc8911ca..5d2972efe 100644
 +}
 diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
 new file mode 100644
-index 000000000..9bb759e33
+index 000000000..fccae2c7f
 --- /dev/null
 +++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,721 @@
 +import SwiftUI
 +import WatchKit
 +
@@ -2231,6 +2621,22 @@ index 000000000..9bb759e33
 +            }
 +            .buttonStyle(.bordered)
 +            .tint(.purple)
++
++            // C-216 (Task D): telemetry-only recovery marker — lets the user self-report "I
++            // restarted the app/watch to fix a stalled signal" so the moment correlates against
++            // surrounding BLE diagnostics. No other behavior change.
++            Button {
++                G7WatchSensorAdapter.shared.logManualRecoveryMarker()
++                triggerConfirmation(message: "📝 Marked")
++            } label: {
++                HStack {
++                    Image(systemName: "bandage")
++                    Text("Mark: restarted to fix signal")
++                }
++                .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.bordered)
++            .tint(.gray)
 +        }
 +    }
 +
@@ -3513,7 +3919,7 @@ index 000000000..ef5ef3c28
 +    }
 +}
 diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
-index 0f81f3475..0d762697b 100644
+index 0f81f3475..77fe94b3a 100644
 --- a/Trio Watch App Extension/WatchLogger.swift	
 +++ b/Trio Watch App Extension/WatchLogger.swift	
 @@ -1,6 +1,46 @@
@@ -3577,16 +3983,34 @@ index 0f81f3475..0d762697b 100644
      private let session = WCSession.default
      private var timerTask: Task<Void, Never>?
  
-@@ -44,6 +91,34 @@ actor WatchLogger {
+@@ -44,6 +91,52 @@ actor WatchLogger {
      private var cachedDrainFiles: Int = 0
      private var cachedCountsTimestamp: Date = .distantPast
  
 +    // C-209-2: daily-log lines buffer in-actor and write as one batch per drain — the per-line
 +    // open/seek/write/close (plus createDirectory) was the #2 measured battery driver. Local
-+    // debug file only; worst case on a hard kill is losing the last `dailyLogBatchSize` lines
-+    // of watch_log_daily.txt (the in-memory `logs` ring and the WC pipeline are unaffected).
++    // debug file only; worst case on a hard kill is losing up to `dailyLogBufferMaxLines` buffered
++    // lines of watch_log_daily.txt (writes now confirm before clearing + retry on failure).
 +    private var dailyLogBuffer: [String] = []
 +    private let dailyLogBatchSize = 40
++
++    /// Loss accounting. The ring (`WatchTelemetryRing`) counts its own evictions; WatchLogger
++    /// previously counted nothing, so on-device drops (a swallowed daily-log write, a `logs`
++    /// drop-oldest) were silent. Window counters reset on each `log_pipeline_summary`; totals
++    /// are cumulative for the process. Surfaced on the summary line so a lost batch leaves a trace.
++    private var logsDropped = 0
++    private var logsDroppedTotal = 0
++    private var dailyWriteFailures = 0
++    private var dailyWriteFailuresTotal = 0
++    private var dailyLogDropped = 0
++    private var dailyLogDroppedTotal = 0
++    /// Bound on the daily-log retry buffer so repeated write failures can't grow it unboundedly.
++    private let dailyLogBufferMaxLines = 2000
++    /// Buffer size after the last daily-log drain attempt — throttles size-triggered retries to once
++    /// per fresh batch (not on every log()) while a failed batch is still buffered.
++    private var lastDailyDrainCount = 0
++    /// Cause of the most recent daily-log write failure (sanitized, truncated); surfaced on the summary.
++    private var lastDailyWriteError: String?
 +
 +    // C-209-3: routine pipeline narration (ack cleanups, queued-bg notices, confirm batches)
 +    // is counted here and emitted as ONE `log_pipeline_summary` line per flush. These sites
@@ -3612,7 +4036,7 @@ index 0f81f3475..0d762697b 100644
      /// Wall-clock cap for how long **this actor** waits on `sendMessage`’s reply/error callbacks.
      /// This does **not** cancel in-flight `WCSession` delivery; a late `replyHandler` may still run.
      /// Keep conservative on watchOS: long waits serialize the actor behind other lifecycle/flush work.
-@@ -58,6 +133,11 @@ actor WatchLogger {
+@@ -58,6 +151,11 @@ actor WatchLogger {
  
      private static let dateFormatter: DateFormatter = {
          let formatter = DateFormatter()
@@ -3624,7 +4048,7 @@ index 0f81f3475..0d762697b 100644
          formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
          return formatter
      }()
-@@ -151,6 +231,11 @@ actor WatchLogger {
+@@ -151,6 +249,11 @@ actor WatchLogger {
              let gate = WCSessionReplyGate()
              let timeoutTask = Task {
                  try? await Task.sleep(nanoseconds: Self.wcSessionSendTimeoutNs)
@@ -3636,7 +4060,7 @@ index 0f81f3475..0d762697b 100644
                  await WatchLogger.shared.log(
                      "⌚️ WCSession sendMessage timed out context=\(context)"
                          + " note=payload_still_pending no_auto_transferUserInfo"
-@@ -177,12 +262,75 @@ actor WatchLogger {
+@@ -177,12 +280,75 @@ actor WatchLogger {
          }
      }
  
@@ -3713,7 +4137,7 @@ index 0f81f3475..0d762697b 100644
                  await flushIfNeeded(force: false)
              }
          }
-@@ -199,59 +347,137 @@ actor WatchLogger {
+@@ -199,42 +365,143 @@ actor WatchLogger {
      ) async {
          let shortFile = (file as NSString).lastPathComponent
          let timestamp = Self.dateFormatter.string(from: Date())
@@ -3723,7 +4147,11 @@ index 0f81f3475..0d762697b 100644
  
          logs.append(entry)
          if logs.count > maxEntries {
-             logs.removeFirst(logs.count - maxEntries)
+-            logs.removeFirst(logs.count - maxEntries)
++            let over = logs.count - maxEntries
++            logs.removeFirst(over)
++            logsDropped += over          // surfaced on the next log_pipeline_summary (mirrors ring_dropped)
++            logsDroppedTotal += over
          }
  
 -        print(entry)
@@ -3756,22 +4184,42 @@ index 0f81f3475..0d762697b 100644
 +    /// flush-cadence drain (see `flushIfNeeded`).
 +    private func bufferDailyLogLine(_ text: String) {
 +        dailyLogBuffer.append(text)
-+        if dailyLogBuffer.count >= dailyLogBatchSize {
++        // Drain once per fresh batch since the last attempt — not on every line while a failed batch
++        // is still buffered (that previously turned every log() into a disk-write retry). The flush
++        // cadence retries the stuck batch separately.
++        if dailyLogBuffer.count - lastDailyDrainCount >= dailyLogBatchSize {
 +            drainDailyLogBuffer()
 +        }
 +    }
++
++    /// C-209-2: single open/seek/write/close for the whole buffered batch. Confirm the write before
++    /// clearing the buffer (previously it cleared first and swallowed write errors → silent batch loss).
++    private func drainDailyLogBuffer() {
++        guard !dailyLogBuffer.isEmpty else { lastDailyDrainCount = 0; return }
++        let batch = dailyLogBuffer.joined(separator: "\n")
++        if appendToDailyLog(batch) {
++            dailyLogBuffer.removeAll(keepingCapacity: true)
++            lastDailyWriteError = nil // recovered — don't let a stale cause ride the next summary
++        } else {
++            // Write failed — keep the batch for the next drain instead of silently dropping it.
++            dailyWriteFailures += 1
++            dailyWriteFailuresTotal += 1
++            if dailyLogBuffer.count > dailyLogBufferMaxLines {
++                let over = dailyLogBuffer.count - dailyLogBufferMaxLines
++                dailyLogBuffer.removeFirst(over)
++                dailyLogDropped += over
++                dailyLogDroppedTotal += over
++            }
++        }
++        lastDailyDrainCount = dailyLogBuffer.count // 0 after success; retained count throttles retries
++    }
  
 -        let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
-+    /// C-209-2: single open/seek/write/close for the whole buffered batch.
-+    private func drainDailyLogBuffer() {
-+        guard !dailyLogBuffer.isEmpty else { return }
-+        let batch = dailyLogBuffer.joined(separator: "\n")
-+        dailyLogBuffer.removeAll(keepingCapacity: true)
-+        appendToDailyLog(batch)
-+    }
-+
 +    /// Appends text to the daily local debug log (never sent to phone).
-+    private func appendToDailyLog(_ text: String) {
++    /// Returns whether the append succeeded (no throw — not fsync-verified); the caller keeps the
++    /// buffer on `false` so a swallowed write failure can no longer silently lose the batch.
++    @discardableResult
++    private func appendToDailyLog(_ text: String) -> Bool {
 +        let dailyLogFile = Self.dailyLogFileURL
          let logEntry = text + "\n"
  
@@ -3780,28 +4228,36 @@ index 0f81f3475..0d762697b 100644
 -                _ = try? handle.seekToEnd()
 -                handle.write(data)
 -                try? handle.close()
--            } else {
--                try? data.write(to: dailyLogFile)
--            }
-+        guard let data = logEntry.data(using: .utf8) else { return }
++        guard let data = logEntry.data(using: .utf8) else { return false }
 +
 +        var postWriteSize: UInt64?
-+
-+        if let handle = try? FileHandle(forWritingTo: dailyLogFile) {
-+            _ = try? handle.seekToEnd()
-+            handle.write(data)
-+            postWriteSize = try? handle.offset()
-+            try? handle.close()
-+        } else {
-+            try? data.write(to: dailyLogFile)
-+            postWriteSize = UInt64(data.count)
-+        }
++        do {
++            if FileManager.default.fileExists(atPath: dailyLogFile.path) {
++                // File exists → append. If it can't be opened for writing, FAIL — never overwrite the
++                // log with just this batch (the old `data.write(to:)` fallback silently truncated it).
++                let handle = try FileHandle(forWritingTo: dailyLogFile)
++                defer { try? handle.close() }
++                _ = try handle.seekToEnd()
++                try handle.write(contentsOf: data)
++                postWriteSize = try? handle.offset()
+             } else {
+-                try? data.write(to: dailyLogFile)
++                try data.write(to: dailyLogFile) // first write — create the file
++                postWriteSize = UInt64(data.count)
+             }
++        } catch {
++            // Domain+code only — never the path/filename, which could ride the summary line to BetterStack.
++            let nsErr = error as NSError
++            lastDailyWriteError = "\(nsErr.domain)#\(nsErr.code)".replacingOccurrences(of: " ", with: "_").prefix(40).description
++            return false // batch is retried (not dropped); cause surfaced on the summary line
+         }
 +
 +        if let size = postWriteSize, size > dailyLogSizeCap {
 +            truncateDailyLogKeepingNewest(at: dailyLogFile)
-         }
-     }
- 
++        }
++        return true
++    }
++
 +    /// Rewrites `watch_log_daily.txt` keeping only the newest `dailyLogTruncateKeepBytes`,
 +    /// aligned to a newline boundary so the head of the file stays line-clean.
 +    ///
@@ -3836,10 +4292,10 @@ index 0f81f3475..0d762697b 100644
 +        output.append(aligned)
 +
 +        try? output.write(to: url, options: .atomic)
-+    }
-+
-     // MARK: - Flush
+     }
  
+     // MARK: - Flush
+@@ -242,16 +509,26 @@ actor WatchLogger {
      func flushIfNeeded(force: Bool = false) async {
          let now = Date()
          let shouldFlush = force
@@ -3867,7 +4323,7 @@ index 0f81f3475..0d762697b 100644
  
          updateCachedCountsIfStale()
          await logFileInventory()
-@@ -264,6 +490,21 @@ actor WatchLogger {
+@@ -264,6 +541,29 @@ actor WatchLogger {
          logs.removeAll()
          lastFlush = Date()
  
@@ -3881,15 +4337,54 @@ index 0f81f3475..0d762697b 100644
 +            + " confirm_files=\(pipelineConfirmFiles)"
 +            + " watch_log_files=\(cachedWatchLogFiles)"
 +            + " drain_files=\(cachedDrainFiles)"
++            + " logs_dropped=\(logsDropped) logs_dropped_total=\(logsDroppedTotal)"
++            + " daily_write_failures=\(dailyWriteFailures) daily_write_failures_total=\(dailyWriteFailuresTotal)"
++            + " daily_lines_dropped=\(dailyLogDropped) daily_lines_dropped_total=\(dailyLogDroppedTotal)"
++            + (lastDailyWriteError.map { " daily_write_err=\($0)" } ?? "")
 +        pipelineQueuedBackground = 0
 +        pipelineCleanupOk = 0
 +        pipelineConfirmFiles = 0
++        logsDropped = 0
++        dailyWriteFailures = 0
++        dailyLogDropped = 0
++        lastDailyWriteError = nil
 +        await log(summary)
 +
          // Single payload fits within cap — send directly
          if originalUTF8Count <= logSizeCap {
              await sendLogPayload(allContent)
-@@ -437,30 +678,30 @@ actor WatchLogger {
+@@ -306,9 +606,11 @@ actor WatchLogger {
+                     if remainingContent.utf8.count <= contentBudget {
+                         chunks.append((content: remainingContent, lineCount: remaining.count))
+                     } else {
+-                        // 4A truncation on the last chunk
+-                        let truncMarker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(totalLineCount)"
+-                        let truncMarkerBytes = truncMarker.utf8.count + 1
++                        // 4A truncation on the last chunk — pack what fits, then COUNT + surface the rest.
++                        // Reserve marker width (incl. a worst-case lines_dropped field) so the real count
++                        // can be filled in after packing without busting the byte budget.
++                        let markerTemplate = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(totalLineCount) lines_dropped=\(totalLineCount)"
++                        let truncMarkerBytes = markerTemplate.utf8.count + 1
+                         let truncBudget = max(0, contentBudget - truncMarkerBytes)
+ 
+                         var truncLines: [String] = []
+@@ -320,6 +622,15 @@ actor WatchLogger {
+                             truncBytes += added
+                         }
+ 
++                        // Overflow beyond 4x cap is dropped from the BetterStack ship path ONLY; the lines
++                        // remain in the on-device daily log. Count them (cumulative logs_dropped_total, like
++                        // the ring's evictions) and stamp the per-flush count on the truncation marker.
++                        let droppedInTrunc = remaining.count - truncLines.count
++                        if droppedInTrunc > 0 {
++                            logsDropped += droppedInTrunc
++                            logsDroppedTotal += droppedInTrunc
++                        }
++                        let truncMarker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(totalLineCount) lines_dropped=\(droppedInTrunc)"
+                         let truncContent = truncMarker + "\n" + truncLines.joined(separator: "\n")
+                         chunks.append((content: truncContent, lineCount: truncLines.count))
+                     }
+@@ -437,30 +748,30 @@ actor WatchLogger {
                  filePath: perPayloadFile.path
              )
              _ = session.transferUserInfo(envelope)
@@ -3929,7 +4424,7 @@ index 0f81f3475..0d762697b 100644
          updateCachedCountsIfStale()
          await logFileInventory()
  
-@@ -481,7 +722,7 @@ actor WatchLogger {
+@@ -481,7 +792,7 @@ actor WatchLogger {
                  && file.lastPathComponent != "watch_log_daily.txt"
          }
  
@@ -3938,7 +4433,7 @@ index 0f81f3475..0d762697b 100644
              perPayloadFiles: perPayloadFiles
          )
  
-@@ -644,6 +885,7 @@ actor WatchLogger {
+@@ -644,6 +955,7 @@ actor WatchLogger {
      // MARK: - Resend pending payloads
  
      func resendPendingPayloads() async {
@@ -3946,7 +4441,7 @@ index 0f81f3475..0d762697b 100644
          guard session.isReachable else { return }
          guard prepareSessionForImmediateSend() else {
              await log(
-@@ -813,29 +1055,23 @@ actor WatchLogger {
+@@ -813,29 +1125,23 @@ actor WatchLogger {
              }
          }
  
@@ -3984,7 +4479,7 @@ index 0f81f3475..0d762697b 100644
              )
          }
      }
-@@ -1079,16 +1315,18 @@ actor WatchLogger {
+@@ -1079,16 +1385,18 @@ actor WatchLogger {
          path: String, flow: String, artifact: String,
          payloadId: String, result res: RemoveResult
      ) async {
@@ -4009,7 +4504,7 @@ index 0f81f3475..0d762697b 100644
      }
  
      // MARK: - Observability (E2, E3)
-@@ -1135,6 +1373,11 @@ actor WatchLogger {
+@@ -1135,6 +1443,11 @@ actor WatchLogger {
  
      /// E2: Best-effort daily inventory of log files and pending payloads.
      private func logFileInventory() async {
@@ -6922,10 +7417,10 @@ index b12e1db77..5f3f7a1df 100644
  }
 diff --git a/Trio Watch App Extension/WatchTelemetryRing.swift b/Trio Watch App Extension/WatchTelemetryRing.swift
 new file mode 100644
-index 000000000..5359b5bc7
+index 000000000..9f729f291
 --- /dev/null
 +++ b/Trio Watch App Extension/WatchTelemetryRing.swift	
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,127 @@
 +import Foundation
 +import G7SensorKit
 +
@@ -6969,14 +7464,20 @@ index 000000000..5359b5bc7
 +    /// should expect the session boundary on the adapter's `did_connect` line.
 +    private var contextSensorName = "nil"
 +    private var contextSession = "nil"
++    // C-212-4 pt2 (BUG-F): scene/ext context for fork (`module=g7_core`) lines, which can't know the
++    // watch app's scene phase. Synced by the adapter at BLE-lifecycle points (where fork events cluster).
++    private var contextScenePhase = "unknown"
++    private var contextExtSessionActive = false
 +
 +    private init() {}
 +
-+    /// Adapter-driven context sync (sensor name + adapter session id).
-+    func setContext(sensorName: String, g7Session: String) {
++    /// Adapter-driven context sync (sensor name + adapter session id + scene/ext for fork lines).
++    func setContext(sensorName: String, g7Session: String, scenePhase: String, extSessionActive: Bool) {
 +        lock.lock()
 +        contextSensorName = sensorName
 +        contextSession = g7Session
++        contextScenePhase = scenePhase
++        contextExtSessionActive = extSessionActive
 +        lock.unlock()
 +    }
 +
@@ -6985,12 +7486,14 @@ index 000000000..5359b5bc7
 +        lock.lock()
 +        let name = contextSensorName
 +        let sid = contextSession
++        let scene = contextScenePhase
++        let extActive = contextExtSessionActive
 +        lock.unlock()
 +        enqueue(G7StructuredTelemetryLogLine.formatCoreTelemetry(
 +            sensorName: name,
 +            payload: payload,
 +            g7Session: sid
-+        ))
++        ) + " scene_phase=\(scene) ext_session_active=\(extActive)")
 +    }
 +
 +    /// Pre-formatted line (the adapter formats its own `module=g7_ble` lines on MainActor where

@@ -1,4 +1,4 @@
-From 78ca69de7808413e3641763a5ae3f218fde14a3b Mon Sep 17 00:00:00 2001
+From ad9202394f243c109b553d6ba5a0157c4d5f8cc3 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
 Date: Thu, 18 Jun 2026 07:56:46 +0100
 Subject: [PATCH] feat: phone-ble-observer-telemetry
@@ -11,8 +11,8 @@ Subject: [PATCH] feat: phone-ble-observer-telemetry
  .../Sources/Helpers/DynamicGlucoseColor.swift |  39 ++--
  Trio/Sources/Helpers/GlucoseHueColor.swift    |  41 +++++
  Trio/Sources/Models/WatchGlucoseObject.swift  |   2 +-
- .../WatchManager/AppleWatchManager.swift      | 170 ++++++++++++------
- 8 files changed, 213 insertions(+), 106 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 168 +++++++++++++-----
+ 8 files changed, 212 insertions(+), 105 deletions(-)
  create mode 100644 Trio/Sources/Helpers/GlucoseHueColor.swift
 
 diff --git a/Model/Helper/GlucoseStored+helper.swift b/Model/Helper/GlucoseStored+helper.swift
@@ -34,10 +34,10 @@ index ecc94d089..826ebdc82 100644
          let date = Date.oneDayAgo
          return NSPredicate(format: "isManual == %@ AND date >= %@", true as NSNumber, date as NSDate)
 diff --git a/Trio/Sources/APS/CGM/PluginSource.swift b/Trio/Sources/APS/CGM/PluginSource.swift
-index 705867096..c14eb4713 100644
+index c94974dcd..ee2427905 100644
 --- a/Trio/Sources/APS/CGM/PluginSource.swift
 +++ b/Trio/Sources/APS/CGM/PluginSource.swift
-@@ -19,6 +19,8 @@ final class PluginSource: GlucoseSource {
+@@ -24,6 +24,8 @@ final class PluginSource: GlucoseSource {
          self.glucoseStorage = glucoseStorage
          self.glucoseManager = glucoseManager
  
@@ -47,10 +47,10 @@ index 705867096..c14eb4713 100644
          cgmManager?.delegateQueue = processQueue
          cgmManager?.cgmManagerDelegate = self
 diff --git a/Trio/Sources/APS/DeviceDataManager.swift b/Trio/Sources/APS/DeviceDataManager.swift
-index d3444ea34..bda5b9fdd 100644
+index 01dc88c9d..eddc31773 100644
 --- a/Trio/Sources/APS/DeviceDataManager.swift
 +++ b/Trio/Sources/APS/DeviceDataManager.swift
-@@ -317,6 +317,7 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
+@@ -337,6 +337,7 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
  
      @Persisted(key: "BaseDeviceDataManager.lastFetchGlucoseDate") private var lastFetchGlucoseDate: Date = .distantPast
  
@@ -280,7 +280,7 @@ index 6fee5bcbd..e4fe058ad 100644
 -    let color: String
  }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 503357069..3233e8acd 100644
+index 77f057d95..74fcca132 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,6 +2,7 @@ import Combine
@@ -458,20 +458,16 @@ index 503357069..3233e8acd 100644
                  }
                  .sorted { $0.date < $1.date }
  
-@@ -454,10 +484,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -454,7 +484,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          let results = try await CoreDataStack.shared.fetchEntitiesAsync(
              ofType: GlucoseStored.self,
              onContext: backgroundContext,
 -            predicate: NSPredicate.glucose,
 +            predicate: NSPredicate.glucoseForTwoHoursAgo, // build 205 / P1: ~2h window (watch keeps full 24h locally)
              key: "date",
-             ascending: false,
--            fetchLimit: 288
-+            fetchLimit: 24
+             ascending: false
          )
- 
-         return try await backgroundContext.perform {
-@@ -513,7 +543,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -512,7 +542,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          var dict: [String: Any] = [
              WatchMessageKeys.date: state.date,
              WatchMessageKeys.currentGlucose: state.currentGlucose ?? "--",
@@ -479,7 +475,7 @@ index 503357069..3233e8acd 100644
              WatchMessageKeys.trend: state.trend ?? "",
              WatchMessageKeys.delta: state.delta ?? "",
              WatchMessageKeys.iob: state.iob ?? "",
-@@ -521,9 +550,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -520,9 +549,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.lastLoopTime: state.lastLoopTime ?? "",
              WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                  [
@@ -491,7 +487,7 @@ index 503357069..3233e8acd 100644
                  ]
              },
              WatchMessageKeys.minYAxisValue: state.minYAxisValue,
-@@ -549,11 +577,31 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -548,11 +576,31 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.units: state.units.rawValue
          ]
  
@@ -523,7 +519,7 @@ index 503357069..3233e8acd 100644
          return dict
      }
  
-@@ -774,13 +822,35 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -773,13 +821,35 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
          // R3: Build complication payload from explicit allowlist.
          // Uses safe if-let inserts to avoid Optional-as-Any bridging issues.
