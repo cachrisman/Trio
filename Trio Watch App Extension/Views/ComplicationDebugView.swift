@@ -374,6 +374,22 @@ struct ComplicationDebugView: View {
             }
             .buttonStyle(.bordered)
             .tint(.purple)
+
+            // C-216 (Task D): telemetry-only recovery marker — lets the user self-report "I
+            // restarted the app/watch to fix a stalled signal" so the moment correlates against
+            // surrounding BLE diagnostics. No other behavior change.
+            Button {
+                G7WatchSensorAdapter.shared.logManualRecoveryMarker()
+                triggerConfirmation(message: "📝 Marked")
+            } label: {
+                HStack {
+                    Image(systemName: "bandage")
+                    Text("Mark: restarted to fix signal")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.gray)
         }
     }
 

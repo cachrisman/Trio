@@ -103,6 +103,13 @@ final class G7WatchSensorAdapter: NSObject {
     /// Current pre-EGV disconnect streak count (for `ComplicationDebugView`).
     var consecutivePreEGVDisconnectsCount: Int { consecutivePreEGVDisconnects }
 
+    /// C-216 (Task D): user-initiated recovery marker, logged when the debug-screen button is
+    /// tapped after the user manually restarts the app/watch to fix a stalled signal. Telemetry-only
+    /// — correlates a self-reported "I restarted to fix it" moment against the surrounding BLE state.
+    func logManualRecoveryMarker() {
+        log("manual_recovery_marker", "source=debug_button")
+    }
+
     /// Human-readable description of `extendedSession.state`
     /// (`notStarted`/`scheduled`/`running`/`invalid`) or "nil" when no session is held. Use alongside
     /// `extSessionLastKnownActive` for diagnosis.
@@ -169,6 +176,10 @@ final class G7WatchSensorAdapter: NSObject {
     private var sessionConnectAt: Date?
     /// C-210-5: true once we've notified for the current direct-BLE stall episode (reset on recovery).
     private var stallNotifiedThisEpisode = false
+    /// C-216 (W-7a/Task B): consecutive heartbeat ticks observing `activePeripheralStateRaw == 1`
+    /// (CBPeripheralState.connecting). Sizes the duration of the unwatched-wedge fingerprint
+    /// (`active_peripheral_state=1` + `connect_pending_age_s=-1`, 06-30 deep-gap class).
+    private var consecutiveConnectingTicks = 0
 
     /// Set on `sensorDidConnect`, cleared on `sensorDisconnected`; read from telemetry / ExtensionDelegate.
     var adapterSessionID: String?
@@ -268,6 +279,9 @@ final class G7WatchSensorAdapter: NSObject {
     func start() {
         guard !isStarted else { return }
         isStarted = true
+        // C-216 (Task D): one-shot per process — a recovery marker distinguishing a genuine cold
+        // launch from other events in the telemetry stream.
+        log("cold_launch", "reason=process_start")
         stopTimers() // defensive only — start() is one-shot per process as of build 208
         loadDailyCountersIfNewCalendarDay()
         startHeartbeatTimer()
@@ -743,7 +757,22 @@ final class G7WatchSensorAdapter: NSObject {
         let deadSinceS = (!sessionLive && sessionInvalidatedAt != nil)
             ? Int(Date().timeIntervalSince(sessionInvalidatedAt!))
             : -1
-        log("heartbeat", "ext_session_active=\(lastKnownExtSessionActive) ext_session_state=\(extStateRaw) session_age_s=\(ageS) session_dead_since_s=\(deadSinceS)")
+
+        // C-216 (W-7a/Task B): BLE diagnostics snapshot on the heartbeat. `active_peripheral_state=1`
+        // (CBPeripheralState.connecting) together with `connect_pending_age_s=-1` is the unwatched-wedge
+        // fingerprint (06-30 deep-gap class) — a connect that never completes and has no this-process
+        // pending-connect marker; `connecting_ticks` sizes how long that state has persisted.
+        let diag = sensor.diagnosticsSnapshot()
+        if diag.activePeripheralStateRaw == 1 {
+            consecutiveConnectingTicks += 1
+        } else {
+            consecutiveConnectingTicks = 0
+        }
+
+        log(
+            "heartbeat",
+            "ext_session_active=\(lastKnownExtSessionActive) ext_session_state=\(extStateRaw) session_age_s=\(ageS) session_dead_since_s=\(deadSinceS) central_state=\(diag.centralStateRaw) scan_active=\(diag.isScanning) active_peripheral_state=\(diag.activePeripheralStateRaw ?? -1) connect_pending_age_s=\(diag.connectPendingAgeS ?? -1) s_since_discover=\(diag.secondsSinceLastDiscover ?? -1) last_rssi=\(diag.lastDiscoverRSSI ?? 127) connecting_ticks=\(consecutiveConnectingTicks)"
+        )
 
         if !sessionNearExpiryLogged,
            extendedSession?.state == .running,
@@ -819,9 +848,14 @@ final class G7WatchSensorAdapter: NSObject {
         let sinceConnectS: Int = sessionConnectAt.map { Int(now.timeIntervalSince($0)) } ?? -1
         let dexcomSide = sinceConnectS < 0 || sinceConnectS > StallThreshold.connectRecentSec
 
+        // C-216 (Task A): stamp last-seen RSSI + its age onto the stall event. This tick runs at most
+        // every ~5 min, so one snapshot call here is cheap; `rssi_age_s=-1` means no didDiscover has
+        // happened yet this process (secondsSinceLastDiscover nil), `last_rssi=127` = BT-spec "RSSI not available".
+        let diag = sensor.diagnosticsSnapshot()
+        let rssiAgeS = diag.secondsSinceLastDiscover ?? -1
         log(
             "direct_ble_stall_detected",
-            "tier=\(tier.rawValue) direct_stale_min=\(staleMin) phone_fresh=\(phoneFresh) fault=\(dexcomSide ? "dexcom_side" : "trio_side") since_connect_s=\(sinceConnectS)"
+            "tier=\(tier.rawValue) direct_stale_min=\(staleMin) phone_fresh=\(phoneFresh) fault=\(dexcomSide ? "dexcom_side" : "trio_side") since_connect_s=\(sinceConnectS) last_rssi=\(diag.lastDiscoverRSSI ?? 127) rssi_age_s=\(rssiAgeS)"
         )
 
         if WatchState.shared.directBleStall != tier { WatchState.shared.directBleStall = tier }
@@ -1273,8 +1307,13 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         } else if sessionPhase == .preEGV {
             consecutivePreEGVDisconnects += 1
             let minutesSinceEGV = minutesSinceLastEGV()
+            // C-216 (W-6): sinceConnectS < 0 means no `sessionConnectAt` existed for this disconnect —
+            // i.e. no preceding adapter-level connect. These are watchdog-cancel fallout (measured at
+            // 67% of the old pre_egv_disconnect metric), not a real pre-EGV auth failure — split the
+            // event name only; all fields and counter/stale-binding logic below are unchanged.
+            let eventName = sinceConnectS < 0 ? "phantom_disconnect" : "pre_egv_disconnect"
             log(
-                "pre_egv_disconnect",
+                eventName,
                 "since_connect_s=\(sinceConnectS) consecutive_count=\(consecutivePreEGVDisconnects) suspected_eos=\(suspectedEndOfSession) minutes_since_last_egv=\(minutesSinceEGV) ext_session_active=\(lastKnownExtSessionActive)"
             )
             // Gate the diagnostic / remediation thresholds on `minutesSinceLastEGV` too: a high
