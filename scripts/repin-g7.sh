@@ -7,8 +7,12 @@
 #   Patch 02 (02-g7-reading-time-with-seconds.patch) pins the G7SensorKit
 #   submodule to a commit on the cachrisman fork. That SHA appears in TWO places
 #   in the patch that must stay in agreement:
-#     1. the gitlink hunk's `+Subproject commit <sha>` line, and
-#     2. the `index <base>..<new> 160000` line's *after* abbreviation.
+#     1. the gitlink hunk's `+Subproject commit <sha>` line,
+#     2. the `index <base>..<new> 160000` line's *after* abbreviation, and
+#     3. (when dev's own G7SensorKit pointer has moved, e.g. an upstream bump) the
+#        base `-Subproject commit <sha>` line + the index *before* abbreviation,
+#        re-derived from `dev:G7SensorKit` — a stale base makes `git am --3way`
+#        fail with an unresolvable submodule conflict.
 #   Hand-editing the patch is against the "never hand-edit patch files" rule and
 #   is easy to get half-right (update one site, miss the other). This script does
 #   the edit mechanically, validates it with patch-test.sh (git am is strict and
@@ -171,6 +175,20 @@ ABBR_LEN=$(grep -E '^index [0-9a-f]+\.\.[0-9a-f]+ 160000' "$PATCH_FILE" | head -
 [ -n "$ABBR_LEN" ] && [ "$ABBR_LEN" -ge 7 ] || ABBR_LEN=9
 NEW_ABBR=$(git -C "$G7_CLONE" rev-parse --short="$ABBR_LEN" "$NEW_SHA")
 
+# The gitlink hunk's BASE ('-') side must match the submodule pointer on the target
+# branch, or `git am --3way` hits an unresolvable submodule conflict. It goes stale
+# whenever upstream bumps G7SensorKit on dev (first hit: 0.8.4 moved 4d0780d -> 0c87905,
+# 2026-07-04). Re-derive it from dev's tree and rewrite the '-Subproject commit' line
+# and the 'index <before>..' abbreviation when they differ.
+PATCH_BASE_SHA=$(grep -E '^-Subproject commit [0-9a-f]{40}' "$PATCH_FILE" | head -1 | awk '{print $3}')
+[ -n "$PATCH_BASE_SHA" ] || die "Could not read the base '-Subproject commit <sha>' from $PATCH_FILE"
+BASE_SHA=$(git -C "$REPO_ROOT" rev-parse "dev:G7SensorKit") \
+    || die "Could not resolve dev's G7SensorKit gitlink (dev:G7SensorKit)"
+BASE_ABBR=${BASE_SHA:0:$ABBR_LEN}
+if [ "$PATCH_BASE_SHA" != "$BASE_SHA" ]; then
+    print_info "Base gitlink moved on dev: $PATCH_BASE_SHA -> $BASE_SHA (rewriting '-' side too)"
+fi
+
 if [ "$DRY_RUN" = true ]; then
     print_info "[dry-run] would rewrite:"
     print_info "    +Subproject commit $OLD_SHA  ->  $NEW_SHA"
@@ -201,10 +219,15 @@ trap _restore_on_fail EXIT
 # Temp beside the patch (same filesystem; avoids mktemp, which the harness
 # sandbox blocks — keeps the script runnable without disabling the sandbox).
 tmp="${PATCH_FILE}.repin.tmp"
-OLD_SHA="$OLD_SHA" NEW_SHA="$NEW_SHA" NEW_ABBR="$NEW_ABBR" awk '
+OLD_SHA="$OLD_SHA" NEW_SHA="$NEW_SHA" NEW_ABBR="$NEW_ABBR" \
+PATCH_BASE_SHA="$PATCH_BASE_SHA" BASE_SHA="$BASE_SHA" BASE_ABBR="$BASE_ABBR" awk '
     /^diff --git a\/G7SensorKit b\/G7SensorKit/ { ing7=1 }
     ing7 && /^index [0-9a-f]+\.\.[0-9a-f]+ 160000/ {
+        sub(/^index [0-9a-f]+/, "index " ENVIRON["BASE_ABBR"])
         sub(/\.\.[0-9a-f]+ 160000/, ".." ENVIRON["NEW_ABBR"] " 160000")
+    }
+    ing7 && $0 == "-Subproject commit " ENVIRON["PATCH_BASE_SHA"] {
+        print "-Subproject commit " ENVIRON["BASE_SHA"]; next
     }
     ing7 && $0 == "+Subproject commit " ENVIRON["OLD_SHA"] {
         print "+Subproject commit " ENVIRON["NEW_SHA"]; next
@@ -214,9 +237,10 @@ OLD_SHA="$OLD_SHA" NEW_SHA="$NEW_SHA" NEW_ABBR="$NEW_ABBR" awk '
 ' "$PATCH_FILE" > "$tmp"
 mv "$tmp" "$PATCH_FILE"
 
-# Sanity: exactly the new SHA is now pinned, old gone.
+# Sanity: exactly the new SHA is now pinned, old gone; base side matches dev's gitlink.
 grep -q "^+Subproject commit $NEW_SHA" "$PATCH_FILE" || die "Rewrite failed: new +Subproject commit line not present."
 grep -q "^+Subproject commit $OLD_SHA" "$PATCH_FILE" && die "Rewrite failed: old +Subproject commit line still present."
+grep -q "^-Subproject commit $BASE_SHA" "$PATCH_FILE" || die "Rewrite failed: base -Subproject commit line does not match dev's gitlink ($BASE_SHA)."
 print_success "Patch 02 re-pinned to $NEW_SHA (index after-abbrev $NEW_ABBR)."
 
 #-------------------------------------------------------------------------------
