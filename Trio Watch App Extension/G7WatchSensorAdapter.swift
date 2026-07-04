@@ -125,6 +125,28 @@ final class G7WatchSensorAdapter: NSObject {
     /// during teardown).
     var extSessionLastKnownActive: Bool { lastKnownExtSessionActive }
 
+    /// C-217-D4: seconds since the current extended runtime session started, via `trueSessionAge()`
+    /// (persisted-epoch first, in-memory fallback — survives adoption/resurrection, §8.7). `nil`
+    /// when no session-start stamp is known.
+    var extSessionAgeSeconds: Int? { trueSessionAge().map(Int.init) }
+
+    /// C-217-D4: true when the C-212-5 near-expiry re-anchor in `renewSessionIfNeeded()` would
+    /// consider the live session eligible right now — `.running` and at least `sessionReanchorAge`
+    /// old. Debug-only mirror of that branch's own guards; reading it never triggers a re-anchor.
+    var isReanchorEligibleNow: Bool {
+        guard extendedSession?.state == .running else { return false }
+        return (trueSessionAge() ?? 0) >= Self.sessionReanchorAge
+    }
+
+    /// C-217-D1: read-only mirror of `consecutiveConnectingTicks` (C-216 W-7a/Task B) for the
+    /// debug "BLE link" row's `ticks:<n>` suffix.
+    var connectingTicksCount: Int { consecutiveConnectingTicks }
+
+    /// C-217-D1/D2: BLE diagnostics snapshot for the debug screen. `sensor.diagnosticsSnapshot()`
+    /// is a BLOCKING `managerQueue.sync` hop — the debug UI must poll this at <= 0.2 Hz (the
+    /// existing 5s tick), never at the 1 Hz tick used for `now`/countdown re-rendering.
+    func bleDiagnostics() -> G7BLEDiagnosticsSnapshot { sensor.diagnosticsSnapshot() }
+
     private let timerQueue = DispatchQueue(label: "org.nightscout.trio.watch.g7WatchAdapter.timers", qos: .utility)
     private var heartbeatTimer: DispatchSourceTimer?
     private var expectedWindowTimer: DispatchSourceTimer?

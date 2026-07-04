@@ -133,6 +133,10 @@ extension TrioComplicationDataSource {
     var gatedSlotsToday: Int = 0
     /// True when `CBCentralManager` had state restored this process (willRestoreState).
     var bleWasRestored: Bool = false
+    // C-217-D5: timestamp companion to `bleWasRestored`, set alongside it from
+    // `WatchTelemetryRing.enqueueCoreTelemetry`'s `will_restore_state` observer hook. UI-207-3's
+    // deferred "Was restored" row — display wiring only, main-thread, mirrors `bleLastConnectAt`.
+    var bleLastRestoreAt: Date?
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 

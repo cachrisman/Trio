@@ -71,6 +71,17 @@ final class WatchTelemetryRing: @unchecked Sendable {
             payload: payload,
             g7Session: sid
         ) + " scene_phase=\(scene) ext_session_active=\(extActive)")
+        // C-217-D5: UI-207-3's deferred "Was restored" row — display wiring only. Observe-only
+        // hook for the fork's `will_restore_state` event: placed AFTER the enqueue and OUTSIDE
+        // the ring's lock, so the telemetry hot path (lock -> append -> yield) is untouched. The
+        // string compare allocates nothing on the non-matching (overwhelmingly common) path; the
+        // main-queue hop happens only on the rare restore event.
+        if payload.event == "will_restore_state" {
+            DispatchQueue.main.async {
+                WatchState.shared.bleWasRestored = true
+                WatchState.shared.bleLastRestoreAt = Date()
+            }
+        }
     }
 
     /// Pre-formatted line (the adapter formats its own `module=g7_ble` lines on MainActor where
