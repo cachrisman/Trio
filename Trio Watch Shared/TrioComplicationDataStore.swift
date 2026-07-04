@@ -90,14 +90,12 @@ struct TrioComplicationSnapshot: Equatable, Codable {
             .joined()
 
         if let doubleValue = Double(numericPortion), doubleValue > 0 {
-            // C-209-6 (review 1.10): mmol/L-range values keep one decimal — integer rounding
-            // turned "5.6" into "6". mg/dL values (≥ 40 by CGM display floor) keep integer
-            // rounding, and whole-number mmol values still collapse to the bare integer.
+            // F-3a (fable5 finding 1.10): mmol/L-range values (< 40, plausible mmol ceiling)
+            // always keep one decimal, including whole numbers — integer rounding previously
+            // turned "5.6" into "6" and collapsed "5.0" to "5", losing the mmol/mg-dL visual
+            // distinction. mg/dL values (>= 40 by CGM display floor) keep integer rounding.
             if doubleValue < 40 {
-                let tenths = (doubleValue * 10).rounded() / 10
-                return tenths == tenths.rounded()
-                    ? String(Int(tenths))
-                    : String(format: "%.1f", tenths)
+                return String(format: "%.1f", doubleValue)
             }
             let rounded = Int(doubleValue.rounded())
             return String(rounded)

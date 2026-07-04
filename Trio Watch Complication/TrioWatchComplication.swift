@@ -85,12 +85,20 @@ struct TrioWatchComplicationEntry: TimelineEntry {
             return color
         }
 
-        guard let glucoseValue = Double(glucose) else {
+        // F-3b: normalize comma decimals before parsing — an unnormalized comma-locale
+        // mmol value ("5,6") fails Double(_:) entirely and falls through to .secondary.
+        let normalized = glucose.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        guard let glucoseValue = Double(normalized) else {
             return .secondary
         }
 
-        let lowThreshold: Double = 70
-        let highThreshold: Double = 180
+        // F-3b: mg/dL and mmol/L thresholds diverge (70/180 mg/dL vs 3.9/10.0 mmol/L) — a
+        // raw mmol value like 5.6 previously matched the mg/dL "<= 70" branch and rendered
+        // red. This fallback path only runs when the snapshot carries no hex color.
+        let isMmol = glucoseValue < 40
+        let lowThreshold: Double = isMmol ? 3.9 : 70
+        let highThreshold: Double = isMmol ? 10.0 : 180
 
         if glucoseValue <= lowThreshold {
             return .red
@@ -241,9 +249,8 @@ struct TrioWatchComplicationProvider: TimelineProvider {
         var entries: [TrioWatchComplicationEntry] = []
         let now = Date().roundedDownToMinute
 
-        for minuteOffset in 0 ..< 30 {
-            let entryDate = now.addingTimeInterval(TimeInterval(minuteOffset * 60))
-            let entry = TrioWatchComplicationEntry(
+        func makeEntry(at entryDate: Date) -> TrioWatchComplicationEntry {
+            TrioWatchComplicationEntry(
                 date: entryDate,
                 readingDate: timelineBase.readingDate,
                 glucose: timelineBase.glucose,
@@ -253,8 +260,23 @@ struct TrioWatchComplicationProvider: TimelineProvider {
                 glucoseColor: timelineBase.glucoseColor,
                 source: timelineBase.source
             )
-            entries.append(entry)
         }
+
+        for minuteOffset in 0 ..< 30 {
+            entries.append(makeEntry(at: now.addingTimeInterval(TimeInterval(minuteOffset * 60))))
+        }
+
+        // F-1: coarser entries beyond the 30-minute dense window, carrying the SAME reading
+        // data as timelineBase. Entries are budget-free (only reloads cost WidgetKit budget),
+        // so extending the horizon here keeps the staleness display honest through a
+        // multi-hour reload drought instead of freezing on the last dense entry ("30m" stale).
+        for minuteOffset in stride(from: 35, through: 55, by: 5) {
+            entries.append(makeEntry(at: now.addingTimeInterval(TimeInterval(minuteOffset * 60))))
+        }
+        for minuteOffset in stride(from: 60, through: 240, by: 15) {
+            entries.append(makeEntry(at: now.addingTimeInterval(TimeInterval(minuteOffset * 60))))
+        }
+
         let nextRefresh = now.addingTimeInterval(refreshInterval)
         completion(Timeline(entries: entries, policy: .after(nextRefresh)))
     }
@@ -285,10 +307,28 @@ struct TrioWatchComplicationEntryView: View {
             TrioAccessoryCircularView(entry: entry)
         case .accessoryCorner:
             TrioAccessoryCornerView(entry: entry)
+        case .accessoryInline:
+            TrioAccessoryInlineView(entry: entry)
+        case .accessoryRectangular:
+            TrioAccessoryRectangularView(entry: entry)
         default:
             Image("ComplicationIcon")
                 .widgetAccentable()
         }
+    }
+}
+
+// F-2: single source of truth for the staleness/recency color used across complication
+// families (corner's widgetLabel, circular's trend text, rectangular's relative-time text).
+// Returns nil for a fresh reading (< 5 min) so callers keep their own fresh-state color.
+private func recencyColor(for entry: TrioWatchComplicationEntry) -> Color? {
+    let age = max(0, entry.date.timeIntervalSince(entry.readingDate))
+    if age < 5 * 60 {
+        return nil
+    } else if age < 15 * 60 {
+        return .yellow
+    } else {
+        return .red
     }
 }
 
@@ -302,9 +342,7 @@ struct TrioAccessoryCornerView: View {
             .widgetAccentable()
             .widgetCurvesContent()
             .widgetLabel {
-                let age = max(0, entry.date.timeIntervalSince(entry.readingDate))
-                let recencyColor: Color = age < 5 * 60 ? .green :
-                    age < 15 * 60 ? .yellow : .red
+                let recencyColor = recencyColor(for: entry) ?? .green
                 let deltaText = entry.deltaDisplayText
                 let timeText = shortRelativeTime(from: entry.readingDate, now: entry.date)
                 let hasDelta = !deltaText.isEmpty && deltaText != ComplicationDefaults.fallbackDelta
@@ -403,10 +441,60 @@ struct TrioAccessoryCircularView: View {
             Text(entry.glucoseNumber)
                 .font(.headline)
                 .foregroundColor(entry.glucoseDisplayColor)
+            // F-2: trend carries the shared recency color instead of a fixed .white, so a
+            // stale reading is visible even when WidgetKit defers reloads.
             Text(entry.trendSymbolOnly)
-                .foregroundColor(.white)
+                .foregroundColor(recencyColor(for: entry) ?? .white)
         }
         .widgetAccentable()
+    }
+}
+
+// V-1: accessoryInline renders a single line of text (no layout control beyond that), so
+// this is intentionally a plain, short Text; color styling is not honored in this family.
+struct TrioAccessoryInlineView: View {
+    var entry: TrioWatchComplicationEntry
+
+    var body: some View {
+        let deltaText = entry.deltaDisplayText
+        let hasDelta = !deltaText.isEmpty && deltaText != ComplicationDefaults.fallbackDelta
+        Text(hasDelta
+            ? "\(entry.glucoseNumber) \(entry.trendSymbolOnly) \(deltaText)"
+            : "\(entry.glucoseNumber) \(entry.trendSymbolOnly)")
+    }
+}
+
+// V-2: text-only v1. No sparkline yet — history data is not app-group-readable from the
+// complication extension today (deliberate deferral; revisit once a shared history buffer
+// exists in the app group).
+struct TrioAccessoryRectangularView: View {
+    var entry: TrioWatchComplicationEntry
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            HStack(spacing: 4) {
+                Text(entry.glucoseNumber)
+                    .font(.headline)
+                    .foregroundColor(entry.glucoseDisplayColor)
+                    .widgetAccentable()
+                Text(entry.trendSymbolOnly)
+                    .foregroundColor(.white)
+                Text(entry.deltaDisplayText)
+                    .font(.subheadline)
+                    .foregroundColor(.white)
+            }
+
+            let timeText = shortRelativeTime(from: entry.readingDate, now: entry.date)
+            let bleSuffix = entry.source == .g7DirectBLE ? " · BLE" : ""
+            Text("\(timeText)\(bleSuffix)")
+                .foregroundColor(recencyColor(for: entry) ?? .white)
+
+            if let stateText = entry.state, !stateText.isEmpty {
+                Text(stateText)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
     }
 }
 
@@ -422,7 +510,9 @@ struct TrioAccessoryCircularView: View {
         .description(String(localized: "Shows current glucose, delta, and trend data."))
         .supportedFamilies([
             .accessoryCorner,
-            .accessoryCircular
+            .accessoryCircular,
+            .accessoryInline,
+            .accessoryRectangular
         ])
     }
 }
