@@ -112,7 +112,7 @@ struct TrioMainWatchView: View {
                 // Page 2: Complication Debug View (only constructed when visible)
                 Group {
                     if currentPage == 2 {
-                        ComplicationDebugView()
+                        WatchDiagnosticsView()
                     } else {
                         Color.clear
                     }

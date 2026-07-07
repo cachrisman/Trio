@@ -2,7 +2,7 @@ import G7SensorKit // C-217-D1/D2: G7BLEDiagnosticsSnapshot
 import SwiftUI
 import WatchKit
 
-struct ComplicationDebugView: View {
+struct WatchDiagnosticsView: View {
     @State private var snapshot: TrioComplicationSnapshot?
     @State private var showConfirmation = false
     @State private var confirmationMessage = ""
@@ -38,6 +38,12 @@ struct ComplicationDebugView: View {
     /// transition is observed) are not unnecessarily suppressed.
     @State private var isActive: Bool = true
 
+    // C-217 D-7: watch-local kill-switches for the Task-2 wedge escalation and Task-4 central
+    // re-init. Keys MUST match G7WatchSensorAdapter.Keys.killSwitch* (applied to the fork's
+    // G7BackgroundHints flags at launch by applyKillSwitchesFromDefaults). Default ON.
+    @AppStorage("G7WatchAdapter.killSwitch.connectWedgeEscalation") private var wedgeEscalationEnabled = true
+    @AppStorage("G7WatchAdapter.killSwitch.centralReinit") private var centralReinitEnabled = true
+
     private let dataStore = TrioComplicationDataStore.shared
 
     // Static formatter — allocated once, reused every 1s tick (item 21)
@@ -62,25 +68,30 @@ struct ComplicationDebugView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                // SECTION 1: Data Store State
-                sectionHeader("DATA STORE")
-                dataStoreStateView
+                glucoseHeadlineView
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 2: Log Files
-                sectionHeader("LOG FILES")
-                logFilesView
-
-                Divider().padding(.vertical, 4)
-
-                // SECTION 3: G7 Direct BLE
                 sectionHeader("G7 DIRECT BLE")
                 G7DirectBleDebugSection(now: now, diag: bleDiag)
 
                 Divider().padding(.vertical, 4)
 
-                // SECTION 4: Actions
+                sectionHeader("LOGS")
+                logFilesView
+
+                Divider().padding(.vertical, 4)
+
+                sectionHeader("DATA STORE")
+                dataStoreStateView
+
+                Divider().padding(.vertical, 4)
+
+                sectionHeader("ESCALATION")
+                escalationControlsView
+
+                Divider().padding(.vertical, 4)
+
                 sectionHeader("ACTIONS")
                 actionsView
                     .padding(.bottom, 8)
@@ -128,30 +139,70 @@ struct ComplicationDebugView: View {
         .overlay(confirmationOverlay)
     }
 
+    // MARK: - Glucose Headline
+
+    @ViewBuilder
+    private var glucoseHeadlineView: some View {
+        if let s = snapshot {
+            HStack(spacing: 8) {
+                Text(s.glucose)
+                    .foregroundColor(glucoseColor(for: s.glucose))
+                    .fontWeight(.bold)
+                Text(s.trend.isEmpty ? "—" : trendSymbol(s.trend))
+                Text(s.delta)
+            }
+            .font(.title)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 2)
+        } else {
+            Text("No snapshot available")
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
+    // MARK: - Escalation kill-switches (C-217 D-7)
+
+    private var escalationControlsView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: $wedgeEscalationEnabled) {
+                Text("Wedge escalation (T2)")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+            .onChange(of: wedgeEscalationEnabled) { _, newValue in
+                G7BackgroundHints.isConnectWedgeEscalationEnabled = newValue
+                G7WatchSensorAdapter.shared.logKillSwitchToggled("connect_wedge_escalation", enabled: newValue)
+            }
+            Toggle(isOn: $centralReinitEnabled) {
+                Text("Central re-init (T4)")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+            .onChange(of: centralReinitEnabled) { _, newValue in
+                G7BackgroundHints.isCentralReinitEnabled = newValue
+                G7WatchSensorAdapter.shared.logKillSwitchToggled("central_reinit", enabled: newValue)
+            }
+        }
+    }
+
     // MARK: - Data Store State Section (items 3–9)
 
     private var dataStoreStateView: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let s = snapshot {
-                HStack(spacing: 8) {
-                    Text(s.glucose)
-                        .foregroundColor(glucoseColor(for: s.glucose))
-                        .fontWeight(.bold)
-                    Text(s.trend.isEmpty ? "—" : trendSymbol(s.trend))
-                    Text(s.delta)
-                }
-                .font(.title)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 2)
-
                 // item 3: source row
                 HStack {
                     Text("Source:")
                     Spacer()
                     Text(s.source?.shortLabel ?? "?")
                         .foregroundColor(.cyan)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                 }
 
                 HStack {
@@ -159,34 +210,17 @@ struct ComplicationDebugView: View {
                     Spacer()
                     Text(formatTime(s.readingDate))
                         .foregroundColor(ageColor(s.readingDate, relativeTo: now))
-                }
-
-                // item 4: next reading countdown — only meaningful for BLE source where
-                // 5-min cadence is authoritative. Phone/HK readings may be delayed,
-                // backfilled, or gap-filled; showing a countdown would be misleading.
-                if s.source == .g7DirectBLE {
-                    HStack {
-                        Text("Next:")
-                        Spacer()
-                        // C-217-D6: 1 Hz stepped countdown ring (reference = snapshot readingDate).
-                        let fraction = g7CountdownFraction(from: s.readingDate, to: now)
-                        CountdownRingView(fraction: fraction, color: g7CountdownRingColor(fraction))
-                        Text(nextReadingCountdown(s.readingDate, relativeTo: now))
-                            .foregroundColor(nextReadingColor(s.readingDate, relativeTo: now))
-                            .monospacedDigit()
-                    }
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                 }
 
                 HStack {
                     Text("Saved:")
                     Spacer()
                     Text(formatTime(s.date))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                 }
-
-            } else {
-                Text("No snapshot available")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
             }
 
             // items 7–8: always visible — most useful when there's no snapshot yet
@@ -194,6 +228,8 @@ struct ComplicationDebugView: View {
                 Text("Last reload:")
                 Spacer()
                 Text(formatTime(dataStore.lastReloadTimestamp))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
 
             HStack {
@@ -203,12 +239,16 @@ struct ComplicationDebugView: View {
                     HStack(spacing: 4) {
                         Circle().fill(Color.red).frame(width: 8, height: 8)
                         Text("\(Int(dataStore.secondsUntilNextReloadAllowed))s")
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
                     }
                     .foregroundColor(.red)
                 } else {
                     HStack(spacing: 4) {
                         Circle().fill(Color.green).frame(width: 8, height: 8)
                         Text("Ready")
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
                     }
                     .foregroundColor(.green)
                 }
@@ -253,6 +293,8 @@ struct ComplicationDebugView: View {
                 Circle().fill(Color.yellow).frame(width: 8, height: 8)
                 Text("ACK pending (\(pendingCount))")
                     .foregroundColor(.yellow)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
         } else if watchLogCount > 0 || drainCount > 0 {
             // Slow phase: files not yet transferred/deleted
@@ -260,12 +302,16 @@ struct ComplicationDebugView: View {
                 Circle().fill(Color.orange).frame(width: 8, height: 8)
                 Text("\(watchLogCount)L · \(drainCount)D queued")
                     .foregroundColor(.orange)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
         } else {
             HStack(spacing: 4) {
                 Circle().fill(Color.green).frame(width: 8, height: 8)
                 Text("Clean")
                     .foregroundColor(.green)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
         }
     }
@@ -340,6 +386,34 @@ struct ComplicationDebugView: View {
 
     private var actionsView: some View {
         VStack(spacing: 8) {
+            // C-216 (Task D): telemetry-only recovery marker — lets the user self-report "I
+            // restarted the app/watch to fix a stalled signal" so the moment correlates against
+            // surrounding BLE diagnostics. No other behavior change.
+            Button {
+                G7WatchSensorAdapter.shared.logManualRecoveryMarker()
+                triggerConfirmation(message: "📝 Marked")
+            } label: {
+                HStack {
+                    Image(systemName: "bandage")
+                    Text("Mark: restarted to fix signal")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.gray)
+
+            Button {
+                flushWatchLogs()
+            } label: {
+                HStack {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("Flush Logs")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.purple)
+
             Button {
                 Task {
                     await WatchLogger.shared.log("🔧 Debug: Force Reload tapped")
@@ -375,34 +449,6 @@ struct ComplicationDebugView: View {
             }
             .buttonStyle(.bordered)
             .tint(.orange)
-
-            Button {
-                flushWatchLogs()
-            } label: {
-                HStack {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("Flush Logs")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .tint(.purple)
-
-            // C-216 (Task D): telemetry-only recovery marker — lets the user self-report "I
-            // restarted the app/watch to fix a stalled signal" so the moment correlates against
-            // surrounding BLE diagnostics. No other behavior change.
-            Button {
-                G7WatchSensorAdapter.shared.logManualRecoveryMarker()
-                triggerConfirmation(message: "📝 Marked")
-            } label: {
-                HStack {
-                    Image(systemName: "bandage")
-                    Text("Mark: restarted to fix signal")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .tint(.gray)
         }
     }
 
@@ -526,7 +572,7 @@ private struct G7DirectBleDebugSection: View {
     /// `managerQueue.sync` hop inside `bleDiagnostics()` — never refresh at 1 Hz). nil until first poll.
     let diag: G7BLEDiagnosticsSnapshot?
 
-    /// G7 nominal cadence (matches `ComplicationDebugView.expectedReadingCadence`).
+    /// G7 nominal cadence (matches `WatchDiagnosticsView.expectedReadingCadence`).
     private static let expectedCadence: TimeInterval = 300
 
     // item 21: static formatter
@@ -538,170 +584,151 @@ private struct G7DirectBleDebugSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // item 12: status now reflects build 191 state machine via updated enum
             HStack {
-                Text("Status:")
+                Text("Capture (slots):")
                 Spacer()
-                Text(WatchState.shared.g7DirectBleStatus.rawValue)
-            }
-            // C-217-D1: live CBPeripheralState from the 5s-polled diagnostics snapshot.
-            // "connecting (unwatched)" (red) = state 1 with no this-process pending-connect
-            // marker — the 06-30 deep-gap wedge fingerprint (C-216 W-7a).
-            HStack {
-                Text("BLE link:")
-                Spacer()
-                Text(bleLinkText)
-                    .foregroundColor(bleLinkColor)
-            }
-            // C-217-D2: last didDiscover RSSI + its age (127 = BT-spec "RSSI not available").
-            HStack {
-                Text("Signal:")
-                Spacer()
-                Text(signalText)
-                    .foregroundColor(signalColor)
+                Text(slotCaptureText)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            // C-217-D3: cross-source freshness stall tier (C-210-4) — distinct from Status,
-            // which reflects the BLE engine state, not EGV freshness.
-            HStack {
-                Text("Stall:")
-                Spacer()
-                Text(stallText)
-                    .foregroundColor(stallColor)
-            }
-            // Ext-session diagnostics: state of the live WKExtendedRuntimeSession (or the last
-            // observed `active` flag as a fallback) and whether a chain-renewal is pending.
-            HStack {
-                Text("Ext session:")
-                Spacer()
-                Text(extSessionDisplay)
-                    .foregroundColor(.secondary)
-            }
-            // items 13–14: bleLastConnectAt / bleLastEGVDate / bleLastEGVValue (updated by `G7WatchSensorAdapter`)
             HStack {
                 Text("Last connect:")
                 Spacer()
                 Text(formatG7Time(WatchState.shared.bleLastConnectAt))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            // Countdown to next anticipated connect (last connect + 5 min cadence).
             HStack {
                 Text("Next connect:")
                 Spacer()
-                // C-217-D6: 1 Hz stepped countdown ring (reference = bleLastConnectAt).
-                let fraction = g7CountdownFraction(from: WatchState.shared.bleLastConnectAt, to: now)
-                CountdownRingView(fraction: fraction, color: g7CountdownRingColor(fraction))
                 Text(nextConnectCountdown(WatchState.shared.bleLastConnectAt))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
             HStack {
                 Text("Last BLE EGV:")
                 Spacer()
                 if let d = WatchState.shared.bleLastEGVDate,
                    let v = WatchState.shared.bleLastEGVValue {
-                    Text("\(formatG7Time(d)) · \(v) mg/dL")
+                    Text("\(formatG7Time(d)) · \(v)")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                 } else {
                     Text("--")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                 }
             }
-            // Minutes since the last EGV epoch — primary diagnostic for "is the sensor stalled?".
             HStack {
                 Text("Since EGV:")
                 Spacer()
                 Text(sinceEGVDisplay)
                     .foregroundColor(sinceEGVColor)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            // W8: high-value diagnostics that already exist in code but weren't displayed.
-            // UI-207-3: relabeled from "Last BLE event" — `g7DirectBleLastEventAt` is bumped on status
-            // changes AND scene-phase transitions (WatchState.applyG7DirectBleScenePhase), not just BLE
-            // activity, so it's a status-event timestamp, not a BLE-activity one.
-            HStack {
-                Text("Last status event:")
-                Spacer()
-                Text(formatG7Time(WatchState.shared.g7DirectBleLastEventAt)) // section-local helper (Date?) — handles nil
-                    .foregroundColor(.secondary)
-            }
-            HStack {
-                Text("Session ID:")
-                Spacer()
-                Text(G7WatchSensorAdapter.shared.adapterSessionID ?? "—")
-                    .foregroundColor(.secondary)
-                    .font(.system(.caption, design: .monospaced))
-            }
-            // Pre-EGV disconnect streak: > 2 means the adapter is struggling to authenticate.
             HStack {
                 Text("Pre-EGV disconnects:")
                 Spacer()
                 Text("\(G7WatchSensorAdapter.shared.consecutivePreEGVDisconnectsCount)")
                     .foregroundColor(G7WatchSensorAdapter.shared.consecutivePreEGVDisconnectsCount > 2 ? .red : .secondary)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            // UI-207-1: raw daily totals (Connects is event-based — multiple per slot — so it must
-            // NOT be shown over a slot denominator). Slot capture rate is a separate, clearly-labeled row.
             HStack {
-                Text("Connects:")
+                Text("Status:")
                 Spacer()
-                Text("\(WatchState.shared.bleConnectsToday)")
+                Text(WatchState.shared.g7DirectBleStatus.rawValue)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+            HStack {
+                Text("BLE link:")
+                Spacer()
+                Text(bleLinkText)
+                    .foregroundColor(bleLinkColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+            HStack {
+                Text("Signal:")
+                Spacer()
+                Text(signalText)
+                    .foregroundColor(signalColor)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
             HStack {
-                Text("EGVs:")
+                Text("Stall:")
                 Spacer()
-                Text("\(WatchState.shared.bleEGVsToday)")
-                    .monospacedDigit()
+                Text(stallText + (G7WatchSensorAdapter.shared.lastDirectBleStallFault.map { " · " + ($0 == "dexcom_side" ? "dex" : "trio") } ?? ""))
+                    .foregroundColor(stallColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
             HStack {
-                Text("Capture (slots):")
+                Text("Ext session:")
                 Spacer()
-                Text(slotCaptureText)
-                    .monospacedDigit()
-            }
-            HStack {
-                Text("Windows:")
-                Spacer()
-                Text("\(eligibleSlots) elig · \(WatchState.shared.gatedSlotsToday) gated")
+                Text(extSessionDisplay)
                     .foregroundColor(.secondary)
-                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            // Phone-relay sensor name (UserDefaults via adapter) — must match WC `g7_active_sensor_name` sync.
             HStack {
-                Text("Phone sensor:")
+                Text("Sensor:")
                 Spacer()
-                Text(G7WatchSensorAdapter.shared.telemetrySensorName)
-                    .foregroundColor(.secondary)
+                Text(sensorRowText)
+                    .foregroundColor(sensorRowConverged ? .secondary : .yellow)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
             }
-            // Phone-pushed identity the adapter will accept in `didDiscoverNewSensor`.
-            HStack {
-                Text("Expected:")
-                Spacer()
-                Text(G7WatchSensorAdapter.shared.expectedSensorName ?? "—")
-                    .foregroundColor(.secondary)
-            }
-            // Name the live `G7Sensor` is currently bound to (set in `sensorDidConnect`). Should
-            // converge to `Expected:` once a discovery is accepted.
-            HStack {
-                Text("Bound:")
-                Spacer()
-                Text(G7WatchSensorAdapter.shared.boundSensorName ?? "—")
-                    .foregroundColor(.secondary)
-            }
-            // item 16: live WatchState source vs persisted snapshot — mismatches are diagnostic
             HStack {
                 Text("Live source:")
                 Spacer()
                 Text(WatchState.shared.displayedReadingSource.watchBadgeText)
                     .foregroundColor(.cyan)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            // C-217-D5 (UI-207-3's deferred row): fed by the observe-only `will_restore_state`
-            // hook in `WatchTelemetryRing.enqueueCoreTelemetry` — display wiring only.
+            HStack {
+                Text("Today:")
+                Spacer()
+                Text("\(WatchState.shared.bleConnectsToday)c · \(WatchState.shared.bleEGVsToday)e · \(eligibleSlots)w · \(WatchState.shared.gatedSlotsToday)g")
+                    .foregroundColor(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+            }
             HStack {
                 Text("Was restored:")
                 Spacer()
                 Text(formatG7Time(WatchState.shared.bleLastRestoreAt))
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
         }
         .font(.caption)
+    }
+
+    private var sensorRowConverged: Bool {
+        let phone = G7WatchSensorAdapter.shared.telemetrySensorName
+        let expected = G7WatchSensorAdapter.shared.expectedSensorName ?? "—"
+        let bound = G7WatchSensorAdapter.shared.boundSensorName ?? "—"
+        return expected != "—" && phone == expected && bound == expected
+    }
+
+    private var sensorRowText: String {
+        let phone = G7WatchSensorAdapter.shared.telemetrySensorName
+        let expected = G7WatchSensorAdapter.shared.expectedSensorName ?? "—"
+        let bound = G7WatchSensorAdapter.shared.boundSensorName ?? "—"
+        if sensorRowConverged { return "\(expected) ✓" }
+        return "exp \(expected) · bnd \(bound) · ph \(phone)"
     }
 
     private var extSessionDisplay: String {
@@ -805,7 +832,7 @@ private struct G7DirectBleDebugSection: View {
         return Self.timeFormatter.string(from: date)
     }
 
-    /// Mirrors `ComplicationDebugView.nextReadingCountdown` semantics: "Ns" when in the future,
+    /// Mirrors `WatchDiagnosticsView.nextReadingCountdown` semantics: "Ns" when in the future,
     /// "⚠️+Ns" when overdue (last connect + cadence has already passed). "--" if no connect yet.
     private func nextConnectCountdown(_ lastConnect: Date?) -> String {
         guard let lastConnect, lastConnect != .distantPast else { return "--" }
@@ -851,30 +878,8 @@ private func g7CountdownRingColor(_ fraction: Double) -> Color {
     return .red
 }
 
-/// C-217-D6: minimal 24pt countdown ring — quaternary track + trimmed progress arc anchored at
-/// 12 o'clock. **Deliberately NO `.animation` anywhere**: the ring steps once per second from the
-/// parent's 1 Hz `now` tick, which is correct — animating the trim caused the build-183
-/// resume-sweep glitch (the arc swept from 0 on every scene resume). Caller computes
-/// `fraction`/`color` from its own reference date.
-private struct CountdownRingView: View {
-    let fraction: Double
-    let color: Color
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(.quaternary, lineWidth: 4)
-            Circle()
-                .trim(from: 0, to: fraction)
-                .stroke(color, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-        }
-        .frame(width: 24, height: 24)
-    }
-}
-
 #Preview {
     NavigationStack {
-        ComplicationDebugView()
+        WatchDiagnosticsView()
     }
 }

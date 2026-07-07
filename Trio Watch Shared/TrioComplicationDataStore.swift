@@ -407,7 +407,7 @@ final class TrioComplicationDataStore {
         cachedAppGroupDefaults
     }
 
-    // MARK: - Debug Properties (for ComplicationDebugView)
+    // MARK: - Debug Properties (for WatchDiagnosticsView)
 
     var lastReloadTimestamp: Date {
         lastReload
@@ -429,7 +429,7 @@ final class TrioComplicationDataStore {
         snapshotFileURL?.deletingLastPathComponent().path
     }
 
-    // MARK: - Debug Properties for ComplicationDebugView
+    // MARK: - Debug Properties for WatchDiagnosticsView
 
     var appGroupID: String? {
         var bundle: Bundle = Bundle.main

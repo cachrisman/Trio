@@ -100,7 +100,7 @@ final class G7WatchSensorAdapter: NSObject {
 
     // MARK: - Debug-UI accessors
 
-    /// Current pre-EGV disconnect streak count (for `ComplicationDebugView`).
+    /// Current pre-EGV disconnect streak count (for `WatchDiagnosticsView`).
     var consecutivePreEGVDisconnectsCount: Int { consecutivePreEGVDisconnects }
 
     /// C-216 (Task D): user-initiated recovery marker, logged when the debug-screen button is
@@ -199,6 +199,9 @@ final class G7WatchSensorAdapter: NSObject {
     /// C-210-5: true once we've notified for the current direct-BLE stall episode (reset on recovery).
     private var stallNotifiedThisEpisode = false
     private var centralReinitThisEpisode = false
+    /// C-217 D-7: last computed C-210-8 stall fault ("dexcom_side"/"trio_side") for the diagnostics
+    /// Stall row. Set when a stall is detected; nil when the direct path is fresh or ineligible.
+    private(set) var lastDirectBleStallFault: String?
     /// C-216 (W-7a/Task B): consecutive heartbeat ticks observing `activePeripheralStateRaw == 1`
     /// (CBPeripheralState.connecting). Sizes the duration of the unwatched-wedge fingerprint
     /// (`active_peripheral_state=1` + `connect_pending_age_s=-1`, 06-30 deep-gap class).
@@ -241,6 +244,11 @@ final class G7WatchSensorAdapter: NSObject {
         static let activationEpochSeconds = "G7WatchAdapter.activationEpochSeconds"
         // Legacy key for the one-time W13 sensorName migration only.
         static let legacySensorName = "G7DirectBLEObserver.sensorName"
+        // C-217 D-7: watch-local kill-switch persistence. The fork's G7BackgroundHints escalation
+        // flags default ON in-memory every process, so a persisted OFF must be re-applied at launch.
+        // The diagnostics view's @AppStorage toggles use these exact key strings.
+        static let killSwitchWedgeEscalation = "G7WatchAdapter.killSwitch.connectWedgeEscalation"
+        static let killSwitchCentralReinit = "G7WatchAdapter.killSwitch.centralReinit"
     }
 
     /// C2 sensor identity = name + activation epoch (Int64 seconds; nil = legacy name-only).
@@ -305,6 +313,7 @@ final class G7WatchSensorAdapter: NSObject {
         // C-216 (Task D): one-shot per process — a recovery marker distinguishing a genuine cold
         // launch from other events in the telemetry stream.
         log("cold_launch", "reason=process_start")
+        applyKillSwitchesFromDefaults() // C-217 D-7: re-apply persisted kill-switch choices
         stopTimers() // defensive only — start() is one-shot per process as of build 208
         loadDailyCountersIfNewCalendarDay()
         startHeartbeatTimer()
@@ -331,6 +340,26 @@ final class G7WatchSensorAdapter: NSObject {
         // `.active` inside applyG7DirectBleSnapshot; publishing the real fork state afterwards
         // corrects a stale-replay `.active` immediately instead of letting it stand.
         publishConnectionStatus()
+    }
+
+    /// C-217 D-7: restore the watch-local kill-switch choices into the fork's in-memory
+    /// G7BackgroundHints flags (which default ON every process). Registers ON as the default so an
+    /// untoggled install matches the fork default. Called once per process from `start()`.
+    private func applyKillSwitchesFromDefaults() {
+        let d = UserDefaults.standard
+        d.register(defaults: [
+            Keys.killSwitchWedgeEscalation: true,
+            Keys.killSwitchCentralReinit: true,
+        ])
+        G7BackgroundHints.isConnectWedgeEscalationEnabled = d.bool(forKey: Keys.killSwitchWedgeEscalation)
+        G7BackgroundHints.isCentralReinitEnabled = d.bool(forKey: Keys.killSwitchCentralReinit)
+    }
+
+    /// C-217 D-7: emit a marker when the user flips a kill-switch in the diagnostics view so soak
+    /// analysis can see exactly when Task-2/Task-4 behavior changed. The view's @AppStorage onChange
+    /// also pushes the value into the fork's G7BackgroundHints flag live (next-cycle effect).
+    func logKillSwitchToggled(_ name: String, enabled: Bool) {
+        log("kill_switch_toggled", "switch=\(name) enabled=\(enabled)")
     }
 
     // Build 208: `stop()` removed. Its only caller was the session-invalidation error branch
@@ -870,6 +899,7 @@ final class G7WatchSensorAdapter: NSObject {
         // direct link is down; Trio can only observe). sessionConnectAt is the last did_connect.
         let sinceConnectS: Int = sessionConnectAt.map { Int(now.timeIntervalSince($0)) } ?? -1
         let dexcomSide = sinceConnectS < 0 || sinceConnectS > StallThreshold.connectRecentSec
+        lastDirectBleStallFault = dexcomSide ? "dexcom_side" : "trio_side" // C-217 D-7: expose for the diagnostics Stall row
 
         // C-216 (Task A): stamp last-seen RSSI + its age onto the stall event. This tick runs at most
         // every ~5 min, so one snapshot call here is cheap; `rssi_age_s=-1` means no didDiscover has
@@ -904,6 +934,7 @@ final class G7WatchSensorAdapter: NSObject {
     private func clearDirectBleStallIfNeeded() {
         stallNotifiedThisEpisode = false
         centralReinitThisEpisode = false
+        lastDirectBleStallFault = nil // C-217 D-7
         if WatchState.shared.directBleStall != .none { WatchState.shared.directBleStall = .none }
     }
 
