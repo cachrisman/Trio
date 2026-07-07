@@ -5,7 +5,7 @@ import UserNotifications
 class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNotificationCenterDelegate {
     func application(
         _: UIApplication,
-        didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]?
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         // Default to `true` if the key doesn't exist — Trio is opt-out, not opt-in.
         // Read before touching Firebase: an explicit opt-out means we never
@@ -35,15 +35,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
             TelemetryClient.shared.checkAndSendIfOverdue()
         }
 
+        // Check for unexpected termination from previous launch, then mark this launch.
+        // Note: AppTerminationTracker uses UserDefaults for state persistence. In rare cases
+        // (ultra-rapid termination <1s), the state may not be synced before iOS kills the app.
+        // If this becomes a problem, consider: (A) file-based atomic writes, (B) hybrid
+        // UserDefaults + file approach. For now, UserDefaults is sufficient for most cases.
+        AppTerminationTracker.shared.checkForUnexpectedTermination()
+        AppTerminationTracker.shared.markAppLaunched(launchOptions: launchOptions)
+
         return true
     }
 
-    /// Foreground-transition entry point for telemetry cadence. Re-evaluates
-    /// the overdue window every time the user brings Trio to the foreground,
-    /// since `scheduleRecurring`'s GCD timer doesn't fire while suspended.
-    /// No-op if a send already landed within the last 24h.
+    func applicationDidBecomeActive(_: UIApplication) {
+        AppTerminationTracker.shared.markAppBecameActive()
+    }
+
+    func applicationWillResignActive(_: UIApplication) {
+        AppTerminationTracker.shared.markAppWillResignActive()
+    }
+
+    func applicationDidEnterBackground(_: UIApplication) {
+        AppTerminationTracker.shared.markAppEnteredBackground()
+    }
+
+    /// Foreground-transition entry point. Drives telemetry cadence
+    /// (re-evaluates the overdue window — `scheduleRecurring`'s GCD timer
+    /// doesn't fire while suspended; no-op if a send landed within 24h)
+    /// and notifies `AppTerminationTracker` so lifecycle state is fresh.
     func applicationWillEnterForeground(_: UIApplication) {
         TelemetryClient.shared.checkAndSendIfOverdue()
+        AppTerminationTracker.shared.markAppWillEnterForeground()
+    }
+
+    func applicationWillTerminate(_: UIApplication) {
+        AppTerminationTracker.shared.markAppWillTerminate()
+    }
+
+    func applicationDidReceiveMemoryWarning(_: UIApplication) {
+        AppTerminationTracker.shared.handleMemoryWarning()
     }
 
     func application(
