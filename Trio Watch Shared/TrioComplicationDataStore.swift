@@ -50,6 +50,12 @@ struct TrioComplicationSnapshot: Equatable, Codable {
     let source: TrioComplicationDataSource?
     /// G7 EGV sequence when known; optional same-reading identity alongside `readingDate`.
     let sequence: Int?
+    /// C-217 V-2b: compact recent readings for the accessoryRectangular sparkline — [epochSeconds, mgDl]
+    /// pairs, last ~2h (<=24 points), oldest-first. Optional for clean Codable evolution (older widget
+    /// reading a newer snapshot ignores it; newer widget reading an older snapshot decodes nil →
+    /// text-only fallback). `var` so the store can enrich it on save. Deliberately excluded from
+    /// ComplicationSnapshotFingerprint, so it never affects dedup.
+    var recentReadings: [[Int]]?
 
     // INVARIANT (Phase 3.4): All display-field sanitization here.
     // Dedup always compares sanitized values.
@@ -62,7 +68,8 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         state: String? = nil,
         glucoseColor: String? = nil,
         source: TrioComplicationDataSource? = nil,
-        sequence: Int? = nil
+        sequence: Int? = nil,
+        recentReadings: [[Int]]? = nil
     ) {
         glucose = Self.sanitizedGlucose(from: rawGlucose)
         trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -73,6 +80,7 @@ struct TrioComplicationSnapshot: Equatable, Codable {
         self.glucoseColor = glucoseColor
         self.source = source
         self.sequence = sequence
+        self.recentReadings = recentReadings
     }
 
     private static func sanitizedGlucose(from value: String) -> String {
@@ -197,6 +205,11 @@ private enum ComplicationReloadRing {
 final class TrioComplicationDataStore {
     static let shared = TrioComplicationDataStore()
     static let complicationKind = "TrioWatchComplication"
+
+    /// C-217 V-2b: set once by the watch extension (ExtensionDelegate) to supply the rolling 2h
+    /// sparkline series from the extension-local WatchGlucoseHistoryStore, which the Shared target
+    /// cannot import directly. nil in the widget process (which only reads snapshots, never saves).
+    var recentReadingsProvider: (() -> [[Int]]?)?
 
     // MARK: - App Group ID Resolution
 
@@ -746,6 +759,13 @@ final class TrioComplicationDataStore {
     }
 
     private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool, minInterval: TimeInterval = 30) {
+        var snapshot = snapshot
+        // C-217 V-2b: enrich with the rolling 2h sparkline series (widget can't read the history
+        // store; the snapshot is the bridge). Provider is nil in the widget process. Not part of the
+        // dedup fingerprint, so this never forces extra reloads.
+        if snapshot.recentReadings == nil, let provider = recentReadingsProvider {
+            snapshot.recentReadings = provider()
+        }
         assert(Thread.isMainThread, "saveOnMain must be called on main thread")
         log("saveOnMain entered: glucose=\(snapshot.glucose), readingDate=\(snapshot.readingDate)")
 

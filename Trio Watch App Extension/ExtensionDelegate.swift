@@ -32,6 +32,10 @@ final class ExtensionDelegate: NSObject, WKApplicationDelegate {
 
         // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
         TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
+        // C-217 V-2b: bridge the extension-local rolling glucose history into saved snapshots so the
+        // widget's accessoryRectangular sparkline can read it. Only the extension can see the history
+        // store; the widget process never sets this (it reads snapshots, never saves).
+        TrioComplicationDataStore.shared.recentReadingsProvider = { WatchGlucoseHistoryStore.shared.recentReadingsCompact() }
         WatchState.shared.scheduleBackgroundLaunchDisarmIfNeeded()
         Task {
             await WatchLogger.shared.log(

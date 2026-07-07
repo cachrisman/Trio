@@ -18,6 +18,8 @@ struct TrioWatchComplicationEntry: TimelineEntry {
     let state: String?
     let glucoseColor: String?
     let source: TrioComplicationDataSource?
+    /// C-217 V-2b: compact [epochSeconds, mgDl] pairs (last ~2h, oldest-first) for the rectangular sparkline; nil → text-only.
+    let recentReadings: [[Int]]?
 
     init(
         date: Date,
@@ -27,7 +29,8 @@ struct TrioWatchComplicationEntry: TimelineEntry {
         delta: String,
         state: String? = nil,
         glucoseColor: String? = nil,
-        source: TrioComplicationDataSource? = nil
+        source: TrioComplicationDataSource? = nil,
+        recentReadings: [[Int]]? = nil
     ) {
         self.date = date
         self.readingDate = readingDate ?? date
@@ -37,6 +40,7 @@ struct TrioWatchComplicationEntry: TimelineEntry {
         self.state = state
         self.glucoseColor = glucoseColor
         self.source = source
+        self.recentReadings = recentReadings
     }
 
     init(snapshot: TrioComplicationSnapshot) {
@@ -48,7 +52,8 @@ struct TrioWatchComplicationEntry: TimelineEntry {
             delta: snapshot.delta,
             state: snapshot.state,
             glucoseColor: snapshot.glucoseColor,
-            source: snapshot.source
+            source: snapshot.source,
+            recentReadings: snapshot.recentReadings
         )
     }
 
@@ -258,7 +263,8 @@ struct TrioWatchComplicationProvider: TimelineProvider {
                 delta: timelineBase.delta,
                 state: timelineBase.state,
                 glucoseColor: timelineBase.glucoseColor,
-                source: timelineBase.source
+                source: timelineBase.source,
+                recentReadings: timelineBase.recentReadings
             )
         }
 
@@ -464,9 +470,9 @@ struct TrioAccessoryInlineView: View {
     }
 }
 
-// V-2: text-only v1. No sparkline yet — history data is not app-group-readable from the
-// complication extension today (deliberate deferral; revisit once a shared history buffer
-// exists in the app group).
+// C-217 V-2b: glucose + trend + delta + age line, with a 2h sparkline beneath when the snapshot
+// carries `recentReadings` (bridged from the extension's WatchGlucoseHistoryStore via the saved
+// snapshot). Falls back to text-only when the series is nil / < 2 points.
 struct TrioAccessoryRectangularView: View {
     var entry: TrioWatchComplicationEntry
 
@@ -494,6 +500,52 @@ struct TrioAccessoryRectangularView: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
+
+            if let readings = entry.recentReadings, readings.count >= 2 {
+                rectangularSparkline(readings)
+                    .frame(height: 16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    /// C-217 V-2b: lightweight Path polyline (no Charts — widget memory/launch budget). X = fixed 2h
+    /// window ending at entry.date; a gap > 15 min renders as a line break (a gap IS information, not
+    /// interpolated). Y = window min/max padded ±20 mg/dL, clamped to a >= 40 span so a flat trace
+    /// isn't dramatic noise. Colour reuses the recency convention (dims when the newest point is stale).
+    private func rectangularSparkline(_ readings: [[Int]]) -> some View {
+        let nowT = entry.date.timeIntervalSince1970
+        let windowStart = nowT - 2 * 60 * 60
+        let points: [(t: Double, v: Double)] = readings.compactMap { pair in
+            guard pair.count == 2 else { return nil }
+            return (t: Double(pair[0]), v: Double(pair[1]))
+        }
+        .filter { $0.t >= windowStart }
+        .sorted { $0.t < $1.t }
+        let values = points.map { $0.v }
+        let rawMin = values.min() ?? 0
+        let rawMax = values.max() ?? 0
+        var lo = rawMin - 20
+        var hi = rawMax + 20
+        if hi - lo < 40 { let mid = (hi + lo) / 2; lo = mid - 20; hi = mid + 20 }
+        let span = max(hi - lo, 1)
+        let color = recencyColor(for: entry) ?? .white
+        return GeometryReader { geo in
+            Path { path in
+                let w = geo.size.width
+                let h = geo.size.height
+                var started = false
+                var lastT: Double?
+                for p in points {
+                    let x = CGFloat((p.t - windowStart) / (nowT - windowStart)) * w
+                    let y = h - CGFloat((p.v - lo) / span) * h
+                    let pt = CGPoint(x: x, y: y)
+                    if let lt = lastT, p.t - lt > 15 * 60 { started = false } // gap > 15 min → break
+                    if started { path.addLine(to: pt) } else { path.move(to: pt); started = true }
+                    lastT = p.t
+                }
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
         }
     }
 }

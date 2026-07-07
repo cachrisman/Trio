@@ -168,4 +168,32 @@ import XCTest
         let newer = snap("126", "", "", at: t.addingTimeInterval(300), source: .watchConnectivity)
         #expect(store.shouldUpdate(new: newer, current: older) == true)
     }
+
+    @Test("V-2b: recentReadings survives Codable round-trip; a snapshot without it omits the key and decodes to nil")
+    func testRecentReadingsCodableEvolution() throws {
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
+        let enc = JSONEncoder()
+        let dec = JSONDecoder()
+
+        // Direction 1 — round-trip WITH data preserves the series.
+        let withData = TrioComplicationSnapshot(
+            glucose: "120", trend: "Flat", delta: "+2", readingDate: t, date: t,
+            state: nil, glucoseColor: nil, source: .g7DirectBLE, sequence: 42,
+            recentReadings: [[1_700_000_000, 118], [1_700_000_300, 120]]
+        )
+        let roundTripped = try dec.decode(TrioComplicationSnapshot.self, from: enc.encode(withData))
+        #expect(roundTripped.recentReadings ?? [] == [[1_700_000_000, 118], [1_700_000_300, 120]])
+
+        // Direction 2 — a snapshot without the field omits the key (nil optional) and decodes to nil,
+        // so an older writer's JSON (no key) is tolerated by the newer decoder.
+        let withoutData = TrioComplicationSnapshot(
+            glucose: "120", trend: "Flat", delta: "+2", readingDate: t, date: t,
+            state: nil, glucoseColor: nil, source: .g7DirectBLE, sequence: 42
+        )
+        let json = try enc.encode(withoutData)
+        let jsonString = String(data: json, encoding: .utf8) ?? ""
+        #expect(!jsonString.contains("recentReadings"))
+        let decoded = try dec.decode(TrioComplicationSnapshot.self, from: json)
+        #expect(decoded.recentReadings == nil)
+    }
 }

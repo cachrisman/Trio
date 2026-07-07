@@ -170,6 +170,20 @@ final class WatchGlucoseHistoryStore {
         }
     }
 
+    /// C-217 V-2b: compact recent readings for the accessoryRectangular sparkline. Returns the last
+    /// `window` seconds of readings (at most `maxPoints`), oldest-first, as `[epochSeconds, mgDl]`
+    /// pairs. `entries` are epoch-ascending after prune, so `suffix` keeps the newest N still ascending.
+    /// On-queue (mirrors the other reads).
+    func recentReadingsCompact(window: TimeInterval = 2 * 60 * 60, maxPoints: Int = 24) -> [[Int]] {
+        queue.sync {
+            pruneAndCap()
+            let cutoff = Int(Date().timeIntervalSince1970 - window)
+            let recent = entries.filter { $0.epochSeconds >= cutoff }
+            let capped = recent.count > maxPoints ? Array(recent.suffix(maxPoints)) : recent
+            return capped.map { [$0.epochSeconds, $0.glucoseMgDl] }
+        }
+    }
+
     // MARK: - Persistence (assume on-queue, except init)
 
     private func loadFromDisk() {
