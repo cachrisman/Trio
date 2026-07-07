@@ -44,6 +44,14 @@ struct WatchDiagnosticsView: View {
     @AppStorage("G7WatchAdapter.killSwitch.connectWedgeEscalation") private var wedgeEscalationEnabled = true
     @AppStorage("G7WatchAdapter.killSwitch.centralReinit") private var centralReinitEnabled = true
 
+    // C-217 D-8: live-tunable edge-ring geometry (dial in on-wrist, then hardcode as defaults).
+    // Behavioral values (fraction math, color thresholds) are deliberately NOT tunable.
+    @AppStorage("g7.ring.cornerRadius") private var ringCornerRadius: Double = 48
+    @AppStorage("g7.ring.lineWidth") private var ringLineWidth: Double = 3
+    @AppStorage("g7.ring.insetX") private var ringInsetX: Double = 0
+    @AppStorage("g7.ring.insetY") private var ringInsetY: Double = 0
+    @AppStorage("g7.ring.trackOpacity") private var ringTrackOpacity: Double = 0.12
+
     private let dataStore = TrioComplicationDataStore.shared
 
     // Static formatter — allocated once, reused every 1s tick (item 21)
@@ -95,6 +103,11 @@ struct WatchDiagnosticsView: View {
                 sectionHeader("ACTIONS")
                 actionsView
                     .padding(.bottom, 8)
+
+                Divider().padding(.vertical, 4)
+
+                sectionHeader("RING TUNING")
+                ringTuningView
             }
             .padding(.horizontal, 8)
         }
@@ -136,6 +149,7 @@ struct WatchDiagnosticsView: View {
                 }
             }
         }
+        .overlay(edgeCycleRing)
         .overlay(confirmationOverlay)
     }
 
@@ -186,6 +200,47 @@ struct WatchDiagnosticsView: View {
             .onChange(of: centralReinitEnabled) { _, newValue in
                 G7BackgroundHints.isCentralReinitEnabled = newValue
                 G7WatchSensorAdapter.shared.logKillSwitchToggled("central_reinit", enabled: newValue)
+            }
+        }
+    }
+
+    // MARK: - Edge cycle ring (C-217 D-8)
+
+    /// Full-perimeter ring tracing the screen edge; fills clockwise from top-center over the 5-min
+    /// CGM cycle (reference = the displayed reading's date). Stepped from the 1 Hz `now` tick — NO
+    /// `.animation` (resume-sweep glitch); trim-based — NO `.rotationEffect`.
+    private var edgeCycleRing: some View {
+        let fraction = g7CountdownFraction(from: snapshot?.readingDate, to: now)
+        return ZStack {
+            EdgeRingShape(cornerRadius: CGFloat(ringCornerRadius), insetX: CGFloat(ringInsetX), insetY: CGFloat(ringInsetY))
+                .stroke(Color.white.opacity(ringTrackOpacity), lineWidth: CGFloat(ringLineWidth))
+            EdgeRingShape(cornerRadius: CGFloat(ringCornerRadius), insetX: CGFloat(ringInsetX), insetY: CGFloat(ringInsetY))
+                .trim(from: 0, to: fraction)
+                .stroke(g7CountdownRingColor(fraction), style: StrokeStyle(lineWidth: CGFloat(ringLineWidth), lineCap: .round))
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+
+    private var ringTuningView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ringStepper("Corner", $ringCornerRadius, range: 20...80, step: 1, format: "%.0f")
+            ringStepper("Width", $ringLineWidth, range: 1...6, step: 1, format: "%.0f")
+            ringStepper("Inset X", $ringInsetX, range: -12...12, step: 1, format: "%.0f")
+            ringStepper("Inset Y", $ringInsetY, range: -12...12, step: 1, format: "%.0f")
+            ringStepper("Track", $ringTrackOpacity, range: 0...0.5, step: 0.02, format: "%.2f")
+        }
+        .font(.caption)
+    }
+
+    private func ringStepper(_ label: String, _ value: Binding<Double>, range: ClosedRange<Double>, step: Double, format: String) -> some View {
+        Stepper(value: value, in: range, step: step) {
+            HStack {
+                Text(label)
+                Spacer()
+                Text(String(format: format, value.wrappedValue))
+                    .monospacedDigit()
+                    .foregroundColor(.secondary)
             }
         }
     }
@@ -876,6 +931,37 @@ private func g7CountdownRingColor(_ fraction: Double) -> Color {
     if fraction < 0.9 { return .green }
     if fraction < 1.0 { return .yellow }
     return .red
+}
+
+// C-217 D-8: rounded-rect perimeter traced from TOP-CENTER clockwise, so a caller's
+// `.trim(from: 0, to: fraction)` fills clockwise from 12 o'clock without any rotation. y-down
+// SwiftUI space. Corner radius + insets are supplied from the live tuning panel. If the arc renders
+// counter-clockwise on device, flip the `clockwise:` booleans (geometry is dialed in on-wrist).
+private struct EdgeRingShape: Shape {
+    var cornerRadius: CGFloat
+    var insetX: CGFloat
+    var insetY: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let r = rect.insetBy(dx: insetX, dy: insetY)
+        let cr = min(cornerRadius, min(r.width, r.height) / 2)
+        var p = Path()
+        p.move(to: CGPoint(x: r.midX, y: r.minY))                       // top-center
+        p.addLine(to: CGPoint(x: r.maxX - cr, y: r.minY))              // top edge -> right
+        p.addArc(center: CGPoint(x: r.maxX - cr, y: r.minY + cr), radius: cr,
+                 startAngle: .degrees(-90), endAngle: .degrees(0), clockwise: false)
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - cr))             // right edge -> bottom
+        p.addArc(center: CGPoint(x: r.maxX - cr, y: r.maxY - cr), radius: cr,
+                 startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+        p.addLine(to: CGPoint(x: r.minX + cr, y: r.maxY))             // bottom edge -> left
+        p.addArc(center: CGPoint(x: r.minX + cr, y: r.maxY - cr), radius: cr,
+                 startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+        p.addLine(to: CGPoint(x: r.minX, y: r.minY + cr))            // left edge -> top
+        p.addArc(center: CGPoint(x: r.minX + cr, y: r.minY + cr), radius: cr,
+                 startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+        p.addLine(to: CGPoint(x: r.midX, y: r.minY))                 // close at top-center
+        return p
+    }
 }
 
 #Preview {
