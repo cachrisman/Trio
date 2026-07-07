@@ -198,6 +198,7 @@ final class G7WatchSensorAdapter: NSObject {
     private var sessionConnectAt: Date?
     /// C-210-5: true once we've notified for the current direct-BLE stall episode (reset on recovery).
     private var stallNotifiedThisEpisode = false
+    private var centralReinitThisEpisode = false
     /// C-216 (W-7a/Task B): consecutive heartbeat ticks observing `activePeripheralStateRaw == 1`
     /// (CBPeripheralState.connecting). Sizes the duration of the unwatched-wedge fingerprint
     /// (`active_peripheral_state=1` + `connect_pending_age_s=-1`, 06-30 deep-gap class).
@@ -890,12 +891,19 @@ final class G7WatchSensorAdapter: NSObject {
             WatchNotificationHandler.shared.postDirectBleStallNotification()
             log("direct_ble_stall_notified", "tier=\(tier.rawValue) since_connect_s=\(sinceConnectS)")
         }
+
+        // C-217 Task 4: attempt a CoreBluetooth central re-init once per sustained hard Dexcom-side episode — the connect_called=0 deep-gap class that Task-2 wedge escalation cannot reach. Bounded by the fork isCentralReinitEnabled kill-switch + 120s guard.
+        if tier == .unavailable, dexcomSide, !centralReinitThisEpisode {
+            centralReinitThisEpisode = true
+            sensor.requestCentralReinit(reason: "dexcom_side_episode")
+        }
     }
 
     /// Reset the stall indicator and the per-episode notification latch once the direct path recovers
     /// (or becomes ineligible). A later genuine stall can then notify again.
     private func clearDirectBleStallIfNeeded() {
         stallNotifiedThisEpisode = false
+        centralReinitThisEpisode = false
         if WatchState.shared.directBleStall != .none { WatchState.shared.directBleStall = .none }
     }
 
