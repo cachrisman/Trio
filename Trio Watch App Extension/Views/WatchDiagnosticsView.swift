@@ -46,11 +46,11 @@ struct WatchDiagnosticsView: View {
 
     // C-217 D-8: live-tunable edge-ring geometry (dial in on-wrist, then hardcode as defaults).
     // Behavioral values (fraction math, color thresholds) are deliberately NOT tunable.
-    @AppStorage("g7.ring.cornerRadius") private var ringCornerRadius: Double = 48
-    @AppStorage("g7.ring.lineWidth") private var ringLineWidth: Double = 3
-    @AppStorage("g7.ring.insetX") private var ringInsetX: Double = 0
-    @AppStorage("g7.ring.insetY") private var ringInsetY: Double = 0
-    @AppStorage("g7.ring.trackOpacity") private var ringTrackOpacity: Double = 0.12
+    @AppStorage("g7.ring.cornerRadius") private var ringCornerRadius: Double = 37
+    @AppStorage("g7.ring.lineWidth") private var ringLineWidth: Double = 6
+    @AppStorage("g7.ring.insetX") private var ringInsetX: Double = 4
+    @AppStorage("g7.ring.insetY") private var ringInsetY: Double = 3
+    @AppStorage("g7.ring.trackOpacity") private var ringTrackOpacity: Double = 0
 
     private let dataStore = TrioComplicationDataStore.shared
 
@@ -210,7 +210,7 @@ struct WatchDiagnosticsView: View {
     /// CGM cycle (reference = the displayed reading's date). Stepped from the 1 Hz `now` tick — NO
     /// `.animation` (resume-sweep glitch); trim-based — NO `.rotationEffect`.
     private var edgeCycleRing: some View {
-        let fraction = g7CountdownFraction(from: snapshot?.readingDate, to: now)
+        let fraction = g7CountdownFraction(from: WatchState.shared.bleLastConnectAt, to: now) // C-218 E-1: next-connect cycle, matches the "Next connect:" row
         return ZStack {
             EdgeRingShape(cornerRadius: CGFloat(ringCornerRadius), insetX: CGFloat(ringInsetX), insetY: CGFloat(ringInsetY))
                 .stroke(Color.white.opacity(ringTrackOpacity), lineWidth: CGFloat(ringLineWidth))
@@ -234,14 +234,31 @@ struct WatchDiagnosticsView: View {
     }
 
     private func ringStepper(_ label: String, _ value: Binding<Double>, range: ClosedRange<Double>, step: Double, format: String) -> some View {
-        Stepper(value: value, in: range, step: step) {
-            HStack {
-                Text(label)
-                Spacer()
-                Text(String(format: format, value.wrappedValue))
-                    .monospacedDigit()
-                    .foregroundColor(.secondary)
+        // C-218 E-3/E-4: plain -/+ Buttons instead of a native Stepper. The watchOS Stepper binds the
+        // Digital Crown to its value (so the crown adjusted a knob instead of scrolling the view) and
+        // its focus-mode buttons occluded the wrapping label. Plain Buttons don't capture the crown, so
+        // the ScrollView keeps it for vertical scroll; +/- adjust the value, clamped to `range`.
+        HStack(spacing: 4) {
+            Text(label)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            Spacer(minLength: 2)
+            Text(String(format: format, value.wrappedValue))
+                .monospacedDigit()
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+            Button {
+                value.wrappedValue = max(range.lowerBound, value.wrappedValue - step)
+            } label: {
+                Image(systemName: "minus.circle")
             }
+            .buttonStyle(.plain)
+            Button {
+                value.wrappedValue = min(range.upperBound, value.wrappedValue + step)
+            } label: {
+                Image(systemName: "plus.circle")
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -332,7 +349,7 @@ struct WatchDiagnosticsView: View {
             }
             // item 10: composite upload status replaces bare Pending row
             HStack {
-                Text("Upload status:")
+                Text("Upload:").lineLimit(1)
                 Spacer()
                 uploadStatusView
             }
@@ -346,7 +363,7 @@ struct WatchDiagnosticsView: View {
             // Fast phase: payload sent to phone, awaiting ACK
             HStack(spacing: 4) {
                 Circle().fill(Color.yellow).frame(width: 8, height: 8)
-                Text("ACK pending (\(pendingCount))")
+                Text("ACK (\(pendingCount))")
                     .foregroundColor(.yellow)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
@@ -734,13 +751,25 @@ private struct G7DirectBleDebugSection: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
             }
-            HStack {
+            HStack(alignment: .top) {
                 Text("Sensor:")
                 Spacer()
-                Text(sensorRowText)
-                    .foregroundColor(sensorRowConverged ? .secondary : .yellow)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
+                if sensorRowConverged {
+                    Text("\(G7WatchSensorAdapter.shared.expectedSensorName ?? "—") ✓")
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                } else {
+                    // C-218 E-6: on divergence, stack the three identities so each stays legible
+                    // (the old one-line form truncated to noise). exp = phone-pushed expected,
+                    // bnd = live G7Sensor binding, ph = WC phone-relay name.
+                    VStack(alignment: .trailing, spacing: 1) {
+                        sensorDivergenceRow("exp", G7WatchSensorAdapter.shared.expectedSensorName ?? "—")
+                        sensorDivergenceRow("bnd", G7WatchSensorAdapter.shared.boundSensorName ?? "—")
+                        sensorDivergenceRow("ph", G7WatchSensorAdapter.shared.telemetrySensorName)
+                    }
+                    .foregroundColor(.yellow)
+                }
             }
             HStack {
                 Text("Live source:")
@@ -778,12 +807,12 @@ private struct G7DirectBleDebugSection: View {
         return expected != "—" && phone == expected && bound == expected
     }
 
-    private var sensorRowText: String {
-        let phone = G7WatchSensorAdapter.shared.telemetrySensorName
-        let expected = G7WatchSensorAdapter.shared.expectedSensorName ?? "—"
-        let bound = G7WatchSensorAdapter.shared.boundSensorName ?? "—"
-        if sensorRowConverged { return "\(expected) ✓" }
-        return "exp \(expected) · bnd \(bound) · ph \(phone)"
+    private func sensorDivergenceRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 3) {
+            Text(label).foregroundColor(.secondary)
+            Text(value).lineLimit(1).minimumScaleFactor(0.6)
+        }
+        .font(.caption2)
     }
 
     private var extSessionDisplay: String {
