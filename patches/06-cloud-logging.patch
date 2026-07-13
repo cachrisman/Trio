@@ -1,9 +1,26 @@
-From a3ae21a6765f6635e249ad13996cd13f14fcbb14 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 31 May 2026 09:29:33 +0200
+From 4640a17d360d894236d822081e1935edc3ede04f Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Tue, 7 Jul 2026 17:30:14 +0200
 Subject: [PATCH] feat: cloud-logging
 
 Trio-Patch-Source-Branch: feature/cloud-logging
+Trio-Patch-Base: 58261b0abb1c3a4f827bc7f75768ce3cec5c4b6d
+Trio-Patch-Feature-Tip: 683e688c88ea32fa5c4c36abe1be3807aaa8960c
+Trio-Patch-Generated: 2026-07-07T15:30:07Z
+Trio-Patch-Source-Commits:
+ ab10de4d8d47277e9bb7669d1233b20a82a1955d feat: ns-richer-settings
+ e3a2d98dfeb9180befadb280b23187397c6296ef feat: g7-reading-time-with-seconds
+ 7f40d4fdd3cfaa06131ab62cef3b0b7cb21a0fde feat: treatments-fixed-bottom-action
+ 3121b5e5dfe1b205b38b0f986ab0911303ca3930 feat: watch error reporting
+ a66a1cd284358f30062c22fd8a9970d12d44364f feat: cloud-logging
+ 683e688c88ea32fa5c4c36abe1be3807aaa8960c fix: drop removed Logger.info type parameter after upstream merge
+Trio-Patch-Source-PatchIds:
+ ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
+ ed97df36e4b18886dc68346ea67ceb00ed61b72f
+ f26f8a63ea5839d8752cf9cbf1f95741a89a958c
+ 5092c2d3231574f24a9fe35f2f7443bff6dde870
+ 144d35d86a5aab6ceb2e65d3415dac000bfd7898
+ b5dfaed7988b5c45502d65cbcfdf6f2396c429bf
 ---
  .../WatchConnectivityPayloadIds.swift         |   59 +
  Trio Watch App Extension/WatchLogger.swift    | 1208 ++++++++++++++---
@@ -1553,10 +1570,10 @@ index 7c67575fc..b5df24a58 100644
  
      func application(
 diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
-index 9445fc974..b68280e76 100644
+index 912a7b1d6..091211d97 100644
 --- a/Trio/Sources/Assemblies/ServiceAssembly.swift
 +++ b/Trio/Sources/Assemblies/ServiceAssembly.swift
-@@ -23,6 +23,7 @@ final class ServiceAssembly: Assembly {
+@@ -29,6 +29,7 @@ final class ServiceAssembly: Assembly {
          container.register(GarminManager.self) { r in BaseGarminManager(resolver: r) }
          container.register(ContactImageManager.self) { r in BaseContactImageManager(resolver: r) }
          container.register(AlertPermissionsChecker.self) { r in AlertPermissionsChecker(resolver: r) }
@@ -1566,7 +1583,7 @@ index 9445fc974..b68280e76 100644
                  LiveActivityManager(resolver: r)
 diff --git a/Trio/Sources/Helpers/AppTerminationTracker.swift b/Trio/Sources/Helpers/AppTerminationTracker.swift
 new file mode 100644
-index 000000000..b42dc8d69
+index 000000000..f04e55860
 --- /dev/null
 +++ b/Trio/Sources/Helpers/AppTerminationTracker.swift
 @@ -0,0 +1,306 @@
@@ -1627,7 +1644,7 @@ index 000000000..b42dc8d69
 +
 +        let message = "App launched at \(timestamp)"
 +        debug(.default, message)
-+        info(.default, message, type: .info)
++        info(.default, message)
 +    }
 +
 +    /// Called when app becomes active
@@ -1666,7 +1683,7 @@ index 000000000..b42dc8d69
 +        userDefaults.set(reason.rawValue, forKey: "AppTerminationTracker.lastTerminationReason")
 +        let message = "App will terminate (reason: \(reason.rawValue))"
 +        debug(.default, message)
-+        info(.default, message, type: .info)
++        info(.default, message)
 +    }
 +
 +    /// Called when iOS sends a memory warning
@@ -3155,10 +3172,10 @@ index 2a02082b7..03a199a39 100644
          try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
      }
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
-index 00d070988..cd1463b97 100644
+index c20f5b03b..f992ae372 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
 +++ b/Trio/Sources/Modules/Settings/SettingItems.swift
-@@ -390,6 +390,17 @@ enum SettingItems {
+@@ -415,6 +415,17 @@ enum SettingItems {
              ],
              path: ["Services", "Nightscout", "Fetch and Remote Control"]
          ),
@@ -3345,10 +3362,10 @@ index 4c595ff8e..2bbd74fb1 100644
                          Text("Apple Health").navigationLink(to: .healthkit, from: self)
                      }
 diff --git a/Trio/Sources/Router/Screen.swift b/Trio/Sources/Router/Screen.swift
-index 1bfc27857..41fcde16a 100644
+index bcdbe6696..1e481667e 100644
 --- a/Trio/Sources/Router/Screen.swift
 +++ b/Trio/Sources/Router/Screen.swift
-@@ -42,6 +42,7 @@ enum Screen: Identifiable, Hashable {
+@@ -43,6 +43,7 @@ enum Screen: Identifiable, Hashable {
      case calendarEventSettings
      case contactImage
      case serviceSettings
@@ -3356,7 +3373,7 @@ index 1bfc27857..41fcde16a 100644
      case remoteControlConfig
      case autosensSettings
      case smbSettings
-@@ -151,6 +152,8 @@ extension Screen {
+@@ -154,6 +155,8 @@ extension Screen {
              ContactImage.RootView(resolver: resolver)
          case .serviceSettings:
              ServicesView(resolver: resolver, state: Settings.StateModel())
