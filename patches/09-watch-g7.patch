@@ -1,6 +1,6 @@
-From cc6d7dfe022b51f16bb960cee22869b27c835221 Mon Sep 17 00:00:00 2001
+From eb251b54833bbb6934f710f9b92ff33c49e781fc Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 4 Jul 2026 09:51:22 +0200
+Date: Wed, 8 Jul 2026 20:27:19 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 3191d6296f8a3857bf15f5bd90db45f358bf163e
-Trio-Patch-Feature-Tip: 56814e62e7985a31902a29e5516c11fad2a842fb
-Trio-Patch-Generated: 2026-07-04T07:51:12Z
+Trio-Patch-Feature-Tip: 50c3e035f1e58251b53aa4ed13c38b3c78e3101e
+Trio-Patch-Generated: 2026-07-08T18:27:10Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -34,6 +34,13 @@ Trio-Patch-Source-Commits:
  177a6c723494a90ef8a5bbb58b1770270eba02dd fix(watch): count + surface log_flush truncation drops
  7c9a3d4704a6f8df8c75099913c114eee3a1cda1 watch(build-215): session telemetry, reanchor tuning, didStart guard
  56814e62e7985a31902a29e5516c11fad2a842fb watch(build-216): instrumentation — heartbeat BLE diagnostics, phantom-disconnect split, recovery markers
+ 5041e8ab5192051499bca003710dbba95ff9e0b5 watch(build-217): complication freshness + mmol fixes + inline/rectangular families
+ bb6be20b74afc4beb57156e787dac4542e94e02c watch(build-217): debug screen D-1..D-6 — BLE link/wedge, RSSI, stall, session age, restore, countdown ring
+ a9170af9cdb6ae299739df8f416298ca3441518c C-217 Task 4: fire CoreBluetooth central re-init once per sustained hard Dexcom-side episode
+ 2a1b704b0965a125f1af95bdffec7aa7c857a41e watch(build-217): D-7 diagnostics view revamp + rename + Task-4 kill-switches
+ cae0ec386056417174025aca990a7f8d82493f4a watch(build-217): D-8 edge-perimeter cycle ring + on-watch tuning panel
+ 0e3ccbaea2ed0c1e19c5cb0ae835456967394889 watch(build-217): V-2b accessoryRectangular 2h sparkline
+ 50c3e035f1e58251b53aa4ed13c38b3c78e3101e watch(build-218): diagnostics UI fixes — ring ref, dialed-in defaults, crown-safe tuning, one-line upload, legible Sensor
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -58,41 +65,48 @@ Trio-Patch-Source-PatchIds:
  7b3953eb145405a7158b2e387d40c82f9d7c2b05
  d25c8f9e483f932ec06e498d5f12c4ffd7269c57
  b73c4eeff51e57f17287fee1992d8771bda6dbf0
+ 4e99b1f80d79d4015c08ad09b888f58eebe6d652
+ cace1cfb80504f7f03f45db1a15ac8b4b73a2189
+ 5be4a079c8ec9035e1bedd42dc771d80ede3027b
+ be9c1c77a104b2dbd8792b2962936da916476b46
+ a694bf08ece4afe5c2deb07e1b00cb8c866ac927
+ 67539b1a7777edd52c81aa2795014fc80bfe13e5
+ 399e06e6c509520321d82e16d3849b14718ffcb6
 ---
- .../ExtensionDelegate.swift                   |   88 +
- .../G7WatchSensorAdapter.swift                | 1769 ++++++++++++
+ .../ExtensionDelegate.swift                   |   92 +
+ .../G7WatchSensorAdapter.swift                | 1830 ++++++++++++
  .../Helper/WatchNotificationHandler.swift     |   30 +
  .../Helper/WatchResidentTelemetry.swift       |  139 +
  Trio Watch App Extension/TrioWatchApp.swift   |   54 +-
- .../Views/ComplicationDebugView.swift         |  721 +++++
  .../Views/GlucoseTrendView.swift              |   59 +-
  .../Views/TrioMainWatchView.swift             |  202 +-
+ .../Views/WatchDiagnosticsView.swift          | 1000 +++++++
  .../WatchErrorReporter.swift                  |  108 +-
  .../WatchGlucoseColorComputer.swift           |  179 ++
- .../WatchGlucoseHistoryStore.swift            |  213 ++
+ .../WatchGlucoseHistoryStore.swift            |  227 ++
  Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 2555 +++++++++++++++--
- .../WatchTelemetryRing.swift                  |  127 +
- Trio Watch App Tests/Unit Tests.swift         |   71 +
+ Trio Watch App Extension/WatchState.swift     | 2559 +++++++++++++++--
+ .../WatchTelemetryRing.swift                  |  138 +
+ Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |   14 +
  Trio Watch Complication/Info.plist            |    2 +
  .../TrioWatchComplication.entitlements        |   10 +
- .../TrioWatchComplication.swift               |  458 ++-
+ .../TrioWatchComplication.swift               |  600 +++-
  .../TrioWatchComplicationPreview.swift        |  124 +
  Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
- .../TrioComplicationDataStore.swift           | 1278 +++++++++
+ .../TrioComplicationDataStore.swift           | 1296 +++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  593 +++-
- 29 files changed, 9155 insertions(+), 544 deletions(-)
+ 29 files changed, 9716 insertions(+), 544 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
- create mode 100644 Trio Watch App Extension/Views/ComplicationDebugView.swift
+ create mode 100644 Trio Watch App Extension/Views/WatchDiagnosticsView.swift
  create mode 100644 Trio Watch App Extension/WatchGlucoseColorComputer.swift
  create mode 100644 Trio Watch App Extension/WatchGlucoseHistoryStore.swift
  create mode 100644 Trio Watch App Extension/WatchTelemetryRing.swift
@@ -106,10 +120,10 @@ Trio-Patch-Source-PatchIds:
 
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
 new file mode 100644
-index 000000000..83907a7bb
+index 000000000..27aaef3cc
 --- /dev/null
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,92 @@
 +import G7SensorKit
 +import WatchKit
 +
@@ -144,6 +158,10 @@ index 000000000..83907a7bb
 +
 +        // Only set in Watch App Extension; complication extension has no WatchLogger so forwarder stays nil.
 +        TrioComplicationDataStore.setLogForwarder { msg in Task { await WatchLogger.shared.log(msg) } }
++        // C-217 V-2b: bridge the extension-local rolling glucose history into saved snapshots so the
++        // widget's accessoryRectangular sparkline can read it. Only the extension can see the history
++        // store; the widget process never sets this (it reads snapshots, never saves).
++        TrioComplicationDataStore.shared.recentReadingsProvider = { WatchGlucoseHistoryStore.shared.recentReadingsCompact() }
 +        WatchState.shared.scheduleBackgroundLaunchDisarmIfNeeded()
 +        Task {
 +            await WatchLogger.shared.log(
@@ -200,10 +218,10 @@ index 000000000..83907a7bb
 +}
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..ab84c8bf0
+index 000000000..3be099f0d
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,1769 @@
+@@ -0,0 +1,1830 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -306,7 +324,7 @@ index 000000000..ab84c8bf0
 +
 +    // MARK: - Debug-UI accessors
 +
-+    /// Current pre-EGV disconnect streak count (for `ComplicationDebugView`).
++    /// Current pre-EGV disconnect streak count (for `WatchDiagnosticsView`).
 +    var consecutivePreEGVDisconnectsCount: Int { consecutivePreEGVDisconnects }
 +
 +    /// C-216 (Task D): user-initiated recovery marker, logged when the debug-screen button is
@@ -330,6 +348,28 @@ index 000000000..ab84c8bf0
 +    /// debug UI when `extendedSession.state` is not informative (e.g. session reference cleared
 +    /// during teardown).
 +    var extSessionLastKnownActive: Bool { lastKnownExtSessionActive }
++
++    /// C-217-D4: seconds since the current extended runtime session started, via `trueSessionAge()`
++    /// (persisted-epoch first, in-memory fallback — survives adoption/resurrection, §8.7). `nil`
++    /// when no session-start stamp is known.
++    var extSessionAgeSeconds: Int? { trueSessionAge().map(Int.init) }
++
++    /// C-217-D4: true when the C-212-5 near-expiry re-anchor in `renewSessionIfNeeded()` would
++    /// consider the live session eligible right now — `.running` and at least `sessionReanchorAge`
++    /// old. Debug-only mirror of that branch's own guards; reading it never triggers a re-anchor.
++    var isReanchorEligibleNow: Bool {
++        guard extendedSession?.state == .running else { return false }
++        return (trueSessionAge() ?? 0) >= Self.sessionReanchorAge
++    }
++
++    /// C-217-D1: read-only mirror of `consecutiveConnectingTicks` (C-216 W-7a/Task B) for the
++    /// debug "BLE link" row's `ticks:<n>` suffix.
++    var connectingTicksCount: Int { consecutiveConnectingTicks }
++
++    /// C-217-D1/D2: BLE diagnostics snapshot for the debug screen. `sensor.diagnosticsSnapshot()`
++    /// is a BLOCKING `managerQueue.sync` hop — the debug UI must poll this at <= 0.2 Hz (the
++    /// existing 5s tick), never at the 1 Hz tick used for `now`/countdown re-rendering.
++    func bleDiagnostics() -> G7BLEDiagnosticsSnapshot { sensor.diagnosticsSnapshot() }
 +
 +    private let timerQueue = DispatchQueue(label: "org.nightscout.trio.watch.g7WatchAdapter.timers", qos: .utility)
 +    private var heartbeatTimer: DispatchSourceTimer?
@@ -382,6 +422,10 @@ index 000000000..ab84c8bf0
 +    private var sessionConnectAt: Date?
 +    /// C-210-5: true once we've notified for the current direct-BLE stall episode (reset on recovery).
 +    private var stallNotifiedThisEpisode = false
++    private var centralReinitThisEpisode = false
++    /// C-217 D-7: last computed C-210-8 stall fault ("dexcom_side"/"trio_side") for the diagnostics
++    /// Stall row. Set when a stall is detected; nil when the direct path is fresh or ineligible.
++    private(set) var lastDirectBleStallFault: String?
 +    /// C-216 (W-7a/Task B): consecutive heartbeat ticks observing `activePeripheralStateRaw == 1`
 +    /// (CBPeripheralState.connecting). Sizes the duration of the unwatched-wedge fingerprint
 +    /// (`active_peripheral_state=1` + `connect_pending_age_s=-1`, 06-30 deep-gap class).
@@ -424,6 +468,11 @@ index 000000000..ab84c8bf0
 +        static let activationEpochSeconds = "G7WatchAdapter.activationEpochSeconds"
 +        // Legacy key for the one-time W13 sensorName migration only.
 +        static let legacySensorName = "G7DirectBLEObserver.sensorName"
++        // C-217 D-7: watch-local kill-switch persistence. The fork's G7BackgroundHints escalation
++        // flags default ON in-memory every process, so a persisted OFF must be re-applied at launch.
++        // The diagnostics view's @AppStorage toggles use these exact key strings.
++        static let killSwitchWedgeEscalation = "G7WatchAdapter.killSwitch.connectWedgeEscalation"
++        static let killSwitchCentralReinit = "G7WatchAdapter.killSwitch.centralReinit"
 +    }
 +
 +    /// C2 sensor identity = name + activation epoch (Int64 seconds; nil = legacy name-only).
@@ -488,6 +537,7 @@ index 000000000..ab84c8bf0
 +        // C-216 (Task D): one-shot per process — a recovery marker distinguishing a genuine cold
 +        // launch from other events in the telemetry stream.
 +        log("cold_launch", "reason=process_start")
++        applyKillSwitchesFromDefaults() // C-217 D-7: re-apply persisted kill-switch choices
 +        stopTimers() // defensive only — start() is one-shot per process as of build 208
 +        loadDailyCountersIfNewCalendarDay()
 +        startHeartbeatTimer()
@@ -514,6 +564,26 @@ index 000000000..ab84c8bf0
 +        // `.active` inside applyG7DirectBleSnapshot; publishing the real fork state afterwards
 +        // corrects a stale-replay `.active` immediately instead of letting it stand.
 +        publishConnectionStatus()
++    }
++
++    /// C-217 D-7: restore the watch-local kill-switch choices into the fork's in-memory
++    /// G7BackgroundHints flags (which default ON every process). Registers ON as the default so an
++    /// untoggled install matches the fork default. Called once per process from `start()`.
++    private func applyKillSwitchesFromDefaults() {
++        let d = UserDefaults.standard
++        d.register(defaults: [
++            Keys.killSwitchWedgeEscalation: true,
++            Keys.killSwitchCentralReinit: true,
++        ])
++        G7BackgroundHints.isConnectWedgeEscalationEnabled = d.bool(forKey: Keys.killSwitchWedgeEscalation)
++        G7BackgroundHints.isCentralReinitEnabled = d.bool(forKey: Keys.killSwitchCentralReinit)
++    }
++
++    /// C-217 D-7: emit a marker when the user flips a kill-switch in the diagnostics view so soak
++    /// analysis can see exactly when Task-2/Task-4 behavior changed. The view's @AppStorage onChange
++    /// also pushes the value into the fork's G7BackgroundHints flag live (next-cycle effect).
++    func logKillSwitchToggled(_ name: String, enabled: Bool) {
++        log("kill_switch_toggled", "switch=\(name) enabled=\(enabled)")
 +    }
 +
 +    // Build 208: `stop()` removed. Its only caller was the session-invalidation error branch
@@ -1053,6 +1123,7 @@ index 000000000..ab84c8bf0
 +        // direct link is down; Trio can only observe). sessionConnectAt is the last did_connect.
 +        let sinceConnectS: Int = sessionConnectAt.map { Int(now.timeIntervalSince($0)) } ?? -1
 +        let dexcomSide = sinceConnectS < 0 || sinceConnectS > StallThreshold.connectRecentSec
++        lastDirectBleStallFault = dexcomSide ? "dexcom_side" : "trio_side" // C-217 D-7: expose for the diagnostics Stall row
 +
 +        // C-216 (Task A): stamp last-seen RSSI + its age onto the stall event. This tick runs at most
 +        // every ~5 min, so one snapshot call here is cheap; `rssi_age_s=-1` means no didDiscover has
@@ -1074,12 +1145,20 @@ index 000000000..ab84c8bf0
 +            WatchNotificationHandler.shared.postDirectBleStallNotification()
 +            log("direct_ble_stall_notified", "tier=\(tier.rawValue) since_connect_s=\(sinceConnectS)")
 +        }
++
++        // C-217 Task 4: attempt a CoreBluetooth central re-init once per sustained hard Dexcom-side episode — the connect_called=0 deep-gap class that Task-2 wedge escalation cannot reach. Bounded by the fork isCentralReinitEnabled kill-switch + 120s guard.
++        if tier == .unavailable, dexcomSide, !centralReinitThisEpisode {
++            centralReinitThisEpisode = true
++            sensor.requestCentralReinit(reason: "dexcom_side_episode")
++        }
 +    }
 +
 +    /// Reset the stall indicator and the per-episode notification latch once the direct path recovers
 +    /// (or becomes ineligible). A later genuine stall can then notify again.
 +    private func clearDirectBleStallIfNeeded() {
 +        stallNotifiedThisEpisode = false
++        centralReinitThisEpisode = false
++        lastDirectBleStallFault = nil // C-217 D-7
 +        if WatchState.shared.directBleStall != .none { WatchState.shared.directBleStall = .none }
 +    }
 +
@@ -2239,733 +2318,6 @@ index ccc8911ca..28bc6aea2 100644
 +    @unknown default: "unknown"
 +    }
 +}
-diff --git a/Trio Watch App Extension/Views/ComplicationDebugView.swift b/Trio Watch App Extension/Views/ComplicationDebugView.swift
-new file mode 100644
-index 000000000..fccae2c7f
---- /dev/null
-+++ b/Trio Watch App Extension/Views/ComplicationDebugView.swift	
-@@ -0,0 +1,721 @@
-+import SwiftUI
-+import WatchKit
-+
-+struct ComplicationDebugView: View {
-+    @State private var snapshot: TrioComplicationSnapshot?
-+    @State private var showConfirmation = false
-+    @State private var confirmationMessage = ""
-+    @State private var confirmationClearWorkItem: DispatchWorkItem? // W10: coalesce overlapping clears
-+
-+    @State private var watchLogCount: Int = 0
-+    @State private var watchLogBytes: UInt64 = 0
-+    @State private var drainCount: Int = 0
-+    @State private var drainBytes: UInt64 = 0
-+    @State private var pendingCount: Int = 0
-+    @State private var isLoadingLogFiles: Bool = false
-+    /// Ticks every second to drive live countdown, age display, and nav title
-+    /// regardless of whether snapshot has changed (snapshot is Equatable — unchanged
-+    /// readings produce no-op @State assignments and no re-render without this).
-+    @State private var now: Date = Date()
-+
-+    /// Scene phase, used **only** to drive the `isActive` `@State` flag via `.onChange`.
-+    /// **Do not read directly from inside the `.task` polling loop** — the task closure captures
-+    /// `self` (a value-type view struct) at task creation, so a captured `scenePhase` would be
-+    /// frozen at its initial value and would never reflect later scene-phase transitions.
-+    /// `isActive` (below) is the actual gate the loop reads, because `@State`-backed values are
-+    /// observed through SwiftUI's storage and are safe to read from a long-lived concurrent Task.
-+    @Environment(\.scenePhase) private var scenePhase
-+
-+    /// `true` while the watch app is in `.active` scene phase. Mirror of `scenePhase` written via
-+    /// `.onChange(of: scenePhase)` and read from the 1Hz polling task to gate per-second work.
-+    /// Defaults to `true` so the very first ticks after `.onAppear` (before any scene-phase
-+    /// transition is observed) are not unnecessarily suppressed.
-+    @State private var isActive: Bool = true
-+
-+    private let dataStore = TrioComplicationDataStore.shared
-+
-+    // Static formatter — allocated once, reused every 1s tick (item 21)
-+    private static let timeFormatter: DateFormatter = {
-+        let f = DateFormatter()
-+        f.dateFormat = "HH:mm:ss"
-+        return f
-+    }()
-+
-+    // MARK: - Nav title (item 2)
-+
-+    private var navTitle: String {
-+        guard let s = snapshot, s.readingDate != .distantPast else { return "Debug" }
-+        let t = trendSymbol(s.trend)
-+        var parts = [s.glucose, t, s.delta].filter { !$0.isEmpty }
-+        parts.append(nextReadingCountdown(s.readingDate, relativeTo: now))
-+        return parts.joined(separator: " ")
-+    }
-+
-+    // MARK: - Body
-+
-+    var body: some View {
-+        ScrollView {
-+            VStack(alignment: .leading, spacing: 8) {
-+                // SECTION 1: Data Store State
-+                sectionHeader("DATA STORE")
-+                dataStoreStateView
-+
-+                Divider().padding(.vertical, 4)
-+
-+                // SECTION 2: Log Files
-+                sectionHeader("LOG FILES")
-+                logFilesView
-+
-+                Divider().padding(.vertical, 4)
-+
-+                // SECTION 3: G7 Direct BLE
-+                sectionHeader("G7 DIRECT BLE")
-+                G7DirectBleDebugSection(now: now)
-+
-+                Divider().padding(.vertical, 4)
-+
-+                // SECTION 4: Actions
-+                sectionHeader("ACTIONS")
-+                actionsView
-+                    .padding(.bottom, 8)
-+            }
-+            .padding(.horizontal, 8)
-+        }
-+        .navigationTitle(navTitle)
-+        .onAppear {
-+            loadSnapshot()
-+            loadLogFileStats()
-+        }
-+        .onChange(of: scenePhase) { _, newPhase in
-+            isActive = (newPhase == .active)
-+        }
-+        // Unified 1s task — snapshot every tick, file stats every 5s (items 18, 20).
-+        // `now` updated unconditionally to drive countdown/age even when snapshot is unchanged.
-+        //
-+        // **Invariant:** the loop continues running while the view exists, but skips work
-+        // (no `now` tick, no `loadSnapshot()`, no `loadLogFileStats()`) whenever the watch app
-+        // is not in `.active` scene phase. This eliminates 1Hz log-store reads (and the
-+        // `latestSnapshot()` cascade) while the user is on the watch face or in another app.
-+        //
-+        // **Correctness note:** the gate reads `isActive` (a `@State`-backed mirror of
-+        // `scenePhase`) instead of `scenePhase` directly. The `.task` closure captures `self`
-+        // by value at task creation, so a directly-captured `@Environment(\.scenePhase)` would
-+        // be **frozen** at the value present at view first-appear and would never observe later
-+        // background ↔ active transitions, defeating the suspension entirely.
-+        .task {
-+            var tick = 0
-+            while !Task.isCancelled {
-+                try? await Task.sleep(nanoseconds: 1_000_000_000)
-+                guard isActive else { continue }
-+                now = Date()
-+                loadSnapshot()
-+                tick += 1
-+                if tick % 5 == 0 {
-+                    loadLogFileStats()
-+                }
-+            }
-+        }
-+        .overlay(confirmationOverlay)
-+    }
-+
-+    // MARK: - Data Store State Section (items 3–9)
-+
-+    private var dataStoreStateView: some View {
-+        VStack(alignment: .leading, spacing: 4) {
-+            if let s = snapshot {
-+                HStack(spacing: 8) {
-+                    Text(s.glucose)
-+                        .foregroundColor(glucoseColor(for: s.glucose))
-+                        .fontWeight(.bold)
-+                    Text(s.trend.isEmpty ? "—" : trendSymbol(s.trend))
-+                    Text(s.delta)
-+                }
-+                .font(.title)
-+                .lineLimit(1)
-+                .minimumScaleFactor(0.6)
-+                .frame(maxWidth: .infinity, alignment: .center)
-+                .padding(.vertical, 2)
-+
-+                // item 3: source row
-+                HStack {
-+                    Text("Source:")
-+                    Spacer()
-+                    Text(s.source?.shortLabel ?? "?")
-+                        .foregroundColor(.cyan)
-+                }
-+
-+                HStack {
-+                    Text("Reading:")
-+                    Spacer()
-+                    Text(formatTime(s.readingDate))
-+                        .foregroundColor(ageColor(s.readingDate, relativeTo: now))
-+                }
-+
-+                // item 4: next reading countdown — only meaningful for BLE source where
-+                // 5-min cadence is authoritative. Phone/HK readings may be delayed,
-+                // backfilled, or gap-filled; showing a countdown would be misleading.
-+                if s.source == .g7DirectBLE {
-+                    HStack {
-+                        Text("Next:")
-+                        Spacer()
-+                        Text(nextReadingCountdown(s.readingDate, relativeTo: now))
-+                            .foregroundColor(nextReadingColor(s.readingDate, relativeTo: now))
-+                            .monospacedDigit()
-+                    }
-+                }
-+
-+                HStack {
-+                    Text("Saved:")
-+                    Spacer()
-+                    Text(formatTime(s.date))
-+                }
-+
-+            } else {
-+                Text("No snapshot available")
-+                    .foregroundColor(.secondary)
-+                    .frame(maxWidth: .infinity, alignment: .center)
-+            }
-+
-+            // items 7–8: always visible — most useful when there's no snapshot yet
-+            HStack {
-+                Text("Last reload:")
-+                Spacer()
-+                Text(formatTime(dataStore.lastReloadTimestamp))
-+            }
-+
-+            HStack {
-+                Text("Debounce:")
-+                Spacer()
-+                if dataStore.isDebounceActive {
-+                    HStack(spacing: 4) {
-+                        Circle().fill(Color.red).frame(width: 8, height: 8)
-+                        Text("\(Int(dataStore.secondsUntilNextReloadAllowed))s")
-+                    }
-+                    .foregroundColor(.red)
-+                } else {
-+                    HStack(spacing: 4) {
-+                        Circle().fill(Color.green).frame(width: 8, height: 8)
-+                        Text("Ready")
-+                    }
-+                    .foregroundColor(.green)
-+                }
-+            }
-+            // items 5, 6: State and Path rows removed
-+        }
-+        .font(.caption)
-+        // item 9: removed .id(refreshTrigger) — @State snapshot drives re-renders
-+    }
-+
-+    // MARK: - Log Files Section (item 10)
-+
-+    private var logFilesView: some View {
-+        VStack(alignment: .leading, spacing: 4) {
-+            HStack {
-+                Text("Watch Logs:")
-+                Spacer()
-+                Text("\(watchLogCount) files, \(formatBytes(watchLogBytes))")
-+                    .foregroundColor(.secondary)
-+            }
-+            HStack {
-+                Text("Drain Files:")
-+                Spacer()
-+                Text("\(drainCount) files, \(formatBytes(drainBytes))")
-+                    .foregroundColor(.secondary)
-+            }
-+            // item 10: composite upload status replaces bare Pending row
-+            HStack {
-+                Text("Upload status:")
-+                Spacer()
-+                uploadStatusView
-+            }
-+        }
-+        .font(.caption)
-+    }
-+
-+    @ViewBuilder
-+    private var uploadStatusView: some View {
-+        if pendingCount > 0 {
-+            // Fast phase: payload sent to phone, awaiting ACK
-+            HStack(spacing: 4) {
-+                Circle().fill(Color.yellow).frame(width: 8, height: 8)
-+                Text("ACK pending (\(pendingCount))")
-+                    .foregroundColor(.yellow)
-+            }
-+        } else if watchLogCount > 0 || drainCount > 0 {
-+            // Slow phase: files not yet transferred/deleted
-+            HStack(spacing: 4) {
-+                Circle().fill(Color.orange).frame(width: 8, height: 8)
-+                Text("\(watchLogCount)L · \(drainCount)D queued")
-+                    .foregroundColor(.orange)
-+            }
-+        } else {
-+            HStack(spacing: 4) {
-+                Circle().fill(Color.green).frame(width: 8, height: 8)
-+                Text("Clean")
-+                    .foregroundColor(.green)
-+            }
-+        }
-+    }
-+
-+    @MainActor private func loadLogFileStats() {
-+        guard !isLoadingLogFiles else { return }
-+        isLoadingLogFiles = true
-+        Task {
-+            // item 19: isLoadingLogFiles always cleared via MainActor.run at end;
-+            // no early returns inside Task body so this path is always reached.
-+            let fileManager = FileManager.default
-+            var wlCount = 0
-+            var wlBytes: UInt64 = 0
-+            var dcCount = 0
-+            var dcBytes: UInt64 = 0
-+
-+            let logDir = fileManager.urls(
-+                for: .documentDirectory, in: .userDomainMask
-+            ).first?.appendingPathComponent("logs", isDirectory: true)
-+
-+            if let logDir, let files = try? fileManager.contentsOfDirectory(
-+                at: logDir, includingPropertiesForKeys: [.fileSizeKey]
-+            ) {
-+                for file in files
-+                    where file.lastPathComponent.hasPrefix("watch_log_")
-+                    && file.lastPathComponent.hasSuffix(".txt")
-+                    && file.lastPathComponent != "watch_log_daily.txt" {
-+                    wlCount += 1
-+                    if let attrs = try? fileManager.attributesOfItem(atPath: file.path),
-+                       let size = attrs[.size] as? UInt64 {
-+                        wlBytes += size
-+                    }
-+                }
-+            }
-+
-+            if let containerURL = ComplicationLogBuffer.sharedContainerURL() {
-+                let drainsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
-+                if let files = try? fileManager.contentsOfDirectory(
-+                    at: drainsDir, includingPropertiesForKeys: [.fileSizeKey]
-+                ) {
-+                    for file in files
-+                        where file.lastPathComponent.hasPrefix("complication_log.drain.")
-+                        && file.lastPathComponent.hasSuffix(".txt") {
-+                        dcCount += 1
-+                        if let attrs = try? fileManager.attributesOfItem(atPath: file.path),
-+                           let size = attrs[.size] as? UInt64 {
-+                            dcBytes += size
-+                        }
-+                    }
-+                }
-+            }
-+
-+            let pCount = await WatchLogger.shared.getPendingPayloads().count
-+
-+            await MainActor.run {
-+                watchLogCount = wlCount
-+                watchLogBytes = wlBytes
-+                drainCount = dcCount
-+                drainBytes = dcBytes
-+                pendingCount = pCount
-+                isLoadingLogFiles = false
-+            }
-+        }
-+    }
-+
-+    private func formatBytes(_ bytes: UInt64) -> String {
-+        if bytes < 1024 { return "\(bytes) B" }
-+        return "\(bytes / 1024) KB"
-+    }
-+
-+    // MARK: - Actions Section
-+
-+    private var actionsView: some View {
-+        VStack(spacing: 8) {
-+            Button {
-+                Task {
-+                    await WatchLogger.shared.log("🔧 Debug: Force Reload tapped")
-+                }
-+                // scheduleRetry: false — debug view one-shot; no retry needed (Phase 1.3).
-+                dataStore.forceReload(scheduleRetry: false)
-+                triggerConfirmation(message: "✅ Reload triggered!")
-+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-+                    loadSnapshot()
-+                }
-+            } label: {
-+                HStack {
-+                    Image(systemName: "arrow.clockwise")
-+                    Text("Force Reload")
-+                }
-+                .frame(maxWidth: .infinity)
-+            }
-+            .buttonStyle(.bordered)
-+            .tint(.blue)
-+
-+            Button {
-+                Task {
-+                    await WatchLogger.shared.log("🔧 Debug: Request Fresh Data tapped")
-+                }
-+                WatchState.shared.requestWatchStateUpdate()
-+                triggerConfirmation(message: "📡 Requesting...")
-+            } label: {
-+                HStack {
-+                    Image(systemName: "iphone.radiowaves.left.and.right")
-+                    Text("Request Data")
-+                }
-+                .frame(maxWidth: .infinity)
-+            }
-+            .buttonStyle(.bordered)
-+            .tint(.orange)
-+
-+            Button {
-+                flushWatchLogs()
-+            } label: {
-+                HStack {
-+                    Image(systemName: "square.and.arrow.up")
-+                    Text("Flush Logs")
-+                }
-+                .frame(maxWidth: .infinity)
-+            }
-+            .buttonStyle(.bordered)
-+            .tint(.purple)
-+
-+            // C-216 (Task D): telemetry-only recovery marker — lets the user self-report "I
-+            // restarted the app/watch to fix a stalled signal" so the moment correlates against
-+            // surrounding BLE diagnostics. No other behavior change.
-+            Button {
-+                G7WatchSensorAdapter.shared.logManualRecoveryMarker()
-+                triggerConfirmation(message: "📝 Marked")
-+            } label: {
-+                HStack {
-+                    Image(systemName: "bandage")
-+                    Text("Mark: restarted to fix signal")
-+                }
-+                .frame(maxWidth: .infinity)
-+            }
-+            .buttonStyle(.bordered)
-+            .tint(.gray)
-+        }
-+    }
-+
-+    private func flushWatchLogs() {
-+        Task {
-+            await WatchLogger.shared.log("⌚️ DEBUG manual flush requested", force: true)
-+            await WatchLogger.shared.flushIfNeeded(force: true)
-+            await WatchLogger.shared.flushPersistedLogs()
-+            await MainActor.run {
-+                triggerConfirmation(message: "📤 Logs flushed")
-+            }
-+        }
-+    }
-+
-+    // MARK: - Confirmation Overlay
-+
-+    private var confirmationOverlay: some View {
-+        Group {
-+            if showConfirmation {
-+                VStack {
-+                    Spacer()
-+                    Text(confirmationMessage)
-+                        .font(.caption)
-+                        .padding(.horizontal, 12)
-+                        .padding(.vertical, 8)
-+                        .background(.ultraThinMaterial)
-+                        .cornerRadius(8)
-+                        .padding(.bottom, 20)
-+                }
-+                .transition(.move(edge: .bottom).combined(with: .opacity))
-+            }
-+        }
-+        .animation(.easeInOut(duration: 0.3), value: showConfirmation)
-+    }
-+
-+    // MARK: - Helpers
-+
-+    private func sectionHeader(_ title: String) -> some View {
-+        Text(title)
-+            .font(.caption2)
-+            .fontWeight(.semibold)
-+            .foregroundColor(.secondary)
-+            .frame(maxWidth: .infinity, alignment: .leading)
-+            .padding(.top, 4)
-+    }
-+
-+    @MainActor private func loadSnapshot() {
-+        snapshot = dataStore.latestSnapshot()
-+    }
-+
-+    // item 20: renamed from showConfirmation(message:) to eliminate property/method name collision
-+    @MainActor private func triggerConfirmation(message: String) {
-+        confirmationMessage = message
-+        showConfirmation = true
-+        // W10: cancel the prior 1.5s clear before scheduling a new one, so rapid taps don't let an
-+        // earlier clear hide a later confirmation.
-+        confirmationClearWorkItem?.cancel()
-+        let work = DispatchWorkItem { showConfirmation = false }
-+        confirmationClearWorkItem = work
-+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
-+    }
-+
-+    private func formatTime(_ date: Date) -> String {
-+        if date == .distantPast { return "--" }
-+        return Self.timeFormatter.string(from: date)
-+    }
-+
-+    private func ageColor(_ date: Date, relativeTo now: Date = Date()) -> Color {
-+        if date == .distantPast { return .secondary }
-+        let age = now.timeIntervalSince(date)
-+        if age < 300 { return .green }
-+        if age < 900 { return .yellow }
-+        return .red
-+    }
-+
-+    private func glucoseColor(for value: String) -> Color {
-+        guard let glucose = Double(value) else { return .secondary }
-+        // UI-207-3: match the main bubble — use the shared user-threshold / dynamic-color computer (W5)
-+        // instead of hard-coded 70/180, so the debug header color tracks the user's settings.
-+        return WatchGlucoseColorComputer.shared.bubbleColor(for: Int(glucose.rounded()))
-+    }
-+
-+    // item 2: trend arrow → unicode symbol for nav title
-+    private func trendSymbol(_ trend: String) -> String {
-+        switch trend {
-+        case "DoubleDown":    return "↓↓"
-+        case "SingleDown":    return "↓"
-+        case "FortyFiveDown": return "↘"
-+        case "Flat":          return "→"
-+        case "FortyFiveUp":   return "↗"
-+        case "SingleUp":      return "↑"
-+        case "DoubleUp":      return "↑↑"
-+        default:              return trend.isEmpty ? "" : "~"
-+        }
-+    }
-+
-+    // item 4: countdown to anticipated next reading
-+    // G7 nominal cadence is 5 min; all current sources (BLE, Phone, HK) deliver on this schedule.
-+    private static let expectedReadingCadence: TimeInterval = 300
-+
-+    private func nextReadingCountdown(_ date: Date, relativeTo now: Date = Date()) -> String {
-+        if date == .distantPast { return "--" }
-+        let remaining = Int(date.addingTimeInterval(Self.expectedReadingCadence).timeIntervalSince(now))
-+        if remaining < 0 { return "⚠️+\(abs(remaining))s" }
-+        return "\(remaining)s"
-+    }
-+
-+    private func nextReadingColor(_ date: Date, relativeTo now: Date = Date()) -> Color {
-+        if date == .distantPast { return .secondary }
-+        return date.addingTimeInterval(Self.expectedReadingCadence).timeIntervalSince(now) < 0 ? .red : .primary
-+    }
-+}
-+
-+/// G7 debug rows: read `WatchState` from this type's `body` so updates observe reliably (vs. a
-+/// `private var` on the parent). DATA STORE / log stats still use the unified 1s task poll.
-+private struct G7DirectBleDebugSection: View {
-+    /// Driven by parent's 1s tick so countdown rows re-render even when underlying state is unchanged.
-+    let now: Date
-+
-+    /// G7 nominal cadence (matches `ComplicationDebugView.expectedReadingCadence`).
-+    private static let expectedCadence: TimeInterval = 300
-+
-+    // item 21: static formatter
-+    private static let timeFormatter: DateFormatter = {
-+        let f = DateFormatter()
-+        f.dateFormat = "HH:mm:ss"
-+        return f
-+    }()
-+
-+    var body: some View {
-+        VStack(alignment: .leading, spacing: 4) {
-+            // item 12: status now reflects build 191 state machine via updated enum
-+            HStack {
-+                Text("Status:")
-+                Spacer()
-+                Text(WatchState.shared.g7DirectBleStatus.rawValue)
-+            }
-+            // Ext-session diagnostics: state of the live WKExtendedRuntimeSession (or the last
-+            // observed `active` flag as a fallback) and whether a chain-renewal is pending.
-+            HStack {
-+                Text("Ext session:")
-+                Spacer()
-+                Text(extSessionDisplay)
-+                    .foregroundColor(.secondary)
-+            }
-+            // items 13–14: bleLastConnectAt / bleLastEGVDate / bleLastEGVValue (updated by `G7WatchSensorAdapter`)
-+            HStack {
-+                Text("Last connect:")
-+                Spacer()
-+                Text(formatG7Time(WatchState.shared.bleLastConnectAt))
-+            }
-+            // Countdown to next anticipated connect (last connect + 5 min cadence).
-+            HStack {
-+                Text("Next connect:")
-+                Spacer()
-+                Text(nextConnectCountdown(WatchState.shared.bleLastConnectAt))
-+                    .monospacedDigit()
-+            }
-+            HStack {
-+                Text("Last BLE EGV:")
-+                Spacer()
-+                if let d = WatchState.shared.bleLastEGVDate,
-+                   let v = WatchState.shared.bleLastEGVValue {
-+                    Text("\(formatG7Time(d)) · \(v) mg/dL")
-+                } else {
-+                    Text("--")
-+                }
-+            }
-+            // Minutes since the last EGV epoch — primary diagnostic for "is the sensor stalled?".
-+            HStack {
-+                Text("Since EGV:")
-+                Spacer()
-+                Text(sinceEGVDisplay)
-+                    .foregroundColor(sinceEGVColor)
-+                    .monospacedDigit()
-+            }
-+            // W8: high-value diagnostics that already exist in code but weren't displayed.
-+            // UI-207-3: relabeled from "Last BLE event" — `g7DirectBleLastEventAt` is bumped on status
-+            // changes AND scene-phase transitions (WatchState.applyG7DirectBleScenePhase), not just BLE
-+            // activity, so it's a status-event timestamp, not a BLE-activity one.
-+            HStack {
-+                Text("Last status event:")
-+                Spacer()
-+                Text(formatG7Time(WatchState.shared.g7DirectBleLastEventAt)) // section-local helper (Date?) — handles nil
-+                    .foregroundColor(.secondary)
-+            }
-+            HStack {
-+                Text("Session ID:")
-+                Spacer()
-+                Text(G7WatchSensorAdapter.shared.adapterSessionID ?? "—")
-+                    .foregroundColor(.secondary)
-+                    .font(.system(.caption, design: .monospaced))
-+            }
-+            // Pre-EGV disconnect streak: > 2 means the adapter is struggling to authenticate.
-+            HStack {
-+                Text("Pre-EGV disconnects:")
-+                Spacer()
-+                Text("\(G7WatchSensorAdapter.shared.consecutivePreEGVDisconnectsCount)")
-+                    .foregroundColor(G7WatchSensorAdapter.shared.consecutivePreEGVDisconnectsCount > 2 ? .red : .secondary)
-+                    .monospacedDigit()
-+            }
-+            // UI-207-1: raw daily totals (Connects is event-based — multiple per slot — so it must
-+            // NOT be shown over a slot denominator). Slot capture rate is a separate, clearly-labeled row.
-+            HStack {
-+                Text("Connects:")
-+                Spacer()
-+                Text("\(WatchState.shared.bleConnectsToday)")
-+                    .monospacedDigit()
-+            }
-+            HStack {
-+                Text("EGVs:")
-+                Spacer()
-+                Text("\(WatchState.shared.bleEGVsToday)")
-+                    .monospacedDigit()
-+            }
-+            HStack {
-+                Text("Capture (slots):")
-+                Spacer()
-+                Text(slotCaptureText)
-+                    .monospacedDigit()
-+            }
-+            HStack {
-+                Text("Windows:")
-+                Spacer()
-+                Text("\(eligibleSlots) elig · \(WatchState.shared.gatedSlotsToday) gated")
-+                    .foregroundColor(.secondary)
-+                    .monospacedDigit()
-+            }
-+            // Phone-relay sensor name (UserDefaults via adapter) — must match WC `g7_active_sensor_name` sync.
-+            HStack {
-+                Text("Phone sensor:")
-+                Spacer()
-+                Text(G7WatchSensorAdapter.shared.telemetrySensorName)
-+                    .foregroundColor(.secondary)
-+            }
-+            // Phone-pushed identity the adapter will accept in `didDiscoverNewSensor`.
-+            HStack {
-+                Text("Expected:")
-+                Spacer()
-+                Text(G7WatchSensorAdapter.shared.expectedSensorName ?? "—")
-+                    .foregroundColor(.secondary)
-+            }
-+            // Name the live `G7Sensor` is currently bound to (set in `sensorDidConnect`). Should
-+            // converge to `Expected:` once a discovery is accepted.
-+            HStack {
-+                Text("Bound:")
-+                Spacer()
-+                Text(G7WatchSensorAdapter.shared.boundSensorName ?? "—")
-+                    .foregroundColor(.secondary)
-+            }
-+            // item 16: live WatchState source vs persisted snapshot — mismatches are diagnostic
-+            HStack {
-+                Text("Live source:")
-+                Spacer()
-+                Text(WatchState.shared.displayedReadingSource.watchBadgeText)
-+                    .foregroundColor(.cyan)
-+            }
-+            // UI-207-3: "Was restored" row pending — willRestoreState now emits `will_restore_state`
-+            // telemetry (G7SensorKit@40b5871) and the watch adapter DOES own the central (D6), so the
-+            // old "never fires for a non-owning central" claim was wrong. Re-add a `Was restored` row
-+            // once `bleWasRestored` is wired to that signal and confirmed firing in BetterStack.
-+        }
-+        .font(.caption)
-+    }
-+
-+    private var extSessionDisplay: String {
-+        let state = G7WatchSensorAdapter.shared.extSessionState
-+        if state == "nil" {
-+            return G7WatchSensorAdapter.shared.extSessionLastKnownActive ? "active?" : "nil"
-+        }
-+        return state
-+    }
-+
-+    private var sinceEGVDisplay: String {
-+        let m = G7WatchSensorAdapter.shared.minutesSinceLastEGV()
-+        return m < 0 ? "—" : "\(m)m"
-+    }
-+
-+    private var sinceEGVColor: Color {
-+        let m = G7WatchSensorAdapter.shared.minutesSinceLastEGV()
-+        if m < 0 { return .secondary }
-+        if m < 6 { return .green }
-+        if m <= 15 { return .yellow }
-+        return .red
-+    }
-+
-+    private func formatG7Time(_ date: Date?) -> String {
-+        guard let date, date != .distantPast else { return "--" }
-+        return Self.timeFormatter.string(from: date)
-+    }
-+
-+    /// Mirrors `ComplicationDebugView.nextReadingCountdown` semantics: "Ns" when in the future,
-+    /// "⚠️+Ns" when overdue (last connect + cadence has already passed). "--" if no connect yet.
-+    private func nextConnectCountdown(_ lastConnect: Date?) -> String {
-+        guard let lastConnect, lastConnect != .distantPast else { return "--" }
-+        let remaining = Int(lastConnect.addingTimeInterval(Self.expectedCadence).timeIntervalSince(now))
-+        if remaining < 0 { return "⚠️+\(abs(remaining))s" }
-+        return "\(remaining)s"
-+    }
-+
-+    /// C-209-1 (B1): analytical eligible windows — elapsed wall-clock slots since midnight minus
-+    /// ineligible (no sensor identity) minus C1-gated. Computed at display time, so it cannot
-+    /// freeze during background suspension the way the old timer-accumulated counter did.
-+    private var slotStats: G7WatchSensorAdapter.DailySlotStats {
-+        G7WatchSensorAdapter.shared.dailySlotStats()
-+    }
-+
-+    private var eligibleSlots: Int {
-+        slotStats.eligibleSlots
-+    }
-+
-+    /// UI-207-1: honest slot capture "EGVs / eligibleWindows", **un-clamped** so a >100% ratio (backfill
-+    /// or multiple reads per slot) stays visible. Falls back to the raw EGV count when no eligible
-+    /// windows are known yet. Replaces the old `countWithDenominator`, which clamped the numerator with
-+    /// `min(count, denom)` and was wrongly applied to the event-based Connects row too — making both
-+    /// rows read e.g. `61/61` and hiding the real totals.
-+    private var slotCaptureText: String {
-+        let stats = slotStats
-+        let denom = stats.eligibleSlots
-+        guard denom > 0 else { return "\(stats.egvs)" }
-+        return "\(stats.egvs) / \(denom)"
-+    }
-+}
-+
-+#Preview {
-+    NavigationStack {
-+        ComplicationDebugView()
-+    }
-+}
 diff --git a/Trio Watch App Extension/Views/GlucoseTrendView.swift b/Trio Watch App Extension/Views/GlucoseTrendView.swift
 index 20b50f21f..0a7115014 100644
 --- a/Trio Watch App Extension/Views/GlucoseTrendView.swift	
@@ -3054,7 +2406,7 @@ index 20b50f21f..0a7115014 100644
              Spacer()
  
 diff --git a/Trio Watch App Extension/Views/TrioMainWatchView.swift b/Trio Watch App Extension/Views/TrioMainWatchView.swift
-index 9e381bcee..4f30e7fb7 100644
+index 9e381bcee..b115e24f5 100644
 --- a/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 +++ b/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 @@ -3,10 +3,11 @@ import SwiftUI
@@ -3148,7 +2500,7 @@ index 9e381bcee..4f30e7fb7 100644
 +                // Page 2: Complication Debug View (only constructed when visible)
 +                Group {
 +                    if currentPage == 2 {
-+                        ComplicationDebugView()
++                        WatchDiagnosticsView()
 +                    } else {
 +                        Color.clear
 +                    }
@@ -3322,6 +2674,1012 @@ index 9e381bcee..4f30e7fb7 100644
                  }
              }
              .fullScreenCover(isPresented: $showingTreatmentMenuSheet) {
+diff --git a/Trio Watch App Extension/Views/WatchDiagnosticsView.swift b/Trio Watch App Extension/Views/WatchDiagnosticsView.swift
+new file mode 100644
+index 000000000..31de71566
+--- /dev/null
++++ b/Trio Watch App Extension/Views/WatchDiagnosticsView.swift	
+@@ -0,0 +1,1000 @@
++import G7SensorKit // C-217-D1/D2: G7BLEDiagnosticsSnapshot
++import SwiftUI
++import WatchKit
++
++struct WatchDiagnosticsView: View {
++    @State private var snapshot: TrioComplicationSnapshot?
++    @State private var showConfirmation = false
++    @State private var confirmationMessage = ""
++    @State private var confirmationClearWorkItem: DispatchWorkItem? // W10: coalesce overlapping clears
++
++    @State private var watchLogCount: Int = 0
++    @State private var watchLogBytes: UInt64 = 0
++    @State private var drainCount: Int = 0
++    @State private var drainBytes: UInt64 = 0
++    @State private var pendingCount: Int = 0
++    @State private var isLoadingLogFiles: Bool = false
++    /// Ticks every second to drive live countdown, age display, and nav title
++    /// regardless of whether snapshot has changed (snapshot is Equatable — unchanged
++    /// readings produce no-op @State assignments and no re-render without this).
++    @State private var now: Date = Date()
++
++    /// C-217-D1/D2: BLE diagnostics snapshot for the G7 section. Refreshed ONLY on the 5s branch
++    /// of the polling task (and once in `.onAppear`) — `bleDiagnostics()` is a blocking
++    /// `managerQueue.sync` hop and must NEVER be called at the 1 Hz tick rate.
++    @State private var bleDiag: G7BLEDiagnosticsSnapshot?
++
++    /// Scene phase, used **only** to drive the `isActive` `@State` flag via `.onChange`.
++    /// **Do not read directly from inside the `.task` polling loop** — the task closure captures
++    /// `self` (a value-type view struct) at task creation, so a captured `scenePhase` would be
++    /// frozen at its initial value and would never reflect later scene-phase transitions.
++    /// `isActive` (below) is the actual gate the loop reads, because `@State`-backed values are
++    /// observed through SwiftUI's storage and are safe to read from a long-lived concurrent Task.
++    @Environment(\.scenePhase) private var scenePhase
++
++    /// `true` while the watch app is in `.active` scene phase. Mirror of `scenePhase` written via
++    /// `.onChange(of: scenePhase)` and read from the 1Hz polling task to gate per-second work.
++    /// Defaults to `true` so the very first ticks after `.onAppear` (before any scene-phase
++    /// transition is observed) are not unnecessarily suppressed.
++    @State private var isActive: Bool = true
++
++    // C-217 D-7: watch-local kill-switches for the Task-2 wedge escalation and Task-4 central
++    // re-init. Keys MUST match G7WatchSensorAdapter.Keys.killSwitch* (applied to the fork's
++    // G7BackgroundHints flags at launch by applyKillSwitchesFromDefaults). Default ON.
++    @AppStorage("G7WatchAdapter.killSwitch.connectWedgeEscalation") private var wedgeEscalationEnabled = true
++    @AppStorage("G7WatchAdapter.killSwitch.centralReinit") private var centralReinitEnabled = true
++
++    // C-217 D-8: live-tunable edge-ring geometry (dial in on-wrist, then hardcode as defaults).
++    // Behavioral values (fraction math, color thresholds) are deliberately NOT tunable.
++    @AppStorage("g7.ring.cornerRadius") private var ringCornerRadius: Double = 37
++    @AppStorage("g7.ring.lineWidth") private var ringLineWidth: Double = 6
++    @AppStorage("g7.ring.insetX") private var ringInsetX: Double = 4
++    @AppStorage("g7.ring.insetY") private var ringInsetY: Double = 3
++    @AppStorage("g7.ring.trackOpacity") private var ringTrackOpacity: Double = 0
++
++    private let dataStore = TrioComplicationDataStore.shared
++
++    // Static formatter — allocated once, reused every 1s tick (item 21)
++    private static let timeFormatter: DateFormatter = {
++        let f = DateFormatter()
++        f.dateFormat = "HH:mm:ss"
++        return f
++    }()
++
++    // MARK: - Nav title (item 2)
++
++    private var navTitle: String {
++        guard let s = snapshot, s.readingDate != .distantPast else { return "Debug" }
++        let t = trendSymbol(s.trend)
++        var parts = [s.glucose, t, s.delta].filter { !$0.isEmpty }
++        parts.append(nextReadingCountdown(s.readingDate, relativeTo: now))
++        return parts.joined(separator: " ")
++    }
++
++    // MARK: - Body
++
++    var body: some View {
++        ScrollView {
++            VStack(alignment: .leading, spacing: 8) {
++                glucoseHeadlineView
++
++                Divider().padding(.vertical, 4)
++
++                sectionHeader("G7 DIRECT BLE")
++                G7DirectBleDebugSection(now: now, diag: bleDiag)
++
++                Divider().padding(.vertical, 4)
++
++                sectionHeader("LOGS")
++                logFilesView
++
++                Divider().padding(.vertical, 4)
++
++                sectionHeader("DATA STORE")
++                dataStoreStateView
++
++                Divider().padding(.vertical, 4)
++
++                sectionHeader("ESCALATION")
++                escalationControlsView
++
++                Divider().padding(.vertical, 4)
++
++                sectionHeader("ACTIONS")
++                actionsView
++                    .padding(.bottom, 8)
++
++                Divider().padding(.vertical, 4)
++
++                sectionHeader("RING TUNING")
++                ringTuningView
++            }
++            .padding(.horizontal, 8)
++        }
++        .navigationTitle(navTitle)
++        .onAppear {
++            loadSnapshot()
++            loadLogFileStats()
++            bleDiag = G7WatchSensorAdapter.shared.bleDiagnostics() // C-217-D1: seed once; 5s tick thereafter
++        }
++        .onChange(of: scenePhase) { _, newPhase in
++            isActive = (newPhase == .active)
++        }
++        // Unified 1s task — snapshot every tick, file stats every 5s (items 18, 20).
++        // `now` updated unconditionally to drive countdown/age even when snapshot is unchanged.
++        //
++        // **Invariant:** the loop continues running while the view exists, but skips work
++        // (no `now` tick, no `loadSnapshot()`, no `loadLogFileStats()`) whenever the watch app
++        // is not in `.active` scene phase. This eliminates 1Hz log-store reads (and the
++        // `latestSnapshot()` cascade) while the user is on the watch face or in another app.
++        //
++        // **Correctness note:** the gate reads `isActive` (a `@State`-backed mirror of
++        // `scenePhase`) instead of `scenePhase` directly. The `.task` closure captures `self`
++        // by value at task creation, so a directly-captured `@Environment(\.scenePhase)` would
++        // be **frozen** at the value present at view first-appear and would never observe later
++        // background ↔ active transitions, defeating the suspension entirely.
++        .task {
++            var tick = 0
++            while !Task.isCancelled {
++                try? await Task.sleep(nanoseconds: 1_000_000_000)
++                guard isActive else { continue }
++                now = Date()
++                loadSnapshot()
++                tick += 1
++                if tick % 5 == 0 {
++                    loadLogFileStats()
++                    // C-217-D1/D2: refresh at the 5s cadence ONLY — bleDiagnostics() blocks on the
++                    // sensor's managerQueue (queue-sync hop); never move this to the 1 Hz path.
++                    bleDiag = G7WatchSensorAdapter.shared.bleDiagnostics()
++                }
++            }
++        }
++        .overlay(edgeCycleRing)
++        .overlay(confirmationOverlay)
++    }
++
++    // MARK: - Glucose Headline
++
++    @ViewBuilder
++    private var glucoseHeadlineView: some View {
++        if let s = snapshot {
++            HStack(spacing: 8) {
++                Text(s.glucose)
++                    .foregroundColor(glucoseColor(for: s.glucose))
++                    .fontWeight(.bold)
++                Text(s.trend.isEmpty ? "—" : trendSymbol(s.trend))
++                Text(s.delta)
++            }
++            .font(.title)
++            .lineLimit(1)
++            .minimumScaleFactor(0.6)
++            .frame(maxWidth: .infinity, alignment: .center)
++            .padding(.vertical, 2)
++        } else {
++            Text("No snapshot available")
++                .foregroundColor(.secondary)
++                .frame(maxWidth: .infinity, alignment: .center)
++        }
++    }
++
++    // MARK: - Escalation kill-switches (C-217 D-7)
++
++    private var escalationControlsView: some View {
++        VStack(alignment: .leading, spacing: 6) {
++            Toggle(isOn: $wedgeEscalationEnabled) {
++                Text("Wedge escalation (T2)")
++                    .font(.caption)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            .onChange(of: wedgeEscalationEnabled) { _, newValue in
++                G7BackgroundHints.isConnectWedgeEscalationEnabled = newValue
++                G7WatchSensorAdapter.shared.logKillSwitchToggled("connect_wedge_escalation", enabled: newValue)
++            }
++            Toggle(isOn: $centralReinitEnabled) {
++                Text("Central re-init (T4)")
++                    .font(.caption)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            .onChange(of: centralReinitEnabled) { _, newValue in
++                G7BackgroundHints.isCentralReinitEnabled = newValue
++                G7WatchSensorAdapter.shared.logKillSwitchToggled("central_reinit", enabled: newValue)
++            }
++        }
++    }
++
++    // MARK: - Edge cycle ring (C-217 D-8)
++
++    /// Full-perimeter ring tracing the screen edge; fills clockwise from top-center over the 5-min
++    /// CGM cycle (reference = the displayed reading's date). Stepped from the 1 Hz `now` tick — NO
++    /// `.animation` (resume-sweep glitch); trim-based — NO `.rotationEffect`.
++    private var edgeCycleRing: some View {
++        let fraction = g7CountdownFraction(from: WatchState.shared.bleLastConnectAt, to: now) // C-218 E-1: next-connect cycle, matches the "Next connect:" row
++        return ZStack {
++            EdgeRingShape(cornerRadius: CGFloat(ringCornerRadius), insetX: CGFloat(ringInsetX), insetY: CGFloat(ringInsetY))
++                .stroke(Color.white.opacity(ringTrackOpacity), lineWidth: CGFloat(ringLineWidth))
++            EdgeRingShape(cornerRadius: CGFloat(ringCornerRadius), insetX: CGFloat(ringInsetX), insetY: CGFloat(ringInsetY))
++                .trim(from: 0, to: fraction)
++                .stroke(g7CountdownRingColor(fraction), style: StrokeStyle(lineWidth: CGFloat(ringLineWidth), lineCap: .round))
++        }
++        .ignoresSafeArea()
++        .allowsHitTesting(false)
++    }
++
++    private var ringTuningView: some View {
++        VStack(alignment: .leading, spacing: 4) {
++            ringStepper("Corner", $ringCornerRadius, range: 20...80, step: 1, format: "%.0f")
++            ringStepper("Width", $ringLineWidth, range: 1...6, step: 1, format: "%.0f")
++            ringStepper("Inset X", $ringInsetX, range: -12...12, step: 1, format: "%.0f")
++            ringStepper("Inset Y", $ringInsetY, range: -12...12, step: 1, format: "%.0f")
++            ringStepper("Track", $ringTrackOpacity, range: 0...0.5, step: 0.02, format: "%.2f")
++        }
++        .font(.caption)
++    }
++
++    private func ringStepper(_ label: String, _ value: Binding<Double>, range: ClosedRange<Double>, step: Double, format: String) -> some View {
++        // C-218 E-3/E-4: plain -/+ Buttons instead of a native Stepper. The watchOS Stepper binds the
++        // Digital Crown to its value (so the crown adjusted a knob instead of scrolling the view) and
++        // its focus-mode buttons occluded the wrapping label. Plain Buttons don't capture the crown, so
++        // the ScrollView keeps it for vertical scroll; +/- adjust the value, clamped to `range`.
++        HStack(spacing: 4) {
++            Text(label)
++                .lineLimit(1)
++                .minimumScaleFactor(0.6)
++            Spacer(minLength: 2)
++            Text(String(format: format, value.wrappedValue))
++                .monospacedDigit()
++                .foregroundColor(.secondary)
++                .lineLimit(1)
++            Button {
++                value.wrappedValue = max(range.lowerBound, value.wrappedValue - step)
++            } label: {
++                Image(systemName: "minus.circle")
++            }
++            .buttonStyle(.plain)
++            Button {
++                value.wrappedValue = min(range.upperBound, value.wrappedValue + step)
++            } label: {
++                Image(systemName: "plus.circle")
++            }
++            .buttonStyle(.plain)
++        }
++    }
++
++    // MARK: - Data Store State Section (items 3–9)
++
++    private var dataStoreStateView: some View {
++        VStack(alignment: .leading, spacing: 4) {
++            if let s = snapshot {
++                // item 3: source row
++                HStack {
++                    Text("Source:")
++                    Spacer()
++                    Text(s.source?.shortLabel ?? "?")
++                        .foregroundColor(.cyan)
++                        .lineLimit(1)
++                        .minimumScaleFactor(0.6)
++                }
++
++                HStack {
++                    Text("Reading:")
++                    Spacer()
++                    Text(formatTime(s.readingDate))
++                        .foregroundColor(ageColor(s.readingDate, relativeTo: now))
++                        .lineLimit(1)
++                        .minimumScaleFactor(0.6)
++                }
++
++                HStack {
++                    Text("Saved:")
++                    Spacer()
++                    Text(formatTime(s.date))
++                        .lineLimit(1)
++                        .minimumScaleFactor(0.6)
++                }
++            }
++
++            // items 7–8: always visible — most useful when there's no snapshot yet
++            HStack {
++                Text("Last reload:")
++                Spacer()
++                Text(formatTime(dataStore.lastReloadTimestamp))
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++
++            HStack {
++                Text("Debounce:")
++                Spacer()
++                if dataStore.isDebounceActive {
++                    HStack(spacing: 4) {
++                        Circle().fill(Color.red).frame(width: 8, height: 8)
++                        Text("\(Int(dataStore.secondsUntilNextReloadAllowed))s")
++                            .lineLimit(1)
++                            .minimumScaleFactor(0.6)
++                    }
++                    .foregroundColor(.red)
++                } else {
++                    HStack(spacing: 4) {
++                        Circle().fill(Color.green).frame(width: 8, height: 8)
++                        Text("Ready")
++                            .lineLimit(1)
++                            .minimumScaleFactor(0.6)
++                    }
++                    .foregroundColor(.green)
++                }
++            }
++            // items 5, 6: State and Path rows removed
++        }
++        .font(.caption)
++        // item 9: removed .id(refreshTrigger) — @State snapshot drives re-renders
++    }
++
++    // MARK: - Log Files Section (item 10)
++
++    private var logFilesView: some View {
++        VStack(alignment: .leading, spacing: 4) {
++            HStack {
++                Text("Watch Logs:")
++                Spacer()
++                Text("\(watchLogCount) files, \(formatBytes(watchLogBytes))")
++                    .foregroundColor(.secondary)
++            }
++            HStack {
++                Text("Drain Files:")
++                Spacer()
++                Text("\(drainCount) files, \(formatBytes(drainBytes))")
++                    .foregroundColor(.secondary)
++            }
++            // item 10: composite upload status replaces bare Pending row
++            HStack {
++                Text("Upload:").lineLimit(1)
++                Spacer()
++                uploadStatusView
++            }
++        }
++        .font(.caption)
++    }
++
++    @ViewBuilder
++    private var uploadStatusView: some View {
++        if pendingCount > 0 {
++            // Fast phase: payload sent to phone, awaiting ACK
++            HStack(spacing: 4) {
++                Circle().fill(Color.yellow).frame(width: 8, height: 8)
++                Text("ACK (\(pendingCount))")
++                    .foregroundColor(.yellow)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++        } else if watchLogCount > 0 || drainCount > 0 {
++            // Slow phase: files not yet transferred/deleted
++            HStack(spacing: 4) {
++                Circle().fill(Color.orange).frame(width: 8, height: 8)
++                Text("\(watchLogCount)L · \(drainCount)D queued")
++                    .foregroundColor(.orange)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++        } else {
++            HStack(spacing: 4) {
++                Circle().fill(Color.green).frame(width: 8, height: 8)
++                Text("Clean")
++                    .foregroundColor(.green)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++        }
++    }
++
++    @MainActor private func loadLogFileStats() {
++        guard !isLoadingLogFiles else { return }
++        isLoadingLogFiles = true
++        Task {
++            // item 19: isLoadingLogFiles always cleared via MainActor.run at end;
++            // no early returns inside Task body so this path is always reached.
++            let fileManager = FileManager.default
++            var wlCount = 0
++            var wlBytes: UInt64 = 0
++            var dcCount = 0
++            var dcBytes: UInt64 = 0
++
++            let logDir = fileManager.urls(
++                for: .documentDirectory, in: .userDomainMask
++            ).first?.appendingPathComponent("logs", isDirectory: true)
++
++            if let logDir, let files = try? fileManager.contentsOfDirectory(
++                at: logDir, includingPropertiesForKeys: [.fileSizeKey]
++            ) {
++                for file in files
++                    where file.lastPathComponent.hasPrefix("watch_log_")
++                    && file.lastPathComponent.hasSuffix(".txt")
++                    && file.lastPathComponent != "watch_log_daily.txt" {
++                    wlCount += 1
++                    if let attrs = try? fileManager.attributesOfItem(atPath: file.path),
++                       let size = attrs[.size] as? UInt64 {
++                        wlBytes += size
++                    }
++                }
++            }
++
++            if let containerURL = ComplicationLogBuffer.sharedContainerURL() {
++                let drainsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
++                if let files = try? fileManager.contentsOfDirectory(
++                    at: drainsDir, includingPropertiesForKeys: [.fileSizeKey]
++                ) {
++                    for file in files
++                        where file.lastPathComponent.hasPrefix("complication_log.drain.")
++                        && file.lastPathComponent.hasSuffix(".txt") {
++                        dcCount += 1
++                        if let attrs = try? fileManager.attributesOfItem(atPath: file.path),
++                           let size = attrs[.size] as? UInt64 {
++                            dcBytes += size
++                        }
++                    }
++                }
++            }
++
++            let pCount = await WatchLogger.shared.getPendingPayloads().count
++
++            await MainActor.run {
++                watchLogCount = wlCount
++                watchLogBytes = wlBytes
++                drainCount = dcCount
++                drainBytes = dcBytes
++                pendingCount = pCount
++                isLoadingLogFiles = false
++            }
++        }
++    }
++
++    private func formatBytes(_ bytes: UInt64) -> String {
++        if bytes < 1024 { return "\(bytes) B" }
++        return "\(bytes / 1024) KB"
++    }
++
++    // MARK: - Actions Section
++
++    private var actionsView: some View {
++        VStack(spacing: 8) {
++            // C-216 (Task D): telemetry-only recovery marker — lets the user self-report "I
++            // restarted the app/watch to fix a stalled signal" so the moment correlates against
++            // surrounding BLE diagnostics. No other behavior change.
++            Button {
++                G7WatchSensorAdapter.shared.logManualRecoveryMarker()
++                triggerConfirmation(message: "📝 Marked")
++            } label: {
++                HStack {
++                    Image(systemName: "bandage")
++                    Text("Mark: restarted to fix signal")
++                }
++                .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.bordered)
++            .tint(.gray)
++
++            Button {
++                flushWatchLogs()
++            } label: {
++                HStack {
++                    Image(systemName: "square.and.arrow.up")
++                    Text("Flush Logs")
++                }
++                .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.bordered)
++            .tint(.purple)
++
++            Button {
++                Task {
++                    await WatchLogger.shared.log("🔧 Debug: Force Reload tapped")
++                }
++                // scheduleRetry: false — debug view one-shot; no retry needed (Phase 1.3).
++                dataStore.forceReload(scheduleRetry: false)
++                triggerConfirmation(message: "✅ Reload triggered!")
++                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
++                    loadSnapshot()
++                }
++            } label: {
++                HStack {
++                    Image(systemName: "arrow.clockwise")
++                    Text("Force Reload")
++                }
++                .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.bordered)
++            .tint(.blue)
++
++            Button {
++                Task {
++                    await WatchLogger.shared.log("🔧 Debug: Request Fresh Data tapped")
++                }
++                WatchState.shared.requestWatchStateUpdate()
++                triggerConfirmation(message: "📡 Requesting...")
++            } label: {
++                HStack {
++                    Image(systemName: "iphone.radiowaves.left.and.right")
++                    Text("Request Data")
++                }
++                .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.bordered)
++            .tint(.orange)
++        }
++    }
++
++    private func flushWatchLogs() {
++        Task {
++            await WatchLogger.shared.log("⌚️ DEBUG manual flush requested", force: true)
++            await WatchLogger.shared.flushIfNeeded(force: true)
++            await WatchLogger.shared.flushPersistedLogs()
++            await MainActor.run {
++                triggerConfirmation(message: "📤 Logs flushed")
++            }
++        }
++    }
++
++    // MARK: - Confirmation Overlay
++
++    private var confirmationOverlay: some View {
++        Group {
++            if showConfirmation {
++                VStack {
++                    Spacer()
++                    Text(confirmationMessage)
++                        .font(.caption)
++                        .padding(.horizontal, 12)
++                        .padding(.vertical, 8)
++                        .background(.ultraThinMaterial)
++                        .cornerRadius(8)
++                        .padding(.bottom, 20)
++                }
++                .transition(.move(edge: .bottom).combined(with: .opacity))
++            }
++        }
++        .animation(.easeInOut(duration: 0.3), value: showConfirmation)
++    }
++
++    // MARK: - Helpers
++
++    private func sectionHeader(_ title: String) -> some View {
++        Text(title)
++            .font(.caption2)
++            .fontWeight(.semibold)
++            .foregroundColor(.secondary)
++            .frame(maxWidth: .infinity, alignment: .leading)
++            .padding(.top, 4)
++    }
++
++    @MainActor private func loadSnapshot() {
++        snapshot = dataStore.latestSnapshot()
++    }
++
++    // item 20: renamed from showConfirmation(message:) to eliminate property/method name collision
++    @MainActor private func triggerConfirmation(message: String) {
++        confirmationMessage = message
++        showConfirmation = true
++        // W10: cancel the prior 1.5s clear before scheduling a new one, so rapid taps don't let an
++        // earlier clear hide a later confirmation.
++        confirmationClearWorkItem?.cancel()
++        let work = DispatchWorkItem { showConfirmation = false }
++        confirmationClearWorkItem = work
++        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
++    }
++
++    private func formatTime(_ date: Date) -> String {
++        if date == .distantPast { return "--" }
++        return Self.timeFormatter.string(from: date)
++    }
++
++    private func ageColor(_ date: Date, relativeTo now: Date = Date()) -> Color {
++        if date == .distantPast { return .secondary }
++        let age = now.timeIntervalSince(date)
++        if age < 300 { return .green }
++        if age < 900 { return .yellow }
++        return .red
++    }
++
++    private func glucoseColor(for value: String) -> Color {
++        guard let glucose = Double(value) else { return .secondary }
++        // UI-207-3: match the main bubble — use the shared user-threshold / dynamic-color computer (W5)
++        // instead of hard-coded 70/180, so the debug header color tracks the user's settings.
++        return WatchGlucoseColorComputer.shared.bubbleColor(for: Int(glucose.rounded()))
++    }
++
++    // item 2: trend arrow → unicode symbol for nav title
++    private func trendSymbol(_ trend: String) -> String {
++        switch trend {
++        case "DoubleDown":    return "↓↓"
++        case "SingleDown":    return "↓"
++        case "FortyFiveDown": return "↘"
++        case "Flat":          return "→"
++        case "FortyFiveUp":   return "↗"
++        case "SingleUp":      return "↑"
++        case "DoubleUp":      return "↑↑"
++        default:              return trend.isEmpty ? "" : "~"
++        }
++    }
++
++    // item 4: countdown to anticipated next reading
++    // G7 nominal cadence is 5 min; all current sources (BLE, Phone, HK) deliver on this schedule.
++    private static let expectedReadingCadence: TimeInterval = 300
++
++    private func nextReadingCountdown(_ date: Date, relativeTo now: Date = Date()) -> String {
++        if date == .distantPast { return "--" }
++        let remaining = Int(date.addingTimeInterval(Self.expectedReadingCadence).timeIntervalSince(now))
++        if remaining < 0 { return "⚠️+\(abs(remaining))s" }
++        return "\(remaining)s"
++    }
++
++    private func nextReadingColor(_ date: Date, relativeTo now: Date = Date()) -> Color {
++        if date == .distantPast { return .secondary }
++        return date.addingTimeInterval(Self.expectedReadingCadence).timeIntervalSince(now) < 0 ? .red : .primary
++    }
++}
++
++/// G7 debug rows: read `WatchState` from this type's `body` so updates observe reliably (vs. a
++/// `private var` on the parent). DATA STORE / log stats still use the unified 1s task poll.
++private struct G7DirectBleDebugSection: View {
++    /// Driven by parent's 1s tick so countdown rows re-render even when underlying state is unchanged.
++    let now: Date
++
++    /// C-217-D1/D2: BLE diagnostics polled by the PARENT at the 5s cadence only (blocking
++    /// `managerQueue.sync` hop inside `bleDiagnostics()` — never refresh at 1 Hz). nil until first poll.
++    let diag: G7BLEDiagnosticsSnapshot?
++
++    /// G7 nominal cadence (matches `WatchDiagnosticsView.expectedReadingCadence`).
++    private static let expectedCadence: TimeInterval = 300
++
++    // item 21: static formatter
++    private static let timeFormatter: DateFormatter = {
++        let f = DateFormatter()
++        f.dateFormat = "HH:mm:ss"
++        return f
++    }()
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 4) {
++            HStack {
++                Text("Capture (slots):")
++                Spacer()
++                Text(slotCaptureText)
++                    .monospacedDigit()
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("Last connect:")
++                Spacer()
++                Text(formatG7Time(WatchState.shared.bleLastConnectAt))
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("Next connect:")
++                Spacer()
++                Text(nextConnectCountdown(WatchState.shared.bleLastConnectAt))
++                    .monospacedDigit()
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("Last BLE EGV:")
++                Spacer()
++                if let d = WatchState.shared.bleLastEGVDate,
++                   let v = WatchState.shared.bleLastEGVValue {
++                    Text("\(formatG7Time(d)) · \(v)")
++                        .lineLimit(1)
++                        .minimumScaleFactor(0.6)
++                } else {
++                    Text("--")
++                        .lineLimit(1)
++                        .minimumScaleFactor(0.6)
++                }
++            }
++            HStack {
++                Text("Since EGV:")
++                Spacer()
++                Text(sinceEGVDisplay)
++                    .foregroundColor(sinceEGVColor)
++                    .monospacedDigit()
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("Pre-EGV disconnects:")
++                Spacer()
++                Text("\(G7WatchSensorAdapter.shared.consecutivePreEGVDisconnectsCount)")
++                    .foregroundColor(G7WatchSensorAdapter.shared.consecutivePreEGVDisconnectsCount > 2 ? .red : .secondary)
++                    .monospacedDigit()
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("Status:")
++                Spacer()
++                Text(WatchState.shared.g7DirectBleStatus.rawValue)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("BLE link:")
++                Spacer()
++                Text(bleLinkText)
++                    .foregroundColor(bleLinkColor)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("Signal:")
++                Spacer()
++                Text(signalText)
++                    .foregroundColor(signalColor)
++                    .monospacedDigit()
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("Stall:")
++                Spacer()
++                Text(stallText + (G7WatchSensorAdapter.shared.lastDirectBleStallFault.map { " · " + ($0 == "dexcom_side" ? "dex" : "trio") } ?? ""))
++                    .foregroundColor(stallColor)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("Ext session:")
++                Spacer()
++                Text(extSessionDisplay)
++                    .foregroundColor(.secondary)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack(alignment: .top) {
++                Text("Sensor:")
++                Spacer()
++                if sensorRowConverged {
++                    Text("\(G7WatchSensorAdapter.shared.expectedSensorName ?? "—") ✓")
++                        .foregroundColor(.secondary)
++                        .lineLimit(1)
++                        .minimumScaleFactor(0.6)
++                } else {
++                    // C-218 E-6: on divergence, stack the three identities so each stays legible
++                    // (the old one-line form truncated to noise). exp = phone-pushed expected,
++                    // bnd = live G7Sensor binding, ph = WC phone-relay name.
++                    VStack(alignment: .trailing, spacing: 1) {
++                        sensorDivergenceRow("exp", G7WatchSensorAdapter.shared.expectedSensorName ?? "—")
++                        sensorDivergenceRow("bnd", G7WatchSensorAdapter.shared.boundSensorName ?? "—")
++                        sensorDivergenceRow("ph", G7WatchSensorAdapter.shared.telemetrySensorName)
++                    }
++                    .foregroundColor(.yellow)
++                }
++            }
++            HStack {
++                Text("Live source:")
++                Spacer()
++                Text(WatchState.shared.displayedReadingSource.watchBadgeText)
++                    .foregroundColor(.cyan)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++            HStack {
++                Text("Today:")
++                Spacer()
++                Text("\(WatchState.shared.bleConnectsToday)c · \(WatchState.shared.bleEGVsToday)e · \(eligibleSlots)w · \(WatchState.shared.gatedSlotsToday)g")
++                    .foregroundColor(.secondary)
++                    .monospacedDigit()
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.5)
++            }
++            HStack {
++                Text("Was restored:")
++                Spacer()
++                Text(formatG7Time(WatchState.shared.bleLastRestoreAt))
++                    .foregroundColor(.secondary)
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++        }
++        .font(.caption)
++    }
++
++    private var sensorRowConverged: Bool {
++        let phone = G7WatchSensorAdapter.shared.telemetrySensorName
++        let expected = G7WatchSensorAdapter.shared.expectedSensorName ?? "—"
++        let bound = G7WatchSensorAdapter.shared.boundSensorName ?? "—"
++        return expected != "—" && phone == expected && bound == expected
++    }
++
++    private func sensorDivergenceRow(_ label: String, _ value: String) -> some View {
++        HStack(spacing: 3) {
++            Text(label).foregroundColor(.secondary)
++            Text(value).lineLimit(1).minimumScaleFactor(0.6)
++        }
++        .font(.caption2)
++    }
++
++    private var extSessionDisplay: String {
++        let state = G7WatchSensorAdapter.shared.extSessionState
++        if state == "nil" {
++            return G7WatchSensorAdapter.shared.extSessionLastKnownActive ? "active?" : "nil"
++        }
++        // C-217-D4: append the true session age ("running · 47m") and a reanchor-eligibility tag
++        // (session .running and >= sessionReanchorAge — the C-212-5 inline-swap window).
++        var display = state
++        if let ageS = G7WatchSensorAdapter.shared.extSessionAgeSeconds {
++            display += " · \(ageS / 60)m"
++        }
++        if G7WatchSensorAdapter.shared.isReanchorEligibleNow {
++            display += " · reanchor-ok"
++        }
++        return display
++    }
++
++    // C-217-D1: peripheral-state name + connect-pending age. `diag` nil (no poll yet) and
++    // `activePeripheralStateRaw` nil (no active peripheral) both render "—".
++    private var bleLinkText: String {
++        guard let raw = diag?.activePeripheralStateRaw else { return "—" }
++        switch raw {
++        case 0:
++            return "disconnected"
++        case 1:
++            let base: String
++            if let age = diag?.connectPendingAgeS {
++                base = "connecting · \(age)s"
++            } else {
++                base = "connecting (unwatched)"
++            }
++            return base + " · ticks:\(G7WatchSensorAdapter.shared.connectingTicksCount)"
++        case 2:
++            return "connected"
++        case 3:
++            return "disconnecting"
++        default:
++            return "state:\(raw)"
++        }
++    }
++
++    private var bleLinkColor: Color {
++        guard let raw = diag?.activePeripheralStateRaw else { return .secondary }
++        if raw == 1 { return diag?.connectPendingAgeS == nil ? .red : .yellow }
++        return raw == 2 ? .green : .secondary
++    }
++
++    // C-217-D2: "-82 dBm · 2m"; RSSI 127 (BT "not available") or nil ⇒ "—".
++    private var signalText: String {
++        guard let diag, let rssi = diag.lastDiscoverRSSI, rssi != 127 else { return "—" }
++        let ageText: String
++        if let s = diag.secondsSinceLastDiscover {
++            ageText = s < 60 ? "\(s)s" : "\(s / 60)m"
++        } else {
++            ageText = "—"
++        }
++        return "\(rssi) dBm · \(ageText)"
++    }
++
++    private var signalColor: Color {
++        guard let diag, let rssi = diag.lastDiscoverRSSI, rssi != 127 else { return .secondary }
++        if rssi >= -70 { return .green }
++        if rssi >= -90 { return .yellow }
++        return .red
++    }
++
++    // C-217-D3: DirectBleStallTier (C-210-4): none / stalled / unavailable.
++    private var stallText: String {
++        switch WatchState.shared.directBleStall {
++        case .none: return "—"
++        case .stalled: return "stalled"
++        case .unavailable: return "unavailable"
++        }
++    }
++
++    private var stallColor: Color {
++        switch WatchState.shared.directBleStall {
++        case .none: return .green
++        case .stalled: return .yellow
++        case .unavailable: return .red
++        }
++    }
++
++    private var sinceEGVDisplay: String {
++        let m = G7WatchSensorAdapter.shared.minutesSinceLastEGV()
++        return m < 0 ? "—" : "\(m)m"
++    }
++
++    private var sinceEGVColor: Color {
++        let m = G7WatchSensorAdapter.shared.minutesSinceLastEGV()
++        if m < 0 { return .secondary }
++        if m < 6 { return .green }
++        if m <= 15 { return .yellow }
++        return .red
++    }
++
++    private func formatG7Time(_ date: Date?) -> String {
++        guard let date, date != .distantPast else { return "--" }
++        return Self.timeFormatter.string(from: date)
++    }
++
++    /// Mirrors `WatchDiagnosticsView.nextReadingCountdown` semantics: "Ns" when in the future,
++    /// "⚠️+Ns" when overdue (last connect + cadence has already passed). "--" if no connect yet.
++    private func nextConnectCountdown(_ lastConnect: Date?) -> String {
++        guard let lastConnect, lastConnect != .distantPast else { return "--" }
++        let remaining = Int(lastConnect.addingTimeInterval(Self.expectedCadence).timeIntervalSince(now))
++        if remaining < 0 { return "⚠️+\(abs(remaining))s" }
++        return "\(remaining)s"
++    }
++
++    /// C-209-1 (B1): analytical eligible windows — elapsed wall-clock slots since midnight minus
++    /// ineligible (no sensor identity) minus C1-gated. Computed at display time, so it cannot
++    /// freeze during background suspension the way the old timer-accumulated counter did.
++    private var slotStats: G7WatchSensorAdapter.DailySlotStats {
++        G7WatchSensorAdapter.shared.dailySlotStats()
++    }
++
++    private var eligibleSlots: Int {
++        slotStats.eligibleSlots
++    }
++
++    /// UI-207-1: honest slot capture "EGVs / eligibleWindows", **un-clamped** so a >100% ratio (backfill
++    /// or multiple reads per slot) stays visible. Falls back to the raw EGV count when no eligible
++    /// windows are known yet. Replaces the old `countWithDenominator`, which clamped the numerator with
++    /// `min(count, denom)` and was wrongly applied to the event-based Connects row too — making both
++    /// rows read e.g. `61/61` and hiding the real totals.
++    private var slotCaptureText: String {
++        let stats = slotStats
++        let denom = stats.eligibleSlots
++        guard denom > 0 else { return "\(stats.egvs)" }
++        return "\(stats.egvs) / \(denom)"
++    }
++}
++
++// C-217-D6: caller-side ring helpers — fraction of the 5-min cadence elapsed since `reference`,
++// clamped to [0, 1] (computed from the existing 1 Hz `now` tick); yellow at 90%, red once overdue.
++private func g7CountdownFraction(from reference: Date?, to now: Date) -> Double {
++    guard let reference, reference != .distantPast else { return 0 }
++    return min(1, max(0, now.timeIntervalSince(reference) / 300))
++}
++
++private func g7CountdownRingColor(_ fraction: Double) -> Color {
++    if fraction < 0.9 { return .green }
++    if fraction < 1.0 { return .yellow }
++    return .red
++}
++
++// C-217 D-8: rounded-rect perimeter traced from TOP-CENTER clockwise, so a caller's
++// `.trim(from: 0, to: fraction)` fills clockwise from 12 o'clock without any rotation. y-down
++// SwiftUI space. Corner radius + insets are supplied from the live tuning panel. If the arc renders
++// counter-clockwise on device, flip the `clockwise:` booleans (geometry is dialed in on-wrist).
++private struct EdgeRingShape: Shape {
++    var cornerRadius: CGFloat
++    var insetX: CGFloat
++    var insetY: CGFloat
++
++    func path(in rect: CGRect) -> Path {
++        let r = rect.insetBy(dx: insetX, dy: insetY)
++        let cr = min(cornerRadius, min(r.width, r.height) / 2)
++        var p = Path()
++        p.move(to: CGPoint(x: r.midX, y: r.minY))                       // top-center
++        p.addLine(to: CGPoint(x: r.maxX - cr, y: r.minY))              // top edge -> right
++        p.addArc(center: CGPoint(x: r.maxX - cr, y: r.minY + cr), radius: cr,
++                 startAngle: .degrees(-90), endAngle: .degrees(0), clockwise: false)
++        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - cr))             // right edge -> bottom
++        p.addArc(center: CGPoint(x: r.maxX - cr, y: r.maxY - cr), radius: cr,
++                 startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
++        p.addLine(to: CGPoint(x: r.minX + cr, y: r.maxY))             // bottom edge -> left
++        p.addArc(center: CGPoint(x: r.minX + cr, y: r.maxY - cr), radius: cr,
++                 startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
++        p.addLine(to: CGPoint(x: r.minX, y: r.minY + cr))            // left edge -> top
++        p.addArc(center: CGPoint(x: r.minX + cr, y: r.minY + cr), radius: cr,
++                 startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
++        p.addLine(to: CGPoint(x: r.midX, y: r.minY))                 // close at top-center
++        return p
++    }
++}
++
++#Preview {
++    NavigationStack {
++        WatchDiagnosticsView()
++    }
++}
 diff --git a/Trio Watch App Extension/WatchErrorReporter.swift b/Trio Watch App Extension/WatchErrorReporter.swift
 index a5bcabd57..9d29d26f8 100644
 --- a/Trio Watch App Extension/WatchErrorReporter.swift	
@@ -3701,10 +4059,10 @@ index 000000000..6555f44c9
 +}
 diff --git a/Trio Watch App Extension/WatchGlucoseHistoryStore.swift b/Trio Watch App Extension/WatchGlucoseHistoryStore.swift
 new file mode 100644
-index 000000000..ef5ef3c28
+index 000000000..6390638ae
 --- /dev/null
 +++ b/Trio Watch App Extension/WatchGlucoseHistoryStore.swift	
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,227 @@
 +import Foundation
 +import SwiftUI
 +
@@ -3874,6 +4232,20 @@ index 000000000..ef5ef3c28
 +        queue.sync {
 +            pruneAndCap()
 +            return entries.last(where: { $0.epochSeconds < epochSeconds })?.glucoseMgDl
++        }
++    }
++
++    /// C-217 V-2b: compact recent readings for the accessoryRectangular sparkline. Returns the last
++    /// `window` seconds of readings (at most `maxPoints`), oldest-first, as `[epochSeconds, mgDl]`
++    /// pairs. `entries` are epoch-ascending after prune, so `suffix` keeps the newest N still ascending.
++    /// On-queue (mirrors the other reads).
++    func recentReadingsCompact(window: TimeInterval = 2 * 60 * 60, maxPoints: Int = 24) -> [[Int]] {
++        queue.sync {
++            pruneAndCap()
++            let cutoff = Int(Date().timeIntervalSince1970 - window)
++            let recent = entries.filter { $0.epochSeconds >= cutoff }
++            let capped = recent.count > maxPoints ? Array(recent.suffix(maxPoints)) : recent
++            return capped.map { [$0.epochSeconds, $0.glucoseMgDl] }
 +        }
 +    }
 +
@@ -4571,7 +4943,7 @@ index d47a971c9..e6e00e3da 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index b12e1db77..5f3f7a1df 100644
+index b12e1db77..11c8ff071 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,22 +1,103 @@
@@ -4685,7 +5057,7 @@ index b12e1db77..5f3f7a1df 100644
      var trend: String? = ""
      var delta: String? = "--"
      var glucoseValues: [(date: Date, glucose: Double, color: Color)] = []
-@@ -25,67 +106,527 @@ import WatchConnectivity
+@@ -25,67 +106,531 @@ import WatchConnectivity
      var cob: String? = "--"
      var iob: String? = "--"
      var lastLoopTime: String? = "--"
@@ -4716,6 +5088,10 @@ index b12e1db77..5f3f7a1df 100644
 +    var gatedSlotsToday: Int = 0
 +    /// True when `CBCentralManager` had state restored this process (willRestoreState).
 +    var bleWasRestored: Bool = false
++    // C-217-D5: timestamp companion to `bleWasRestored`, set alongside it from
++    // `WatchTelemetryRing.enqueueCoreTelemetry`'s `will_restore_state` observer hook. UI-207-3's
++    // deferred "Was restored" row — display wiring only, main-thread, mirrors `bleLastConnectAt`.
++    var bleLastRestoreAt: Date?
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
@@ -5234,7 +5610,7 @@ index b12e1db77..5f3f7a1df 100644
      private func setupSession() {
          if WCSession.isSupported() {
              let session = WCSession.default
-@@ -93,16 +634,554 @@ import WatchConnectivity
+@@ -93,16 +638,554 @@ import WatchConnectivity
              session.activate()
              self.session = session
              Task {
@@ -5792,7 +6168,7 @@ index b12e1db77..5f3f7a1df 100644
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
          Task {
-@@ -111,21 +1190,17 @@ import WatchConnectivity
+@@ -111,21 +1194,17 @@ import WatchConnectivity
  
          if success {
              Task {
@@ -5816,7 +6192,7 @@ index b12e1db77..5f3f7a1df 100644
              DispatchQueue.main.async {
                  self.showCommsAnimation = false
              }
-@@ -140,7 +1215,7 @@ import WatchConnectivity
+@@ -140,7 +1219,7 @@ import WatchConnectivity
  
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                  self.showAcknowledgmentBanner = false
@@ -5825,7 +6201,7 @@ index b12e1db77..5f3f7a1df 100644
                  Task {
                      await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                  }
-@@ -150,14 +1225,12 @@ import WatchConnectivity
+@@ -150,14 +1229,12 @@ import WatchConnectivity
  
      // MARK: - WCSessionDelegate
  
@@ -5842,7 +6218,7 @@ index b12e1db77..5f3f7a1df 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -165,165 +1238,651 @@ import WatchConnectivity
+@@ -165,165 +1242,651 @@ import WatchConnectivity
  
              if activationState == .activated {
                  Task {
@@ -6596,7 +6972,7 @@ index b12e1db77..5f3f7a1df 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -334,7 +1893,7 @@ import WatchConnectivity
+@@ -334,7 +1897,7 @@ import WatchConnectivity
                  }
  
                  Task {
@@ -6605,7 +6981,7 @@ index b12e1db77..5f3f7a1df 100644
                  }
  
                  switch ackCode {
-@@ -357,26 +1916,66 @@ import WatchConnectivity
+@@ -357,26 +1920,66 @@ import WatchConnectivity
                  }
              }
  
@@ -6681,7 +7057,7 @@ index b12e1db77..5f3f7a1df 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -385,84 +1984,175 @@ import WatchConnectivity
+@@ -385,84 +1988,175 @@ import WatchConnectivity
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -6890,7 +7266,7 @@ index b12e1db77..5f3f7a1df 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -478,31 +2168,26 @@ import WatchConnectivity
+@@ -478,31 +2172,26 @@ import WatchConnectivity
          }
  
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
@@ -6938,7 +7314,7 @@ index b12e1db77..5f3f7a1df 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -523,41 +2208,457 @@ import WatchConnectivity
+@@ -523,41 +2212,457 @@ import WatchConnectivity
              }
          }
  
@@ -7417,10 +7793,10 @@ index b12e1db77..5f3f7a1df 100644
  }
 diff --git a/Trio Watch App Extension/WatchTelemetryRing.swift b/Trio Watch App Extension/WatchTelemetryRing.swift
 new file mode 100644
-index 000000000..9f729f291
+index 000000000..7da4583cb
 --- /dev/null
 +++ b/Trio Watch App Extension/WatchTelemetryRing.swift	
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,138 @@
 +import Foundation
 +import G7SensorKit
 +
@@ -7494,6 +7870,17 @@ index 000000000..9f729f291
 +            payload: payload,
 +            g7Session: sid
 +        ) + " scene_phase=\(scene) ext_session_active=\(extActive)")
++        // C-217-D5: UI-207-3's deferred "Was restored" row — display wiring only. Observe-only
++        // hook for the fork's `will_restore_state` event: placed AFTER the enqueue and OUTSIDE
++        // the ring's lock, so the telemetry hot path (lock -> append -> yield) is untouched. The
++        // string compare allocates nothing on the non-matching (overwhelmingly common) path; the
++        // main-queue hop happens only on the rare restore event.
++        if payload.event == "will_restore_state" {
++            DispatchQueue.main.async {
++                WatchState.shared.bleWasRestored = true
++                WatchState.shared.bleLastRestoreAt = Date()
++            }
++        }
 +    }
 +
 +    /// Pre-formatted line (the adapter formats its own `module=g7_ble` lines on MainActor where
@@ -7549,7 +7936,7 @@ index 000000000..9f729f291
 +    }
 +}
 diff --git a/Trio Watch App Tests/Unit Tests.swift b/Trio Watch App Tests/Unit Tests.swift
-index 0d0cde0eb..84228ecc2 100644
+index 0d0cde0eb..b06331373 100644
 --- a/Trio Watch App Tests/Unit Tests.swift	
 +++ b/Trio Watch App Tests/Unit Tests.swift	
 @@ -80,6 +80,36 @@ import XCTest
@@ -7589,7 +7976,7 @@ index 0d0cde0eb..84228ecc2 100644
      @Test("Acknowledgment states transition correctly") func testAcknowledgmentStates() throws {
          // Given - Initial state
          #expect(watchState.acknowledgementStatus == .pending)
-@@ -97,4 +127,45 @@ import XCTest
+@@ -97,4 +127,73 @@ import XCTest
          #expect(watchState.showAcknowledgmentBanner)
          #expect(watchState.acknowledgmentMessage == "Error")
      }
@@ -7633,6 +8020,34 @@ index 0d0cde0eb..84228ecc2 100644
 +        let older = snap("120", "Flat", "+2", at: t, source: .g7DirectBLE)
 +        let newer = snap("126", "", "", at: t.addingTimeInterval(300), source: .watchConnectivity)
 +        #expect(store.shouldUpdate(new: newer, current: older) == true)
++    }
++
++    @Test("V-2b: recentReadings survives Codable round-trip; a snapshot without it omits the key and decodes to nil")
++    func testRecentReadingsCodableEvolution() throws {
++        let t = Date(timeIntervalSince1970: 1_700_000_000)
++        let enc = JSONEncoder()
++        let dec = JSONDecoder()
++
++        // Direction 1 — round-trip WITH data preserves the series.
++        let withData = TrioComplicationSnapshot(
++            glucose: "120", trend: "Flat", delta: "+2", readingDate: t, date: t,
++            state: nil, glucoseColor: nil, source: .g7DirectBLE, sequence: 42,
++            recentReadings: [[1_700_000_000, 118], [1_700_000_300, 120]]
++        )
++        let roundTripped = try dec.decode(TrioComplicationSnapshot.self, from: enc.encode(withData))
++        #expect(roundTripped.recentReadings ?? [] == [[1_700_000_000, 118], [1_700_000_300, 120]])
++
++        // Direction 2 — a snapshot without the field omits the key (nil optional) and decodes to nil,
++        // so an older writer's JSON (no key) is tolerated by the newer decoder.
++        let withoutData = TrioComplicationSnapshot(
++            glucose: "120", trend: "Flat", delta: "+2", readingDate: t, date: t,
++            state: nil, glucoseColor: nil, source: .g7DirectBLE, sequence: 42
++        )
++        let json = try enc.encode(withoutData)
++        let jsonString = String(data: json, encoding: .utf8) ?? ""
++        #expect(!jsonString.contains("recentReadings"))
++        let decoded = try dec.decode(TrioComplicationSnapshot.self, from: json)
++        #expect(decoded.recentReadings == nil)
 +    }
  }
 diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
@@ -7732,10 +8147,10 @@ index 000000000..9a37de423
 +</dict>
 +</plist>
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
-index 411968936..9152d7023 100644
+index 411968936..97b676b94 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
 +++ b/Trio Watch Complication/TrioWatchComplication.swift	
-@@ -1,40 +1,285 @@
+@@ -1,105 +1,627 @@
 +import Foundation
  import SwiftUI
  import WidgetKit
@@ -7757,6 +8172,8 @@ index 411968936..9152d7023 100644
 +    let state: String?
 +    let glucoseColor: String?
 +    let source: TrioComplicationDataSource?
++    /// C-217 V-2b: compact [epochSeconds, mgDl] pairs (last ~2h, oldest-first) for the rectangular sparkline; nil → text-only.
++    let recentReadings: [[Int]]?
 +
 +    init(
 +        date: Date,
@@ -7766,7 +8183,8 @@ index 411968936..9152d7023 100644
 +        delta: String,
 +        state: String? = nil,
 +        glucoseColor: String? = nil,
-+        source: TrioComplicationDataSource? = nil
++        source: TrioComplicationDataSource? = nil,
++        recentReadings: [[Int]]? = nil
 +    ) {
 +        self.date = date
 +        self.readingDate = readingDate ?? date
@@ -7776,6 +8194,7 @@ index 411968936..9152d7023 100644
 +        self.state = state
 +        self.glucoseColor = glucoseColor
 +        self.source = source
++        self.recentReadings = recentReadings
 +    }
 +
 +    init(snapshot: TrioComplicationSnapshot) {
@@ -7787,7 +8206,8 @@ index 411968936..9152d7023 100644
 +            delta: snapshot.delta,
 +            state: snapshot.state,
 +            glucoseColor: snapshot.glucoseColor,
-+            source: snapshot.source
++            source: snapshot.source,
++            recentReadings: snapshot.recentReadings
 +        )
 +    }
 +
@@ -7824,12 +8244,20 @@ index 411968936..9152d7023 100644
 +            return color
 +        }
 +
-+        guard let glucoseValue = Double(glucose) else {
++        // F-3b: normalize comma decimals before parsing — an unnormalized comma-locale
++        // mmol value ("5,6") fails Double(_:) entirely and falls through to .secondary.
++        let normalized = glucose.trimmingCharacters(in: .whitespacesAndNewlines)
++            .replacingOccurrences(of: ",", with: ".")
++        guard let glucoseValue = Double(normalized) else {
 +            return .secondary
 +        }
 +
-+        let lowThreshold: Double = 70
-+        let highThreshold: Double = 180
++        // F-3b: mg/dL and mmol/L thresholds diverge (70/180 mg/dL vs 3.9/10.0 mmol/L) — a
++        // raw mmol value like 5.6 previously matched the mg/dL "<= 70" branch and rendered
++        // red. This fallback path only runs when the snapshot carries no hex color.
++        let isMmol = glucoseValue < 40
++        let lowThreshold: Double = isMmol ? 3.9 : 70
++        let highThreshold: Double = isMmol ? 10.0 : 180
 +
 +        if glucoseValue <= lowThreshold {
 +            return .red
@@ -7987,9 +8415,8 @@ index 411968936..9152d7023 100644
 +        var entries: [TrioWatchComplicationEntry] = []
 +        let now = Date().roundedDownToMinute
 +
-+        for minuteOffset in 0 ..< 30 {
-+            let entryDate = now.addingTimeInterval(TimeInterval(minuteOffset * 60))
-+            let entry = TrioWatchComplicationEntry(
++        func makeEntry(at entryDate: Date) -> TrioWatchComplicationEntry {
++            TrioWatchComplicationEntry(
 +                date: entryDate,
 +                readingDate: timelineBase.readingDate,
 +                glucose: timelineBase.glucose,
@@ -7997,10 +8424,26 @@ index 411968936..9152d7023 100644
 +                delta: timelineBase.delta,
 +                state: timelineBase.state,
 +                glucoseColor: timelineBase.glucoseColor,
-+                source: timelineBase.source
++                source: timelineBase.source,
++                recentReadings: timelineBase.recentReadings
 +            )
-+            entries.append(entry)
 +        }
++
++        for minuteOffset in 0 ..< 30 {
++            entries.append(makeEntry(at: now.addingTimeInterval(TimeInterval(minuteOffset * 60))))
++        }
++
++        // F-1: coarser entries beyond the 30-minute dense window, carrying the SAME reading
++        // data as timelineBase. Entries are budget-free (only reloads cost WidgetKit budget),
++        // so extending the horizon here keeps the staleness display honest through a
++        // multi-hour reload drought instead of freezing on the last dense entry ("30m" stale).
++        for minuteOffset in stride(from: 35, through: 55, by: 5) {
++            entries.append(makeEntry(at: now.addingTimeInterval(TimeInterval(minuteOffset * 60))))
++        }
++        for minuteOffset in stride(from: 60, through: 240, by: 15) {
++            entries.append(makeEntry(at: now.addingTimeInterval(TimeInterval(minuteOffset * 60))))
++        }
++
 +        let nextRefresh = now.addingTimeInterval(refreshInterval)
 +        completion(Timeline(entries: entries, policy: .after(nextRefresh)))
      }
@@ -8035,7 +8478,12 @@ index 411968936..9152d7023 100644
          switch widgetFamily {
          case .accessoryCircular:
              TrioAccessoryCircularView(entry: entry)
-@@ -43,48 +288,138 @@ struct TrioWatchComplicationEntryView: View {
+         case .accessoryCorner:
+             TrioAccessoryCornerView(entry: entry)
++        case .accessoryInline:
++            TrioAccessoryInlineView(entry: entry)
++        case .accessoryRectangular:
++            TrioAccessoryRectangularView(entry: entry)
          default:
              Image("ComplicationIcon")
                  .widgetAccentable()
@@ -8045,6 +8493,20 @@ index 411968936..9152d7023 100644
  }
  
 -/// Corner Complication
++// F-2: single source of truth for the staleness/recency color used across complication
++// families (corner's widgetLabel, circular's trend text, rectangular's relative-time text).
++// Returns nil for a fresh reading (< 5 min) so callers keep their own fresh-state color.
++private func recencyColor(for entry: TrioWatchComplicationEntry) -> Color? {
++    let age = max(0, entry.date.timeIntervalSince(entry.readingDate))
++    if age < 5 * 60 {
++        return nil
++    } else if age < 15 * 60 {
++        return .yellow
++    } else {
++        return .red
++    }
++}
++
  struct TrioAccessoryCornerView: View {
 -    var entry: TrioWatchComplicationProvider.Entry
 +    var entry: TrioWatchComplicationEntry
@@ -8058,9 +8520,7 @@ index 411968936..9152d7023 100644
              .widgetCurvesContent()
              .widgetLabel {
 -                Text("Trio")
-+                let age = max(0, entry.date.timeIntervalSince(entry.readingDate))
-+                let recencyColor: Color = age < 5 * 60 ? .green :
-+                    age < 15 * 60 ? .yellow : .red
++                let recencyColor = recencyColor(for: entry) ?? .green
 +                let deltaText = entry.deltaDisplayText
 +                let timeText = shortRelativeTime(from: entry.readingDate, now: entry.date)
 +                let hasDelta = !deltaText.isEmpty && deltaText != ComplicationDefaults.fallbackDelta
@@ -8166,15 +8626,110 @@ index 411968936..9152d7023 100644
 +            Text(entry.glucoseNumber)
 +                .font(.headline)
 +                .foregroundColor(entry.glucoseDisplayColor)
++            // F-2: trend carries the shared recency color instead of a fixed .white, so a
++            // stale reading is visible even when WidgetKit defers reloads.
 +            Text(entry.trendSymbolOnly)
-+                .foregroundColor(.white)
++                .foregroundColor(recencyColor(for: entry) ?? .white)
 +        }
 +        .widgetAccentable()
++    }
++}
++
++// V-1: accessoryInline renders a single line of text (no layout control beyond that), so
++// this is intentionally a plain, short Text; color styling is not honored in this family.
++struct TrioAccessoryInlineView: View {
++    var entry: TrioWatchComplicationEntry
++
++    var body: some View {
++        let deltaText = entry.deltaDisplayText
++        let hasDelta = !deltaText.isEmpty && deltaText != ComplicationDefaults.fallbackDelta
++        Text(hasDelta
++            ? "\(entry.glucoseNumber) \(entry.trendSymbolOnly) \(deltaText)"
++            : "\(entry.glucoseNumber) \(entry.trendSymbolOnly)")
      }
  }
  
 -// MARK: - Widget Configuration
--
++// C-217 V-2b: glucose + trend + delta + age line, with a 2h sparkline beneath when the snapshot
++// carries `recentReadings` (bridged from the extension's WatchGlucoseHistoryStore via the saved
++// snapshot). Falls back to text-only when the series is nil / < 2 points.
++struct TrioAccessoryRectangularView: View {
++    var entry: TrioWatchComplicationEntry
++
++    var body: some View {
++        VStack(alignment: .leading) {
++            HStack(spacing: 4) {
++                Text(entry.glucoseNumber)
++                    .font(.headline)
++                    .foregroundColor(entry.glucoseDisplayColor)
++                    .widgetAccentable()
++                Text(entry.trendSymbolOnly)
++                    .foregroundColor(.white)
++                Text(entry.deltaDisplayText)
++                    .font(.subheadline)
++                    .foregroundColor(.white)
++            }
++
++            let timeText = shortRelativeTime(from: entry.readingDate, now: entry.date)
++            let bleSuffix = entry.source == .g7DirectBLE ? " · BLE" : ""
++            Text("\(timeText)\(bleSuffix)")
++                .foregroundColor(recencyColor(for: entry) ?? .white)
++
++            if let stateText = entry.state, !stateText.isEmpty {
++                Text(stateText)
++                    .font(.caption2)
++                    .foregroundColor(.secondary)
++            }
++
++            if let readings = entry.recentReadings, readings.count >= 2 {
++                rectangularSparkline(readings)
++                    .frame(height: 16)
++                    .frame(maxWidth: .infinity, alignment: .leading)
++            }
++        }
++    }
++
++    /// C-217 V-2b: lightweight Path polyline (no Charts — widget memory/launch budget). X = fixed 2h
++    /// window ending at entry.date; a gap > 15 min renders as a line break (a gap IS information, not
++    /// interpolated). Y = window min/max padded ±20 mg/dL, clamped to a >= 40 span so a flat trace
++    /// isn't dramatic noise. Colour reuses the recency convention (dims when the newest point is stale).
++    private func rectangularSparkline(_ readings: [[Int]]) -> some View {
++        let nowT = entry.date.timeIntervalSince1970
++        let windowStart = nowT - 2 * 60 * 60
++        let points: [(t: Double, v: Double)] = readings.compactMap { pair in
++            guard pair.count == 2 else { return nil }
++            return (t: Double(pair[0]), v: Double(pair[1]))
++        }
++        .filter { $0.t >= windowStart }
++        .sorted { $0.t < $1.t }
++        let values = points.map { $0.v }
++        let rawMin = values.min() ?? 0
++        let rawMax = values.max() ?? 0
++        var lo = rawMin - 20
++        var hi = rawMax + 20
++        if hi - lo < 40 { let mid = (hi + lo) / 2; lo = mid - 20; hi = mid + 20 }
++        let span = max(hi - lo, 1)
++        let color = recencyColor(for: entry) ?? .white
++        return GeometryReader { geo in
++            Path { path in
++                let w = geo.size.width
++                let h = geo.size.height
++                var started = false
++                var lastT: Double?
++                for p in points {
++                    let x = CGFloat((p.t - windowStart) / (nowT - windowStart)) * w
++                    let y = h - CGFloat((p.v - lo) / span) * h
++                    let pt = CGPoint(x: x, y: y)
++                    if let lt = lastT, p.t - lt > 15 * 60 { started = false } // gap > 15 min → break
++                    if started { path.addLine(to: pt) } else { path.move(to: pt); started = true }
++                    lastT = p.t
++                }
++            }
++            .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
++        }
++    }
++}
+ 
  @main struct TrioWatchComplication: Widget {
 -    let kind: String = "TrioWatchComplication"
 +    let kind: String = ComplicationDefaults.widgetKind
@@ -8190,8 +8745,11 @@ index 411968936..9152d7023 100644
 +        .description(String(localized: "Shows current glucose, delta, and trend data."))
          .supportedFamilies([
              .accessoryCorner,
-             .accessoryCircular
-@@ -92,14 +427,59 @@ struct TrioAccessoryCircularView: View {
+-            .accessoryCircular
++            .accessoryCircular,
++            .accessoryInline,
++            .accessoryRectangular
+         ])
      }
  }
  
@@ -8748,10 +9306,10 @@ index 000000000..b85a47a93
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..faa3b35b4
+index 000000000..6e7d8c5ea
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,1278 @@
+@@ -0,0 +1,1296 @@
 +import Foundation
 +import os
 +#if os(watchOS)
@@ -8804,6 +9362,12 @@ index 000000000..faa3b35b4
 +    let source: TrioComplicationDataSource?
 +    /// G7 EGV sequence when known; optional same-reading identity alongside `readingDate`.
 +    let sequence: Int?
++    /// C-217 V-2b: compact recent readings for the accessoryRectangular sparkline — [epochSeconds, mgDl]
++    /// pairs, last ~2h (<=24 points), oldest-first. Optional for clean Codable evolution (older widget
++    /// reading a newer snapshot ignores it; newer widget reading an older snapshot decodes nil →
++    /// text-only fallback). `var` so the store can enrich it on save. Deliberately excluded from
++    /// ComplicationSnapshotFingerprint, so it never affects dedup.
++    var recentReadings: [[Int]]?
 +
 +    // INVARIANT (Phase 3.4): All display-field sanitization here.
 +    // Dedup always compares sanitized values.
@@ -8816,7 +9380,8 @@ index 000000000..faa3b35b4
 +        state: String? = nil,
 +        glucoseColor: String? = nil,
 +        source: TrioComplicationDataSource? = nil,
-+        sequence: Int? = nil
++        sequence: Int? = nil,
++        recentReadings: [[Int]]? = nil
 +    ) {
 +        glucose = Self.sanitizedGlucose(from: rawGlucose)
 +        trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -8827,6 +9392,7 @@ index 000000000..faa3b35b4
 +        self.glucoseColor = glucoseColor
 +        self.source = source
 +        self.sequence = sequence
++        self.recentReadings = recentReadings
 +    }
 +
 +    private static func sanitizedGlucose(from value: String) -> String {
@@ -8844,14 +9410,12 @@ index 000000000..faa3b35b4
 +            .joined()
 +
 +        if let doubleValue = Double(numericPortion), doubleValue > 0 {
-+            // C-209-6 (review 1.10): mmol/L-range values keep one decimal — integer rounding
-+            // turned "5.6" into "6". mg/dL values (≥ 40 by CGM display floor) keep integer
-+            // rounding, and whole-number mmol values still collapse to the bare integer.
++            // F-3a (fable5 finding 1.10): mmol/L-range values (< 40, plausible mmol ceiling)
++            // always keep one decimal, including whole numbers — integer rounding previously
++            // turned "5.6" into "6" and collapsed "5.0" to "5", losing the mmol/mg-dL visual
++            // distinction. mg/dL values (>= 40 by CGM display floor) keep integer rounding.
 +            if doubleValue < 40 {
-+                let tenths = (doubleValue * 10).rounded() / 10
-+                return tenths == tenths.rounded()
-+                    ? String(Int(tenths))
-+                    : String(format: "%.1f", tenths)
++                return String(format: "%.1f", doubleValue)
 +            }
 +            let rounded = Int(doubleValue.rounded())
 +            return String(rounded)
@@ -8953,6 +9517,11 @@ index 000000000..faa3b35b4
 +final class TrioComplicationDataStore {
 +    static let shared = TrioComplicationDataStore()
 +    static let complicationKind = "TrioWatchComplication"
++
++    /// C-217 V-2b: set once by the watch extension (ExtensionDelegate) to supply the rolling 2h
++    /// sparkline series from the extension-local WatchGlucoseHistoryStore, which the Shared target
++    /// cannot import directly. nil in the widget process (which only reads snapshots, never saves).
++    var recentReadingsProvider: (() -> [[Int]]?)?
 +
 +    // MARK: - App Group ID Resolution
 +
@@ -9163,7 +9732,7 @@ index 000000000..faa3b35b4
 +        cachedAppGroupDefaults
 +    }
 +
-+    // MARK: - Debug Properties (for ComplicationDebugView)
++    // MARK: - Debug Properties (for WatchDiagnosticsView)
 +
 +    var lastReloadTimestamp: Date {
 +        lastReload
@@ -9185,7 +9754,7 @@ index 000000000..faa3b35b4
 +        snapshotFileURL?.deletingLastPathComponent().path
 +    }
 +
-+    // MARK: - Debug Properties for ComplicationDebugView
++    // MARK: - Debug Properties for WatchDiagnosticsView
 +
 +    var appGroupID: String? {
 +        var bundle: Bundle = Bundle.main
@@ -9502,6 +10071,13 @@ index 000000000..faa3b35b4
 +    }
 +
 +    private func saveOnMain(_ snapshot: TrioComplicationSnapshot, triggerReload: Bool, minInterval: TimeInterval = 30) {
++        var snapshot = snapshot
++        // C-217 V-2b: enrich with the rolling 2h sparkline series (widget can't read the history
++        // store; the snapshot is the bridge). Provider is nil in the widget process. Not part of the
++        // dedup fingerprint, so this never forces extra reloads.
++        if snapshot.recentReadings == nil, let provider = recentReadingsProvider {
++            snapshot.recentReadings = provider()
++        }
 +        assert(Thread.isMainThread, "saveOnMain must be called on main thread")
 +        log("saveOnMain entered: glucose=\(snapshot.glucose), readingDate=\(snapshot.readingDate)")
 +
@@ -10191,7 +10767,7 @@ index cb2bf3c0b..3c0dbe37a 100644
      }
  }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 307be87dc..b29f32a31 100644
+index 433038f08..82b99e982 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -16,6 +16,8 @@ protocol WatchManager {
@@ -10455,7 +11031,7 @@ index 307be87dc..b29f32a31 100644
                      let formattedDelta = Formatter.glucoseFormatter(for: self.units)
                          .string(from: deltaValue as NSNumber) ?? "0"
                      watchState.delta = deltaValue < 0 ? "\(formattedDelta)" : "+\(formattedDelta)"
-@@ -438,8 +495,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -437,8 +494,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      // MARK: - Send to Watch
  
      func watchStateToDictionary(from state: WatchState) -> [String: Any] {
@@ -10466,7 +11042,7 @@ index 307be87dc..b29f32a31 100644
              WatchMessageKeys.currentGlucose: state.currentGlucose ?? "--",
              WatchMessageKeys.currentGlucoseColorString: state.currentGlucoseColorString ?? "#ffffff",
              WatchMessageKeys.trend: state.trend ?? "",
-@@ -450,7 +507,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -449,7 +506,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                  [
                      "glucose": value.glucose,
@@ -10475,7 +11051,7 @@ index 307be87dc..b29f32a31 100644
                      "color": value.color
                  ]
              },
-@@ -476,11 +533,197 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -475,11 +532,197 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.confirmBolusFaster: state.confirmBolusFaster,
              WatchMessageKeys.units: state.units.rawValue
          ]
@@ -10675,7 +11251,7 @@ index 307be87dc..b29f32a31 100644
          guard let session = session else { return }
  
          guard session.isPaired else {
-@@ -489,7 +732,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -488,7 +731,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          guard session.isWatchAppInstalled else {
@@ -10684,7 +11260,7 @@ index 307be87dc..b29f32a31 100644
              return
          }
  
-@@ -507,17 +750,140 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -506,17 +749,140 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          var state = state
          state.date = Date()
  
@@ -10832,7 +11408,7 @@ index 307be87dc..b29f32a31 100644
          }
          WatchStateSnapshot.saveLatestDateToDisk(state.date)
      }
-@@ -547,10 +913,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -546,10 +912,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -10857,7 +11433,7 @@ index 307be87dc..b29f32a31 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -675,14 +1052,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -674,14 +1051,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
      /// Implements the replyHandler version of didReceiveMessage for ACK support.
      func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
@@ -10877,7 +11453,7 @@ index 307be87dc..b29f32a31 100644
          if type == "queryAcks" {
              if let pendingIds = message["pendingIds"] as? [String] {
                  let ackIds = getAcknowledgedIds(from: pendingIds)
-@@ -691,16 +1070,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -690,16 +1069,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      "ackIds": ackIds
                  ]
                  replyHandler(batchAck)
@@ -10895,7 +11471,7 @@ index 307be87dc..b29f32a31 100644
          }
  
          // Deduplicate BEFORE any Crashlytics calls
-@@ -722,6 +1093,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -721,6 +1092,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = message["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -10903,7 +11479,7 @@ index 307be87dc..b29f32a31 100644
                  }
              } else if type == "watchError" {
                  if let errorData = message["data"] as? [String: Any] {
-@@ -730,6 +1102,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -729,6 +1101,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              }
          }
  
@@ -10914,7 +11490,7 @@ index 307be87dc..b29f32a31 100644
          // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
          let ack: [String: Any] = [
              "type": "ack",
-@@ -743,10 +1119,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -742,10 +1118,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Check if this is an envelope message
              if let type = message["type"] as? String,
                 let payloadId = message["payloadId"] as? String {
@@ -10929,7 +11505,7 @@ index 307be87dc..b29f32a31 100644
                      }
                  } else if type == "watchError" {
                      if let errorData = message["data"] as? [String: Any] {
-@@ -759,6 +1138,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -758,6 +1137,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Legacy message format
              if let logs = message["watchLogs"] as? String {
                  SimpleLogReporter.appendToWatchLog(logs)
@@ -10937,7 +11513,7 @@ index 307be87dc..b29f32a31 100644
              }
  
              // Handle watch errors forwarded for Crashlytics logging
-@@ -771,9 +1151,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -770,9 +1150,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              {
                  debug(.watchManager, "📱 Watch requested watch state data update.")
                  guard let self = self else { return }
@@ -10950,7 +11526,7 @@ index 307be87dc..b29f32a31 100644
                  Task {
                      let state = await self.setupWatchState()
                      await self.sendDataToWatch(state)
-@@ -895,6 +1275,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -894,6 +1274,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -10965,7 +11541,7 @@ index 307be87dc..b29f32a31 100644
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
          // Check if this is an envelope message
          if let type = userInfo["type"] as? String,
-@@ -914,6 +1302,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -913,6 +1301,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = userInfo["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -10973,7 +11549,7 @@ index 307be87dc..b29f32a31 100644
                  }
              } else if type == "watchError" {
                  if let errorData = userInfo["data"] as? [String: Any] {
-@@ -964,10 +1353,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -963,10 +1352,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      #endif
  
      func sessionReachabilityDidChange(_ session: WCSession) {
@@ -10989,7 +11565,7 @@ index 307be87dc..b29f32a31 100644
              Task {
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
-@@ -1015,6 +1407,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1014,6 +1406,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                  carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
                  carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
                  carbEntry.isUploadedToNS = false
@@ -10998,7 +11574,7 @@ index 307be87dc..b29f32a31 100644
  
                  do {
                      guard context.hasChanges else {
-@@ -1077,6 +1471,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1076,6 +1470,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
                      carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
                      carbEntry.isUploadedToNS = false
@@ -11007,7 +11583,7 @@ index 307be87dc..b29f32a31 100644
  
                      guard context.hasChanges else {
                          // Acknowledge failure
-@@ -1448,11 +1844,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1447,11 +1843,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -11021,7 +11597,7 @@ index 307be87dc..b29f32a31 100644
          }
      }
  
-@@ -1463,12 +1856,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1462,12 +1855,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
