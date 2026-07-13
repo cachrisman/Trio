@@ -87,3 +87,5 @@ ConfigOverride.xcconfig
 UserData/
 .cursor/plans/
 .claude
+.fusion
+.task-relay

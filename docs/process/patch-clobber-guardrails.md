@@ -1,11 +1,10 @@
 # Patch clobber guardrails — design & implementation log
 
-**Version:** 1.0 (2026-06-18)
-**Status:** Approved (Model B); implementation in progress
+**Version:** 1.2 (2026-06-29)
+**Status:** Implemented (Model B + `local-build.sh` exit-code fix)
 **Owner:** Charlie
 **Related:** [feature-branch-workflow-optimization.md](feature-branch-workflow-optimization.md),
-[dev-sync-branch-cleanup/00-plan.md](../in-progress/dev-sync-branch-cleanup/00-plan.md),
-[backlog/build-script-archive-exit-code](../backlog/build-script-archive-exit-code/)
+[dev-sync-branch-cleanup/00-plan.md](../in-progress/dev-sync-branch-cleanup/00-plan.md)
 
 > This doc exists so a future revisit doesn't require re-investigating from scratch. It records the
 > incident, the root cause, **why Model B was chosen over Model A**, the implementation, and how to
@@ -114,15 +113,37 @@ Waivers (rare): `scripts/patch-audit.waivers` — one line `patch=<NN> file=<pat
   (closes the gap below).
 
 ### 4. Fixes to existing tooling
-- **`ci/local-build.sh` false success (codex-identified):** `if ! capture_fastlane_errors ...; then
-  build_exit_code=$?` captures the status of the `!` expression, so the failure path resolves to `0`
-  (~line 1395; same pattern for release ~1321). Fix so a failed archive yields non-zero and prints
-  failure; make a **missing IPA fatal**, not a warning (~line 1321).
-- **`mid-stack-update.sh` provenance gap (codex-identified):** drift check compares the regenerated
-  patch against the feature branch, so a bad deletion already in the branch passes; provenance records
-  `dev..feature` (not patch-local), so prior-patch commits appear as a later patch's source. The audit
-  hook (3) closes the immediate safety gap; the provenance-scoping fix is tracked separately (not in
-  this change unless trivial).
+
+#### `ci/local-build.sh` false success (fixed 2026-06-18)
+
+**Incident:** On the first build-209 attempt, the IPA archive failed (Swift compiler crash in
+G7SensorKit), yet `local-build.sh` printed `✅ TOTAL (Success)` and exited 0. The Build-IPA stage
+logged `ARCHIVE FAILED` correctly; only the wrapper exit code and summary banner were wrong.
+
+**Root cause:** `if ! capture_fastlane_errors ...; then rc=$?` captures the status of the `!`
+expression (0 on failure), not the command's exit code. Same bug at all three fastlane call sites
+(build, release, release-only).
+
+**Current behavior (as of commit `f3e4978f7`):**
+- All fastlane invocations use `cmd || rc=$?` so a failed archive/upload propagates a non-zero exit.
+- The `cleanup` trap calls `print_stage_summary "failed"` (prints `❌ TOTAL (Failed)`) when
+  `exit_code ≠ 0`; success banner only on exit 0.
+- `stage_ipa_for_release` treats a missing IPA as a **hard failure** (`exit 1`), not a warning.
+- Failure detection is exit-code based via fastlane; there is no separate log-line assertion for
+  "Successfully uploaded" / Record Release (not deemed necessary once exit codes are correct).
+
+**Verification markers:**
+- Failed archive: `ARCHIVE FAILED`, `[build] ❌ Build step FAILED (exit code: 1)`,
+  `[stage] ✗ Failed: Build IPA`, `❌ TOTAL (Failed)`, non-zero `EXIT_CODE`.
+- Successful full deploy: `Build IPA … ✅`, `TestFlight Upload … ✅`, `Record Release … ✅`,
+  `✅ TOTAL (Success)`, `EXIT_CODE=0`.
+
+#### `mid-stack-update.sh` provenance gap (open)
+
+Drift check compares the regenerated patch against the feature branch, so a bad deletion already in
+the branch passes; provenance records `dev..feature` (not patch-local), so prior-patch commits
+appear as a later patch's source. The audit hook (§3) closes the immediate safety gap;
+provenance-scoping is tracked separately.
 
 ### 5. Doc rules
 - **AGENTS.md:** the audit is mandatory and part of patch validation; agents never edit the
@@ -141,6 +162,13 @@ Waivers (rare): `scripts/patch-audit.waivers` — one line `patch=<NN> file=<pat
 - **Everything else is recomputed each run** — no per-patch manifest to update.
 
 ## Changelog
+
+### v1.2 (2026-06-29 10:13 CET)
+- Removed `docs/backlog/build-script-archive-exit-code/` (fix shipped; this doc is canonical).
+- Expanded §4 with **current `local-build.sh` behavior** (exit-code propagation, failed summary
+  banner, missing-IPA fatal) and verification markers from the original backlog write-up.
+- Status → Implemented.
+
 ### v1.1 (2026-06-18)
 - `scripts/patch-audit.sh` written (bash-3.2-safe) and **validated**:
   - PASSES on the current fixed stack (36 informational warnings — legitimate refactors in the

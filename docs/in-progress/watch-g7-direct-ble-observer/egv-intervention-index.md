@@ -19,6 +19,11 @@ Key funnel/yield facts the ideas below target:
 - **Stalls** 95% `fault=dexcom_side`, 100% `phone_fresh=true`; spike at the 40% battery bucket (44 vs 11–22). No Low-Power-Mode / RSSI field is logged.
 - **Deep-gap signature:** observer awake (`heartbeat`, `expected_window` firing) but `connect_called=0` — cause (OS-suspend vs no-candidate vs connect-fail) is currently indistinguishable.
 
+**Build 216 soak (44 h, n=1, 2026-07-06):**
+- **RSSI↔EGV is monotonic but modest** (Task A): ≥−75 dBm → 93% EGV, −75..−85 → 83%, −85..−92 → 77%, <−92 → 72%. The connected link typically runs **weak** (−85..−94 dBm, ~65% of sessions), so a real slice of residual loss is **physical range, not code**. Confounded with scene_phase.
+- **C-216-W7 worked:** deep-gap hours 13.1% → 4.8% of awake hours; `phantom_disconnect` split confirmed **78%** of old `pre_egv_disconnect` was watchdog-cancel fallout; `command_timeout` **58% on `.connected` peripheral** → W-1 stage-2 timeout raise is GO for 217.
+- **Rotation conclusively buried (Task 7):** 216-A `did_discover` shows the real sensor has ONE stable identity (`F42CA099`: 331 connects / 232 auth-bonds); other discovered UUIDs are **other nearby Dexcom devices** (0 auth, 0 EGV), not the sensor under new identities. `sensor_name` on discovery records is a context stamp, not the found device's name.
+
 ---
 
 ## Shipped / tried interventions by theme
@@ -118,6 +123,7 @@ Status key: ✅ SHIPPED · ❌ REJECTED · ⏸ DEFERRED · 📋 BACKLOG · 💡 
 | Persistent "stay-connected between windows" (DiaBLE-style) | Not viable for G7: the **transmitter** shuts BLE down after each EGV (post-EGV shutdown is normal); the watch cannot hold the link open |
 | Guessing `0x59` backfill byte offsets | Prohibited in 04 plan (don't guess offsets). NOTE: fork now parses backfill (B192), so the format is known — see Idea #8 |
 | "G7 favors single phone connection" / primary-secondary | Debunked; cause is conjecture. See top-of-file note |
+| Sensor BLE-identity rotation / stale-UUID recovery (W-2, Task 7) | **Buried by 216-A `did_discover`:** the sensor has ONE stable identity (`F42CA099`, 331 connects / 232 auth-bonds); the multiple UUIDs in discovery are **other nearby Dexcom devices** (0 auth, 0 EGV), not the sensor rotating. The earlier `has_identifier` "rotation ruled out" test was non-discriminating; this data is the real burial. Minor residual: discovery-mode wastes a few connects on foreign advertisers — churn, not the gap cause |
 
 ---
 

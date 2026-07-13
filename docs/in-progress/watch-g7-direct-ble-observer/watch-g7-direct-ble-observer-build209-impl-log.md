@@ -38,7 +38,7 @@
   `self[self.startIndex + i]` + `T(truncatingIfNeeded:)`), preserving the bounded-read safety fix;
   typecheck-verified in Swift 6. Fork commit `cd879d5` on `cachrisman/G7SensorKit` main; patch-02
   repinned. **Also caught:** `local-build.sh` reported `TOTAL (Success)` / exit 0 on that failed
-  archive — logged in `docs/backlog/build-script-archive-exit-code/`.
+  archive — fixed; see `docs/process/patch-clobber-guardrails.md` §4.
 
 ## Section A — 209 confirmation pass (2026-06-15, ~10 min post-install)
 
