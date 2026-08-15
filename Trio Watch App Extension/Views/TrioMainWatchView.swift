@@ -65,10 +65,13 @@ struct TrioMainWatchView: View {
                 // Page 0: Glucose chart (swipe right from main)
                 Group {
                     if currentPage == 0 {
+                        // Upstream rewrote GlucoseChartView for forecast support; its
+                        // minYAxisValue/maxYAxisValue inputs are gone and the axis bounds are
+                        // now derived from `state`. Page position is this fork's (chart first,
+                        // swipe right from main); the component itself is upstream's.
                         GlucoseChartView(
-                            glucoseValues: state.glucoseValues,
-                            minYAxisValue: state.minYAxisValue,
-                            maxYAxisValue: state.maxYAxisValue
+                            state: state,
+                            glucoseValues: state.glucoseValues
                         )
                     } else {
                         Color.clear

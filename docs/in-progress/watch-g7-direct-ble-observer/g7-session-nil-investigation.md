@@ -1,3 +1,5 @@
+> **Historical note (2026-06-16):** The former patches **09** (`watch-complication-improvements`) and **12** (`direct-ble-observer`) were merged into a single watch patch `09-watch-g7.patch` during the dev-sync / branch-cleanup. References to the separate 09/12 split below are historical. See [`dev-sync-branch-cleanup/00-plan.md`](../dev-sync-branch-cleanup/00-plan.md).
+
 # Investigation: `g7_session=nil` on watch-side G7SensorKit core telemetry
 
 **Version:** v1  

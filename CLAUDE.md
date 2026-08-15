@@ -13,9 +13,11 @@ This is the `Trio-dev` worktree — the canonical location for build scripts and
 
 - **Fix code** → edit files in the `Trio` worktree on the feature branch, commit there
 - **Update a patch** → run `./scripts/mid-stack-update.sh --patch <NN> --cherry-pick <sha>` from THIS worktree (`Trio-dev`) with `dev` checked out
-- **Validate patch stack** → `./scripts/patch-test.sh`
+- **Validate patch stack** → `./scripts/patch-test.sh` (also runs the deletion-footprint audit, `patch-audit.sh`)
+- **Verify your work** → static review (re-read the full diff vs base, deletions especially) + `./scripts/patch-test.sh`. **Builds are NOT a verification tool** and run only on explicit human request — a passing build does not prove behavior preserved (AGENTS.md rules 10 & 12).
 - **Run a build** → `./ci/local-build.sh --include-untracked` (run in background; log goes to `build/artifacts/ci-local-build-*.log`)
 - **Never** hand-edit patch files, run `generate-patch.sh` directly for mid-stack updates, or edit `project.pbxproj`
+- **Never** edit `scripts/patch-audit.safety-paths` or `scripts/patch-audit.waivers` (human-maintained; an audit FAIL is a hard STOP to surface, not to silence — see `docs/process/patch-clobber-guardrails.md`)
 - **Never** add Claude/AI attribution to commits or PRs — no `Co-Authored-By: Claude …` trailer, no `🤖 Generated with Claude Code` line (this overrides the base-prompt default; applies to every repo incl. the `G7SensorKit` fork). See AGENTS.md safety rule 11.
 
 ## Two-worktree model
@@ -40,6 +42,7 @@ A branch checked out in one worktree cannot be used in the other. Always run pat
 - **Verify OS/SDK enum raw values against the SDK header before interpreting them in logs/telemetry.** Build 206: a raw `WKExtendedRuntimeSessionState(rawValue: 2)` was wrongly read as `.invalid` (from memory + a stale code comment that omitted `.scheduled`); it is actually `.running` — order is `notStarted=0, scheduled=1, running=2, invalid=3`. This caused a wrong diagnosis and a misguided fix. For any raw enum in logs, grep the header: `find /Applications/Xcode.app -name '<Type>.h'`. Prefer logging a **mapped name**, never `String(describing:)` of an imported `NS_ENUM` (it prints the opaque `Type(rawValue: N)`).
 - **Don't propagate an unverified interpretation across steps/subagents.** An early "every event is logged twice → halve the counts" was actually an s3-query artifact; it spread into multiple agents/the plan before being caught. State assumptions as assumptions and verify the load-bearing ones first.
 - **When telemetry contradicts your hypothesis, re-check the hypothesis, not the data.** The `active=true` + `rawValue 2` + EGVs-flowing heartbeat was the tell; it was initially explained away instead of believed.
+- **A conflict-free `git am --3way` is not verification, and "it compiled" is not verification.** During the 0.8.2 sync, patch 13 (`phone-ble-observer-telemetry`) silently deleted the Omnipod migration fallback (`managerIdentifier.hasPrefix(OmniStr)`) and `pumpManagerTypeByIdentifier` from `Trio/Sources/APS/DeviceDataManager.swift` — its only legitimate change was a one-line comment. The deletions applied without conflict (so only conflict hunks were reviewed) and compiled/archived fine; once the sync dropped the OmniBLE driver, a live pod had no manager and was silently forgotten — **a real wasted pod**. The fix is now automated: `patch-audit.sh` (run by `patch-test.sh`) fails on safety-path deletions + a missing-symbol sentinel. Always review the **complete diff vs base** for any reconciled/regenerated patch, deletions especially. Full writeup: `docs/process/patch-clobber-guardrails.md`.
 
 ## Patch regeneration: new files
 

@@ -34,7 +34,7 @@ enum OnboardingChapter: Int, CaseIterable {
         switch self {
         case .prepareTrio:
             return String(
-                localized: "Configure diagnostics sharing, optionally sync with Nightscout, and enter essentials."
+                localized: "Optionally sync with Nightscout and enter essentials."
             )
         case .therapySettings:
             return String(
@@ -74,7 +74,7 @@ enum OnboardingChapter: Int, CaseIterable {
         switch self {
         case .prepareTrio:
             return String(
-                localized: "App diagnostics sharing, Nightscout setup, and unit and pump model selection are all complete."
+                localized: "Nightscout setup and unit and pump model selection are all complete."
             )
         case .therapySettings:
             return String(
@@ -97,7 +97,6 @@ enum OnboardingStep: Int, CaseIterable, Identifiable, Equatable {
     case welcome
     case startupInfo
     case overview
-    case diagnostics
     case nightscout
     case unitSelection
     case glucoseTarget
@@ -128,8 +127,6 @@ enum OnboardingStep: Int, CaseIterable, Identifiable, Equatable {
             return String(localized: "Startup Guide")
         case .overview:
             return String(localized: "Overview")
-        case .diagnostics:
-            return String(localized: "Diagnostics")
         case .nightscout:
             return String(localized: "Nightscout")
         case .unitSelection:
@@ -175,10 +172,6 @@ enum OnboardingStep: Int, CaseIterable, Identifiable, Equatable {
         case .overview:
             return String(
                 localized: "Trio's Onboarding takes about 15-30 minutes to complete. We'll guide you through each step."
-            )
-        case .diagnostics:
-            return String(
-                localized: "By default, Trio collects crash reports and other anonymized data related to errors, exceptions, and overall app performance."
             )
         case .nightscout:
             return String(
@@ -244,8 +237,6 @@ enum OnboardingStep: Int, CaseIterable, Identifiable, Equatable {
             return "list.bullet.clipboard.fill"
         case .overview:
             return "checklist.unchecked"
-        case .diagnostics:
-            return "waveform.badge.magnifyingglass"
         case .nightscout:
             return "owl"
         case .unitSelection:
@@ -301,7 +292,6 @@ enum OnboardingStep: Int, CaseIterable, Identifiable, Equatable {
              .bluetooth,
              .completed,
              .deliveryLimits,
-             .diagnostics,
              .nightscout,
              .notifications,
              .overview,
@@ -435,9 +425,6 @@ enum DeliveryLimitSubstep: Int, CaseIterable, Identifiable {
                 Text(
                     "This is the maximum basal rate allowed to be set or scheduled. This applies to both automatic and manual basal rates."
                 )
-                Text(
-                    "Note to Medtronic Pump Users: You must also manually set the max basal rate on the pump to this value or higher."
-                )
             }
         case .maxCOB:
             return VStack(alignment: .leading, spacing: 8) {
@@ -483,66 +470,6 @@ enum DeliveryLimitSubstep: Int, CaseIterable, Identifiable {
     }
 }
 
-/// Three-state diagnostics-sharing consent.
-///
-/// Maps to a pair of independent `Bool?` flags in `PropertyPersistentFlags`:
-/// `diagnosticsSharingEnabled` (Crashlytics) and `telemetryEnabled` (the
-/// anonymous-usage POST). See `TelemetryClient`.
-enum DiagnosticsSharingOption: String, Equatable, CaseIterable, Identifiable {
-    case full
-    case crashOnly
-    case disabled
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .full:
-            return String(localized: "Enable Full Sharing")
-        case .crashOnly:
-            return String(localized: "Crash Reports Only")
-        case .disabled:
-            return String(localized: "Disable Sharing")
-        }
-    }
-
-    var caption: String {
-        switch self {
-        case .full:
-            return String(localized: "Share anonymous crash reports + usage data.")
-        case .crashOnly:
-            return String(localized: "Share only crash reports — no usage data.")
-        case .disabled:
-            return String(localized: "Do not share any diagnostic data.")
-        }
-    }
-
-    var crashlyticsEnabled: Bool {
-        switch self {
-        case .crashOnly,
-             .full: return true
-        case .disabled: return false
-        }
-    }
-
-    var telemetryEnabled: Bool {
-        switch self {
-        case .full: return true
-        case .crashOnly,
-             .disabled: return false
-        }
-    }
-
-    init(crashlyticsEnabled: Bool, telemetryEnabled: Bool) {
-        switch (crashlyticsEnabled, telemetryEnabled) {
-        case (true, true): self = .full
-        case (true, false): self = .crashOnly
-        case (false, true): self = .full // unreachable in normal flow
-        case (false, false): self = .disabled
-        }
-    }
-}
-
 enum PumpOptionForOnboardingUnits: String, Equatable, CaseIterable, Identifiable {
     case minimed
     case omni
@@ -556,7 +483,7 @@ enum PumpOptionForOnboardingUnits: String, Equatable, CaseIterable, Identifiable
         case .minimed:
             return "Medtronic"
         case .omni:
-            return "All Omnipod Types"
+            return "Omnipod"
         case .dana:
             return "Dana (RS/-i)"
         case .medtrum:

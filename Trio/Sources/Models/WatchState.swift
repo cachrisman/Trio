@@ -30,6 +30,14 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
     var bolusIncrement: Decimal = 0.05
     var confirmBolusFaster: Bool = false
 
+    // Forecast options
+    var showForecast: Bool = false
+    var isForecastCone: Bool = false
+    var forecastStartDate: Date? = nil
+    var forecastConeMin: [Double] = []
+    var forecastConeMax: [Double] = []
+    var forecastLines: [String: [Double]] = [:] // "iob" / "cob" / "uam" / "zt" -> values
+
     /// G7 EGV sequence when the active CGM is G7 and it matches `latestGlucose`; watch attribution only.
     var g7Sequence: Int?
 
@@ -62,6 +70,12 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
             lhs.maxProtein == rhs.maxProtein &&
             lhs.bolusIncrement == rhs.bolusIncrement &&
             lhs.confirmBolusFaster == rhs.confirmBolusFaster &&
+            lhs.showForecast == rhs.showForecast &&
+            lhs.isForecastCone == rhs.isForecastCone &&
+            lhs.forecastStartDate == rhs.forecastStartDate &&
+            lhs.forecastConeMin == rhs.forecastConeMin &&
+            lhs.forecastConeMax == rhs.forecastConeMax &&
+            lhs.forecastLines == rhs.forecastLines &&
             lhs.g7Sequence == rhs.g7Sequence &&
             lhs.g7ActiveSensorName == rhs.g7ActiveSensorName &&
             lhs.g7ActivationEpoch == rhs.g7ActivationEpoch
@@ -91,6 +105,12 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
         hasher.combine(maxProtein)
         hasher.combine(bolusIncrement)
         hasher.combine(confirmBolusFaster)
+        hasher.combine(showForecast)
+        hasher.combine(isForecastCone)
+        hasher.combine(forecastStartDate)
+        hasher.combine(forecastConeMin)
+        hasher.combine(forecastConeMax)
+        hasher.combine(forecastLines)
         hasher.combine(g7Sequence)
         hasher.combine(g7ActiveSensorName)
         hasher.combine(g7ActivationEpoch)

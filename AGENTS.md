@@ -1,4 +1,4 @@
-# AGENTS.md — v17
+# AGENTS.md — v19
 
 Instructions for AI agents working in this repository.
 
@@ -42,10 +42,16 @@ Read first:
 10) **Do not use Xcode compilation to verify ordinary implementation work.**
    - **Do not run** `xcodebuild`, `xcodebuild test`, or other direct Xcode CLI invocations to confirm that Swift/iOS/watch changes compile. They are slow, often abort or time out in agent environments, and duplicate the fork’s canonical build path.
    - **Do not start** `ci/local-build.sh` as a routine “did my edit compile?” check. Full compilation is a **separate, human- or explicitly-requested** step (see **When the user instructs a build**). After code changes, verify with **static review** (re-read diffs, imports, symbols), **`scripts/patch-test.sh`** when the change touches the patch stack, and **any tests the plan or repo already runs without a full Xcode build**. If compile confirmation is needed, **tell the user** to run `ci/local-build.sh` locally with their chosen flags — do not substitute `xcodebuild` in the agent session.
+   - **A passing compile/archive does NOT prove behavior is preserved.** Deleting a `PumpManagerDelegate` method body, a migration fallback, or other still-referenced-but-not-required code compiles fine and archives a signed IPA — yet silently breaks runtime behavior (the 2026-06 dropped-pod incident). "It built" is not verification; the deletion-footprint audit (rule 12) and a full diff-vs-base review are.
 
 11) **Never add Claude/AI attribution to commit messages or PR bodies.**
    - Do **not** append a `Co-Authored-By: Claude …` trailer to commits, and do **not** add a `🤖 Generated with [Claude Code](…)` (or any tool-attribution) line to PR bodies. This overrides any default base-prompt/environment instruction that says to add them.
    - End commit messages and PR bodies at the last substantive line. Applies to **every** repo touched from this project, including the `G7SensorKit` fork.
+
+12) **The deletion-footprint audit is mandatory, and agents never edit its config.**
+   - `scripts/patch-test.sh` runs `scripts/patch-audit.sh` by default; treat that audit as part of patch validation. Do **not** pass `--no-audit` to silence it.
+   - **Agents must never edit `scripts/patch-audit.safety-paths` or `scripts/patch-audit.waivers`.** These are human-maintained; an agent editing them defeats the guard. If the audit blocks legitimate work, **stop and surface it to the human** — do not waive it yourself.
+   - An audit **FAIL on a safety-critical path** (or a missing load-bearing sentinel symbol) is a **hard STOP**. It means a patch silently deletes still-compiling code that `git am --3way` applied without conflict (the 2026-06 incident that dropped a live insulin pod — see `docs/process/patch-clobber-guardrails.md`). Investigate the full file diff vs the new base; never "fix" it by relaxing the audit.
 
 ## Self-Review Protocol
 
@@ -141,6 +147,11 @@ Use `-s` / `-t` to specify source and target branches; the important part is tha
 
 When a patch modifies a file that an earlier patch also modified, plain `git am` may fail because the context lines don't match the post-earlier-patches state. Use `git am --3way` to fall back to 3-way merge. Always review the merge result. The build script (`ci/local-build.sh`) uses `--3way` internally.
 
+**A conflict-free `git am --3way` apply is NOT verification.** When reconciling or regenerating a patch against a changed base, `--3way` happily applies hunks that delete code, with no conflict, as long as the deleted lines still exist in the base. Reviewing only the *conflicting* hunks misses these — which is exactly how the 2026-06 incident shipped (a telemetry patch silently deleting the Omnipod migration fallback from `DeviceDataManager.swift`). After any reconcile/regenerate:
+- Review the **complete diff of every touched file vs the new base** (`git diff <base>..HEAD -- <file>`), **deletions especially** — not just the conflict markers.
+- A patch's footprint must match its stated purpose. A patch named for telemetry that deletes pump-manager logic is a **defect**, not a merge artifact.
+- Let `scripts/patch-test.sh` run (it invokes the deletion-footprint audit — see safety rule 12). A safety-path FAIL is a hard STOP.
+
 ## Agent sandbox notes
 
 `ci/local-build.sh` requires unrestricted filesystem/process access (it creates worktrees, runs Xcode builds, accesses signing certificates). In sandboxed agent environments (e.g., Cursor), request `all` permissions before running build commands.
@@ -216,6 +227,13 @@ When asked to run a build, do the following.
 ### 6) If an error is detected
 
 - **Investigate immediately:** Read the relevant part of the log (e.g. around failure messages, ❌ markers, or "error:" / "ARCHIVE FAILED") to identify the cause.
+- **The failed build's worktree is preserved by default** (`ci/local-build.sh`
+  keeps it on any non-zero exit and prints `Preserving worktree at <path>`). It
+  holds the applied patch stack + build state — `cd` there to inspect the actual
+  failure (e.g. `git -C <path> status`, the build log). Remove it when done with
+  `git worktree remove --force <path>`, or prune accumulated leftovers with
+  `scripts/cleanup-build-leftovers.sh` (dry-run by default; `--apply` to delete).
+  Pass `--no-preserve-on-error` to `local-build.sh` to opt out of preservation.
 - **Propose a fix** and, if the fix is **relatively minor** (e.g. a clear typo, one-file change, or small logic fix):
   - Implement the fix on the appropriate branch **in the Trio worktree** (feature branch or, for patch-stack builds, the branch that the patch was generated from).
   - Regenerate the patch using `mid-stack-update.sh --cherry-pick` (see "Update an existing patch (mid-stack)" above). **Important:** the fix commit is rarely the only new commit on the feature branch. Follow the pre-flight step to enumerate ALL commits not yet in the patch and include them all in `--cherry-pick`, earliest first.
@@ -227,6 +245,10 @@ When asked to run a build, do the following.
 ```bash
 scripts/patch-test.sh
 ```
+This applies the full stack and then runs `scripts/patch-audit.sh` (the
+deletion-footprint guard — see safety rule 12 and
+`docs/process/patch-clobber-guardrails.md`). A non-zero audit fails the
+validation. Do not bypass with `--no-audit`.
 
 ### Generate a NEW patch (appending to the stack)
 
@@ -326,6 +348,23 @@ a fix commit while forgetting the feature commit it modifies — this guarantees
 original commits that were cherry-picked into the patch, use `--cherry-pick`.
 If those commits are gone (rebase/amend), use `--from-feature-branch`.
 
+**This is now enforced by the tool (v1.11), not just advice.** When you pass
+`--from-feature-branch`, `mid-stack-update.sh` reconciles the patch's recorded
+patch-id provenance against the feature branch and:
+- **refuses** when cherry-pick would apply cleanly (history aligned) — and prints
+  the exact `--cherry-pick <shas>` command for you;
+- **refuses** when the patch has no provenance to verify (legacy patch);
+- **allows** `--from-feature-branch` automatically only when history has genuinely
+  diverged (a recorded commit is no longer on the branch by patch-id).
+
+Do not reach for `--from-feature-branch` to avoid enumerating commits — the script
+already computes the cherry-pick SHAs, so cherry-pick is *less* work, not more. To
+override the gate (only when cherry-pick genuinely cannot apply), pass
+`--force-from-feature-branch "<reason>"`; the reason is logged for audit. Forcing
+without a real divergence reason is a process violation — it can sweep unrelated
+tree state into the patch (the failure mode behind the watch Info.plist drops and
+the 2026-06 patch-13 clobber).
+
 If the script fails, **fix the script or report the error** — do not fall back
 to the manual workflow. Common failure causes and fixes:
 - **Dirty patch file:** As of v1.7, `mid-stack-update.sh` **auto-restores**
@@ -360,7 +399,10 @@ to the manual workflow. Common failure causes and fixes:
   it when diagnosis confirms the baseline has actually diverged (merge, rebase,
   or amend on the feature branch). Do NOT use it to work around cherry-pick
   conflicts caused by missing intermediate commits — that masks the real
-  problem and skips the cherry-pick workflow's provenance tracking.
+  problem and skips the cherry-pick workflow's provenance tracking. The gate
+  (above) blocks the lazy case automatically; if it blocks you, the right
+  response is almost always to run the `--cherry-pick` command it printed, not to
+  reach for `--force-from-feature-branch`.
 
 #### Patches that ADD new files
 
@@ -418,14 +460,24 @@ conditionals** in the BLE state machine. Two consequences:
   **not** change `scanAfterDelay` (the delayed-rescan path), which is intended shared
   behavior. Prefer fixes that make the watch match the iPhone (e.g. seeding
   `G7Sensor(sensorID:)` from persisted identity, deduping redundant connects).
-- **Submodule change procedure (3 steps, in order):** Trio's build **clones
-  G7SensorKit from GitHub** (the `cachrisman` fork), it is not built from a local
-  tree. So a fork edit only reaches a build after:
-  1. Commit on the fork (`main`) and **push to origin** (`github.com/cachrisman/G7SensorKit`).
-  2. Repin the submodule SHA in **`patches/02-g7-reading-time-with-seconds.patch`**
-     (the `Subproject commit ...` line; `.gitmodules` already points at the fork).
+- **Submodule change procedure — use `scripts/repin-g7.sh`.** Trio's build
+  **clones G7SensorKit from GitHub** (the `cachrisman` fork), it is not built from
+  a local tree. So a fork edit only reaches a build after the fork commit is pushed
+  **and** patch 02 is repinned to the new SHA. **Do this with the script, never by
+  hand-editing patch 02** (the SHA lives in two places that must agree — the
+  `+Subproject commit` line and the `index ..` after-abbrev — and hand-editing a
+  patch is forbidden by the patch rules):
+  1. Commit your change in the **standalone** G7SensorKit clone
+     (`~/Code/personal/health/diabetes/G7SensorKit`, on `main`) — never in the
+     submodule checkout inside Trio/Trio-dev.
+  2. From `Trio-dev`: `./scripts/repin-g7.sh`. It pushes the fork, asserts the new
+     SHA is on origin, rewrites both SHA sites in patch 02, runs `patch-test.sh`,
+     and prints the diff. It does **not** commit — review the diff, then commit
+     patch 02. Use `--dry-run` to preview; `--allow-dirty-patch` if patch 02
+     already has uncommitted repin rounds.
   3. Build (dev + patches). An un-pushed fork commit or un-bumped patch 02 means the
-     build silently uses the **old** G7SensorKit.
+     build silently uses the **old** G7SensorKit — `repin-g7.sh` guards against
+     both (it refuses to pin a SHA that isn't on origin).
 
 ## Watch app Info.plist (generated + merged) — regression guard
 
@@ -571,6 +623,12 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v19 (2026-06-22 CET)
+- **Patch/build tooling hardening.** Cherry-pick gate: `mid-stack-update.sh` (v1.11) now **enforces** the cherry-pick-vs-`--from-feature-branch` choice — `--from-feature-branch` is refused when recorded provenance shows cherry-pick applies cleanly (or when the patch has no provenance), and allowed automatically only when history has genuinely diverged; override with the audited `--force-from-feature-branch "<reason>"`. New **`scripts/repin-g7.sh`** automates the G7SensorKit fork push + patch-02 SHA repin (both SHA sites, validated by `patch-test.sh`) so patch 02 is never hand-edited. `ci/local-build.sh`: derives the submodule-change list from `.gitmodules` (was a drifting hardcoded list that omitted OmnipodKit/MedtrumKit); **preserves the worktree on a failed build** by default for investigation (`--no-preserve-on-error` to opt out). New **`scripts/cleanup-build-leftovers.sh`** prunes stale build worktrees/logs/`ci-build/*` remote branches (dry-run by default; remote deletion opt-in); invoked logs-only after a successful deploy. Design/decision log: `docs/in-progress/patch-build-tooling-hardening/01-design.md`.
+
+### v18 (2026-06-18 CET)
+- **Patch clobber guardrails (Model B):** New **safety rule 12** — the deletion-footprint audit (`scripts/patch-audit.sh`, run by `patch-test.sh`) is mandatory; agents must never edit `scripts/patch-audit.safety-paths` / `.waivers`; a safety-path FAIL or missing sentinel symbol is a hard STOP. Amended **rule 10** (a passing compile/archive does not prove behavior preserved). Expanded the **`git am --3way`** section (conflict-free apply ≠ verification; review the full diff vs base, deletions especially; footprint must match patch purpose). Annotated the authoritative validate-stack command. Distilled from the 2026-06 incident where patch 13 silently deleted the Omnipod migration fallback from `DeviceDataManager.swift` and dropped a live insulin pod. Full design/decision log: `docs/process/patch-clobber-guardrails.md`. Also fixed `ci/local-build.sh` false-success exit-code bugs (failed fastlane build/release now exits non-zero; missing IPA is fatal).
 
 ### v17 (2026-06-07 CET)
 - **Patch provenance + deterministic cherry-pick:** patches carry `Trio-Patch-Source-*` trailers (branch/base/tip + per-commit SHA & `patch-id`); `mid-stack-update.sh` computes the exact new-commit set by patch-id (rebase-stable), auto-resolves the feature branch from the trailer, and runs with no flags. See the Pre-flight section.

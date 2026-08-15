@@ -1,0 +1,2 @@
+- review mode over-flags Swift: verify nested early-returns, documented invariants, and non-failable conversions (Int(UInt16) cannot crash) against the actual file before reporting a bug.
+- critique/review: never claim an Apple/CoreBluetooth API or option doesn't exist from training knowledge — grep the local SDK headers first (e.g. CBCentralManagerConstants.h); and don't call documented CoreBluetooth behaviors (scan-while-connect-pending) "prohibited".

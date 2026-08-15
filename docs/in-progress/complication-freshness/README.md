@@ -46,11 +46,14 @@ Status dashboard and navigation hub for the complication-freshness initiative.
 | [healthkit-improvements/](healthkit-improvements/) | R6.1 | Completed (build 141) |
 | [dashboards/](dashboards/) | Sawtooth dashboard design docs | Reference |
 | [archive/](archive/) | Frozen original FP-plan, full changelogs | Reference |
-| [proactive-transfer/](proactive-transfer/) | iPhone + watch foreground staleness-gated sync | Draft design + implementation plan — **implement in `Trio` worktree, branch `feature/watch-complication-improvements`** |
+| [proactive-transfer/](proactive-transfer/) | iPhone + watch foreground staleness-gated sync | Draft design + implementation plan — **implement in `Trio` worktree, branch `feature/watch-g7`** (formerly `feature/watch-complication-improvements`, merged in the 2026-06-16 dev-sync/cleanup) |
 
 ---
 
 ## Changelog
+
+### v1.7 (2026-06-16 00:30 CET)
+- **proactive-transfer branch ref updated:** `feature/watch-complication-improvements` → `feature/watch-g7` (the former was merged into the unified watch patch in the 2026-06-16 dev-sync/branch-cleanup).
 
 ### v1.6 (2026-04-08 23:17 CET)
 - **proactive-transfer:** Navigation row notes **`Trio` worktree / `feature/watch-complication-improvements`** for implementation (planning docs remain in **Trio-dev**).

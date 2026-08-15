@@ -26,7 +26,9 @@ Options:
                              to enable for other base branches)
   --no-sync-upstream         Skip upstream sync even for --base-branch dev
   --worktree-parent <path>   Parent dir for temporary worktrees
-  --preserve-worktree        Preserve worktree after build (for debugging)
+  --preserve-worktree        Preserve worktree after build, even on success (for debugging)
+  --no-preserve-on-error     Remove the worktree even when the build fails
+                             (default: a failed build keeps its worktree to investigate)
   -h, --help                 Show this help
 
 Examples:
@@ -59,6 +61,7 @@ INCLUDE_PROJECT_FILE=0
 SYNC_EXPLICIT_ONLY=""
 IPA_PATH=""
 PRESERVE_WORKTREE=0
+NO_PRESERVE_ON_ERROR=0   # by default, a failed build keeps its worktree for investigation
 SYNC_UPSTREAM=""
 
 while [[ $# -gt 0 ]]; do
@@ -121,6 +124,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --preserve-worktree)
       PRESERVE_WORKTREE=1
+      ;;
+    --no-preserve-on-error)
+      NO_PRESERVE_ON_ERROR=1
       ;;
     -h|--help)
       usage
@@ -411,6 +417,24 @@ export FASTLANE_DONT_STORE_PASSWORD=1
 export LANG="${LANG:-en_US.UTF-8}"
 export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
+# Pin Ruby to Homebrew's so the build doesn't depend on the launching shell's PATH
+# ordering. When system Ruby (/usr/bin/ruby 2.6) is first in PATH, the "Ruby
+# Dependencies" stage fails with "Could not find 'bundler' (4.0.4) required by your
+# Gemfile.lock" -- the Gemfile.lock's BUNDLED WITH (4.0.4) is only provided by the
+# Homebrew Ruby. Prepend Homebrew's ruby bin dir when present; preserve everything
+# else in PATH so a caller who already arranged a working Ruby is unaffected.
+# Cover both Apple Silicon (/opt/homebrew) and Intel (/usr/local) Homebrew prefixes.
+for _brew_ruby_bin in /opt/homebrew/opt/ruby/bin /usr/local/opt/ruby/bin; do
+  if [[ -d "$_brew_ruby_bin" ]]; then
+    case ":$PATH:" in
+      *":$_brew_ruby_bin:"*) ;;
+      *) PATH="$_brew_ruby_bin:$PATH" ;;
+    esac
+    export PATH
+    break
+  fi
+done
+
 export BUNDLE_SILENCE_ROOT_WARNING=1
 export BUNDLE_DISABLE_VERSION_CHECK=true
 
@@ -700,9 +724,12 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
   cd "$ROOT_DIR"
 
   stage_start "TestFlight Upload"
-  if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step"; then
-    release_exit_code=$?
-    exit $release_exit_code
+  # `cmd || rc=$?` captures the real exit code; `if ! cmd; then rc=$?` would
+  # capture the negation's status (0) and exit success on a failed upload.
+  release_exit_code=0
+  capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step" || release_exit_code=$?
+  if [[ $release_exit_code -ne 0 ]]; then
+    exit "$release_exit_code"
   fi
   stage_end
 
@@ -725,6 +752,13 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
     echo "[build] WARNING: Could not find IPA for release recording."
   fi
   stage_end
+
+  # Housekeeping (logs only) — same as the full-deploy tail, so --release-only
+  # doesn't accumulate logs. Non-fatal; worktrees/remote branches stay manual.
+  if [[ -x "$ROOT_DIR/scripts/cleanup-build-leftovers.sh" ]]; then
+    echo "[build] Pruning old build logs..."
+    "$ROOT_DIR/scripts/cleanup-build-leftovers.sh" --apply --skip-worktrees --skip-branches || true
+  fi
 
   print_stage_summary "success"
   exit 0
@@ -752,8 +786,8 @@ if ! command -v bundle >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "[build] Ruby:    $(ruby -v)"
-echo "[build] Bundler: $(bundle _${BUNDLER_VERSION}_ -v || echo 'bundler not found for this version')"
+echo "[build] Ruby:    $(ruby -v)  ($(command -v ruby))"
+echo "[build] Bundler: $(bundle _${BUNDLER_VERSION}_ -v || echo 'bundler not found for this version')  ($(command -v bundle))"
 echo "[build] Xcode:   $(xcode-select -p)"
 xcodebuild -version || true
 
@@ -940,8 +974,24 @@ cleanup() {
 
   if [[ "$WORKTREE_CREATED" = true && -n "$WORKTREE_DIR" ]]; then
     normalized_worktree="$(normalize_path "$WORKTREE_DIR")"
+    # Decide whether to keep the worktree:
+    #   - explicit --preserve-worktree (or the record-release-retry path) → always keep
+    #   - a failed build → keep by default so the failure can be investigated
+    #     (the worktree holds the applied patch stack + build state); opt out with
+    #     --no-preserve-on-error. Pre-build failures never reach here (no worktree yet).
+    # Stale preserved worktrees are pruned by scripts/cleanup-build-leftovers.sh.
+    keep_worktree=false
+    keep_reason=""
     if [[ "$preserve_worktree" = true || "$PRESERVE_WORKTREE" = "1" ]]; then
-      echo "[cleanup] Preserving worktree at $normalized_worktree"
+      keep_worktree=true; keep_reason="--preserve-worktree"
+    elif [[ $exit_code -ne 0 && "$NO_PRESERVE_ON_ERROR" != "1" ]]; then
+      keep_worktree=true; keep_reason="build failed (exit $exit_code) — kept for investigation"
+    fi
+    if [[ "$keep_worktree" = true ]]; then
+      echo "[cleanup] Preserving worktree at $normalized_worktree ($keep_reason)"
+      echo "[cleanup]   Investigate it, then remove THIS one with: git worktree remove --force '$normalized_worktree'"
+      echo "[cleanup]   (bulk-prune old logs later with scripts/cleanup-build-leftovers.sh --apply --skip-worktrees;"
+      echo "[cleanup]    a bare --apply prunes by recency and could remove OTHER preserved worktrees you're still using)"
     else
       echo "[cleanup] Removing worktree at $normalized_worktree"
       cd "$ROOT_DIR" >/dev/null 2>&1 || true
@@ -1260,8 +1310,14 @@ elif [[ -d "$PATCHES_DIR" ]]; then
         if printf '%s\n' "$patch_changes" | grep -q "^\.gitmodules$"; then
           SUBMODULE_MODIFIED=true
         fi
-        # Check if any submodule commit reference was modified
-        if printf '%s\n' "$patch_changes" | grep -qE '^(G7SensorKit|CGMBLEKit|DanaKit|OmniKit|OmniBLE|MinimedKit|LibreTransmitter|TidepoolService|RileyLinkKit|LoopKit|dexcom-share-client-swift)$'; then
+        # Check if any submodule gitlink was repinned. Derive the submodule paths
+        # from .gitmodules rather than hardcoding them — a hardcoded list drifts as
+        # drivers are added/removed (it once listed removed OmniKit/OmniBLE and
+        # omitted OmnipodKit/MedtrumKit), which would silently skip the submodule
+        # update for a patch that repins an unlisted submodule by SHA alone.
+        submodule_paths="$(git -C "$BUILD_DIR" config -f "$BUILD_DIR/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}')"
+        if [[ -n "$submodule_paths" ]] \
+          && printf '%s\n' "$patch_changes" | grep -qxF -f <(printf '%s\n' "$submodule_paths"); then
           SUBMODULE_MODIFIED=true
         fi
       else
@@ -1324,7 +1380,12 @@ stage_ipa_for_release() {
       cp -f "$ipa_source" "$ROOT_DIR/Trio.ipa"
     fi
   else
-    echo "[build] Warning: IPA not found at $ipa_source"
+    # A fastlane run that "succeeded" but produced no IPA is NOT a success —
+    # treat it as a hard failure rather than printing a warning and continuing
+    # to the success summary. See docs/process/patch-clobber-guardrails.md.
+    echo "[build] ❌ ERROR: expected IPA not found at $ipa_source"
+    echo "[build] The archive/export step did not produce an IPA; failing the build."
+    exit 1
   fi
 }
 
@@ -1392,9 +1453,13 @@ fi
 
 stage_start "Build IPA"
 
-if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane build_trio" "Build step"; then
-  build_exit_code=$?
-  exit $build_exit_code
+# NB: `if ! cmd; then rc=$?` captures the status of the *negation* (always 0 on
+# failure), so the old form exited 0 on a failed build. Use `cmd || rc=$?` to
+# capture the command's real exit code under set -e.
+build_exit_code=0
+capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane build_trio" "Build step" || build_exit_code=$?
+if [[ $build_exit_code -ne 0 ]]; then
+  exit "$build_exit_code"
 fi
 
 stage_ipa_for_release
@@ -1427,9 +1492,12 @@ echo "[build] Ready to upload to TestFlight."
 
 stage_start "TestFlight Upload"
 
-if ! capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step"; then
-  release_exit_code=$?
-  exit $release_exit_code
+# `cmd || rc=$?` captures the real exit code; `if ! cmd; then rc=$?` would
+# capture the negation's status (0) and exit success on a failed upload.
+release_exit_code=0
+capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step" || release_exit_code=$?
+if [[ $release_exit_code -ne 0 ]]; then
+  exit "$release_exit_code"
 fi
 
 stage_end
@@ -1484,6 +1552,15 @@ if [[ -n "$ipa_path_for_release" ]]; then
   cd "$ROOT_DIR"
 else
   echo "[build] WARNING: Could not find IPA for release recording."
+fi
+
+# Housekeeping: this deploy succeeded and supersedes older build logs, so prune
+# them now. Logs ONLY — worktrees may be under investigation (see preserve-on-
+# error above) and remote ci-build/* branches are outward-facing, so those stay
+# manual. Never fatal to the build.
+if [[ -x "$ROOT_DIR/scripts/cleanup-build-leftovers.sh" ]]; then
+  echo "[build] Pruning old build logs..."
+  "$ROOT_DIR/scripts/cleanup-build-leftovers.sh" --apply --skip-worktrees --skip-branches || true
 fi
 
 stage_end

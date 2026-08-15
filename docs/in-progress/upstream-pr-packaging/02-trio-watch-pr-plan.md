@@ -1,10 +1,19 @@
 # Trio watch G7 observer — upstream pitch & PR plan
 
-**Version:** 0.3 (draft for Charlie review — pitch + plan consolidated)
-**Status:** In progress — Phase 4 prep (drafted during the 208 soak; packaging executes after
-dev sync + feature-branch cleanup)
+**Version:** 0.4 (patch-org note added post dev-sync/cleanup)
+**Status:** In progress — the prerequisite **dev sync + feature-branch cleanup is now complete**
+(2026-06-16); PR packaging is ready to execute against the reorganized stack.
 **Created:** 2026-06-11 06:00 CEST
-**Last updated:** 2026-06-12 18:34 CEST
+**Last updated:** 2026-06-16 00:30 CEST
+
+> **Patch-org update (2026-06-16):** the dev-sync/branch-cleanup merged the two watch patches —
+> former **09 (`watch-complication-improvements`)** + **12 (`direct-ble-observer`)** are now a
+> single **`09-watch-g7.patch`** (source branch `feature/watch-g7`), and old **patch 11** was
+> deleted (superseded). Phone-side telemetry stays in **patch 13**. The patch-number references
+> and line-count breakdowns below predate that merge — the code is unchanged, but for packaging,
+> extract from the single `09-watch-g7` patch rather than the old 09/12 split. The detailed
+> include/exclude line accounting should be re-derived against `09-watch-g7` when the PR is
+> actually cut.
 
 **Target:** nightscout/Trio (public PR + description). **Scope decision (Charlie):** minimal core
 — logging/debug UI/telemetry stripped entirely. **Evidence policy:** aggregate numbers only — no
@@ -194,6 +203,9 @@ claim without one of these.
 ---
 
 ## Changelog
+
+### v0.4 (2026-06-16 00:30 CEST)
+- **Patch-org note** added after the dev-sync/branch-cleanup completed: former patches 09+12 are now one `09-watch-g7.patch` (branch `feature/watch-g7`); patch 11 deleted. Status updated (the cleanup prerequisite is done). Detailed include/exclude line counts below still reference the pre-merge 09/12 split and should be re-derived against `09-watch-g7` at PR-cut time.
 
 ### v0.3 (2026-06-12 18:34 CEST)
 - Landing sequence: added step 4 — fix the `sanitizedGlucose` mmol/comma corruption (review

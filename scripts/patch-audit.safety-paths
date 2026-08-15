@@ -1,0 +1,15 @@
+# Safety-critical path globs for scripts/patch-audit.sh (Model B).
+# A patch that DELETES pre-existing upstream lines from a file matching any glob
+# below FAILS the audit (fail-closed) unless a matching line exists in
+# scripts/patch-audit.waivers. See docs/process/patch-clobber-guardrails.md.
+#
+# Matched with shell `case` globbing: `*` matches any characters INCLUDING `/`,
+# so a trailing `/*` covers the whole subtree.
+#
+# HUMAN-MAINTAINED. Agents must not edit this file (AGENTS.md). Changes are rare
+# and should be an obvious, reviewable commit.
+
+# The closed-loop algorithm, device/pump/CGM data flow, and pump-manager
+# resolution (incl. DeviceDataManager.swift and the OmniBLE->OmnipodKit
+# managerIdentifier migration whose deletion dropped a live pod, 2026-06).
+Trio/Sources/APS/*

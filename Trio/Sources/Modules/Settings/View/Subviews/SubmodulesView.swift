@@ -40,10 +40,12 @@ struct KeyValueRow: View {
         HStack {
             Text(key)
                 .foregroundColor(.primary)
+                .textSelection(.enabled)
             Spacer()
             Text(value)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
         }
     }
 }

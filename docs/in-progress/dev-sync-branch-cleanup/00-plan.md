@@ -1,9 +1,9 @@
 # Dev sync + feature-branch cleanup — plan
 
-**Version:** 1.1 (Q2 resolved; branch keep/delete set enumerated; patch-14 delete contradiction fixed)
-**Status:** Planning — gated behind the 209 ship
+**Version:** 1.2 (executed 2026-06-16 — see changelog for outcomes + deviations)
+**Status:** Complete — Phases 0–5 done, build-validated, committed (`c21092055`) + force-pushed to `origin/dev` 2026-06-16. TestFlight deploy not yet run (build-only validation; deferred per Charlie).
 **Created:** 2026-06-13 17:25 CEST
-**Last updated:** 2026-06-14 09:45 CEST
+**Last updated:** 2026-06-16 00:15 CEST
 
 Goal: sync local `dev` with `upstream/dev`, excise the abandoned crashlytics experiment from the
 drift path, and clean the feature branches so the stack is maintainable. Guiding principle:
@@ -159,6 +159,17 @@ so:
 - **Phase 5 — docs:** living inline; frozen banners.
 
 ## Changelog
+### v1.2 (2026-06-16 00:15 CEST) — EXECUTED
+- **Phase 0:** 25 annotated safety tags `safety/pre-dev-sync-20260615/<branch>` (dev + all 24 branches). Baseline patch-test green.
+- **Phase 1:** Clean MERGE `upstream/dev` → `dev` (`3191d6296`, signed, 0 conflicts; 0 behind upstream). Per-patch outcome vs synced dev: `01/03/06/07/08` apply clean (no regen); `05` applies clean via `git am --3way` (upstream watch overlap absorbed); `02` regenerated preserving **build-209 G7 pin `cd879d59a`** (decision Q3=A; branch reconstructed). **Patch 14 dropped** in favor of upstream's superior Live Activity temp-target work — replaced by a slim `14-temp-target-default-tab` (Adjustments tab reorder only; push-on-cancel dropped per Charlie). Signing now works in-sandbox (1Password socket allowlisted). Feature-branch work moved to a fresh worktree `.trio-worktrees/fb-rebase-20260615` (avoids `../Trio` untracked-CLAUDE.md collision + a corrupted OmnipodKit submodule that was repaired).
+- **Phase 2:** Deleted `04-…skipped` + `11-…skipped`. Crashlytics **experiment** (`1b7dbf805`) confirmed excised (reverted on synthesis; experiment branch deleted). Legitimate `FirebaseCrashlytics` *logging* usage (05/06/09/10/13) intentionally retained. `feature/live-activity-temp-target-badge` crashlytics-revert moot (branch deleted, patch 14 dropped).
+- **Phase 3 (Flavor B):** Merged 09+12 → **`09-watch-g7.patch`** (27 files) on synced dev; restored the C-209-5 ComplicationLogBuffer hunk (#6). Upstream #1162 back-sync reconciliation: **Option A** — kept patch-09's richer 209-shipped receive path (superset of upstream's unified `handleIncomingWatchStatePayload`); upstream's load-bearing send-side `state.date = Date()` stamping preserved in `AppleWatchManager`. (Upstream's unified-handler refactor ≈ a ~5% slice of the [watch-messaging-centralization](../../backlog/watch-messaging-centralization/) plan point #3 — noted there as a precedent; full centralization remains deliberate future work.) Dropped patch 12. **Patch 13 reconciled** (Q=drop Omni-removal): its stale `DeviceDataManager` Omni-removal would have deleted the OmnipodKit/`OmniPumpManager` backend upstream still ships — dropped; kept only its telemetry additions.
+- **Phase 4:** 1:1 branch↔patch mapping established (11↔11). `feature/patch-metadata` reconstructed via `git am` of patch 08 (signed). Deleted all Phase-4-list stale branches + (Q2a) superseded `feature/watch-g7-direct-ble-observer-synthesis` and `feature/watch-complication-improvements` + replaced `feature/live-activity-temp-target-badge` + scratch/integration branches. **Deviation:** the 5 reconstructed source branches sit cleanly on synced dev (0 behind); the 6 untouched old branches (`01/03/05/06/07/10`) retain heavy drift (123–794 behind) — patches apply + compile, but branches are stale regeneration sources. Full reconciliation deferred (Q2b: leave clean branches' signing alone). `feature/cloud-logging` still needs its own origin reconciliation (ahead/behind vs origin) — separate item.
+- **Build:** `ci/local-build.sh --base-branch dev --build-only --include-untracked --no-sync-upstream` → **signed `Trio.ipa` produced, TOTAL Success 4m47s** (verified real export, not just exit 0). Reorganized stack applies clean AND compiles.
+- **Milestone (done 2026-06-16):** patches + docs committed to `dev` as `c21092055` (signed) and force-pushed to `origin/dev` (`cf1219af6`→`c21092055`, `--force-with-lease`) per Charlie's "commit now, no deploy". origin/dev's 4 prior commits were content-redundant (attribution rule + GlucoseHueColor sync-config already on dev; 2 merge commits) — nothing of value lost. All 6 drifted source branches reconciled onto synced dev; `Trio-Patch-Source-Branch` trailers added to all 11 patches; frozen watch-g7 docs bannered.
+- **Cloud-logging branch fixed (2026-06-16):** `feature/cloud-logging` rebuilt clean on current dev (dev+01–06, signed, crashlytics-free) and force-pushed to `origin/feature/cloud-logging` (`c4292d9f1`→`a66a1cd28`, `--force-with-lease`, explicitly authorized). origin's 17 stale build-143/144-era commits (+ crashlytics experiment + old 01/02) were superseded by the 209 patches; old tip preserved at tag `safety/origin-cloud-logging-pre-fix-20260616`.
+- **Still open (deferred, all optional, none blocking):** TestFlight deploy + BetterStack verification (only build-only was run — `./ci/local-build.sh --base-branch dev` for full); living-doc inline updates (review / upstream-PR plan / 209 plan / complication-freshness README — banners done, not rewrites); the other 10 reconstructed feature branches not yet pushed to origin (only `dev` + `feature/cloud-logging` are); scratch worktree `.trio-worktrees/fb-rebase-20260615` + `../Trio` detached at `7776d8cff`; `safety/*` recovery tags (26) retained until fully confirmed.
+
 ### v1.1 (2026-06-14 09:45 CEST)
 - **Q2 resolved** by fetch + FF check: `origin/dev` is **diverged, not auto-synced** (ahead 160 /
   behind 19 vs `upstream/dev`). Sync target `upstream/dev` confirmed; conflict scope is only ~30
