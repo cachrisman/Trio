@@ -2,10 +2,37 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>EXAppExtensionAttributes</key>
-	<dict>
-		<key>EXExtensionPointIdentifier</key>
-		<string>com.apple.appintents-extension</string>
-	</dict>
+	<!--
+	  Watch app Info.plist “merge” file.
+
+	  The `Trio Watch App` target uses `GENERATE_INFOPLIST_FILE = YES`.
+	  Xcode’s generated watch app Info.plist output has not been reliably emitting custom keys
+	  via `INFOPLIST_KEY_*` (e.g. `INFOPLIST_KEY_AppGroupID`), so we provide a real Info.plist
+	  file and configure the target to merge it at build time (`INFOPLIST_FILE`).
+	-->
+	<key>AppGroupID</key>
+	<string>$(TRIO_APP_GROUP_ID)</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Trio reads your blood glucose data to keep the watch complication current when wireless sync is unavailable.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Trio may save blood glucose readings to Apple Health to keep your health data synchronized.</string>
+	<key>WKBackgroundModes</key>
+	<array>
+		<!--
+		  physical-therapy: background session, up to 1h, no entitlement required.
+		  Required for WKExtendedRuntimeSession to keep the G7 BLE observer alive
+		  after the watch face becomes inactive.
+		-->
+		<string>physical-therapy</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<!--
+		  bluetooth-central: allows the app to act as a BLE central while
+		  backgrounded so the direct G7 observer can keep receiving readings.
+		  Mirrors the iPhone app, which declares the same mode.
+		-->
+		<string>bluetooth-central</string>
+	</array>
 </dict>
 </plist>
