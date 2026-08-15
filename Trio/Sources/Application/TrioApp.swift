@@ -1,6 +1,7 @@
 import BackgroundTasks
 import CoreData
 import Foundation
+import G7SensorKit
 import SwiftUI
 import Swinject
 
@@ -69,9 +70,10 @@ extension Notification.Name {
         if let appearance = resolveOrLog(AppearanceManager.self) {
             appearance.setupGlobalAppearance()
         }
-        resolveOrLog(DeviceDataManager.self)
+        let deviceDataManager = resolveOrLog(DeviceDataManager.self)
         resolveOrLog(APSManager.self)
-        resolveOrLog(FetchGlucoseManager.self)
+        let fetchGlucoseManager = resolveOrLog(FetchGlucoseManager.self)
+        configureG7ForkTelemetry(deviceDataManager: deviceDataManager, fetchGlucoseManager: fetchGlucoseManager)
         resolveOrLog(FetchTreatmentsManager.self)
         resolveOrLog(CalendarManager.self)
         resolveOrLog(UserNotificationsManager.self)
@@ -86,15 +88,34 @@ extension Notification.Name {
         if #available(iOS 16.2, *) {
             resolveOrLog(LiveActivityManager.self)
         }
+        resolveOrLog(IOBService.self)
         resolveOrLog(GlucoseAlertCoordinator.self)
         resolveOrLog(NotLoopingMonitor.self)
         _ = DeviceAlertsStore.shared
-        resolveOrLog(IOBService.self)
+        // Last: needs the pump manager's AlertResponder registration and the
+        // seeded DeviceAlertsStore in place before re-presenting alerts.
+        resolveOrLog(TrioAlertManager.self)?.replayUnacknowledgedAlerts()
+    }
 
-        // This must come last: re-presenting unacknowledged alerts requires the pump manager's
-        // AlertResponder registration and the seeded DeviceAlertsStore to already be in place.
-        // Routed through the resolveOrLog helper rather than a force unwrap.
-        _ = resolveOrLog(TrioAlertManager.self)?.replayUnacknowledgedAlerts()
+    /// Routes G7SensorKit fork telemetry (`G7TelemetryPayload`) into the iOS log file / cloud upload pipeline.
+    /// Uses `FetchGlucoseManager.cgmManager` first (plugin CGM), then `DeviceDataManager.cgmManager` — matches `BaseWatchManager` G7 resolution.
+    private func configureG7ForkTelemetry(deviceDataManager: DeviceDataManager?, fetchGlucoseManager: FetchGlucoseManager?) {
+        G7Telemetry.emit = { [deviceDataManager, fetchGlucoseManager] payload in
+            let sensorName: String
+            let g7 = (fetchGlucoseManager?.cgmManager as? G7CGMManager)
+                ?? (deviceDataManager?.cgmManager as? G7CGMManager)
+            if let g7 {
+                sensorName = g7.sensorName ?? "nil"
+            } else {
+                sensorName = "nil"
+            }
+            let line = G7StructuredTelemetryLogLine.formatCoreTelemetry(
+                sensorName: sensorName,
+                payload: payload,
+                g7Session: "na"
+            )
+            debug(.service, line)
+        }
     }
 
     @discardableResult
