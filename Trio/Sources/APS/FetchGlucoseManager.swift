@@ -63,8 +63,6 @@ final class BaseFetchGlucoseManager: FetchGlucoseManager, Injectable {
 
     private lazy var simulatorSource = GlucoseSimulatorSource()
 
-    private let context = CoreDataStack.shared.newTaskContext()
-
     /// Enforce mutual exclusion on calls to glucoseStoreAndHeartDecision
     private let glucoseStoreAndHeartLock = DispatchSemaphore(value: 1)
 
@@ -255,6 +253,10 @@ final class BaseFetchGlucoseManager: FetchGlucoseManager, Injectable {
                 glucoseSource = PluginSource(glucoseStorage: glucoseStorage, glucoseManager: self)
             }
         }
+
+        // Only an active plugin CGM with its own BLE connection can wake the app; otherwise the pump must heartbeat
+        let cgmProvidesHeartbeat = cgmGlucoseSourceType == .plugin && (cgmManager?.providesBLEHeartbeat ?? false)
+        deviceDataManager.updateCGMHeartbeatCapability(providesBLEHeartbeat: cgmProvidesHeartbeat)
     }
 
     /// Upload cgmManager from raw value
@@ -305,8 +307,16 @@ final class BaseFetchGlucoseManager: FetchGlucoseManager, Injectable {
         try await glucoseStorage.storeGlucose(filtered)
 
         if settingsManager.settings.smoothGlucose {
-            await exponentialSmoothingGlucose(context: context)
+            let smoothingContext = CoreDataStack.shared.newTaskContext()
+            smoothingContext.name = "exponentialSmoothingGlucose"
+            await exponentialSmoothingGlucose(context: smoothingContext)
         }
+
+        // Push the fresh reading schedule so the pump can align its BLE heartbeat
+        deviceDataManager.updatePumpBLEHeartbeat(
+            lastCGMReadingDate: filtered.map(\.dateString).max(),
+            expectedCGMReadingInterval: cgmManager?.expectedGlucoseSampleInterval
+        )
 
         deviceDataManager.heartbeat(date: Date())
 
@@ -382,7 +392,9 @@ extension BaseFetchGlucoseManager: SettingsObserver {
 
             self.glucoseStoreAndHeartLock.wait()
             Task {
-                await self.exponentialSmoothingGlucose(context: self.context)
+                let context = CoreDataStack.shared.newTaskContext()
+                context.name = "exponentialSmoothingGlucose"
+                await self.exponentialSmoothingGlucose(context: context)
                 self.glucoseStoreAndHeartLock.signal()
             }
         }

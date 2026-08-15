@@ -1,7 +1,12 @@
 #! /bin/sh
 
+if [ "$CI" = "true" ]; then
+	echo "CI detected - skipping SwiftFormat."
+	exit 0
+fi
+
 assertEnvironment() {
-	if [ -z "$1" ]; then 
+	if [ -z "$1" ]; then
 		echo "$2"
 		exit 127
 	fi
@@ -121,4 +126,5 @@ trailingClosures \
 --exclude DerivedData \
 --exclude .trio-worktrees \
 --exclude SourcePackages \
---exclude '**/*.pb.swift'
+--exclude '**/*.pb.swift' \
+--exclude AccuChekKit

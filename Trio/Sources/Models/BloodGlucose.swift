@@ -1,6 +1,4 @@
 import Foundation
-import HealthKit
-import LoopKit
 
 struct BloodGlucose: JSON, Identifiable, Hashable, Codable {
     enum Direction: String, JSON {
@@ -173,6 +171,11 @@ struct BloodGlucose: JSON, Identifiable, Hashable, Codable {
     var transmitterID: String? = nil
     var isStateValid: Bool { sgv ?? 0 >= 39 && noise ?? 1 != 4 }
 
+    // TODO: remove this custom Equatable/Hashable. Keying identity on `dateString` is a footgun:
+    // two distinct readings at the same instant collide, and the same reading at different date
+    // precision compares unequal. `id` (the sync identifier) is the natural key. It's currently
+    // safe to leave — nothing live compares `BloodGlucose` via ==/hash (only the unused
+    // `History.Glucose` reaches it) — but it should be removed in its own change.
     static func == (lhs: BloodGlucose, rhs: BloodGlucose) -> Bool {
         lhs.dateString == rhs.dateString
     }
@@ -270,16 +273,4 @@ extension NumberFormatter {
         formatter.maximumFractionDigits = 1
         return formatter
     }()
-}
-
-extension BloodGlucose {
-    func convertStoredGlucoseSample(isManualGlucose: Bool) -> StoredGlucoseSample {
-        StoredGlucoseSample(
-            syncIdentifier: id,
-            startDate: dateString.date,
-            quantity: HKQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(glucose!)),
-            wasUserEntered: isManualGlucose,
-            device: HKDevice.local()
-        )
-    }
 }

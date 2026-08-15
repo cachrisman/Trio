@@ -1,9 +1,5 @@
 import Foundation
 
-struct DeterminationErrorResponse: JSON, Equatable {
-    let error: String
-}
-
 struct Determination: JSON, Equatable {
     let id: UUID?
     var reason: String
@@ -36,6 +32,10 @@ struct Determination: JSON, Equatable {
     var threshold: Decimal?
     let carbRatio: Decimal?
     let received: Bool?
+
+    /// Remaining COB per 5 min forecast step; display-only,
+    /// not part of CodingKeys so the serialized JSON is unchanged.
+    var cobProjection: [Decimal]? = nil
 }
 
 struct Predictions: JSON, Equatable {
@@ -67,7 +67,6 @@ extension Determination {
         case isf = "ISF"
         case current_target
         case tdd = "TDD"
-        case insulinForManualBolus
         case minDelta
         case expectedDelta
         case minGuardBG

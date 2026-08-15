@@ -21,7 +21,7 @@ protocol DeviceDataManager: GlucoseSource {
     var loopInProgress: Bool { get set }
     var pumpDisplayState: CurrentValueSubject<PumpDisplayState?, Never> { get }
     var recommendsLoop: PassthroughSubject<Void, Never> { get }
-    var bolusTrigger: PassthroughSubject<Bool, Never> { get }
+    var bolusTrigger: CurrentValueSubject<BolusStatus, Never> { get }
     var manualTempBasal: PassthroughSubject<Bool, Never> { get }
     var scheduledBasal: PassthroughSubject<Bool?, Never> { get }
     var suspended: PassthroughSubject<Bool, Never> { get }
@@ -31,6 +31,8 @@ protocol DeviceDataManager: GlucoseSource {
     var pumpActivatedAtDate: CurrentValueSubject<Date?, Never> { get }
 
     func heartbeat(date: Date)
+    func updatePumpBLEHeartbeat(lastCGMReadingDate: Date?, expectedCGMReadingInterval: TimeInterval?)
+    func updateCGMHeartbeatCapability(providesBLEHeartbeat: Bool)
     func createBolusProgressReporter() -> DoseProgressReporter?
     var alertHistoryStorage: AlertHistoryStorage! { get }
 }
@@ -69,7 +71,7 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
         .distantPast
 
     let recommendsLoop = PassthroughSubject<Void, Never>()
-    let bolusTrigger = PassthroughSubject<Bool, Never>()
+    let bolusTrigger = CurrentValueSubject<BolusStatus, Never>(.noBolus)
     let errorSubject = PassthroughSubject<Error, Never>()
     let pumpNewStatus = PassthroughSubject<Void, Never>()
     let manualTempBasal = PassthroughSubject<Bool, Never>()
@@ -80,7 +82,6 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
     @SyncAccess private var pumpUpdateCancellable: AnyCancellable?
     private var pumpUpdatePromise: Future<Bool, Never>.Promise?
     @SyncAccess var loopInProgress: Bool = false
-    private let privateContext = CoreDataStack.shared.newTaskContext()
 
     var pumpManager: PumpManagerUI? {
         didSet {
@@ -90,6 +91,11 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
             if let pumpManager = pumpManager {
                 pumpManager.pumpManagerDelegate = self
                 pumpManager.delegateQueue = processQueue
+
+                // Re-apply the latest CGM-aligned heartbeat request to a freshly set pump
+                if let heartbeatRequest = lastPumpHeartbeatRequest {
+                    pumpManager.setBLEHeartbeatRequest(heartbeatRequest)
+                }
 
                 trioAlertManager?.register(responder: pumpManager, for: pumpManager.pluginIdentifier)
                 trioAlertManager?.register(soundVendor: pumpManager, for: pumpManager.pluginIdentifier)
@@ -174,8 +180,10 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
                         display: simulatorPump.state.pumpBatteryChargeRemaining != nil
                     )
                     Task {
-                        await self.privateContext.perform {
-                            let saveBatteryToCoreData = OpenAPS_Battery(context: self.privateContext)
+                        let context = CoreDataStack.shared.newTaskContext()
+                        context.name = "storeSimulatorBattery"
+                        await context.perform {
+                            let saveBatteryToCoreData = OpenAPS_Battery(context: context)
                             saveBatteryToCoreData.id = UUID()
                             saveBatteryToCoreData.date = Date()
                             saveBatteryToCoreData.percent = Double(batteryPercent)
@@ -185,8 +193,8 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
                             saveBatteryToCoreData.display = simulatorPump.state.pumpBatteryChargeRemaining != nil
 
                             do {
-                                guard self.privateContext.hasChanges else { return }
-                                try self.privateContext.save()
+                                guard context.hasChanges else { return }
+                                try context.save()
                             } catch {
                                 print(error.localizedDescription)
                             }
@@ -209,18 +217,20 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
                 storage.save(modifiedPreferences, as: OpenAPS.Settings.preferences)
                 // Remove OpenAPS_Battery entries
                 Task {
-                    await self.privateContext.perform {
+                    let context = CoreDataStack.shared.newTaskContext()
+                    context.name = "deleteBatteryEntries"
+                    await context.perform {
                         let fetchRequest: NSFetchRequest<OpenAPS_Battery> = OpenAPS_Battery.fetchRequest()
 
                         do {
-                            let batteryEntries = try self.privateContext.fetch(fetchRequest)
+                            let batteryEntries = try context.fetch(fetchRequest)
 
                             for entry in batteryEntries {
-                                self.privateContext.delete(entry)
+                                context.delete(entry)
                             }
 
-                            guard self.privateContext.hasChanges else { return }
-                            try self.privateContext.save()
+                            guard context.hasChanges else { return }
+                            try context.save()
 
                         } catch {
                             debug(.deviceManager, "Failed to delete OpenAPS_Battery entries: \(error)")
@@ -232,6 +242,10 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
     }
 
     @PersistedProperty(key: "PumpManagerState") var rawPumpManager: PumpManager.RawValue?
+
+    @SyncAccess private var lastPumpHeartbeatRequest: PumpHeartbeatRequest?
+    @SyncAccess private var cgmProvidesBLEHeartbeat = false
+    private var appActiveCancellable: AnyCancellable?
 
     var bluetoothManager: BluetoothStateManager { bluetoothProvider }
 
@@ -248,6 +262,17 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
         injectServices(resolver)
         setupPumpManager()
         UIDevice.current.isBatteryMonitoringEnabled = true
+
+        // Refresh the pump's heartbeat schedule on foreground, matching Loop's didBecomeActive
+        appActiveCancellable = Foundation.NotificationCenter.default
+            .publisher(for: UIApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                self.updatePumpBLEHeartbeat(
+                    lastCGMReadingDate: self.glucoseStorage.lastGlucoseDate(),
+                    expectedCGMReadingInterval: self.lastPumpHeartbeatRequest?.expectedCGMReadingInterval
+                )
+            }
     }
 
     func setupPumpManager() {
@@ -260,6 +285,30 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
 
     func createBolusProgressReporter() -> DoseProgressReporter? {
         pumpManager?.createBolusProgressReporter(reportingOn: processQueue)
+    }
+
+    func updateCGMHeartbeatCapability(providesBLEHeartbeat: Bool) {
+        cgmProvidesBLEHeartbeat = providesBLEHeartbeat
+        // A CGM with its own heartbeat relieves the pump; retract any standing request
+        if providesBLEHeartbeat {
+            lastPumpHeartbeatRequest = nil
+            pumpManager?.setBLEHeartbeatRequest(nil)
+        }
+    }
+
+    func updatePumpBLEHeartbeat(lastCGMReadingDate: Date?, expectedCGMReadingInterval: TimeInterval?) {
+        guard !cgmProvidesBLEHeartbeat else {
+            lastPumpHeartbeatRequest = nil
+            pumpManager?.setBLEHeartbeatRequest(nil)
+            return
+        }
+        // Tell the pump when the next CGM reading is due so it can align its BLE heartbeat (LoopKit#599)
+        let request = PumpHeartbeatRequest(
+            lastCGMReadingDate: lastCGMReadingDate,
+            expectedCGMReadingInterval: expectedCGMReadingInterval ?? .minutes(5)
+        )
+        lastPumpHeartbeatRequest = request
+        pumpManager?.setBLEHeartbeatRequest(request)
     }
 
     func heartbeat(date: Date) {
@@ -462,7 +511,7 @@ extension BaseDeviceDataManager: PumpManagerDelegate {
     }
 
     func pumpManagerMustProvideBLEHeartbeat(_: PumpManager) -> Bool {
-        true
+        !cgmProvidesBLEHeartbeat
     }
 
     func pumpManager(_ pumpManager: PumpManager, didUpdate status: PumpManagerStatus, oldStatus: PumpManagerStatus) {
@@ -470,10 +519,13 @@ extension BaseDeviceDataManager: PumpManagerDelegate {
         debug(.deviceManager, "New pump status Bolus: \(status.bolusState)")
         debug(.deviceManager, "New pump status Basal: \(String(describing: status.basalDeliveryState))")
 
-        if case .inProgress = status.bolusState {
-            bolusTrigger.send(true)
-        } else {
-            bolusTrigger.send(false)
+        switch status.bolusState {
+        case .initiating:
+            bolusTrigger.send(.initiating)
+        case let .inProgress(dose):
+            bolusTrigger.send(.inProgress)
+        default:
+            bolusTrigger.send(.noBolus)
         }
 
         switch status.basalDeliveryState {

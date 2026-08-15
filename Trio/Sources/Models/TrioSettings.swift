@@ -41,7 +41,7 @@ struct TrioSettings: JSON, Equatable, Encodable {
     var eA1cDisplayUnit: EstimatedA1cDisplayUnit = .percent
     var high: Decimal = 180
     var low: Decimal = 70
-    var glucoseColorScheme: GlucoseColorScheme = .staticColor
+    var glucoseColorScheme: GlucoseColorScheme = .dynamicColor
     var xGridLines: Bool = true
     var yGridLines: Bool = true
     var hideInsulinBadge: Bool = false
@@ -55,6 +55,7 @@ struct TrioSettings: JSON, Equatable, Encodable {
     var maxFat: Decimal = 250
     var maxProtein: Decimal = 250
     var confirmBolusFaster: Bool = false
+    var showForecastWatch: Bool = false
     var overrideFactor: Decimal = 0.8
     var fattyMeals: Bool = false
     var fattyMealFactor: Decimal = 0.7
@@ -62,13 +63,15 @@ struct TrioSettings: JSON, Equatable, Encodable {
     var sweetMealFactor: Decimal = 1
     var displayPresets: Bool = true
     var confirmBolus: Bool = false
+    var enableQuickPickTreatments: Bool = false
     var useLiveActivity: Bool = false
     var lockScreenView: LockScreenView = .simple
     var smartStackView: LockScreenView = .simple
+    var displayGlucoseForecasts: Bool = false
     var bolusShortcut: BolusShortcutLimit = .notAllowed
     var timeInRangeType: TimeInRangeType = .timeInTightRange
+    var homeStatsPanelFace: HomeStatsPanelFace = .timeInRange
     var requireAdjustmentsConfirmation: Bool = false
-    var useSwiftOref: Bool = false
 
     /// Selected Garmin watchface (Trio or SwissAlpine)
     var garminWatchface: GarminWatchface = .trio
@@ -102,6 +105,23 @@ struct TrioSettings: JSON, Equatable, Encodable {
             isWatchfaceDataEnabled = newValue.isWatchfaceDataEnabled
         }
     }
+}
+
+/// Used to decode settings keys that no longer have a matching stored property (e.g. renamed keys kept for migration).
+private struct LegacyCodingKey: CodingKey {
+    let stringValue: String
+    init(stringValue: String) { self.stringValue = stringValue }
+    var intValue: Int? { nil }
+    init?(intValue _: Int) { nil }
+}
+
+/// The established pattern for migrating a renamed `TrioSettings` key: add the new property with its
+/// default value, decode the new key first, and fall back to this for the old key's persisted value so
+/// existing users keep their setting under the new name. Reuse this (rather than hand-rolling a legacy
+/// container) for any future `TrioSettings` key rename.
+private func decodeLegacyBool(from decoder: Decoder, legacyKey: String) -> Bool? {
+    guard let legacyContainer = try? decoder.container(keyedBy: LegacyCodingKey.self) else { return nil }
+    return try? legacyContainer.decode(Bool.self, forKey: LegacyCodingKey(stringValue: legacyKey))
 }
 
 extension TrioSettings: Decodable {
@@ -286,12 +306,23 @@ extension TrioSettings: Decodable {
             settings.confirmBolusFaster = confirmBolusFaster
         }
 
+        if let showForecastWatch = try? container.decode(Bool.self, forKey: .showForecastWatch) {
+            settings.showForecastWatch = showForecastWatch
+        }
+
         if let displayPresets = try? container.decode(Bool.self, forKey: .displayPresets) {
             settings.displayPresets = displayPresets
         }
 
         if let confirmBolus = try? container.decode(Bool.self, forKey: .confirmBolus) {
             settings.confirmBolus = confirmBolus
+        }
+
+        if let enableQuickPickTreatments = try? container.decode(Bool.self, forKey: .enableQuickPickTreatments) {
+            settings.enableQuickPickTreatments = enableQuickPickTreatments
+        } else if let legacyValue = decodeLegacyBool(from: decoder, legacyKey: "enableQuickBolus") {
+            // Migrate the pre-rename "enableQuickBolus" key so existing users keep their opt-in.
+            settings.enableQuickPickTreatments = legacyValue
         }
 
         if let useLiveActivity = try? container.decode(Bool.self, forKey: .useLiveActivity) {
@@ -306,6 +337,10 @@ extension TrioSettings: Decodable {
             settings.smartStackView = smartStackView
         }
 
+        if let displayGlucoseForecasts = try? container.decode(Bool.self, forKey: .displayGlucoseForecasts) {
+            settings.displayGlucoseForecasts = displayGlucoseForecasts
+        }
+
         if let bolusShortcut = try? container.decode(BolusShortcutLimit.self, forKey: .bolusShortcut) {
             settings.bolusShortcut = bolusShortcut
         }
@@ -314,12 +349,12 @@ extension TrioSettings: Decodable {
             settings.timeInRangeType = timeInRangeType
         }
 
-        if let requireAdjustmentsConfirmation = try? container.decode(Bool.self, forKey: .requireAdjustmentsConfirmation) {
-            settings.requireAdjustmentsConfirmation = requireAdjustmentsConfirmation
+        if let homeStatsPanelFace = try? container.decode(HomeStatsPanelFace.self, forKey: .homeStatsPanelFace) {
+            settings.homeStatsPanelFace = homeStatsPanelFace
         }
 
-        if let useSwiftOref = try? container.decode(Bool.self, forKey: .useSwiftOref) {
-            settings.useSwiftOref = useSwiftOref
+        if let requireAdjustmentsConfirmation = try? container.decode(Bool.self, forKey: .requireAdjustmentsConfirmation) {
+            settings.requireAdjustmentsConfirmation = requireAdjustmentsConfirmation
         }
 
         if let garminWatchface = try? container.decode(GarminWatchface.self, forKey: .garminWatchface) {

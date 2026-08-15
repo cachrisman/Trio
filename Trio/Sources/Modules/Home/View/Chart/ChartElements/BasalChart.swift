@@ -15,156 +15,169 @@ struct BasalProfile: Hashable {
     }
 }
 
-extension MainChartView {
+extension MainChartCanvas {
     var basalChart: some View {
         VStack {
             Chart {
-                drawStartRuleMark()
-                drawEndRuleMark()
                 drawCurrentTimeMarker()
-                drawTempBasals(dummy: false)
+                drawTempBasals()
                 drawBasalProfile()
                 drawSuspensions()
             }.onChange(of: state.tempBasals) {
                 calculateBasals()
-                calculateTempBasalsInBackground()
+                calculateTempBasals()
             }
             .onChange(of: state.maxBasal) {
                 calculateBasals()
             }
-            .frame(minHeight: geo.size.height * 0.05)
-            .frame(width: fullWidth(viewWidth: screenSize.width))
-            .chartXScale(domain: state.startMarker ... state.endMarker)
-            .chartXAxis { basalChartXAxis }
-            .chartXAxis(.hidden)
+            .frame(width: canvasWidth, height: basalHeight)
+            .chartXScale(domain: windowStart ... windowEnd)
+            .chartXAxis { mainChartXAxis } // grid lines only; hour labels render once, on the bottom pane
             .chartYAxis(.hidden)
-            .chartPlotStyle { basalChartPlotStyle($0) }
+            .chartYScale(domain: 0 ... basalDomainMax)
         }
+    }
+
+    /// Upper bound of the basal chart's y-domain. The bars hang from the top of the plot
+    /// (drawn at `basalDomainMax - rate`), so the tallest rate spans the full strip height —
+    /// matching the old rendering, which achieved the same look by rotating and mirroring
+    /// the plot content.
+    var basalDomainMax: Double {
+        let tempMax = preparedTempBasals.map(\.rate).max() ?? 0
+        let profileMax = basalProfiles.map(\.amount).max() ?? 0
+        return max(tempMax, profileMax, 0.1)
+    }
+
+    /// Converts a basal rate to its top-anchored y value.
+    private func invertedY(_ rate: Double) -> Double {
+        basalDomainMax - rate
     }
 }
 
 // MARK: - Draw functions
 
-extension MainChartView {
-    func drawTempBasals(dummy: Bool) -> some ChartContent {
-        ForEach(preparedTempBasals, id: \.rate) { basal in
-            if dummy {
-                RectangleMark(
-                    xStart: .value("start", basal.start),
-                    xEnd: .value("end", basal.end),
-                    yStart: .value("rate-start", 0),
-                    yEnd: .value("rate-end", basal.rate)
-                ).foregroundStyle(Color.clear)
+extension MainChartCanvas {
+    func drawTempBasals() -> some ChartContent {
+        // only bars overlapping the render window; the rest clip invisibly but still cost layout
+        let visible = preparedTempBasals.filter { $0.end >= windowStart && $0.start <= windowEnd }
+        return ForEach(visible, id: \.start) { basal in
+            RectangleMark(
+                xStart: .value("start", basal.start),
+                xEnd: .value("end", basal.end),
+                yStart: .value("rate-start", basalDomainMax),
+                yEnd: .value("rate-end", invertedY(basal.rate))
+            ).foregroundStyle(
+                .linearGradient(
+                    colors: [
+                        Color.insulin.opacity(0.6),
+                        Color.insulin.opacity(0.1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            ).alignsMarkStylesWithPlotArea()
 
-                LineMark(x: .value("Start Date", basal.start), y: .value("Amount", basal.rate))
-                    .lineStyle(.init(lineWidth: 1)).foregroundStyle(Color.clear)
+            LineMark(x: .value("Start Date", basal.start), y: .value("Amount", invertedY(basal.rate)))
+                .lineStyle(.init(lineWidth: 1)).foregroundStyle(Color.insulin)
 
-                LineMark(x: .value("End Date", basal.end), y: .value("Amount", basal.rate))
-                    .lineStyle(.init(lineWidth: 1)).foregroundStyle(Color.clear)
-            } else {
-                RectangleMark(
-                    xStart: .value("start", basal.start),
-                    xEnd: .value("end", basal.end),
-                    yStart: .value("rate-start", 0),
-                    yEnd: .value("rate-end", basal.rate)
-                ).foregroundStyle(
-                    .linearGradient(
-                        colors: [
-                            Color.insulin.opacity(0.6),
-                            Color.insulin.opacity(0.1)
-                        ],
-                        startPoint: .bottom,
-                        endPoint: .top
-                    )
-                ).alignsMarkStylesWithPlotArea()
-
-                LineMark(x: .value("Start Date", basal.start), y: .value("Amount", basal.rate))
-                    .lineStyle(.init(lineWidth: 1)).foregroundStyle(Color.insulin)
-
-                LineMark(x: .value("End Date", basal.end), y: .value("Amount", basal.rate))
-                    .lineStyle(.init(lineWidth: 1)).foregroundStyle(Color.insulin)
-            }
+            LineMark(x: .value("End Date", basal.end), y: .value("Amount", invertedY(basal.rate)))
+                .lineStyle(.init(lineWidth: 1)).foregroundStyle(Color.insulin)
         }
     }
 
     func drawBasalProfile() -> some ChartContent {
         /// dashed profile line
-        ForEach(basalProfiles, id: \.self) { profile in
+        let visible = basalProfiles.filter { ($0.endDate ?? state.endMarker) >= windowStart && $0.startDate <= windowEnd }
+        return ForEach(visible, id: \.self) { profile in
             LineMark(
                 x: .value("Start Date", profile.startDate),
-                y: .value("Amount", profile.amount),
+                y: .value("Amount", invertedY(profile.amount)),
                 series: .value("profile", "profile")
             ).lineStyle(.init(lineWidth: 2, dash: [2, 4])).foregroundStyle(Color.insulin)
             LineMark(
                 x: .value("End Date", profile.endDate ?? state.endMarker),
-                y: .value("Amount", profile.amount),
+                y: .value("Amount", invertedY(profile.amount)),
                 series: .value("profile", "profile")
             ).lineStyle(.init(lineWidth: 2.5, dash: [2, 4])).foregroundStyle(Color.insulin)
         }
     }
 
-    func drawSuspensions() -> some ChartContent {
+    /// Suspend→resume intervals resolved once, so the mark loop does no per-mark lookups.
+    private func suspensionIntervals() -> [(start: Date, end: Date, height: Double)] {
         let suspensions = state.suspendAndResumeEvents
-        return ForEach(suspensions) { suspension in
-            let now = Date()
+        let now = Date()
+        var intervals = [(start: Date, end: Date, height: Double)]()
 
-            if let type = suspension.type, type == EventType.pumpSuspend.rawValue, let suspensionStart = suspension.timestamp {
-                let suspensionEnd = min(
-                    (
-                        suspensions
-                            .first(where: {
-                                $0.timestamp ?? now > suspensionStart && $0.type == EventType.pumpResume.rawValue })?
-                            .timestamp
-                    ) ?? now,
-                    now
-                )
-
-                let basalProfileDuringSuspension = basalProfiles.first(where: { $0.startDate <= suspensionStart })
-                let suspensionMarkHeight = basalProfileDuringSuspension?.amount ?? 1
-
-                RectangleMark(
-                    xStart: .value("start", suspensionStart),
-                    xEnd: .value("end", suspensionEnd),
-                    yStart: .value("suspend-start", 0),
-                    yEnd: .value("suspend-end", suspensionMarkHeight)
-                )
-                .foregroundStyle(Color.loopGray.opacity(colorScheme == .dark ? 0.3 : 0.8))
+        for suspension in suspensions {
+            guard suspension.type == EventType.pumpSuspend.rawValue, let suspensionStart = suspension.timestamp else {
+                continue
             }
+            let suspensionEnd = min(
+                suspensions.first(where: {
+                    $0.timestamp ?? now > suspensionStart && $0.type == EventType.pumpResume.rawValue
+                })?.timestamp ?? now,
+                now
+            )
+            let basalProfileDuringSuspension = basalProfiles.first(where: { $0.startDate <= suspensionStart })
+            // Clamp to the explicit y-domain: the fallback height of 1 U/hr can exceed
+            // `basalDomainMax` when no profile data is available, and unlike the old
+            // auto-scaled (flipped) plot, an explicit domain would clip the mark.
+            let height = min(basalProfileDuringSuspension?.amount ?? 1, basalDomainMax)
+            intervals.append((suspensionStart, suspensionEnd, height))
+        }
+        return intervals
+    }
+
+    func drawSuspensions() -> some ChartContent {
+        let visible = suspensionIntervals().filter { $0.end >= windowStart && $0.start <= windowEnd }
+        return ForEach(visible, id: \.start) { interval in
+            RectangleMark(
+                xStart: .value("start", interval.start),
+                xEnd: .value("end", interval.end),
+                yStart: .value("suspend-start", basalDomainMax),
+                yEnd: .value("suspend-end", invertedY(interval.height))
+            )
+            .foregroundStyle(Color.loopGray.opacity(colorScheme == .dark ? 0.3 : 0.8))
         }
     }
 }
 
 // MARK: - Calculation
 
-extension MainChartView {
-    func calculateTempBasalsInBackground() {
-        Task {
-            let basals = await prepareTempBasals()
-            await MainActor.run {
-                preparedTempBasals = basals
-            }
-        }
-    }
-
-    func prepareTempBasals() async -> [(start: Date, end: Date, rate: Double)] {
+extension MainChartCanvas {
+    @MainActor func calculateTempBasals() {
         let now = Date()
-        let tempBasals = state.tempBasals
+        let suspensionTimes = state.suspendAndResumeEvents.compactMap(\.timestamp)
 
-        return tempBasals.compactMap { temp -> (start: Date, end: Date, rate: Double)? in
-            let duration = temp.tempBasal?.duration ?? 0
-            let timestamp = temp.timestamp ?? Date()
-            let end = timestamp + duration.minutes
-            let isInsulinSuspended = state.suspendAndResumeEvents
-                .contains { $0.timestamp ?? now >= timestamp && $0.timestamp ?? now <= end }
-
-            let rate = Double(truncating: temp.tempBasal?.rate ?? Decimal.zero as NSDecimalNumber) * (isInsulinSuspended ? 0 : 1)
-
-            // Check if there's a subsequent temp basal to determine the end time
-            guard let nextTemp = state.tempBasals.first(where: { $0.timestamp ?? .distantPast > timestamp }) else {
-                return (timestamp, end, rate)
-            }
-            return (timestamp, nextTemp.timestamp ?? Date(), rate)
+        // Snapshot the managed-object fields once; plain values from here on.
+        let events = state.tempBasals.map {
+            (timestamp: $0.timestamp, duration: $0.tempBasal?.duration ?? 0, rate: $0.tempBasal?.rate)
         }
+
+        var prepared = [(start: Date, end: Date, rate: Double)]()
+        prepared.reserveCapacity(events.count)
+
+        for (index, event) in events.enumerated() {
+            let timestamp = event.timestamp ?? now
+            let end = timestamp + event.duration.minutes
+            let isInsulinSuspended = suspensionTimes.contains { $0 >= timestamp && $0 <= end }
+            let rate = Double(truncating: event.rate ?? 0) * (isInsulinSuspended ? 0 : 1)
+
+            // A bar ends where the next later-starting temp basal begins,
+            // else at its own scheduled end.
+            var next = index + 1
+            while next < events.count {
+                if let nextStart = events[next].timestamp, nextStart > timestamp { break }
+                next += 1
+            }
+            if next < events.count, let nextStart = events[next].timestamp {
+                prepared.append((timestamp, nextStart, rate))
+            } else {
+                prepared.append((timestamp, end, rate))
+            }
+        }
+
+        preparedTempBasals = prepared
     }
 
     func findRegularBasalPoints(
