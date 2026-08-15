@@ -25,6 +25,8 @@ final class PluginSource: GlucoseSource {
         self.glucoseStorage = glucoseStorage
         self.glucoseManager = glucoseManager
 
+        // Snapshot of fetch manager cgmManager at source creation; if FetchGlucoseManager swaps the manager without
+        // recreating this PluginSource, self.cgmManager can drift (narrow - typical G7 use keeps one instance).
         cgmManager = glucoseManager.cgmManager
         cgmManager?.delegateQueue = processQueue
         cgmManager?.cgmManagerDelegate = self
