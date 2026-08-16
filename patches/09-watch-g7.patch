@@ -1,6 +1,6 @@
-From 0c60e4e15260e5efe6e76bafb389ed0c01c2c510 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 15 Aug 2026 19:03:27 +0200
+From b78334426051e89382a6d1588e533204d858c252 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 15:56:52 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: d21d0fd2437fdfe0914baf5ff89e966453033f3c
-Trio-Patch-Generated: 2026-08-15T17:03:16Z
+Trio-Patch-Feature-Tip: 3dfb75e92caf91f3502dc9fec060491b89238d03
+Trio-Patch-Generated: 2026-08-16T13:56:41Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -42,6 +42,9 @@ Trio-Patch-Source-Commits:
  0e3ccbaea2ed0c1e19c5cb0ae835456967394889 watch(build-217): V-2b accessoryRectangular 2h sparkline
  50c3e035f1e58251b53aa4ed13c38b3c78e3101e watch(build-218): diagnostics UI fixes — ring ref, dialed-in defaults, crown-safe tuning, one-line upload, legible Sensor
  d21d0fd2437fdfe0914baf5ff89e966453033f3c Merge dev into feature/watch-g7 (post-upstream-sync reconciliation)
+ 63810b6ab9a0fbd20056523b4181825cbb74e811 watch: store received G7 backfill entries instead of only logging them (TRIO-029)
+ 090cdcb640f558073c8dabf839f187434b5df227 watch: refresh the chart after backfill, and three review fixes (TRIO-029)
+ 3dfb75e92caf91f3502dc9fec060491b89238d03 watch: store backfill glucose unmodified, matching the store's canary pattern (TRIO-029)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -79,9 +82,12 @@ d544b10a73968114b66b4358f788fde42bbdb38b
 8fe7265ccb8c7a92799a829b48c791e3a4d0c346
 7a05334d6a1075450395c10f0e16bbda00b449d5
 77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
+ 659ba69719ccb1774143d441bba70239f6ef99fb
+ 5645703ac8e969779a2f2c87646aef07fc3e0702
+ 17827e87392a8919ba6f1014215f40bbf7bef53f
 ---
  .../ExtensionDelegate.swift                   |   92 +
- .../G7WatchSensorAdapter.swift                | 1830 ++++++++++++
+ .../G7WatchSensorAdapter.swift                | 1904 ++++++++++++
  .../Helper/WatchNotificationHandler.swift     |   30 +
  .../Helper/WatchResidentTelemetry.swift       |  139 +
  Trio Watch App Extension/TrioWatchApp.swift   |   54 +-
@@ -90,7 +96,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  .../Views/WatchDiagnosticsView.swift          | 1000 +++++++
  .../WatchErrorReporter.swift                  |  108 +-
  .../WatchGlucoseColorComputer.swift           |  179 ++
- .../WatchGlucoseHistoryStore.swift            |  227 ++
+ .../WatchGlucoseHistoryStore.swift            |  229 ++
  Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
  Trio Watch App Extension/WatchState.swift     | 2559 +++++++++++++++--
@@ -109,7 +115,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  612 +++-
- 29 files changed, 9737 insertions(+), 544 deletions(-)
+ 29 files changed, 9813 insertions(+), 544 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -225,10 +231,10 @@ index 000000000..27aaef3cc
 +}
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..3be099f0d
+index 000000000..3ad8e7b27
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,1830 @@
+@@ -0,0 +1,1904 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -1686,6 +1692,13 @@ index 000000000..3be099f0d
 +            return
 +        }
 +
++        // Anchor the session activation before the missing-value guard so a reading without a
++        // glucose value still establishes the date basis for any backfill arriving in the same
++        // connection (its own entries carry good values and need the anchor to be placed).
++        if sessionActivationDate == nil {
++            sessionActivationDate = Date().addingTimeInterval(-TimeInterval(glucose.messageTimestamp))
++        }
++
 +        guard let gMgDl = glucose.glucose else {
 +            log("egv_missing_glucose_value", "sequence=\(glucose.sequence) state=\(glucose.algorithmState.rawValue)")
 +            return
@@ -1698,9 +1711,6 @@ index 000000000..3be099f0d
 +        consecutivePreEGVDisconnects = 0
 +        hadEGVThisSession = true
 +
-+        if sessionActivationDate == nil {
-+            sessionActivationDate = Date().addingTimeInterval(-TimeInterval(glucose.messageTimestamp))
-+        }
 +        guard let activation = sessionActivationDate else { return }
 +
 +        let readingDate = activation.addingTimeInterval(TimeInterval(glucose.glucoseTimestamp))
@@ -1844,6 +1854,76 @@ index 000000000..3be099f0d
 +                "timestamp=\(msg.timestamp) glucose=\(msg.glucose.map(String.init) ?? "nil") algorithm_state=\(msg.algorithmState.rawValue) display_only=\(msg.glucoseIsDisplayOnly) trend=\(msg.trend.map { String(format: "%.1f", $0) } ?? "nil")"
 +            )
 +        }
++
++        // TRIO-029: persist to the history store — HISTORY ONLY.
++        //
++        // Deliberately does NOT touch the complication store, the WatchState snapshot, or
++        // bleLastEGVDate/Value. Backfill entries are historical by definition and must never be
++        // promoted to the currently-displayed reading; the live EGV path owns those. The accepted
++        // trade-off is that a reading recovered only via backfill refreshes the chart but not the
++        // displayed value.
++
++        // Reading times use the same anchor as the EGV path: the session activation date plus the
++        // message's glucose-relative timestamp (`G7BackfillMessage.timestamp` is on the same basis
++        // as `G7GlucoseMessage.glucoseTimestamp`). Backfill can arrive before any live reading in a
++        // fresh process; without the anchor the timestamps cannot be placed, so skip the batch.
++        guard let activation = sessionActivationDate else {
++            log("backfill_persist_skipped", "reason=no_activation_anchor count=\(backfill.count)")
++            return
++        }
++
++        var toStore: [StoredGlucoseReading] = []
++        var skipped = 0
++
++        for msg in backfill {
++            // Reliability gate — mirrors the phone-side manager's backfill filter.
++            guard msg.hasReliableGlucose else {
++                log("backfill_entry_skipped", "reason=unreliable_state timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState.rawValue)")
++                skipped += 1
++                continue
++            }
++            guard let glucoseValue = msg.glucose else {
++                log("backfill_entry_skipped", "reason=missing_glucose_value timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState.rawValue)")
++                skipped += 1
++                continue
++            }
++
++            // Store the raw Int value unmodified. The history store's logging canary
++            // diagnoses implausible readings rather than rewriting them, and the live EGV
++            // path in this file likewise stores raw values.
++            let rawValue = Int(glucoseValue)
++
++            let readingDate = activation.addingTimeInterval(TimeInterval(msg.timestamp))
++
++            toStore.append(StoredGlucoseReading(
++                epochSeconds: Int(readingDate.timeIntervalSince1970),
++                glucoseMgDl: rawValue,
++                // nil, NOT 0. `sequencesMatch` treats a nil on either side as a match, so a
++                // backfilled record dedups against the live EGV holding the same timestamp. A
++                // literal 0 would compare unequal to the real sequence and store a duplicate.
++                sequence: nil,
++                source: "backfill"
++            ))
++        }
++
++        // Dedup, prune and persist are the store's job. "backfill" falls through `priority` to 0,
++        // below "hk"/"wc"/"ble", so a live reading for the same timestamp always wins the merge.
++        if !toStore.isEmpty {
++            WatchGlucoseHistoryStore.shared.insert(toStore)
++            // The loader takes the store's serial queue synchronously while the insert is
++            // asynchronous on that same queue, so the reload is ordered after the insert and
++            // observes the new entries. Refresh only the chart array — not the current glucose
++            // value or the last-watch-state-update timestamp (those are owned by the live
++            // snapshot paths).
++            WatchState.shared.glucoseValues = WatchGlucoseHistoryStore.shared.loadAsDisplayValues(
++                colorComputer: WatchGlucoseColorComputer.shared
++            )
++        }
++
++        // toStore.count is the candidate count (entries that passed the reliability/value gates
++        // before the store's async merge); the store emits its own insert telemetry carrying the
++        // true appended figure.
++        log("backfill_persist_summary", "arrived=\(backfill.count) candidate=\(toStore.count) skipped=\(skipped)")
 +    }
 +}
 +
@@ -4068,10 +4148,10 @@ index 000000000..6555f44c9
 +}
 diff --git a/Trio Watch App Extension/WatchGlucoseHistoryStore.swift b/Trio Watch App Extension/WatchGlucoseHistoryStore.swift
 new file mode 100644
-index 000000000..6390638ae
+index 000000000..f316727ef
 --- /dev/null
 +++ b/Trio Watch App Extension/WatchGlucoseHistoryStore.swift	
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,229 @@
 +import Foundation
 +import SwiftUI
 +
@@ -4178,7 +4258,9 @@ index 000000000..6390638ae
 +            }
 +            pruneAndCap()
 +            writeToDisk()
-+            emitInsertTelemetry(source: "wc", batch: readings.count, appended: appended)
++            // This path is no longer WC-only: backfill batches also flow through here.
++            // A hardcoded "wc" source mislabelled every backfill reading in telemetry.
++            emitInsertTelemetry(source: readings.first?.source ?? "wc", batch: readings.count, appended: appended)
 +        }
 +    }
 +
