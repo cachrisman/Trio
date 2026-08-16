@@ -1651,20 +1651,16 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
                 continue
             }
 
-            // Mirror the phone-side manager's clamp to the sensor's plausible display range.
-            // The phone uses a named constant (unavailable to the watch target); the store's
-            // plausibility canary already documents Dexcom flooring real readings at 40.
+            // Store the raw Int value unmodified. The history store's logging canary
+            // diagnoses implausible readings rather than rewriting them, and the live EGV
+            // path in this file likewise stores raw values.
             let rawValue = Int(glucoseValue)
-            let clampedValue = max(40, min(400, rawValue))
-            if clampedValue != rawValue {
-                log("backfill_value_clamped", "raw=\(rawValue) clamped=\(clampedValue) timestamp=\(msg.timestamp)")
-            }
 
             let readingDate = activation.addingTimeInterval(TimeInterval(msg.timestamp))
 
             toStore.append(StoredGlucoseReading(
                 epochSeconds: Int(readingDate.timeIntervalSince1970),
-                glucoseMgDl: clampedValue,
+                glucoseMgDl: rawValue,
                 // nil, NOT 0. `sequencesMatch` treats a nil on either side as a match, so a
                 // backfilled record dedups against the live EGV holding the same timestamp. A
                 // literal 0 would compare unequal to the real sequence and store a duplicate.
