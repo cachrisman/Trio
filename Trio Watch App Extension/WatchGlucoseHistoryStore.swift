@@ -104,7 +104,9 @@ final class WatchGlucoseHistoryStore {
             }
             pruneAndCap()
             writeToDisk()
-            emitInsertTelemetry(source: "wc", batch: readings.count, appended: appended)
+            // This path is no longer WC-only: backfill batches also flow through here.
+            // A hardcoded "wc" source mislabelled every backfill reading in telemetry.
+            emitInsertTelemetry(source: readings.first?.source ?? "wc", batch: readings.count, appended: appended)
         }
     }
 

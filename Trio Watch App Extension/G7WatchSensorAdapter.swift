@@ -1613,6 +1613,60 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
                 "timestamp=\(msg.timestamp) glucose=\(msg.glucose.map(String.init) ?? "nil") algorithm_state=\(msg.algorithmState.rawValue) display_only=\(msg.glucoseIsDisplayOnly) trend=\(msg.trend.map { String(format: "%.1f", $0) } ?? "nil")"
             )
         }
+
+        // TRIO-029: persist to the history store — HISTORY ONLY.
+        //
+        // Deliberately does NOT touch the complication store, the WatchState snapshot, or
+        // bleLastEGVDate/Value. Backfill entries are historical by definition and must never be
+        // promoted to the currently-displayed reading; the live EGV path owns those. The accepted
+        // trade-off is that a reading recovered only via backfill refreshes the chart but not the
+        // displayed value.
+
+        // Reading times use the same anchor as the EGV path: the session activation date plus the
+        // message's glucose-relative timestamp (`G7BackfillMessage.timestamp` is on the same basis
+        // as `G7GlucoseMessage.glucoseTimestamp`). Backfill can arrive before any live reading in a
+        // fresh process; without the anchor the timestamps cannot be placed, so skip the batch.
+        guard let activation = sessionActivationDate else {
+            log("backfill_persist_skipped", "reason=no_activation_anchor count=\(backfill.count)")
+            return
+        }
+
+        var toStore: [StoredGlucoseReading] = []
+        var skipped = 0
+
+        for msg in backfill {
+            // Reliability gate — mirrors the phone-side manager's backfill filter.
+            guard msg.hasReliableGlucose else {
+                log("backfill_entry_skipped", "reason=unreliable_state timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState.rawValue)")
+                skipped += 1
+                continue
+            }
+            guard let glucoseValue = msg.glucose else {
+                log("backfill_entry_skipped", "reason=missing_glucose_value timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState.rawValue)")
+                skipped += 1
+                continue
+            }
+
+            let readingDate = activation.addingTimeInterval(TimeInterval(msg.timestamp))
+
+            toStore.append(StoredGlucoseReading(
+                epochSeconds: Int(readingDate.timeIntervalSince1970),
+                glucoseMgDl: Int(glucoseValue),
+                // nil, NOT 0. `sequencesMatch` treats a nil on either side as a match, so a
+                // backfilled record dedups against the live EGV holding the same timestamp. A
+                // literal 0 would compare unequal to the real sequence and store a duplicate.
+                sequence: nil,
+                source: "backfill"
+            ))
+        }
+
+        // Dedup, prune and persist are the store's job. "backfill" falls through `priority` to 0,
+        // below "hk"/"wc"/"ble", so a live reading for the same timestamp always wins the merge.
+        if !toStore.isEmpty {
+            WatchGlucoseHistoryStore.shared.insert(toStore)
+        }
+
+        log("backfill_persist_summary", "arrived=\(backfill.count) stored=\(toStore.count) skipped=\(skipped)")
     }
 }
 
