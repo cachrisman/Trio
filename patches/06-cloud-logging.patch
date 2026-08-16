@@ -1,12 +1,12 @@
-From 4640a17d360d894236d822081e1935edc3ede04f Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Tue, 7 Jul 2026 17:30:14 +0200
+From f4797825e9db18f37d4268e6821b1f4283e08bcf Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 21:55:22 +0200
 Subject: [PATCH] feat: cloud-logging
 
 Trio-Patch-Source-Branch: feature/cloud-logging
 Trio-Patch-Base: 58261b0abb1c3a4f827bc7f75768ce3cec5c4b6d
-Trio-Patch-Feature-Tip: 683e688c88ea32fa5c4c36abe1be3807aaa8960c
-Trio-Patch-Generated: 2026-07-07T15:30:07Z
+Trio-Patch-Feature-Tip: a892be0ffa576436437b8e69c2cc5cb2e8370a11
+Trio-Patch-Generated: 2026-08-16T19:55:13Z
 Trio-Patch-Source-Commits:
  ab10de4d8d47277e9bb7669d1233b20a82a1955d feat: ns-richer-settings
  e3a2d98dfeb9180befadb280b23187397c6296ef feat: g7-reading-time-with-seconds
@@ -14,6 +14,8 @@ Trio-Patch-Source-Commits:
  3121b5e5dfe1b205b38b0f986ab0911303ca3930 feat: watch error reporting
  a66a1cd284358f30062c22fd8a9970d12d44364f feat: cloud-logging
  683e688c88ea32fa5c4c36abe1be3807aaa8960c fix: drop removed Logger.info type parameter after upstream merge
+ fa09b10ee7f168d71e36f448ee097e7a071ed2d0 cloud logging: make the tail offset survive container migration and drain incrementally (TRIO-032)
+ a892be0ffa576436437b8e69c2cc5cb2e8370a11 cloud logging: cap each read at one upload batch so progress is always banked (TRIO-032)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -21,6 +23,8 @@ Trio-Patch-Source-PatchIds:
  5092c2d3231574f24a9fe35f2f7443bff6dde870
  144d35d86a5aab6ceb2e65d3415dac000bfd7898
  b5dfaed7988b5c45502d65cbcfdf6f2396c429bf
+ 524309fe6285e0bd29fd262092611abb46c23f84
+ 7db5983d858dbf0b625b64e5d80e260226ab01b4
 ---
  .../WatchConnectivityPayloadIds.swift         |   59 +
  Trio Watch App Extension/WatchLogger.swift    | 1208 ++++++++++++++---
@@ -33,14 +37,14 @@ Trio-Patch-Source-PatchIds:
  .../CloudLogging/CloudLogLineParsing.swift    |  298 ++++
  .../CloudLogging/CloudLogProvider.swift       |  127 ++
  .../CloudLogging/CloudLogUploadService.swift  |  194 +++
- .../CloudLogging/CloudLogUploader.swift       |  438 ++++++
+ .../CloudLogging/CloudLogUploader.swift       |  507 +++++++
  .../IssueReporter/SimpleLogReporter.swift     |   13 +-
  .../Modules/Settings/SettingItems.swift       |   11 +
  .../View/CloudLoggingSettingsView.swift       |  150 ++
  .../Settings/View/Subviews/ServicesView.swift |    1 +
  Trio/Sources/Router/Screen.swift              |    3 +
  TrioTests/CloudLogEntryAggregatorTests.swift  |   42 +
- 18 files changed, 2839 insertions(+), 198 deletions(-)
+ 18 files changed, 2908 insertions(+), 198 deletions(-)
  create mode 100644 Trio Watch App Extension/WatchConnectivityPayloadIds.swift
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
@@ -1508,19 +1512,19 @@ index 3f9a83de5..0f81f3475 100644
      }
  }
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
-index 7c67575fc..b5df24a58 100644
+index cb1dc4583..49f3ecd90 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
 +++ b/Trio/Sources/Application/AppDelegate.swift
-@@ -7,7 +7,7 @@ import UserNotifications
+@@ -5,7 +5,7 @@ import UserNotifications
  class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNotificationCenterDelegate {
      func application(
          _: UIApplication,
 -        didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]?
 +        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
      ) -> Bool {
-         FirebaseApp.configure()
- 
-@@ -42,15 +42,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+         // Default to `true` if the key doesn't exist — Trio is opt-out, not opt-in.
+         // Read before touching Firebase: an explicit opt-out means we never
+@@ -35,15 +35,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
              TelemetryClient.shared.checkAndSendIfOverdue()
          }
  
@@ -2697,10 +2701,10 @@ index 000000000..abce87784
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
-index 000000000..0c23fc7b3
+index 000000000..d8c586d8f
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,438 @@
+@@ -0,0 +1,507 @@
 +import Foundation
 +
 +/// iPhone-only log tailer/uploader.
@@ -2724,6 +2728,10 @@ index 000000000..0c23fc7b3
 +    private let pairs: [RotatingPair]
 +    private let userDefaults: UserDefaults
 +    private let stateKey = "cloudLogUploader.tailState.v1"
++
++    /// A file larger than this with no stored offset is assumed to be pre-existing history rather
++    /// than new content, and is seeded to end-of-file instead of being queued for full re-upload.
++    private let seedToEndOfFileThreshold: UInt64 = 1024 * 1024
 +
 +    private var isUploading = false
 +
@@ -2768,6 +2776,25 @@ index 000000000..0c23fc7b3
 +        var currentState = loadState(for: pair.currentPath)
 +        var prevState = loadState(for: pair.previousPath)
 +        var succeeded = true
++
++        // Seed to end-of-file for a large file we have no stored offset for. An app update can
++        // migrate the data container, and although the offsets are now keyed by filename rather
++        // than absolute path, a fresh install — or the first run after this change ships — still
++        // arrives with no state. Starting such a file at 0 would queue its entire accumulated
++        // history for re-upload, which over a poor link never completes. Files at or below the
++        // threshold are small enough to upload in full, so they still start at 0.
++        if loadStateIfPresent(for: pair.currentPath) == nil,
++           let size = fileSize(currentURL), size > seedToEndOfFileThreshold
++        {
++            currentState.offset = size
++            saveState(currentState, for: pair.currentPath)
++        }
++        if loadStateIfPresent(for: pair.previousPath) == nil,
++           let size = fileSize(prevURL), size > seedToEndOfFileThreshold
++        {
++            prevState.offset = size
++            saveState(prevState, for: pair.previousPath)
++        }
 +
 +        // Reset offsets if file shrank (rotation or truncation).
 +        if let currentSize = fileSize(currentURL), currentSize < currentState.offset {
@@ -2880,20 +2907,39 @@ index 000000000..0c23fc7b3
 +        return true
 +    }
 +
-+    /// Reads from startOffset to EOF and returns only complete lines (ending with '\n').
-+    /// The returned `nextOffset` is the byte offset right after the last complete newline.
++    /// Maximum number of bytes consumed per invocation of `readCompleteLines`.
++    /// Bounding the read prevents a single pass from attempting to process an
++    /// unbounded backlog, which would make one upload failure discard all progress.
++    private let maxReadBytesPerPass = 512 * 1024
++
++    /// Reads up to `maxReadBytesPerPass` bytes from startOffset and returns only complete
++    /// lines (ending with '\n'). The returned `nextOffset` is the byte offset right after
++    /// the last complete newline within the consumed slice.
 +    private func readCompleteLines(fileURL: URL, startOffset: UInt64) -> ([String], UInt64)? {
 +        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
 +        defer { try? handle.close() }
 +
 +        do {
 +            try handle.seek(toOffset: startOffset)
-+            let data = try handle.readToEnd() ?? Data()
++            let data = try handle.read(upToCount: maxReadBytesPerPass) ?? Data()
 +            guard !data.isEmpty else { return ([], startOffset) }
 +
 +            // Only advance to the last newline to avoid uploading a partial final line.
 +            guard let lastNewlineIdx = data.lastIndex(of: 0x0A) else {
-+                return ([], startOffset)
++                // No newline anywhere in the window. Two very different cases:
++                //  - a short read: a partial final line is still being written, so wait for it.
++                //  - a full window: this single line is longer than the read budget. Returning
++                //    `startOffset` here would re-read the same bytes forever and never advance,
++                //    reintroducing the permanent stall this bounded read exists to prevent.
++                //    Skip the window instead. The skipped bytes are dropped for good; when a
++                //    newline is finally reached only the trailing fragment of the entry surfaces
++                //    (without its beginning), accepted as the price of guaranteed forward progress.
++                guard data.count == maxReadBytesPerPass else { return ([], startOffset) }
++                debug(
++                    .service,
++                    "CloudLogUploader: no newline in \(data.count)B window at offset \(startOffset), skipping over-long line"
++                )
++                return ([], startOffset + UInt64(data.count))
 +            }
 +
 +            let completeData = data.prefix(upTo: data.index(after: lastNewlineIdx))
@@ -2905,6 +2951,19 @@ index 000000000..0c23fc7b3
 +            // Because `text` ends with '\n', split(...) includes a final empty element; drop it.
 +            if lines.last == "" {
 +                lines.removeLast()
++            }
++
++            // Cap the number of physical lines so the pass produces at most one upload batch.
++            // Aggregation only merges physical lines into fewer logical entries, never more, so
++            // capping physical lines guarantees at most one batch.
++            if lines.count > maxEventsPerRequest {
++                let kept = Array(lines.prefix(maxEventsPerRequest))
++                // Each physical line contributes its UTF-8 byte count plus one byte for the
++                // terminating newline (0x0A). The sum gives the exact consumed prefix length
++                // for the kept lines only.
++                let keptByteCount = kept.reduce(0) { $0 + $1.utf8.count + 1 }
++                let nextOffset = startOffset + UInt64(keptByteCount)
++                return (kept, nextOffset)
 +            }
 +
 +            let nextOffset = startOffset + UInt64(completeData.count)
@@ -3032,12 +3091,26 @@ index 000000000..0c23fc7b3
 +
 +    // MARK: - State store
 +
++    /// Reduces a file path to a stable identifier (its last path component) so that tail offsets
++    /// survive iOS data-container migrations, which change the absolute path but not the filename.
++    /// Named distinctly from the `stateKey` UserDefaults constant above to keep the two readable.
++    private func tailStateKey(for path: String) -> String {
++        (path as NSString).lastPathComponent
++    }
++
 +    private func loadState(for path: String) -> TailState {
++        loadStateIfPresent(for: path) ?? TailState(offset: 0)
++    }
++
++    /// Returns the stored `TailState` for the given path, or `nil` if none has been persisted.
++    /// The `nil` case is distinct from a stored offset of 0 and is what lets a first run after a
++    /// container migration seed to end-of-file rather than re-uploading the whole history.
++    private func loadStateIfPresent(for path: String) -> TailState? {
 +        guard let data = userDefaults.data(forKey: stateKey),
 +              let dict = try? JSONDecoder().decode([String: TailState].self, from: data),
-+              let state = dict[path]
++              let state = dict[tailStateKey(for: path)]
 +        else {
-+            return TailState(offset: 0)
++            return nil
 +        }
 +        return state
 +    }
@@ -3049,7 +3122,7 @@ index 000000000..0c23fc7b3
 +        {
 +            dict = decoded
 +        }
-+        dict[path] = state
++        dict[tailStateKey(for: path)] = state
 +        if let encoded = try? JSONEncoder().encode(dict) {
 +            userDefaults.set(encoded, forKey: stateKey)
 +        }
@@ -3172,10 +3245,10 @@ index 2a02082b7..03a199a39 100644
          try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
      }
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
-index c20f5b03b..f992ae372 100644
+index 8c0d27a29..a561354a8 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
 +++ b/Trio/Sources/Modules/Settings/SettingItems.swift
-@@ -415,6 +415,17 @@ enum SettingItems {
+@@ -421,6 +421,17 @@ enum SettingItems {
              ],
              path: ["Services", "Nightscout", "Fetch and Remote Control"]
          ),
@@ -3362,10 +3435,10 @@ index 4c595ff8e..2bbd74fb1 100644
                          Text("Apple Health").navigationLink(to: .healthkit, from: self)
                      }
 diff --git a/Trio/Sources/Router/Screen.swift b/Trio/Sources/Router/Screen.swift
-index bcdbe6696..1e481667e 100644
+index e4710d9ee..4cc536839 100644
 --- a/Trio/Sources/Router/Screen.swift
 +++ b/Trio/Sources/Router/Screen.swift
-@@ -43,6 +43,7 @@ enum Screen: Identifiable, Hashable {
+@@ -44,6 +44,7 @@ enum Screen: Identifiable, Hashable {
      case calendarEventSettings
      case contactImage
      case serviceSettings
@@ -3373,7 +3446,7 @@ index bcdbe6696..1e481667e 100644
      case remoteControlConfig
      case autosensSettings
      case smbSettings
-@@ -154,6 +155,8 @@ extension Screen {
+@@ -158,6 +159,8 @@ extension Screen {
              ContactImage.RootView(resolver: resolver)
          case .serviceSettings:
              ServicesView(resolver: resolver, state: Settings.StateModel())
@@ -3431,5 +3504,5 @@ index 000000000..7c166f17c
 +    }
 +}
 -- 
-2.50.1 (Apple Git-155)
+2.55.0
 
