@@ -1455,6 +1455,13 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
             return
         }
 
+        // Anchor the session activation before the missing-value guard so a reading without a
+        // glucose value still establishes the date basis for any backfill arriving in the same
+        // connection (its own entries carry good values and need the anchor to be placed).
+        if sessionActivationDate == nil {
+            sessionActivationDate = Date().addingTimeInterval(-TimeInterval(glucose.messageTimestamp))
+        }
+
         guard let gMgDl = glucose.glucose else {
             log("egv_missing_glucose_value", "sequence=\(glucose.sequence) state=\(glucose.algorithmState.rawValue)")
             return
@@ -1467,9 +1474,6 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         consecutivePreEGVDisconnects = 0
         hadEGVThisSession = true
 
-        if sessionActivationDate == nil {
-            sessionActivationDate = Date().addingTimeInterval(-TimeInterval(glucose.messageTimestamp))
-        }
         guard let activation = sessionActivationDate else { return }
 
         let readingDate = activation.addingTimeInterval(TimeInterval(glucose.glucoseTimestamp))
@@ -1647,11 +1651,20 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
                 continue
             }
 
+            // Mirror the phone-side manager's clamp to the sensor's plausible display range.
+            // The phone uses a named constant (unavailable to the watch target); the store's
+            // plausibility canary already documents Dexcom flooring real readings at 40.
+            let rawValue = Int(glucoseValue)
+            let clampedValue = max(40, min(400, rawValue))
+            if clampedValue != rawValue {
+                log("backfill_value_clamped", "raw=\(rawValue) clamped=\(clampedValue) timestamp=\(msg.timestamp)")
+            }
+
             let readingDate = activation.addingTimeInterval(TimeInterval(msg.timestamp))
 
             toStore.append(StoredGlucoseReading(
                 epochSeconds: Int(readingDate.timeIntervalSince1970),
-                glucoseMgDl: Int(glucoseValue),
+                glucoseMgDl: clampedValue,
                 // nil, NOT 0. `sequencesMatch` treats a nil on either side as a match, so a
                 // backfilled record dedups against the live EGV holding the same timestamp. A
                 // literal 0 would compare unequal to the real sequence and store a duplicate.
@@ -1664,9 +1677,20 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         // below "hk"/"wc"/"ble", so a live reading for the same timestamp always wins the merge.
         if !toStore.isEmpty {
             WatchGlucoseHistoryStore.shared.insert(toStore)
+            // The loader takes the store's serial queue synchronously while the insert is
+            // asynchronous on that same queue, so the reload is ordered after the insert and
+            // observes the new entries. Refresh only the chart array — not the current glucose
+            // value or the last-watch-state-update timestamp (those are owned by the live
+            // snapshot paths).
+            WatchState.shared.glucoseValues = WatchGlucoseHistoryStore.shared.loadAsDisplayValues(
+                colorComputer: WatchGlucoseColorComputer.shared
+            )
         }
 
-        log("backfill_persist_summary", "arrived=\(backfill.count) stored=\(toStore.count) skipped=\(skipped)")
+        // toStore.count is the candidate count (entries that passed the reliability/value gates
+        // before the store's async merge); the store emits its own insert telemetry carrying the
+        // true appended figure.
+        log("backfill_persist_summary", "arrived=\(backfill.count) candidate=\(toStore.count) skipped=\(skipped)")
     }
 }
 
