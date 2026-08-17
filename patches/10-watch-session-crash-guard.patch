@@ -1,12 +1,12 @@
-From e9484f85ab9c33a597c5d5953871994540422402 Mon Sep 17 00:00:00 2001
+From c6f293724acd60bbb74098545c6db84fff232d53 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 15 Aug 2026 19:21:42 +0200
+Date: Mon, 17 Aug 2026 11:43:21 +0200
 Subject: [PATCH] feat: watch-session-crash-guard
 
 Trio-Patch-Source-Branch: feature/watch-session-crash-guard
 Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: f684492064c41a37ca8591bbb0dc702f5adfa8c3
-Trio-Patch-Generated: 2026-08-15T17:21:34Z
+Trio-Patch-Feature-Tip: 1021a8addb6812415fb38a7d22dd7c2eeac295d1
+Trio-Patch-Generated: 2026-08-17T09:43:12Z
 Trio-Patch-Source-Commits:
  53ac829f5ef436c0f39e72d97eaff2a9da665b98 feat: ns-richer-settings
  7efe8a135fd76228c8f952603da8fe2d0ec788bf feat: g7-reading-time-with-seconds
@@ -19,6 +19,7 @@ Trio-Patch-Source-Commits:
  3ecf3c82734865c79ef3b856b9bebbe5d292f0ef feat: watch-session-crash-guard
  cf605540dcff1b021125f22208dfb360ea084c17 fix: load upstream alerting services in resolveOrLog loadServices
  f684492064c41a37ca8591bbb0dc702f5adfa8c3 Merge dev into feature/watch-session-crash-guard (post-upstream-sync reconciliation)
+ 1021a8addb6812415fb38a7d22dd7c2eeac295d1 watch: set isUploadedToHealth/Tidepool on watch-entered carbs (TRIO-037)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -37,10 +38,11 @@ d544b10a73968114b66b4358f788fde42bbdb38b
 4bc3746a87763708289b23628cfcb5be38f310c3
 7a05334d6a1075450395c10f0e16bbda00b449d5
 77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
+ effa4e5be63dad9f77a8743b6aba4e27dce7a277
 ---
  Trio/Sources/Application/TrioApp.swift        |  58 +++++----
- .../WatchManager/AppleWatchManager.swift      | 121 +++++++-----------
- 2 files changed, 84 insertions(+), 95 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 117 ++++++++----------
+ 2 files changed, 84 insertions(+), 91 deletions(-)
 
 diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
 index d88152f2f..d30306ca2 100644
@@ -115,7 +117,7 @@ index d88152f2f..d30306ca2 100644
  
      init() {
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 56e34e6b9..19e7594a5 100644
+index 56e34e6b9..b92c23657 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,7 +2,6 @@ import Combine
@@ -366,24 +368,6 @@ index 56e34e6b9..19e7594a5 100644
          }
      }
  
-@@ -1517,8 +1498,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                 carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
-                 carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
-                 carbEntry.isUploadedToNS = false
--                carbEntry.isUploadedToHealth = false
--                carbEntry.isUploadedToTidepool = false
- 
-                 do {
-                     guard context.hasChanges else {
-@@ -1581,8 +1560,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                     carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
-                     carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
-                     carbEntry.isUploadedToNS = false
--                    carbEntry.isUploadedToHealth = false
--                    carbEntry.isUploadedToTidepool = false
- 
-                     guard context.hasChanges else {
-                         // Acknowledge failure
 -- 
 2.55.0
 
