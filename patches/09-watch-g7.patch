@@ -1,6 +1,6 @@
-From 6627bcf93c2186d1de9f434e0c43bab40c56c3de Mon Sep 17 00:00:00 2001
-From: t <a@b.c>
-Date: Mon, 17 Aug 2026 14:25:13 +0200
+From bf9b3f304fb59fad7e858345ea54a0132d93bb83 Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Mon, 17 Aug 2026 14:31:55 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: be3f545d2e907ec354cdf4b73082d028bddcf3d2
-Trio-Patch-Generated: 2026-08-17T12:25:01Z
+Trio-Patch-Feature-Tip: d9a78e0e35761a7c12024480ecbbba119e9d01fb
+Trio-Patch-Generated: 2026-08-17T12:31:43Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -45,7 +45,7 @@ Trio-Patch-Source-Commits:
  63810b6ab9a0fbd20056523b4181825cbb74e811 watch: store received G7 backfill entries instead of only logging them (TRIO-029)
  090cdcb640f558073c8dabf839f187434b5df227 watch: refresh the chart after backfill, and three review fixes (TRIO-029)
  3dfb75e92caf91f3502dc9fec060491b89238d03 watch: store backfill glucose unmodified, matching the store's canary pattern (TRIO-029)
- be3f545d2e907ec354cdf4b73082d028bddcf3d2 watch: log the mapped algorithm state name alongside the raw value (TRIO-041)
+ d9a78e0e35761a7c12024480ecbbba119e9d01fb watch: log the mapped algorithm state name alongside the raw value (TRIO-041)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
