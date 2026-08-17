@@ -1,48 +1,40 @@
-From c6f293724acd60bbb74098545c6db84fff232d53 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Mon, 17 Aug 2026 11:43:21 +0200
+From 73d0f6a7286bceb34070a022d6d264bed26c61e5 Mon Sep 17 00:00:00 2001
+From: Charlie Chrisman <agent@chrisman.io>
+Date: Mon, 17 Aug 2026 13:59:38 +0200
 Subject: [PATCH] feat: watch-session-crash-guard
 
 Trio-Patch-Source-Branch: feature/watch-session-crash-guard
-Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: 1021a8addb6812415fb38a7d22dd7c2eeac295d1
-Trio-Patch-Generated: 2026-08-17T09:43:12Z
+Trio-Patch-Base: d148ba67bd581e24e5da59a86feed4c80418ce8a
+Trio-Patch-Feature-Tip: d22934fa170e2f94bcb31ab21a67f43cb6f83009
+Trio-Patch-Generated: 2026-08-17T11:59:29Z
 Trio-Patch-Source-Commits:
- 53ac829f5ef436c0f39e72d97eaff2a9da665b98 feat: ns-richer-settings
- 7efe8a135fd76228c8f952603da8fe2d0ec788bf feat: g7-reading-time-with-seconds
- f6222651d1c0e7da01128861223b43b1bb4f151c feat: treatments-fixed-bottom-action
- bdc15f99bccf64a57c087aeefb91a1b2af208cee feat: watch error reporting
- ea1dc7d7e097795130c814060d144c6df0d69029 feat: cloud-logging
- d0fc5e86ce09081bee83119d0ae623c7be043187 feat: chart-height-fix
- 9a8e79182e30058c45f1263bc1638cb9b39caa2c feat: patch-metadata
- 110ed17f350a2b7cf2a4f929c57c9ddb5b014c19 feat: watch-g7
- 3ecf3c82734865c79ef3b856b9bebbe5d292f0ef feat: watch-session-crash-guard
- cf605540dcff1b021125f22208dfb360ea084c17 fix: load upstream alerting services in resolveOrLog loadServices
- f684492064c41a37ca8591bbb0dc702f5adfa8c3 Merge dev into feature/watch-session-crash-guard (post-upstream-sync reconciliation)
- 1021a8addb6812415fb38a7d22dd7c2eeac295d1 watch: set isUploadedToHealth/Tidepool on watch-entered carbs (TRIO-037)
+ 31568c5eebfcee5621f890e3b0c650a7d79d92ed feat: ns-richer-settings
+ f0111815ecc217dd6cdac32e133d47994f798852 feat: g7-reading-time-with-seconds
+ 5024d9ca775850473e3569c53f5001f5d1781d95 feat: watch-error-reporting
+ 872d2dbf18bf6f5eca9c5352240ba6e731443a60 feat: cloud-logging
+ 1768ae65949cf846e800979c7f15bf532ff0cb3c feat: patch-metadata
+ eff19919b81ccb97d2ba1ee08e956e6c94c73a68 feat: watch-g7
+ 69b4995d4d6a5615b99ed8fa412d51697188ee59 feat: watch-session-crash-guard
+ 36890c173709ebb286dd846dedbb656f75ad20ef fix: load upstream alerting services in resolveOrLog loadServices
+ e21a0bbffacdc164fa91830e92035862e6fc5b3d watch: set isUploadedToHealth/Tidepool on watch-entered carbs (TRIO-037)
+ 09e9e93a00a1f81ea45006915c418cf0e5fad874 watch: restore round-each-operand mmol/L delta on the phone (TRIO-038)
+ d22934fa170e2f94bcb31ab21a67f43cb6f83009 watch: drop the superseded g7Sequence stamping from patch 10
 Trio-Patch-Source-PatchIds:
- ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
- ed97df36e4b18886dc68346ea67ceb00ed61b72f
- f26f8a63ea5839d8752cf9cbf1f95741a89a958c
- 5092c2d3231574f24a9fe35f2f7443bff6dde870
- 144d35d86a5aab6ceb2e65d3415dac000bfd7898
- c9bd65095aea882a70f1093d556a39886b5bb532
+ f19d9363a9ac847de8e6c12a5acd685d05be56fa
+ 20881cbfa882e622b997fffe65a9d4fe9e3febae
+ 4e4a769baa892c72240031f8f2b120e946ea9b46
+ c507f59d2f8af2ae8fa607838047e63eaa878894
  e1ee5b50a3acd77eb9b5d4218dcf038b1b753f1e
- 564b656c60381878745dde363170cb92df2f52d7
- 379f617354c1825708c98b7e649bfdf8d1759ca4
- 82908a9b75c65b2d48955d8c8137f0b6bbf42ca8
- 5560470aadb1706fcb843cabf5981f33df1fe39d
-d544b10a73968114b66b4358f788fde42bbdb38b
-937d56001c55b6873c232c5feee035618186411a
-8fe7265ccb8c7a92799a829b48c791e3a4d0c346
-4bc3746a87763708289b23628cfcb5be38f310c3
-7a05334d6a1075450395c10f0e16bbda00b449d5
-77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
+ 1e3bdb6758fc1c2dc2ae0dc6db18efe58a1f9e5a
+ 54254e3a989b82d45db42a187c43a2e91bc1087c
+ f0bd8c44f86c76c9eea2f33fea6c7d77702eba52
  effa4e5be63dad9f77a8743b6aba4e27dce7a277
+ 756f516bdb8976d748be6fa8c1760152b9e9bf9b
+ 7edc93ae36f06843a94979fa9784ee585873665a
 ---
- Trio/Sources/Application/TrioApp.swift        |  58 +++++----
- .../WatchManager/AppleWatchManager.swift      | 117 ++++++++----------
- 2 files changed, 84 insertions(+), 91 deletions(-)
+ Trio/Sources/Application/TrioApp.swift        |  58 ++++++----
+ .../WatchManager/AppleWatchManager.swift      | 109 ++++++++----------
+ 2 files changed, 81 insertions(+), 86 deletions(-)
 
 diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
 index d88152f2f..d30306ca2 100644
@@ -117,7 +109,7 @@ index d88152f2f..d30306ca2 100644
  
      init() {
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 56e34e6b9..b92c23657 100644
+index 56e34e6b9..2d0e2d877 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,7 +2,6 @@ import Combine
@@ -200,25 +192,7 @@ index 56e34e6b9..b92c23657 100644
                  /// Calculate latest color
                  let hardCodedLow = Decimal(55)
                  let hardCodedHigh = Decimal(220)
-@@ -399,14 +402,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
- 
-                 // Calculate delta if we have at least 2 readings
-                 if glucoseObjects.count >= 2 {
--                    var glucoseLast = Decimal(glucoseObjects[0].glucose)
--                    var glucoseSecondLast = Decimal(glucoseObjects[1].glucose)
-+                    var deltaValue = Decimal(glucoseObjects[0].glucose - glucoseObjects[1].glucose)
-+
-                     if self.units == .mmolL {
--                        glucoseLast = glucoseLast.asMmolL
--                        glucoseSecondLast = glucoseSecondLast.asMmolL
-+                        deltaValue = Double(truncating: deltaValue as NSNumber).asMmolL
-                     }
- 
--                    let deltaValue = glucoseLast - glucoseSecondLast
-                     let formattedDelta = Formatter.glucoseFormatter(for: self.units)
-                         .string(from: deltaValue as NSNumber) ?? "0"
-                     watchState.delta = deltaValue < 0 ? "\(formattedDelta)" : "+\(formattedDelta)"
-@@ -641,11 +642,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -641,11 +644,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              dictionary[WatchMessageKeys.readingEpoch] = newestReading.date.timeIntervalSince1970
          }
  
@@ -230,7 +204,7 @@ index 56e34e6b9..b92c23657 100644
          return dictionary
      }
  
-@@ -875,7 +871,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -875,7 +873,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              (WatchMessageKeys.readingEpoch, "readingEpoch"),
              (WatchMessageKeys.transferEnqueuedAt, "transferEnqueuedAt"),
              (WatchMessageKeys.date, "date"),
@@ -238,7 +212,7 @@ index 56e34e6b9..b92c23657 100644
          ]
          for (key, name) in complicationAllowlist {
              if let value = fullMessage[key] {
-@@ -908,7 +903,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -908,7 +905,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          let budgetSnapshot = session.remainingComplicationUserInfoTransfers
@@ -247,7 +221,7 @@ index 56e34e6b9..b92c23657 100644
  
          // sendMessage (budget-free watch UI path) — always fires with fullMessage
          if session.isReachable {
-@@ -989,7 +984,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -989,7 +986,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          do {
              try session.updateApplicationContext(ctx)
              debug(.watchManager, "📦 context_succeeded reading_epoch=\(readingEpoch)")
@@ -255,7 +229,7 @@ index 56e34e6b9..b92c23657 100644
          } catch {
              debug(.watchManager, "📦 context_failed context_update_failed=true error=\(error)")
          }
-@@ -1021,6 +1015,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1021,6 +1017,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -267,7 +241,7 @@ index 56e34e6b9..b92c23657 100644
          debug(.watchManager, "📱 Phone session activated state=\(activationState.rawValue) isReachable=\(session.isReachable) isPaired=\(session.isPaired) isWatchAppInstalled=\(session.isWatchAppInstalled) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
  
          // R2b: clear dispatch gate on activation so the first post-launch transfer always fires
-@@ -1032,14 +1031,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1032,14 +1033,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              cancelStaleQueuedTransfers()
          }
  
@@ -283,7 +257,7 @@ index 56e34e6b9..b92c23657 100644
      }
  
      // MARK: - Processed IDs Management
-@@ -1160,16 +1152,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1160,16 +1154,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
      /// Implements the replyHandler version of didReceiveMessage for ACK support.
      func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
@@ -303,7 +277,7 @@ index 56e34e6b9..b92c23657 100644
          if type == "queryAcks" {
              if let pendingIds = message["pendingIds"] as? [String] {
                  let ackIds = getAcknowledgedIds(from: pendingIds)
-@@ -1178,8 +1168,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1178,8 +1170,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      "ackIds": ackIds
                  ]
                  replyHandler(batchAck)
@@ -321,7 +295,7 @@ index 56e34e6b9..b92c23657 100644
          }
  
          // Deduplicate BEFORE any Crashlytics calls
-@@ -1210,10 +1208,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1210,10 +1210,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              }
          }
  
@@ -332,7 +306,7 @@ index 56e34e6b9..b92c23657 100644
          // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
          let ack: [String: Any] = [
              "type": "ack",
-@@ -1227,9 +1221,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1227,9 +1223,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Check if this is an envelope message
              if let type = message["type"] as? String,
                 let payloadId = message["payloadId"] as? String {
@@ -343,7 +317,7 @@ index 56e34e6b9..b92c23657 100644
                  if type == "watchLogs" {
                      if let logData = message["data"] as? String {
                          SimpleLogReporter.appendToWatchLog(logData)
-@@ -1466,22 +1458,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1466,22 +1460,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          debug(.watchManager, "📱 Phone reachability changed: isReachable=\(session.isReachable) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
  
          if session.isReachable {
