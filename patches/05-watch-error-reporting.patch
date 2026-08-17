@@ -1,18 +1,20 @@
-From 8d0eff6109df851d9c2c5d73a57911c65e9688fb Mon Sep 17 00:00:00 2001
+From 45cbe1ef35a1b501301a068132e540b5d64e3e23 Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sat, 15 Aug 2026 18:09:41 +0200
+Date: Mon, 17 Aug 2026 11:25:17 +0200
 Subject: [PATCH] feat: watch-error-reporting
 
 Trio-Patch-Source-Branch: feature/watch-error-reporting
-Trio-Patch-Base: 9a2ef6b43d0f6de75a3fc89818b56f024a94fc0e
-Trio-Patch-Feature-Tip: a0fb767da22dff360dda869680f31c9af36c4dfa
-Trio-Patch-Generated: 2026-08-15T16:09:33Z
+Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
+Trio-Patch-Feature-Tip: f6ca271f440094b91b405627145849bfeebf0966
+Trio-Patch-Generated: 2026-08-17T09:25:08Z
 Trio-Patch-Source-Commits:
  53ac829f5ef436c0f39e72d97eaff2a9da665b98 feat: ns-richer-settings
  7efe8a135fd76228c8f952603da8fe2d0ec788bf feat: g7-reading-time-with-seconds
  f6222651d1c0e7da01128861223b43b1bb4f151c feat: treatments-fixed-bottom-action
  bdc15f99bccf64a57c087aeefb91a1b2af208cee feat: watch error reporting
  a0fb767da22dff360dda869680f31c9af36c4dfa Merge dev (0.8.4.61 upstream sync) into feature/watch-error-reporting
+ e4ba503c49d1f2ab7d3cd6376e3eabd96f64d853 Merge branch 'dev' into feature/watch-error-reporting
+ f6ca271f440094b91b405627145849bfeebf0966 watch: set isUploadedToHealth/Tidepool on watch-entered carbs (TRIO-037)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -20,14 +22,15 @@ Trio-Patch-Source-PatchIds:
  5092c2d3231574f24a9fe35f2f7443bff6dde870
  5560470aadb1706fcb843cabf5981f33df1fe39d
 77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
+ effa4e5be63dad9f77a8743b6aba4e27dce7a277
 ---
  Trio Watch App Extension/TrioWatchApp.swift   |  10 +-
  .../WatchErrorReporter.swift                  | 363 ++++++++++++++++
  Trio Watch App Extension/WatchLogger.swift    | 327 +++++++++++---
  .../WatchState+Requests.swift                 |  14 +-
  Trio Watch App Extension/WatchState.swift     |   4 +-
- .../WatchManager/AppleWatchManager.swift      | 402 ++++++++++++++++--
- 6 files changed, 1029 insertions(+), 91 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 398 ++++++++++++++++--
+ 6 files changed, 1029 insertions(+), 87 deletions(-)
  create mode 100644 Trio Watch App Extension/WatchErrorReporter.swift
 
 diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
@@ -897,7 +900,7 @@ index 805f52895..164175cf5 100644
          }
      }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 21187db44..0092e47e4 100644
+index 21187db44..7f352652f 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -1,5 +1,6 @@
@@ -1326,25 +1329,7 @@ index 21187db44..0092e47e4 100644
          } else {
              // Try to reconnect after a short delay
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-@@ -847,8 +1108,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                 carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
-                 carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
-                 carbEntry.isUploadedToNS = false
--                carbEntry.isUploadedToHealth = false
--                carbEntry.isUploadedToTidepool = false
- 
-                 do {
-                     guard context.hasChanges else {
-@@ -911,8 +1170,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                     carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
-                     carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
-                     carbEntry.isUploadedToNS = false
--                    carbEntry.isUploadedToHealth = false
--                    carbEntry.isUploadedToTidepool = false
- 
-                     guard context.hasChanges else {
-                         // Acknowledge failure
-@@ -1356,6 +1613,91 @@ extension BaseWatchManager {
+@@ -1356,6 +1617,91 @@ extension BaseWatchManager {
  
          return nil
      }
