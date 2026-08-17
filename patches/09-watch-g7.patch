@@ -1,6 +1,6 @@
-From b78334426051e89382a6d1588e533204d858c252 Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Sun, 16 Aug 2026 15:56:52 +0200
+From 6627bcf93c2186d1de9f434e0c43bab40c56c3de Mon Sep 17 00:00:00 2001
+From: t <a@b.c>
+Date: Mon, 17 Aug 2026 14:25:13 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: 3dfb75e92caf91f3502dc9fec060491b89238d03
-Trio-Patch-Generated: 2026-08-16T13:56:41Z
+Trio-Patch-Feature-Tip: be3f545d2e907ec354cdf4b73082d028bddcf3d2
+Trio-Patch-Generated: 2026-08-17T12:25:01Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -45,6 +45,7 @@ Trio-Patch-Source-Commits:
  63810b6ab9a0fbd20056523b4181825cbb74e811 watch: store received G7 backfill entries instead of only logging them (TRIO-029)
  090cdcb640f558073c8dabf839f187434b5df227 watch: refresh the chart after backfill, and three review fixes (TRIO-029)
  3dfb75e92caf91f3502dc9fec060491b89238d03 watch: store backfill glucose unmodified, matching the store's canary pattern (TRIO-029)
+ be3f545d2e907ec354cdf4b73082d028bddcf3d2 watch: log the mapped algorithm state name alongside the raw value (TRIO-041)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -85,6 +86,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  659ba69719ccb1774143d441bba70239f6ef99fb
  5645703ac8e969779a2f2c87646aef07fc3e0702
  17827e87392a8919ba6f1014215f40bbf7bef53f
+ f877c3b8d1fff1d759be1e9b1dec7e53393ebe1d
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1904 ++++++++++++
@@ -114,8 +116,8 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
- .../WatchManager/AppleWatchManager.swift      |  612 +++-
- 29 files changed, 9813 insertions(+), 544 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      |  608 +++-
+ 29 files changed, 9809 insertions(+), 544 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -231,7 +233,7 @@ index 000000000..27aaef3cc
 +}
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..3ad8e7b27
+index 000000000..15306d2d3
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
 @@ -0,0 +1,1904 @@
@@ -1678,7 +1680,7 @@ index 000000000..3ad8e7b27
 +        guard glucose.hasReliableGlucose else {
 +            log(
 +                "egv_unreliable",
-+                "algorithm_state=\(glucose.algorithmState.rawValue) sequence=\(glucose.sequence) glucose=\(glucose.glucose.map(String.init) ?? "nil")"
++                "algorithm_state=\(glucose.algorithmState) algorithm_state_raw=\(glucose.algorithmState.rawValue) sequence=\(glucose.sequence) glucose=\(glucose.glucose.map(String.init) ?? "nil")"
 +            )
 +            return
 +        }
@@ -1878,12 +1880,12 @@ index 000000000..3ad8e7b27
 +        for msg in backfill {
 +            // Reliability gate — mirrors the phone-side manager's backfill filter.
 +            guard msg.hasReliableGlucose else {
-+                log("backfill_entry_skipped", "reason=unreliable_state timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState.rawValue)")
++                log("backfill_entry_skipped", "reason=unreliable_state timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState) algorithm_state_raw=\(msg.algorithmState.rawValue)")
 +                skipped += 1
 +                continue
 +            }
 +            guard let glucoseValue = msg.glucose else {
-+                log("backfill_entry_skipped", "reason=missing_glucose_value timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState.rawValue)")
++                log("backfill_entry_skipped", "reason=missing_glucose_value timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState) algorithm_state_raw=\(msg.algorithmState.rawValue)")
 +                skipped += 1
 +                continue
 +            }
@@ -10868,7 +10870,7 @@ index e939aba00..85dfce140 100644
      }
  }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 0092e47e4..56e34e6b9 100644
+index 7f352652f..56e34e6b9 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,6 +2,7 @@ import Combine
@@ -11708,25 +11710,7 @@ index 0092e47e4..56e34e6b9 100644
              Task {
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
-@@ -1108,6 +1517,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                 carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
-                 carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
-                 carbEntry.isUploadedToNS = false
-+                carbEntry.isUploadedToHealth = false
-+                carbEntry.isUploadedToTidepool = false
- 
-                 do {
-                     guard context.hasChanges else {
-@@ -1170,6 +1581,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                     carbEntry.note = String(localized: "Via Watch", comment: "Note added to carb entry when entered via watch")
-                     carbEntry.isFPU = false // set this to false to ensure watch-entered carbs are displayed in main chart
-                     carbEntry.isUploadedToNS = false
-+                    carbEntry.isUploadedToHealth = false
-+                    carbEntry.isUploadedToTidepool = false
- 
-                     guard context.hasChanges else {
-                         // Acknowledge failure
-@@ -1541,11 +1954,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1545,11 +1954,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -11740,7 +11724,7 @@ index 0092e47e4..56e34e6b9 100644
          }
      }
  
-@@ -1556,12 +1966,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1560,12 +1966,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
