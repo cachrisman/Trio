@@ -1441,7 +1441,7 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         guard glucose.hasReliableGlucose else {
             log(
                 "egv_unreliable",
-                "algorithm_state=\(glucose.algorithmState.rawValue) sequence=\(glucose.sequence) glucose=\(glucose.glucose.map(String.init) ?? "nil")"
+                "algorithm_state=\(glucose.algorithmState) algorithm_state_raw=\(glucose.algorithmState.rawValue) sequence=\(glucose.sequence) glucose=\(glucose.glucose.map(String.init) ?? "nil")"
             )
             return
         }
@@ -1641,12 +1641,12 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         for msg in backfill {
             // Reliability gate — mirrors the phone-side manager's backfill filter.
             guard msg.hasReliableGlucose else {
-                log("backfill_entry_skipped", "reason=unreliable_state timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState.rawValue)")
+                log("backfill_entry_skipped", "reason=unreliable_state timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState) algorithm_state_raw=\(msg.algorithmState.rawValue)")
                 skipped += 1
                 continue
             }
             guard let glucoseValue = msg.glucose else {
-                log("backfill_entry_skipped", "reason=missing_glucose_value timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState.rawValue)")
+                log("backfill_entry_skipped", "reason=missing_glucose_value timestamp=\(msg.timestamp) algorithm_state=\(msg.algorithmState) algorithm_state_raw=\(msg.algorithmState.rawValue)")
                 skipped += 1
                 continue
             }
