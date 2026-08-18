@@ -1,6 +1,6 @@
-From bf9b3f304fb59fad7e858345ea54a0132d93bb83 Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Mon, 17 Aug 2026 14:31:55 +0200
+From ffa54f4dc332e0ef5ea89d070a777877d1a143ff Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 07:05:18 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: d9a78e0e35761a7c12024480ecbbba119e9d01fb
-Trio-Patch-Generated: 2026-08-17T12:31:43Z
+Trio-Patch-Feature-Tip: d689bec9e443d0895e93121f5bab3c6deeb8bf1a
+Trio-Patch-Generated: 2026-08-18T05:05:05Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -46,6 +46,7 @@ Trio-Patch-Source-Commits:
  090cdcb640f558073c8dabf839f187434b5df227 watch: refresh the chart after backfill, and three review fixes (TRIO-029)
  3dfb75e92caf91f3502dc9fec060491b89238d03 watch: store backfill glucose unmodified, matching the store's canary pattern (TRIO-029)
  d9a78e0e35761a7c12024480ecbbba119e9d01fb watch: log the mapped algorithm state name alongside the raw value (TRIO-041)
+ d689bec9e443d0895e93121f5bab3c6deeb8bf1a watch: compute the delta from the history store so backfill readings count (TRIO-045)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -87,9 +88,10 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  5645703ac8e969779a2f2c87646aef07fc3e0702
  17827e87392a8919ba6f1014215f40bbf7bef53f
  f877c3b8d1fff1d759be1e9b1dec7e53393ebe1d
+ dd5e04ecf41c87100b6367f1b54319f413289f3c
 ---
  .../ExtensionDelegate.swift                   |   92 +
- .../G7WatchSensorAdapter.swift                | 1904 ++++++++++++
+ .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
  .../Helper/WatchNotificationHandler.swift     |   30 +
  .../Helper/WatchResidentTelemetry.swift       |  139 +
  Trio Watch App Extension/TrioWatchApp.swift   |   54 +-
@@ -117,7 +119,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  608 +++-
- 29 files changed, 9809 insertions(+), 544 deletions(-)
+ 29 files changed, 9805 insertions(+), 544 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -233,10 +235,10 @@ index 000000000..27aaef3cc
 +}
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..15306d2d3
+index 000000000..3d472a5b4
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,1904 @@
+@@ -0,0 +1,1900 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -464,7 +466,6 @@ index 000000000..15306d2d3
 +    private var lastKnownExtSessionActive = false { didSet { syncTelemetryRingContext() } }
 +
 +    private var lastReadingSequence: UInt16?
-+    private var lastSavedGlucoseValue: Int?
 +    private var sessionActivationDate: Date?
 +
 +    private enum Keys {
@@ -955,7 +956,6 @@ index 000000000..15306d2d3
 +        // does not clear these fields — only `performEndOfSessionTeardown` does, and a
 +        // phone-pushed sensor swap can happen without an EOS-marked EGV arriving first.
 +        lastReadingSequence = nil
-+        lastSavedGlucoseValue = nil
 +        sessionActivationDate = nil
 +        mirrorDailyCountersToWatchState()
 +        // C2 accepted swap: the old binding is definitively dead — tear it down NOW even if the
@@ -1434,7 +1434,6 @@ index 000000000..15306d2d3
 +        boundSensorName = nil
 +        consecutivePreEGVDisconnects = 0
 +        lastReadingSequence = nil
-+        lastSavedGlucoseValue = nil
 +        sessionActivationDate = nil
 +        mirrorDailyCountersToWatchState()
 +        sessionPhase = .preEGV
@@ -1737,15 +1736,14 @@ index 000000000..15306d2d3
 +        persistDailyCounters()
 +        mirrorDailyCountersToWatchState()
 +        let delta: String = {
-+            // C-210-2 (#2b): prefer the in-memory baseline; fall back to the cross-source history store
-+            // so a cold start / sensor swap (lastSavedGlucoseValue == nil) still yields a real delta
-+            // instead of "--". C-210-1: format in the user's display unit.
-+            let previous = lastSavedGlucoseValue
-+                ?? WatchGlucoseHistoryStore.shared.mostRecentMgDl(before: readingEpoch)
++            // C-210-2 (#2b): the history store is the single baseline — readings that arrived via
++            // backfill are counted, so the delta is the last ~5-minute step rather than the whole
++            // gap after a disconnect. The lookup is strictly-before the current reading, which is
++            // inserted into the store afterwards. C-210-1: format in the user's display unit.
++            let previous = WatchGlucoseHistoryStore.shared.mostRecentMgDl(before: readingEpoch)
 +            guard let previous else { return "--" }
 +            return WatchGlucoseColorComputer.shared.displayDeltaString(previousMgDl: previous, currentMgDl: glucoseValue)
 +        }()
-+        lastSavedGlucoseValue = glucoseValue
 +
 +        let trend = WatchState.trendString(fromDirectBleRate: glucose.trend)
 +
