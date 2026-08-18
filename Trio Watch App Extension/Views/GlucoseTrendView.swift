@@ -35,6 +35,41 @@ struct GlucoseTrendView: View {
         }
     }
 
+    /// Single status line under the glucose bubble: recency, optional `· BLE · captures / slots` (the
+    /// honest background capture-success rate since midnight). C-210-3 (D210-1): replaced the old
+    /// `egvs/connects` — connects/readings can look healthy during a dormancy because they don't
+    /// surface *missed* slots; the captures/eligible-slots ratio (e.g. `67 / 248`) makes a stall visible.
+    @ViewBuilder
+    private func bleRecencyStatusLine(recency: String) -> some View {
+        let conns = state.bleConnectsToday
+        let stats = G7WatchSensorAdapter.shared.dailySlotStats()
+        let egvs = stats.egvs
+        let fromBle = state.displayedReadingSource == .g7DirectBLE
+
+        let base: Text = {
+            if conns > 0 {
+                let denom = stats.eligibleSlots
+                let ratio = denom > 0 ? "\(egvs) / \(denom)" : "\(egvs)"
+                let suffixColor: Color = egvs > 0 ? .primary : .secondary
+                return Text(recency) + Text(" · BLE · \(ratio)").foregroundStyle(suffixColor)
+            } else if fromBle {
+                return Text(recency) + Text(" · BLE").foregroundStyle(.secondary)
+            } else {
+                return Text(recency) + Text(" · Phone").foregroundStyle(.secondary)
+            }
+        }()
+
+        // C-210-4: surface a direct-BLE stall (direct path stale while phone fresh => on phone relay).
+        switch state.directBleStall {
+        case .none:
+            base
+        case .stalled:
+            base + Text(" · stalled").foregroundStyle(Color.loopYellow)
+        case .unavailable:
+            base + Text(" · no direct").foregroundStyle(Color.loopRed)
+        }
+    }
+
     var circleSize: CGFloat {
         switch state.deviceType {
         case .watch40mm:
@@ -132,10 +167,13 @@ struct GlucoseTrendView: View {
                 .shadow(color: Color.black.opacity(0.5), radius: 5)
 
                 VStack(alignment: .center) {
+                    let glucoseColor: Color = isWatchStateDated
+                        ? Color.secondary
+                        : state.currentGlucoseColorString.toColor()
                     Text(isWatchStateDated ? "--" : state.currentGlucose)
                         .fontWeight(.semibold)
                         .font(currentGlucoseFontSize)
-                        .foregroundStyle(isWatchStateDated ? Color.secondary : state.currentGlucoseColorString.toColor())
+                        .foregroundStyle(glucoseColor)
 
                     if let delta = state.delta {
                         Text(isWatchStateDated ? "--" : delta)
@@ -148,14 +186,17 @@ struct GlucoseTrendView: View {
 
             Spacer()
 
-            Text(
-                isWatchStateDated ?
-                    String(localized: "STALE DATA", comment: "Information displayed when watch app data outdated or stale.") :
-                    state
-                    .lastLoopTime ?? "--"
-            )
-            .font(.system(size: minutesAgoFontSize))
-            .fontWidth(isWatchStateDated ? .expanded : .standard)
+            VStack(spacing: 2) {
+                let recency: String = isWatchStateDated
+                    ? String(localized: "STALE DATA", comment: "Outdated watch data label.")
+                    : (state.lastLoopTime ?? "--")
+                let statusLine = bleRecencyStatusLine(recency: recency)
+                statusLine
+                    .font(.system(size: minutesAgoFontSize))
+                    .fontWidth(isWatchStateDated ? .expanded : .standard)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+            }
 
             Spacer()
 
