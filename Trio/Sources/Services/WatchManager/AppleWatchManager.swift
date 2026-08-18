@@ -1193,11 +1193,20 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             return
         }
 
-        // New payload - record as processed (durable) BEFORE processing
-        recordProcessed(payloadId)
-
-        // Enqueue payload handling (durable enqueue)
+        // Handle, then record, then ACK — neither the dedupe marker nor the ACK may be made
+        // before the work is done: the watch deletes its retained payload once it sees the ACK,
+        // and a later resend short-circuits on the dedupe record without doing any work.
+        // If the app terminates after the ACK but before this block runs, the report is lost
+        // with no way to recover it.
+        // Accepted trade-off: isProcessed is checked on the delegate queue while recordProcessed
+        // now runs on the main queue, so two identical payloads arriving in quick succession may
+        // both be handled. A duplicate log append or duplicate Crashlytics record is harmless,
+        // whereas a lost report is not.
         DispatchQueue.main.async { [weak self] in
+            // If self is gone, deliberately skip the reply: an unanswered reply makes the watch
+            // time out its sendMessage, run its errorHandler, and keep the payload retained for a retry.
+            // ACKing from a torn-down manager would be a promise about work that never happened.
+            guard let self else { return }
             if type == "watchLogs" {
                 if let logData = message["data"] as? String {
                     SimpleLogReporter.appendToWatchLog(logData)
@@ -1205,21 +1214,20 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 }
             } else if type == "watchError" {
                 if let errorData = message["data"] as? [String: Any] {
-                    self?.handleWatchError(errorData)
+                    self.handleWatchError(errorData)
                 }
             }
+
+            // Record after handling so the dedupe marker reflects completed work
+            self.recordProcessed(payloadId)
+
+            // ACK after the record so the watch only discards the payload once we are done
+            let ack: [String: Any] = [
+                "type": "ack",
+                "payloadId": payloadId
+            ]
+            replyHandler(ack)
         }
-
-        // Do not send reverse transferUserInfo confirms for watchLogs here.
-        // Watch-side cleanup is covered by the immediate ACK reply plus later batchAck/queryAcks,
-        // and the extra userInfo confirm can create avoidable connectivity background wakes.
-
-        // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
-        let ack: [String: Any] = [
-            "type": "ack",
-            "payloadId": payloadId
-        ]
-        replyHandler(ack)
     }
 
     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
