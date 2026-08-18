@@ -1,12 +1,12 @@
-From 49c69ba3df97200ddb7ae9f790acec51aa47cdb7 Mon Sep 17 00:00:00 2001
+From 8b203be012b7f0073ccee2480f48b9ec60ba213a Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 18 Aug 2026 07:37:50 +0200
+Date: Tue, 18 Aug 2026 08:37:30 +0200
 Subject: [PATCH] feat: watch-session-crash-guard
 
 Trio-Patch-Source-Branch: feature/watch-session-crash-guard
 Trio-Patch-Base: d148ba67bd581e24e5da59a86feed4c80418ce8a
-Trio-Patch-Feature-Tip: dfe00a693d602c0bb0c76f87714c76ba9a60074b
-Trio-Patch-Generated: 2026-08-18T05:37:42Z
+Trio-Patch-Feature-Tip: d0efd426a4b9e92d116e50345130812b8d80fd1c
+Trio-Patch-Generated: 2026-08-18T06:37:22Z
 Trio-Patch-Source-Commits:
  31568c5eebfcee5621f890e3b0c650a7d79d92ed feat: ns-richer-settings
  f0111815ecc217dd6cdac32e133d47994f798852 feat: g7-reading-time-with-seconds
@@ -20,6 +20,7 @@ Trio-Patch-Source-Commits:
  09e9e93a00a1f81ea45006915c418cf0e5fad874 watch: restore round-each-operand mmol/L delta on the phone (TRIO-038)
  d22934fa170e2f94bcb31ab21a67f43cb6f83009 watch: drop the superseded g7Sequence stamping from patch 10
  dfe00a693d602c0bb0c76f87714c76ba9a60074b watch: ACK only after the payload has actually been handled (TRIO-043)
+ d0efd426a4b9e92d116e50345130812b8d80fd1c watch: correct two TRIO-043 comments that overstated their guarantees
 Trio-Patch-Source-PatchIds:
  f19d9363a9ac847de8e6c12a5acd685d05be56fa
  20881cbfa882e622b997fffe65a9d4fe9e3febae
@@ -33,6 +34,7 @@ Trio-Patch-Source-PatchIds:
  756f516bdb8976d748be6fa8c1760152b9e9bf9b
  7edc93ae36f06843a94979fa9784ee585873665a
  6ac3161235528aac14b650a1cc40eae8c437fe2f
+ 40b36224e87fd6e18c9a38873bd375cfcdc8133e
 ---
  Trio/Sources/Application/TrioApp.swift        |  58 ++++++----
  .../WatchManager/AppleWatchManager.swift      | 105 ++++++++----------
@@ -111,7 +113,7 @@ index d88152f2f..d30306ca2 100644
  
      init() {
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index f38114b5c..872875380 100644
+index 1c8b499ed..5e16a1ff5 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,7 +2,6 @@ import Combine
@@ -297,7 +299,7 @@ index f38114b5c..872875380 100644
          }
  
          // Deduplicate BEFORE any Crashlytics calls
-@@ -1235,9 +1235,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1240,9 +1240,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Check if this is an envelope message
              if let type = message["type"] as? String,
                 let payloadId = message["payloadId"] as? String {
@@ -308,7 +310,7 @@ index f38114b5c..872875380 100644
                  if type == "watchLogs" {
                      if let logData = message["data"] as? String {
                          SimpleLogReporter.appendToWatchLog(logData)
-@@ -1474,22 +1472,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1479,22 +1477,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          debug(.watchManager, "📱 Phone reachability changed: isReachable=\(session.isReachable) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
  
          if session.isReachable {
