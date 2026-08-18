@@ -1,12 +1,12 @@
-From a017ad9c903ceb0709bc12340ddd2282b1888dcb Mon Sep 17 00:00:00 2001
+From 92b1b43a690b4681d58580cedfed6065cd9d5935 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 18 Aug 2026 07:34:58 +0200
+Date: Tue, 18 Aug 2026 08:36:50 +0200
 Subject: [PATCH] feat: watch-error-reporting
 
 Trio-Patch-Source-Branch: feature/watch-error-reporting
 Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: 5a40d8ad656bcff6b5a51c8b924a1047e6a4f22e
-Trio-Patch-Generated: 2026-08-18T05:34:50Z
+Trio-Patch-Feature-Tip: fb198cc959e2df51eb3473f04bd8c08f3bdcb544
+Trio-Patch-Generated: 2026-08-18T06:36:41Z
 Trio-Patch-Source-Commits:
  53ac829f5ef436c0f39e72d97eaff2a9da665b98 feat: ns-richer-settings
  7efe8a135fd76228c8f952603da8fe2d0ec788bf feat: g7-reading-time-with-seconds
@@ -16,6 +16,7 @@ Trio-Patch-Source-Commits:
  e4ba503c49d1f2ab7d3cd6376e3eabd96f64d853 Merge branch 'dev' into feature/watch-error-reporting
  f6ca271f440094b91b405627145849bfeebf0966 watch: set isUploadedToHealth/Tidepool on watch-entered carbs (TRIO-037)
  5a40d8ad656bcff6b5a51c8b924a1047e6a4f22e watch: ACK only after the payload has actually been handled (TRIO-043)
+ fb198cc959e2df51eb3473f04bd8c08f3bdcb544 watch: correct two TRIO-043 comments that overstated their guarantees
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -25,14 +26,15 @@ Trio-Patch-Source-PatchIds:
 77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
  effa4e5be63dad9f77a8743b6aba4e27dce7a277
  6ac3161235528aac14b650a1cc40eae8c437fe2f
+ 40b36224e87fd6e18c9a38873bd375cfcdc8133e
 ---
  Trio Watch App Extension/TrioWatchApp.swift   |  10 +-
- .../WatchErrorReporter.swift                  | 363 ++++++++++++++++
+ .../WatchErrorReporter.swift                  | 363 +++++++++++++++
  Trio Watch App Extension/WatchLogger.swift    | 327 +++++++++++---
  .../WatchState+Requests.swift                 |  14 +-
  Trio Watch App Extension/WatchState.swift     |   4 +-
- .../WatchManager/AppleWatchManager.swift      | 408 ++++++++++++++++--
- 6 files changed, 1040 insertions(+), 86 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 413 ++++++++++++++++--
+ 6 files changed, 1045 insertions(+), 86 deletions(-)
  create mode 100644 Trio Watch App Extension/WatchErrorReporter.swift
 
 diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
@@ -902,7 +904,7 @@ index 805f52895..164175cf5 100644
          }
      }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 21187db44..2857ff194 100644
+index 21187db44..02c883a38 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -1,5 +1,6 @@
@@ -961,7 +963,7 @@ index 21187db44..2857ff194 100644
  
                  return watchState
              }
-@@ -641,19 +648,232 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -641,19 +648,237 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -1132,14 +1134,19 @@ index 21187db44..2857ff194 100644
 +        // and a later resend short-circuits on the dedupe record without doing any work.
 +        // If the app terminates after the ACK but before this block runs, the report is lost
 +        // with no way to recover it.
-+        // Accepted trade-off: isProcessed is checked on the delegate queue while recordProcessed
-+        // now runs on the main queue, so two identical payloads arriving in quick succession may
-+        // both be handled. A duplicate log append or duplicate Crashlytics record is harmless,
-+        // whereas a lost report is not.
++        // Accepted cost: recordProcessed now runs on the main queue while isProcessed is read on
++        // the delegate queue, and didReceiveUserInfo performs the same UserDefaults
++        // read-modify-write without serialising against either. Concurrent callbacks can therefore
++        // lose a dedupe marker - for distinct payloads, not only identical ones - so a payload may
++        // be handled more than once. Every outcome here is a duplicate log append or Crashlytics
++        // record, never a lost report, which is the direction this reordering exists to choose.
 +        DispatchQueue.main.async { [weak self] in
-+            // If self is gone, deliberately skip the reply: an unanswered reply makes the watch
-+            // time out its sendMessage, run its errorHandler, and keep the payload retained for a retry.
-+            // ACKing from a torn-down manager would be a promise about work that never happened.
++            // Torn-down manager: send no reply at all. This is NOT a working retry - the watch's
++            // errorHandler stores only {payloadId, filePath: nil} in a list nothing consumes
++            // (TRIO-042), so the report is lost either way today. Silence is still better than an
++            // ACK: an ACK would additionally have the watch discard its retained copy, and skipping
++            // recordProcessed leaves the phone's dedupe clean so a resend is handled rather than
++            // short-circuited once TRIO-042 gives the watch a replay path.
              guard let self else { return }
 +            if type == "watchLogs" {
 +                if let logData = message["data"] as? String {
@@ -1199,7 +1206,7 @@ index 21187db44..2857ff194 100644
                  // Skip if no watch is paired or app not installed
                  guard let session = self.session, session.isPaired, session.isReachable,
                        session.isWatchAppInstalled else { return }
-@@ -666,21 +886,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -666,21 +891,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
              if let snoozeMinutes = message[WatchMessageKeys.snoozeDuration] as? Int {
                  debug(.watchManager, "📱 Received snooze request from watch: \(snoozeMinutes) minutes")
@@ -1227,7 +1234,7 @@ index 21187db44..2857ff194 100644
              } else if let bolusAmount = message[WatchMessageKeys.bolus] as? Double,
                        let carbsAmount = message[WatchMessageKeys.carbs] as? Int,
                        let timestamp = message[WatchMessageKeys.date] as? TimeInterval
-@@ -690,11 +913,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -690,11 +918,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      .watchManager,
                      "📱 Received meal bolus combo request from watch: \(bolusAmount)U, \(carbsAmount)g at \(date)"
                  )
@@ -1241,7 +1248,7 @@ index 21187db44..2857ff194 100644
                      toWatch: false,
                      message: "Error! Invalid or incomplete data received from watch.",
                      ackCode: .genericFailure
-@@ -703,22 +926,22 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -703,22 +931,22 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
              if message[WatchMessageKeys.cancelOverride] as? Bool == true {
                  debug(.watchManager, "📱 Received cancel override request from watch")
@@ -1268,7 +1275,7 @@ index 21187db44..2857ff194 100644
              }
  
              if message[WatchMessageKeys.requestBolusRecommendation] as? Bool == true {
-@@ -778,14 +1001,61 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -778,14 +1006,61 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      }
  
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
@@ -1332,7 +1339,7 @@ index 21187db44..2857ff194 100644
                  await self.notificationsManager.applySnooze(for: TimeInterval(snoozeMinutes * 60))
              }
          }
-@@ -807,6 +1077,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -807,6 +1082,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
              }
@@ -1342,7 +1349,7 @@ index 21187db44..2857ff194 100644
          } else {
              // Try to reconnect after a short delay
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-@@ -1356,6 +1629,91 @@ extension BaseWatchManager {
+@@ -1356,6 +1634,91 @@ extension BaseWatchManager {
  
          return nil
      }
