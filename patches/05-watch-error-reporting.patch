@@ -1,12 +1,12 @@
-From 45cbe1ef35a1b501301a068132e540b5d64e3e23 Mon Sep 17 00:00:00 2001
-From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Mon, 17 Aug 2026 11:25:17 +0200
+From a017ad9c903ceb0709bc12340ddd2282b1888dcb Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 07:34:58 +0200
 Subject: [PATCH] feat: watch-error-reporting
 
 Trio-Patch-Source-Branch: feature/watch-error-reporting
 Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: f6ca271f440094b91b405627145849bfeebf0966
-Trio-Patch-Generated: 2026-08-17T09:25:08Z
+Trio-Patch-Feature-Tip: 5a40d8ad656bcff6b5a51c8b924a1047e6a4f22e
+Trio-Patch-Generated: 2026-08-18T05:34:50Z
 Trio-Patch-Source-Commits:
  53ac829f5ef436c0f39e72d97eaff2a9da665b98 feat: ns-richer-settings
  7efe8a135fd76228c8f952603da8fe2d0ec788bf feat: g7-reading-time-with-seconds
@@ -15,6 +15,7 @@ Trio-Patch-Source-Commits:
  a0fb767da22dff360dda869680f31c9af36c4dfa Merge dev (0.8.4.61 upstream sync) into feature/watch-error-reporting
  e4ba503c49d1f2ab7d3cd6376e3eabd96f64d853 Merge branch 'dev' into feature/watch-error-reporting
  f6ca271f440094b91b405627145849bfeebf0966 watch: set isUploadedToHealth/Tidepool on watch-entered carbs (TRIO-037)
+ 5a40d8ad656bcff6b5a51c8b924a1047e6a4f22e watch: ACK only after the payload has actually been handled (TRIO-043)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -23,14 +24,15 @@ Trio-Patch-Source-PatchIds:
  5560470aadb1706fcb843cabf5981f33df1fe39d
 77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
  effa4e5be63dad9f77a8743b6aba4e27dce7a277
+ 6ac3161235528aac14b650a1cc40eae8c437fe2f
 ---
  Trio Watch App Extension/TrioWatchApp.swift   |  10 +-
  .../WatchErrorReporter.swift                  | 363 ++++++++++++++++
  Trio Watch App Extension/WatchLogger.swift    | 327 +++++++++++---
  .../WatchState+Requests.swift                 |  14 +-
  Trio Watch App Extension/WatchState.swift     |   4 +-
- .../WatchManager/AppleWatchManager.swift      | 398 ++++++++++++++++--
- 6 files changed, 1029 insertions(+), 87 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 408 ++++++++++++++++--
+ 6 files changed, 1040 insertions(+), 86 deletions(-)
  create mode 100644 Trio Watch App Extension/WatchErrorReporter.swift
 
 diff --git a/Trio Watch App Extension/TrioWatchApp.swift b/Trio Watch App Extension/TrioWatchApp.swift
@@ -900,7 +902,7 @@ index 805f52895..164175cf5 100644
          }
      }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 21187db44..7f352652f 100644
+index 21187db44..2857ff194 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -1,5 +1,6 @@
@@ -959,7 +961,7 @@ index 21187db44..7f352652f 100644
  
                  return watchState
              }
-@@ -641,19 +648,220 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -641,19 +648,232 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -1048,8 +1050,9 @@ index 21187db44..7f352652f 100644
 +                return (now - timestamp) < (7 * 24 * 60 * 60)
 +            }
 +            return true
-+        }
-+
+         }
+ 
+-        Task { @MainActor [weak self] in
 +        UserDefaults.standard.set(pendingAcks, forKey: pendingAcksKey)
 +    }
 +
@@ -1122,32 +1125,42 @@ index 21187db44..7f352652f 100644
 +            ]
 +            replyHandler(ack)
 +            return
-         }
- 
--        Task { @MainActor [weak self] in
--            guard let self else { return }
-+        // New payload - record as processed (durable) BEFORE processing
-+        recordProcessed(payloadId)
++        }
 +
-+        // Enqueue payload handling (durable enqueue)
++        // Handle, then record, then ACK — neither the dedupe marker nor the ACK may be made
++        // before the work is done: the watch deletes its retained payload once it sees the ACK,
++        // and a later resend short-circuits on the dedupe record without doing any work.
++        // If the app terminates after the ACK but before this block runs, the report is lost
++        // with no way to recover it.
++        // Accepted trade-off: isProcessed is checked on the delegate queue while recordProcessed
++        // now runs on the main queue, so two identical payloads arriving in quick succession may
++        // both be handled. A duplicate log append or duplicate Crashlytics record is harmless,
++        // whereas a lost report is not.
 +        DispatchQueue.main.async { [weak self] in
++            // If self is gone, deliberately skip the reply: an unanswered reply makes the watch
++            // time out its sendMessage, run its errorHandler, and keep the payload retained for a retry.
++            // ACKing from a torn-down manager would be a promise about work that never happened.
+             guard let self else { return }
 +            if type == "watchLogs" {
 +                if let logData = message["data"] as? String {
 +                    SimpleLogReporter.appendToWatchLog(logData)
 +                }
 +            } else if type == "watchError" {
 +                if let errorData = message["data"] as? [String: Any] {
-+                    self?.handleWatchError(errorData)
++                    self.handleWatchError(errorData)
 +                }
 +            }
-+        }
 +
-+        // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
-+        let ack: [String: Any] = [
-+            "type": "ack",
-+            "payloadId": payloadId
-+        ]
-+        replyHandler(ack)
++            // Record after handling so the dedupe marker reflects completed work
++            self.recordProcessed(payloadId)
++
++            // ACK after the record so the watch only discards the payload once we are done
++            let ack: [String: Any] = [
++                "type": "ack",
++                "payloadId": payloadId
++            ]
++            replyHandler(ack)
++        }
 +    }
 +
 +    func session(_: WCSession, didReceiveMessage message: [String: Any]) {
@@ -1186,7 +1199,7 @@ index 21187db44..7f352652f 100644
                  // Skip if no watch is paired or app not installed
                  guard let session = self.session, session.isPaired, session.isReachable,
                        session.isWatchAppInstalled else { return }
-@@ -666,21 +874,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -666,21 +886,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
              if let snoozeMinutes = message[WatchMessageKeys.snoozeDuration] as? Int {
                  debug(.watchManager, "📱 Received snooze request from watch: \(snoozeMinutes) minutes")
@@ -1214,7 +1227,7 @@ index 21187db44..7f352652f 100644
              } else if let bolusAmount = message[WatchMessageKeys.bolus] as? Double,
                        let carbsAmount = message[WatchMessageKeys.carbs] as? Int,
                        let timestamp = message[WatchMessageKeys.date] as? TimeInterval
-@@ -690,11 +901,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -690,11 +913,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      .watchManager,
                      "📱 Received meal bolus combo request from watch: \(bolusAmount)U, \(carbsAmount)g at \(date)"
                  )
@@ -1228,7 +1241,7 @@ index 21187db44..7f352652f 100644
                      toWatch: false,
                      message: "Error! Invalid or incomplete data received from watch.",
                      ackCode: .genericFailure
-@@ -703,22 +914,22 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -703,22 +926,22 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
              if message[WatchMessageKeys.cancelOverride] as? Bool == true {
                  debug(.watchManager, "📱 Received cancel override request from watch")
@@ -1255,7 +1268,7 @@ index 21187db44..7f352652f 100644
              }
  
              if message[WatchMessageKeys.requestBolusRecommendation] as? Bool == true {
-@@ -778,14 +989,61 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -778,14 +1001,61 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      }
  
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
@@ -1319,7 +1332,7 @@ index 21187db44..7f352652f 100644
                  await self.notificationsManager.applySnooze(for: TimeInterval(snoozeMinutes * 60))
              }
          }
-@@ -807,6 +1065,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -807,6 +1077,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
              }
@@ -1329,7 +1342,7 @@ index 21187db44..7f352652f 100644
          } else {
              // Try to reconnect after a short delay
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-@@ -1356,6 +1617,91 @@ extension BaseWatchManager {
+@@ -1356,6 +1629,91 @@ extension BaseWatchManager {
  
          return nil
      }
