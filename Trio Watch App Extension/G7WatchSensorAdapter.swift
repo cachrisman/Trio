@@ -225,7 +225,6 @@ final class G7WatchSensorAdapter: NSObject {
     private var lastKnownExtSessionActive = false { didSet { syncTelemetryRingContext() } }
 
     private var lastReadingSequence: UInt16?
-    private var lastSavedGlucoseValue: Int?
     private var sessionActivationDate: Date?
 
     private enum Keys {
@@ -716,7 +715,6 @@ final class G7WatchSensorAdapter: NSObject {
         // does not clear these fields — only `performEndOfSessionTeardown` does, and a
         // phone-pushed sensor swap can happen without an EOS-marked EGV arriving first.
         lastReadingSequence = nil
-        lastSavedGlucoseValue = nil
         sessionActivationDate = nil
         mirrorDailyCountersToWatchState()
         // C2 accepted swap: the old binding is definitively dead — tear it down NOW even if the
@@ -1195,7 +1193,6 @@ final class G7WatchSensorAdapter: NSObject {
         boundSensorName = nil
         consecutivePreEGVDisconnects = 0
         lastReadingSequence = nil
-        lastSavedGlucoseValue = nil
         sessionActivationDate = nil
         mirrorDailyCountersToWatchState()
         sessionPhase = .preEGV
@@ -1498,15 +1495,14 @@ extension G7WatchSensorAdapter: G7SensorDelegate {
         persistDailyCounters()
         mirrorDailyCountersToWatchState()
         let delta: String = {
-            // C-210-2 (#2b): prefer the in-memory baseline; fall back to the cross-source history store
-            // so a cold start / sensor swap (lastSavedGlucoseValue == nil) still yields a real delta
-            // instead of "--". C-210-1: format in the user's display unit.
-            let previous = lastSavedGlucoseValue
-                ?? WatchGlucoseHistoryStore.shared.mostRecentMgDl(before: readingEpoch)
+            // C-210-2 (#2b): the history store is the single baseline — readings that arrived via
+            // backfill are counted, so the delta is the last ~5-minute step rather than the whole
+            // gap after a disconnect. The lookup is strictly-before the current reading, which is
+            // inserted into the store afterwards. C-210-1: format in the user's display unit.
+            let previous = WatchGlucoseHistoryStore.shared.mostRecentMgDl(before: readingEpoch)
             guard let previous else { return "--" }
             return WatchGlucoseColorComputer.shared.displayDeltaString(previousMgDl: previous, currentMgDl: glucoseValue)
         }()
-        lastSavedGlucoseValue = glucoseValue
 
         let trend = WatchState.trendString(fromDirectBleRate: glucose.trend)
 
