@@ -1198,14 +1198,19 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         // and a later resend short-circuits on the dedupe record without doing any work.
         // If the app terminates after the ACK but before this block runs, the report is lost
         // with no way to recover it.
-        // Accepted trade-off: isProcessed is checked on the delegate queue while recordProcessed
-        // now runs on the main queue, so two identical payloads arriving in quick succession may
-        // both be handled. A duplicate log append or duplicate Crashlytics record is harmless,
-        // whereas a lost report is not.
+        // Accepted cost: recordProcessed now runs on the main queue while isProcessed is read on
+        // the delegate queue, and didReceiveUserInfo performs the same UserDefaults
+        // read-modify-write without serialising against either. Concurrent callbacks can therefore
+        // lose a dedupe marker - for distinct payloads, not only identical ones - so a payload may
+        // be handled more than once. Every outcome here is a duplicate log append or Crashlytics
+        // record, never a lost report, which is the direction this reordering exists to choose.
         DispatchQueue.main.async { [weak self] in
-            // If self is gone, deliberately skip the reply: an unanswered reply makes the watch
-            // time out its sendMessage, run its errorHandler, and keep the payload retained for a retry.
-            // ACKing from a torn-down manager would be a promise about work that never happened.
+            // Torn-down manager: send no reply at all. This is NOT a working retry - the watch's
+            // errorHandler stores only {payloadId, filePath: nil} in a list nothing consumes
+            // (TRIO-042), so the report is lost either way today. Silence is still better than an
+            // ACK: an ACK would additionally have the watch discard its retained copy, and skipping
+            // recordProcessed leaves the phone's dedupe clean so a resend is handled rather than
+            // short-circuited once TRIO-042 gives the watch a replay path.
             guard let self else { return }
             if type == "watchLogs" {
                 if let logData = message["data"] as? String {
