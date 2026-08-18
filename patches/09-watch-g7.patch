@@ -1,6 +1,6 @@
-From ffa54f4dc332e0ef5ea89d070a777877d1a143ff Mon Sep 17 00:00:00 2001
+From cea51b317f7cda4485180fda3c373ff8dd1534a9 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 18 Aug 2026 07:05:18 +0200
+Date: Tue, 18 Aug 2026 07:36:01 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: d689bec9e443d0895e93121f5bab3c6deeb8bf1a
-Trio-Patch-Generated: 2026-08-18T05:05:05Z
+Trio-Patch-Feature-Tip: 6c89bfb5b1b38d42cf03aafecfc05f902c31574d
+Trio-Patch-Generated: 2026-08-18T05:35:51Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -47,6 +47,7 @@ Trio-Patch-Source-Commits:
  3dfb75e92caf91f3502dc9fec060491b89238d03 watch: store backfill glucose unmodified, matching the store's canary pattern (TRIO-029)
  d9a78e0e35761a7c12024480ecbbba119e9d01fb watch: log the mapped algorithm state name alongside the raw value (TRIO-041)
  d689bec9e443d0895e93121f5bab3c6deeb8bf1a watch: compute the delta from the history store so backfill readings count (TRIO-045)
+ 6c89bfb5b1b38d42cf03aafecfc05f902c31574d watch: ACK only after the payload has actually been handled (TRIO-043)
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -89,6 +90,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  17827e87392a8919ba6f1014215f40bbf7bef53f
  f877c3b8d1fff1d759be1e9b1dec7e53393ebe1d
  dd5e04ecf41c87100b6367f1b54319f413289f3c
+ 1b5a384b6b47f57836e0777c3a3c3a88ddc64c11
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -118,8 +120,8 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
- .../WatchManager/AppleWatchManager.swift      |  608 +++-
- 29 files changed, 9805 insertions(+), 544 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      |  604 +++-
+ 29 files changed, 9801 insertions(+), 544 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -10868,7 +10870,7 @@ index e939aba00..85dfce140 100644
      }
  }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 7f352652f..56e34e6b9 100644
+index 2857ff194..f38114b5c 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,6 +2,7 @@ import Combine
@@ -11558,11 +11560,11 @@ index 7f352652f..56e34e6b9 100644
 -        debug(.watchManager, "📱 Phone session activated with state: \(activationState.rawValue)")
 -        debug(.watchManager, "📱 Phone isReachable after activation: \(session.isReachable)")
 +        debug(.watchManager, "📱 Phone session activated state=\(activationState.rawValue) isReachable=\(session.isReachable) isPaired=\(session.isPaired) isWatchAppInstalled=\(session.isWatchAppInstalled) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
-+
-+        // R2b: clear dispatch gate on activation so the first post-launch transfer always fires
-+        lastDispatchedGateKey = ""
  
 -        // Try to send initial data after activation
++        // R2b: clear dispatch gate on activation so the first post-launch transfer always fires
++        lastDispatchedGateKey = ""
++
 +        // R1b: one-time startup drain of the frozen transfer queue
 +        if !hasPerformedStartupQueueDrain {
 +            hasPerformedStartupQueueDrain = true
@@ -11614,7 +11616,7 @@ index 7f352652f..56e34e6b9 100644
          }
  
          // Deduplicate BEFORE any Crashlytics calls
-@@ -813,6 +1201,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -822,6 +1210,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = message["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -11622,18 +11624,7 @@ index 7f352652f..56e34e6b9 100644
                  }
              } else if type == "watchError" {
                  if let errorData = message["data"] as? [String: Any] {
-@@ -821,6 +1210,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-             }
-         }
- 
-+        // Do not send reverse transferUserInfo confirms for watchLogs here.
-+        // Watch-side cleanup is covered by the immediate ACK reply plus later batchAck/queryAcks,
-+        // and the extra userInfo confirm can create avoidable connectivity background wakes.
-+
-         // Reply ACK immediately (even if Crashlytics fails) - ACK means "received and queued"
-         let ack: [String: Any] = [
-             "type": "ack",
-@@ -834,10 +1227,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -846,10 +1235,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Check if this is an envelope message
              if let type = message["type"] as? String,
                 let payloadId = message["payloadId"] as? String {
@@ -11648,7 +11639,7 @@ index 7f352652f..56e34e6b9 100644
                      }
                  } else if type == "watchError" {
                      if let errorData = message["data"] as? [String: Any] {
-@@ -850,6 +1246,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -862,6 +1254,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Legacy message format
              if let logs = message["watchLogs"] as? String {
                  SimpleLogReporter.appendToWatchLog(logs)
@@ -11656,7 +11647,7 @@ index 7f352652f..56e34e6b9 100644
              }
  
              // Handle watch errors forwarded for Crashlytics logging
-@@ -862,9 +1259,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -874,9 +1267,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              {
                  debug(.watchManager, "📱 Watch requested watch state data update.")
                  guard let self = self else { return }
@@ -11669,7 +11660,7 @@ index 7f352652f..56e34e6b9 100644
                  Task {
                      let state = await self.setupWatchState()
                      await self.sendDataToWatch(state)
-@@ -988,6 +1385,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1000,6 +1393,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -11684,7 +11675,7 @@ index 7f352652f..56e34e6b9 100644
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
          // Check if this is an envelope message
          if let type = userInfo["type"] as? String,
-@@ -1007,6 +1412,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1019,6 +1420,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = userInfo["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -11692,7 +11683,7 @@ index 7f352652f..56e34e6b9 100644
                  }
              } else if type == "watchError" {
                  if let errorData = userInfo["data"] as? [String: Any] {
-@@ -1057,10 +1463,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1069,10 +1471,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      #endif
  
      func sessionReachabilityDidChange(_ session: WCSession) {
@@ -11708,7 +11699,7 @@ index 7f352652f..56e34e6b9 100644
              Task {
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
-@@ -1545,11 +1954,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1557,11 +1962,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -11722,7 +11713,7 @@ index 7f352652f..56e34e6b9 100644
          }
      }
  
-@@ -1560,12 +1966,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1572,12 +1974,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
