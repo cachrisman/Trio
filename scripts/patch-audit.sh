@@ -22,9 +22,13 @@ WAIVERS_FILE="$REPO/scripts/patch-audit.waivers"
 
 SENTINEL_FILE="Trio/Sources/APS/DeviceDataManager.swift"
 # Symbols the 2026-06 incident silently deleted (pump-manager migration).
-# NB: upstream routes via `let OmniStr = "Omni"` then `hasPrefix(OmniStr)` —
-# match the variable form, not a "Omni" string literal.
-SENTINEL_SYMBOLS='func pumpManagerTypeByIdentifier|managerIdentifier.hasPrefix(OmniStr)|as? OmniPumpManager'
+# 2026-08-30: upstream's device-picker/DeviceCatalog refactor (9121d70f1, 2f2994bf8) relocated the
+# inline `let OmniStr = "Omni"; managerIdentifier.hasPrefix(OmniStr)` fallback out of this file and
+# into DeviceCatalog.pumpEntry(forPersistedIdentifier:), which DeviceDataManager.swift now delegates
+# to. The delegation call site is the load-bearing symbol here; the fallback's own correctness
+# (legacyIdentifierPrefixes containing "Omni" -> OmniPumpManager) is covered by upstream's own
+# TrioTests/DeviceCatalogTests.swift::testLegacyOmnipodIdentifiers. See TRIO-050.
+SENTINEL_SYMBOLS='func pumpManagerTypeByIdentifier|DeviceCatalog.pumpEntry(forPersistedIdentifier|as? OmniPumpManager'
 
 errors=0
 warnings=0
