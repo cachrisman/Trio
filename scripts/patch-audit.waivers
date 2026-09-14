@@ -1,0 +1,6 @@
+# Patch audit waivers file
+#
+# Format: patch=<NN> file=<path> allow_deleted=<n> reason="..."
+#
+# Example:
+# patch=12 file=Trio/Sources/APS/DeviceDataManager.swift allow_deleted=5 reason="Temporary removal of unused code"

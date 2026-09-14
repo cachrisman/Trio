@@ -1,7 +1,12 @@
 #! /bin/sh
 
+if [ "$CI" = "true" ]; then
+	echo "CI detected - skipping SwiftFormat."
+	exit 0
+fi
+
 assertEnvironment() {
-	if [ -z "$1" ]; then 
+	if [ -z "$1" ]; then
 		echo "$2"
 		exit 127
 	fi
@@ -97,24 +102,29 @@ trailingClosures \
 --typeattributes same-line \
 --varattributes same-line \
 --wrapcollections before-first \
---exclude Pods, Generated, \
-  **/R.generated.swift, \
-  fastlane/swift, \
-  Dependencies,  \
-  LoopKit,  \
-  LibreTransmitter, \
-  G7SensorKit, \
-  dexcom-share-client-swift, \
-  CGMBLEKit, \
-  RileyLinkKit, \
-  MinimedKit, \
-  TidepoolService, \
-  DanaKit, \
-  MedtrumKit, \
-  OmnipodKit, \
-  build, \
-  .build, \
-  DerivedData, \
-  .trio-worktrees, \
-  SourcePackages, \
-  **/*.pb.swift
+--exclude Pods \
+--exclude Generated \
+--exclude '**/R.generated.swift' \
+--exclude fastlane/swift \
+--exclude Dependencies \
+--exclude LoopKit \
+--exclude LibreTransmitter \
+--exclude G7SensorKit \
+--exclude dexcom-share-client-swift \
+--exclude CGMBLEKit \
+--exclude RileyLinkKit \
+--exclude MinimedKit \
+--exclude TidepoolService \
+--exclude DanaKit \
+--exclude MedtrumKit \
+--exclude OmnipodKit \
+--exclude LibreLoop \
+--exclude LibreCRKit \
+--exclude LoopAlgorithm \
+--exclude build \
+--exclude .build \
+--exclude DerivedData \
+--exclude .trio-worktrees \
+--exclude SourcePackages \
+--exclude '**/*.pb.swift' \
+--exclude AccuChekKit

@@ -47,6 +47,7 @@ playground.xcworkspace
 # Package.pins
 # Package.resolved
 .build/
+.swiftpm/
 
 # CocoaPods
 #
@@ -86,3 +87,6 @@ ConfigOverride.xcconfig
 .sync_baseline.json
 UserData/
 .cursor/plans/
+.claude
+.fusion
+.task-relay

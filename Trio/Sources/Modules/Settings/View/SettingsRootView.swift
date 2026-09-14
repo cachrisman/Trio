@@ -3,6 +3,7 @@ import LoopKit
 import LoopKitUI
 import SwiftUI
 import Swinject
+import UIKit
 
 extension Settings {
     struct VersionInfo: Equatable {
@@ -34,6 +35,8 @@ extension Settings {
             isDevUpdateAvailable: false
         )
         @State private var closedLoopDisabled = true
+        @State private var showCopiedToast = false
+        @ObservedObject private var releaseNotesService = ReleaseNotesService.shared
 
         @Environment(\.colorScheme) var colorScheme
         @EnvironmentObject var appIcons: Icons
@@ -59,6 +62,12 @@ extension Settings {
                         Image(systemName: versionIconName)
                             .foregroundColor(updateColor)
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text("Latest version: \(version), " + (
+                        versionInfo.isUpdateAvailable
+                            ? String(localized: "update available", comment: "Accessibility: version status")
+                            : String(localized: "up to date", comment: "Accessibility: version status")
+                    )))
                     if versionInfo.isBlacklisted {
                         HStack {
                             Text("Warning: Known issues. Update now.")
@@ -67,6 +76,7 @@ extension Settings {
                             Image(systemName: "exclamationmark.octagon.fill")
                                 .foregroundColor(.red)
                         }
+                        .accessibilityElement(children: .combine)
                     }
                 } else {
                     Text("Latest version: Fetching...")
@@ -89,6 +99,12 @@ extension Settings {
                                 .font(.footnote)
                                 .foregroundColor(devUpdateColor)
                         }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(Text("Latest dev: \(devVersion), " + (
+                            versionInfo.isDevUpdateAvailable
+                                ? String(localized: "update available", comment: "Accessibility: version status")
+                                : String(localized: "up to date", comment: "Accessibility: version status")
+                        )))
                     } else {
                         Text("Latest dev: Fetching...")
                             .font(.footnote)
@@ -98,30 +114,50 @@ extension Settings {
             }
         }
 
+        private func copyVersionInfo(_ text: String) {
+            UIPasteboard.general.string = text
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            withAnimation { showCopiedToast = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                withAnimation { showCopiedToast = false }
+            }
+        }
+
         var body: some View {
             List {
                 if searchText.isEmpty {
                     let buildDetails = BuildDetails.shared
 
+                    /// The current development version of the app.
+                    ///
+                    /// Follows a semantic pattern where release versions are like `0.5.0`, and
+                    /// development versions increment with a fourth component (e.g., `0.5.0.1`, `0.5.0.2`)
+                    /// after the base release. For example:
+                    /// - After release `0.5.0` → `0.5.0`
+                    /// - First dev push → `0.5.0.1`
+                    /// - Next dev push → `0.5.0.2`
+                    /// - Next release `0.6.0` → `0.6.0`
+                    /// - Next dev push → `0.6.0.1`
+                    ///
+                    /// If the dev version is unavailable, `"unknown"` is returned.
+                    let devVersion = Bundle.main.appDevVersion ?? "unknown"
+
+                    let buildNumber = Bundle.main.buildVersionNumber ?? String(localized: "Unknown")
+
                     Section(
-                        header: Text("BRANCH: \(buildDetails.branchAndSha)").textCase(nil),
+                        header: HStack(spacing: 4) {
+                            Button {
+                                copyVersionInfo(
+                                    "Trio v\(devVersion) (\(buildNumber)) \(buildDetails.branchAndSha)"
+                                )
+                            } label: {
+                                Image(systemName: "doc.on.doc.fill")
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(Text("Copy version information"))
+                            Text("BRANCH: \(buildDetails.branchAndSha)")
+                        }.textCase(nil),
                         content: {
-                            /// The current development version of the app.
-                            ///
-                            /// Follows a semantic pattern where release versions are like `0.5.0`, and
-                            /// development versions increment with a fourth component (e.g., `0.5.0.1`, `0.5.0.2`)
-                            /// after the base release. For example:
-                            /// - After release `0.5.0` → `0.5.0`
-                            /// - First dev push → `0.5.0.1`
-                            /// - Next dev push → `0.5.0.2`
-                            /// - Next release `0.6.0` → `0.6.0`
-                            /// - Next dev push → `0.6.0.1`
-                            ///
-                            /// If the dev version is unavailable, `"unknown"` is returned.
-                            let devVersion = Bundle.main.appDevVersion ?? "unknown"
-
-                            let buildNumber = Bundle.main.buildVersionNumber ?? String(localized: "Unknown")
-
                             NavigationLink(destination: SubmodulesView(buildDetails: buildDetails)) {
                                 HStack {
                                     Image(appIcons.appIcon.rawValue)
@@ -130,6 +166,7 @@ extension Settings {
                                         .frame(width: 50, height: 50)
                                         .cornerRadius(10)
                                         .padding(.trailing, 10)
+                                        .accessibilityHidden(true)
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text("Trio v\(devVersion) (\(buildNumber))")
                                             .font(.headline)
@@ -268,6 +305,46 @@ extension Settings {
                         }
                     ).listRowBackground(Color.chart)
 
+                    if !releaseNotesService.releases.isEmpty {
+                        Section(
+                            header: Text("Release Notes"),
+                            content: {
+                                if let current = releaseNotesService.notes {
+                                    NavigationLink(destination: ReleaseNotesDetailView(notes: current)) {
+                                        HStack {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(current.name)
+                                                    .foregroundColor(.primary)
+
+                                                Text(
+                                                    "Current release",
+                                                    comment: "Marks the release notes entry matching the running build"
+                                                )
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                            }
+
+                                            Spacer()
+
+                                            Text(current.publishedDateString)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                }
+
+                                if !releaseNotesService.previousReleases.isEmpty {
+                                    NavigationLink(
+                                        destination: ReleaseNotesListView(releases: releaseNotesService.previousReleases)
+                                    ) {
+                                        Text("Previous Versions")
+                                            .foregroundColor(.primary)
+                                    }
+                                }
+                            }
+                        ).listRowBackground(Color.chart)
+                    }
+
                     Section(
                         header: Text("Trio Backup"),
                         content: {
@@ -310,6 +387,18 @@ extension Settings {
                     ).listRowBackground(Color.chart)
                 }
             }
+            .overlay(alignment: .bottom) {
+                if showCopiedToast {
+                    Label("Copied", systemImage: "checkmark.circle.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.bottom, 32)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
             .scrollContentBackground(.hidden).background(appState.trioBackgroundColor(for: colorScheme))
             .sheet(isPresented: $shouldDisplayHint) {
                 SettingInputHintView(
@@ -324,6 +413,9 @@ extension Settings {
                 ShareSheet(activityItems: state.logItems())
             }
             .onAppear(perform: configureView)
+            .task {
+                await releaseNotesService.load()
+            }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.automatic)
             .toolbar {
