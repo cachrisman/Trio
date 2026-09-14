@@ -169,7 +169,7 @@ import WidgetKit
                 Task {
                     await WatchLogger.shared.log("⌚️ Watch session activation failed: \(error)", force: true)
                     await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                    await WatchLogger.shared.persistLogsLocally()
+                    await WatchLogger.shared.flushPersistedLogs()
                 }
                 return
             }
@@ -271,7 +271,7 @@ import WidgetKit
             Task {
                 await WatchLogger.shared.log("⌚️ transferUserInfo failed with error: \(error)")
                 await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
-                await WatchLogger.shared.persistLogsLocally()
+                await WatchLogger.shared.flushPersistedLogs()
             }
         }
     }
