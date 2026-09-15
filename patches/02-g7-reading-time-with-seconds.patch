@@ -1,16 +1,25 @@
-From d6ae456caafd7136d37af0f34fad902fe5db8ea6 Mon Sep 17 00:00:00 2001
+From 51ae1a968215244fb6b8a027d12b34b20d4d3022 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Mon, 15 Jun 2026 23:12:29 +0200
+Date: Tue, 15 Sep 2026 00:05:27 +0200
 Subject: [PATCH] feat: g7-reading-time-with-seconds
 
 Trio-Patch-Source-Branch: feature/g7sensorkit-timestamp-seconds
+Trio-Patch-Base: 1900ad76c43c42918e650a7863f7ae315bf689d2
+Trio-Patch-Feature-Tip: 7fbf12120793e3c996c1a1784e536ba4b3038ff0
+Trio-Patch-Generated: 2026-09-14T22:05:17Z
+Trio-Patch-Source-Commits:
+ fc24f3972964564b48d0f8cab9aedf851bcb9114 Update G7SensorKit (show reading timestamp with seconds)
+ 7fbf12120793e3c996c1a1784e536ba4b3038ff0 Merge dev (0.8.4.106) into feature/g7sensorkit-timestamp-seconds
+Trio-Patch-Source-PatchIds:
+ ed97df36e4b18886dc68346ea67ceb00ed61b72f
+ 5560470aadb1706fcb843cabf5981f33df1fe39d
 ---
  .gitmodules | 2 +-
  G7SensorKit | 2 +-
  2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/.gitmodules b/.gitmodules
-index 556b37d33..fc04255b4 100644
+index 6978b165c..af35c2b05 100644
 --- a/.gitmodules
 +++ b/.gitmodules
 @@ -12,7 +12,7 @@
@@ -23,12 +32,12 @@ index 556b37d33..fc04255b4 100644
  	path = MinimedKit
  	url = https://github.com/loopandlearn/MinimedKit.git
 diff --git a/G7SensorKit b/G7SensorKit
-index 0c8790529..7232e5578 160000
+index 1486241a9..0013c90d4 160000
 --- a/G7SensorKit
 +++ b/G7SensorKit
 @@ -1 +1 @@
--Subproject commit 0c87905297b70a7f0fa41e87fa0fbe1efff6c29f
-+Subproject commit 7232e55785a636d4a0a001cae40ec9e9b2ac60f7
+-Subproject commit 1486241a9e4a6f3da13d98542b8e39a02938ab96
++Subproject commit 0013c90d4e2f2a5f3c49c19096c58d01667f078c
 -- 
-2.50.1 (Apple Git-155)
+2.55.0
 

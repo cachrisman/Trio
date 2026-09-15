@@ -1,30 +1,22 @@
-From f4797825e9db18f37d4268e6821b1f4283e08bcf Mon Sep 17 00:00:00 2001
+From e45ff55e6ba32404d0a5094697d19acbf68c9418 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 16 Aug 2026 21:55:22 +0200
+Date: Tue, 15 Sep 2026 00:15:02 +0200
 Subject: [PATCH] feat: cloud-logging
 
 Trio-Patch-Source-Branch: feature/cloud-logging
-Trio-Patch-Base: 58261b0abb1c3a4f827bc7f75768ce3cec5c4b6d
-Trio-Patch-Feature-Tip: a892be0ffa576436437b8e69c2cc5cb2e8370a11
-Trio-Patch-Generated: 2026-08-16T19:55:13Z
+Trio-Patch-Base: 1900ad76c43c42918e650a7863f7ae315bf689d2
+Trio-Patch-Feature-Tip: cd08bec1244e4e360ef26679f706608f98f41942
+Trio-Patch-Generated: 2026-09-14T22:14:52Z
 Trio-Patch-Source-Commits:
- ab10de4d8d47277e9bb7669d1233b20a82a1955d feat: ns-richer-settings
- e3a2d98dfeb9180befadb280b23187397c6296ef feat: g7-reading-time-with-seconds
- 7f40d4fdd3cfaa06131ab62cef3b0b7cb21a0fde feat: treatments-fixed-bottom-action
- 3121b5e5dfe1b205b38b0f986ab0911303ca3930 feat: watch error reporting
- a66a1cd284358f30062c22fd8a9970d12d44364f feat: cloud-logging
- 683e688c88ea32fa5c4c36abe1be3807aaa8960c fix: drop removed Logger.info type parameter after upstream merge
- fa09b10ee7f168d71e36f448ee097e7a071ed2d0 cloud logging: make the tail offset survive container migration and drain incrementally (TRIO-032)
- a892be0ffa576436437b8e69c2cc5cb2e8370a11 cloud logging: cap each read at one upload batch so progress is always banked (TRIO-032)
+ fc417ef5189f50f479dea4579a726fa7dc6677e6 feat: ns-richer-settings
+ c7c8d208badaa588d5eb2050dd74ef4487ce4efe feat: g7-reading-time-with-seconds
+ d915e6309ac10843ec2e66f6e4e9b16e2726b8ef feat: watch-error-reporting
+ cd08bec1244e4e360ef26679f706608f98f41942 feat: cloud-logging
 Trio-Patch-Source-PatchIds:
- ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
- ed97df36e4b18886dc68346ea67ceb00ed61b72f
- f26f8a63ea5839d8752cf9cbf1f95741a89a958c
- 5092c2d3231574f24a9fe35f2f7443bff6dde870
- 144d35d86a5aab6ceb2e65d3415dac000bfd7898
- b5dfaed7988b5c45502d65cbcfdf6f2396c429bf
- 524309fe6285e0bd29fd262092611abb46c23f84
- 7db5983d858dbf0b625b64e5d80e260226ab01b4
+ f19d9363a9ac847de8e6c12a5acd685d05be56fa
+ bca2c9a93345d165f68dc257dd7cee8ca4cee7fc
+ d64aec69341345cffa16e72b239ed51922d813e4
+ 155ae686f2d7b0cac8d1446cb5acca53e406843d
 ---
  .../WatchConnectivityPayloadIds.swift         |   59 +
  Trio Watch App Extension/WatchLogger.swift    | 1208 ++++++++++++++---
@@ -1512,7 +1504,7 @@ index 3f9a83de5..0f81f3475 100644
      }
  }
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
-index cb1dc4583..49f3ecd90 100644
+index b23092e76..1b11b9cf4 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
 +++ b/Trio/Sources/Application/AppDelegate.swift
 @@ -5,7 +5,7 @@ import UserNotifications
@@ -1524,8 +1516,8 @@ index cb1dc4583..49f3ecd90 100644
      ) -> Bool {
          // Default to `true` if the key doesn't exist — Trio is opt-out, not opt-in.
          // Read before touching Firebase: an explicit opt-out means we never
-@@ -35,15 +35,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
-             TelemetryClient.shared.checkAndSendIfOverdue()
+@@ -38,15 +38,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+             TelemetryClient.shared.checkAndSendIfOverdue(reason: .coldLaunch)
          }
  
 +        // Check for unexpected termination from previous launch, then mark this launch.
@@ -1560,7 +1552,7 @@ index cb1dc4583..49f3ecd90 100644
 +    /// doesn't fire while suspended; no-op if a send landed within 24h)
 +    /// and notifies `AppTerminationTracker` so lifecycle state is fresh.
      func applicationWillEnterForeground(_: UIApplication) {
-         TelemetryClient.shared.checkAndSendIfOverdue()
+         TelemetryClient.shared.checkAndSendIfOverdue(reason: .foreground)
 +        AppTerminationTracker.shared.markAppWillEnterForeground()
 +    }
 +
@@ -1574,7 +1566,7 @@ index cb1dc4583..49f3ecd90 100644
  
      func application(
 diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
-index 912a7b1d6..091211d97 100644
+index 3b675466c..fcdfec219 100644
 --- a/Trio/Sources/Assemblies/ServiceAssembly.swift
 +++ b/Trio/Sources/Assemblies/ServiceAssembly.swift
 @@ -29,6 +29,7 @@ final class ServiceAssembly: Assembly {
@@ -3213,10 +3205,10 @@ index 000000000..d8c586d8f
 +    }
 +}
 diff --git a/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift b/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift
-index 2a02082b7..03a199a39 100644
+index 254d723ec..4a5460494 100644
 --- a/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift
 +++ b/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift
-@@ -3,12 +3,13 @@ import SwiftDate
+@@ -4,12 +4,13 @@ import System
  
  final class SimpleLogReporter: IssueReporter {
      private let fileManager = FileManager.default
@@ -3235,7 +3227,7 @@ index 2a02082b7..03a199a39 100644
  
      func setup() {}
  
-@@ -42,7 +43,7 @@ final class SimpleLogReporter: IssueReporter {
+@@ -43,7 +44,7 @@ final class SimpleLogReporter: IssueReporter {
              }
          }
  

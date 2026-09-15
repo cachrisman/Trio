@@ -1,59 +1,47 @@
-From 5b57c6bae65f1f9bb400b5c2bd96ebdbdd6a4441 Mon Sep 17 00:00:00 2001
-From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 15 Aug 2026 19:31:39 +0200
+From 5f20057f0a2d056f4e87f19c2bc636d825599c1f Mon Sep 17 00:00:00 2001
+From: Trio Build Bot <build-bot@users.noreply.github.com>
+Date: Tue, 15 Sep 2026 00:33:19 +0200
 Subject: [PATCH] feat: phone-ble-observer-telemetry
 
 Trio-Patch-Source-Branch: feature/phone-ble-observer-telemetry
-Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: 48d5622047d97c7b5d7789ca107a552266adc0cc
-Trio-Patch-Generated: 2026-08-15T17:31:30Z
+Trio-Patch-Base: 1900ad76c43c42918e650a7863f7ae315bf689d2
+Trio-Patch-Feature-Tip: bb54eb4a2b1d8e1c5dd0a0e0a60e414485bc468e
+Trio-Patch-Generated: 2026-09-14T22:33:10Z
 Trio-Patch-Source-Commits:
- 3a38c7f2eb99a9d22bbf03d011f8186ea0228dba feat: ns-richer-settings
- a2bcceb635d612e66fc73a951fefadbfc850415b feat: g7-reading-time-with-seconds
- 8aff49d83e6e0a124a5a6c510c7ab356ffeac406 feat: treatments-fixed-bottom-action
- 105f1fbdc5ba5f927b4a2b4038b5377cbc034548 feat: watch error reporting
- 9519005a82e83a60791693e463cf8c164885faeb feat: cloud-logging
- ce748969fa66b856e9ac070185429ae7c0f5007d feat: chart-height-fix
- 86f91fd2352c56c1eef2c08d492e81dc0a009c39 feat: patch-metadata
- 108124be175e945165609700f20f0cec07abcce8 feat: watch-g7
- a1e1d1ce60dac578360e73572ce79366d91db162 feat: watch-session-crash-guard
- 84ea628de3473ea31b2995d69a57851d09dd47b7 feat: phone-ble-observer-telemetry
- 48d5622047d97c7b5d7789ca107a552266adc0cc Merge dev into feature/phone-ble-observer-telemetry (post-upstream-sync reconciliation)
+ e81f316dd67a48938ff8bc82ea10aeb23bf37644 feat: ns-richer-settings
+ 5e41a3af3f8bc9a298ce2435905a5b7c40a14c50 feat: g7-reading-time-with-seconds
+ 7ff26ba2d455da5d8f25aa71afe7c09e9f684c65 feat: watch-error-reporting
+ bc316423335fb17eaf758d5da960f973054a39d1 feat: cloud-logging
+ a03a760d6068819a6f0db094ab4632881c07d368 feat: patch-metadata
+ 57990818c50e710382cb8346f05774b786b52345 feat: watch-g7
+ 8294fc9d669e10c86035e76e20d1da887f855743 feat: watch-session-crash-guard
+ 51b61da7e0a722245021d6de313fe1390af80f76 feat: phone-ble-observer-telemetry
+ bb54eb4a2b1d8e1c5dd0a0e0a60e414485bc468e phone-ble-observer-telemetry: drop the DeviceDataManager.cgmManager G7 fallback
 Trio-Patch-Source-PatchIds:
- ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
- 23119ed14821c7421b991f3a1eac433318c78d3d
- f26f8a63ea5839d8752cf9cbf1f95741a89a958c
- 5092c2d3231574f24a9fe35f2f7443bff6dde870
- 144d35d86a5aab6ceb2e65d3415dac000bfd7898
- c9bd65095aea882a70f1093d556a39886b5bb532
+ f19d9363a9ac847de8e6c12a5acd685d05be56fa
+ bca2c9a93345d165f68dc257dd7cee8ca4cee7fc
+ d64aec69341345cffa16e72b239ed51922d813e4
+ 155ae686f2d7b0cac8d1446cb5acca53e406843d
  e1ee5b50a3acd77eb9b5d4218dcf038b1b753f1e
- 052adef53bb1dec9f9caf7cff2e02611cf5ed3cc
- 379f617354c1825708c98b7e649bfdf8d1759ca4
- bbfac0265653426d7a9cffe817214faf722e30f0
- 5560470aadb1706fcb843cabf5981f33df1fe39d
-d544b10a73968114b66b4358f788fde42bbdb38b
-937d56001c55b6873c232c5feee035618186411a
-8fe7265ccb8c7a92799a829b48c791e3a4d0c346
-4bc3746a87763708289b23628cfcb5be38f310c3
-abf7b03e5c1261cb6e0ad71eaa701f54ded4c292
-7a05334d6a1075450395c10f0e16bbda00b449d5
-77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
+ d274628fc0fdf7f0b96071afde7524e9ff134706
+ 16a6b025ce2aeead0c6cd7c5457a19109160e8e9
+ 2cd8ea9752edfb2dd0b1d0eedc032e7eb8b6d35b
+ c392f1d26b9ebb645e5f432fb42abfd863da3e8f
 ---
  Trio/Sources/APS/CGM/PluginSource.swift       |   2 +
- Trio/Sources/APS/DeviceDataManager.swift      |   1 +
- Trio/Sources/Application/TrioApp.swift        |  35 +++-
+ Trio/Sources/Application/TrioApp.swift        |  34 +++-
  .../Sources/Helpers/DynamicGlucoseColor.swift |  39 ++--
  Trio/Sources/Helpers/GlucoseHueColor.swift    |  41 ++++
  Trio/Sources/Models/WatchGlucoseObject.swift  |   2 +-
- .../WatchManager/AppleWatchManager.swift      | 182 ++++++++++++------
- 7 files changed, 215 insertions(+), 87 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      | 181 ++++++++++++------
+ 6 files changed, 212 insertions(+), 87 deletions(-)
  create mode 100644 Trio/Sources/Helpers/GlucoseHueColor.swift
 
 diff --git a/Trio/Sources/APS/CGM/PluginSource.swift b/Trio/Sources/APS/CGM/PluginSource.swift
-index de4a43dd9..4b1934c4c 100644
+index 55f13dc9e..fc3cb2bbc 100644
 --- a/Trio/Sources/APS/CGM/PluginSource.swift
 +++ b/Trio/Sources/APS/CGM/PluginSource.swift
-@@ -24,6 +24,8 @@ final class PluginSource: GlucoseSource {
+@@ -25,6 +25,8 @@ final class PluginSource: GlucoseSource {
          self.glucoseStorage = glucoseStorage
          self.glucoseManager = glucoseManager
  
@@ -62,20 +50,8 @@ index de4a43dd9..4b1934c4c 100644
          cgmManager = glucoseManager.cgmManager
          cgmManager?.delegateQueue = processQueue
          cgmManager?.cgmManagerDelegate = self
-diff --git a/Trio/Sources/APS/DeviceDataManager.swift b/Trio/Sources/APS/DeviceDataManager.swift
-index 5fdcc9c27..b686524bd 100644
---- a/Trio/Sources/APS/DeviceDataManager.swift
-+++ b/Trio/Sources/APS/DeviceDataManager.swift
-@@ -392,6 +392,7 @@ final class BaseDeviceDataManager: DeviceDataManager, Injectable {
- 
-     @Persisted(key: "BaseDeviceDataManager.lastFetchGlucoseDate") private var lastFetchGlucoseDate: Date = .distantPast
- 
-+    // Plugin CGM uses FetchGlucoseManager; glucoseManager / cgmManager here stay unset - do not use them for plugin identity.
-     var glucoseManager: FetchGlucoseManager?
-     var cgmManager: CGMManagerUI?
-     var cgmType: CGMType = .enlite
 diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
-index d30306ca2..e4ced081c 100644
+index b9da7180a..5736567cb 100644
 --- a/Trio/Sources/Application/TrioApp.swift
 +++ b/Trio/Sources/Application/TrioApp.swift
 @@ -1,6 +1,7 @@
@@ -99,7 +75,7 @@ index d30306ca2..e4ced081c 100644
          resolveOrLog(FetchTreatmentsManager.self)
          resolveOrLog(CalendarManager.self)
          resolveOrLog(UserNotificationsManager.self)
-@@ -86,15 +88,34 @@ extension Notification.Name {
+@@ -86,15 +88,33 @@ extension Notification.Name {
          if #available(iOS 16.2, *) {
              resolveOrLog(LiveActivityManager.self)
          }
@@ -118,12 +94,11 @@ index d30306ca2..e4ced081c 100644
 -        // Routed through the resolveOrLog helper rather than a force unwrap.
 -        _ = resolveOrLog(TrioAlertManager.self)?.replayUnacknowledgedAlerts()
 +    /// Routes G7SensorKit fork telemetry (`G7TelemetryPayload`) into the iOS log file / cloud upload pipeline.
-+    /// Uses `FetchGlucoseManager.cgmManager` first (plugin CGM), then `DeviceDataManager.cgmManager` — matches `BaseWatchManager` G7 resolution.
++    /// Uses `FetchGlucoseManager.cgmManager` (plugin CGM) — `DeviceDataManager` no longer exposes a CGM manager since upstream removed the built-in Enlite CGM.
 +    private func configureG7ForkTelemetry(deviceDataManager: DeviceDataManager?, fetchGlucoseManager: FetchGlucoseManager?) {
 +        G7Telemetry.emit = { [deviceDataManager, fetchGlucoseManager] payload in
 +            let sensorName: String
-+            let g7 = (fetchGlucoseManager?.cgmManager as? G7CGMManager)
-+                ?? (deviceDataManager?.cgmManager as? G7CGMManager)
++            let g7 = fetchGlucoseManager?.cgmManager as? G7CGMManager
 +            if let g7 {
 +                sensorName = g7.sensorName ?? "nil"
 +            } else {
@@ -255,7 +230,7 @@ index 6fee5bcbd..e4fe058ad 100644
 -    let color: String
  }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 19e7594a5..32b44fd40 100644
+index 0caf1bf5c..d1ed330f8 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,6 +2,7 @@ import Combine
@@ -275,7 +250,7 @@ index 19e7594a5..32b44fd40 100644
      @Injected() private var settingsManager: SettingsManager!
      @Injected() private var fileStorage: FileStorage!
      @Injected() private var glucoseStorage: GlucoseStorage!
-@@ -37,6 +40,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -38,6 +41,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      private var currentGlucoseTarget: Decimal = 100.0
      private var activeBolusAmount: Double = 0.0
  
@@ -291,7 +266,7 @@ index 19e7594a5..32b44fd40 100644
      // Queue for handling Core Data change notifications
      private let queue = DispatchQueue(label: "BaseWatchManagerManager.queue", qos: .utility)
      private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
-@@ -230,6 +242,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -231,6 +243,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
      /// Prepares the current state data to be sent to the Watch
      /// - Returns: WatchState containing current glucose readings and trends and determination infos for displaying cob and iob in the view
@@ -301,13 +276,12 @@ index 19e7594a5..32b44fd40 100644
      func setupWatchState() async -> WatchState {
          // Check if a watch is paired and reachable before doing expensive calculations
          guard let session else {
-@@ -259,6 +274,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -260,6 +275,49 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              debug(.watchManager, "⌚️❌ Skipping setupWatchState - Watch session not activated")
              return WatchState(date: Date())
          }
 +        let g7PhoneContext = await MainActor.run { () -> (seqCtx: (sequence: Int, timestamp: Date)?, resolvedSensorName: String?, resolvedActivationEpoch: Int64) in
-+            let g7 = (fetchGlucoseManager.cgmManager as? G7CGMManager)
-+                ?? (deviceManager.cgmManager as? G7CGMManager)
++            let g7 = fetchGlucoseManager.cgmManager as? G7CGMManager
 +            guard let g7 else { return (nil, nil, 0) }
 +            let seqCtx: (sequence: Int, timestamp: Date)?
 +            if let msg = g7.latestReading, let ts = g7.latestReadingTimestamp {
@@ -352,7 +326,7 @@ index 19e7594a5..32b44fd40 100644
          do {
              let context = CoreDataStack.shared.newTaskContext()
              context.name = "setupWatchState"
-@@ -283,6 +342,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -284,6 +342,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
              return await context.perform {
                  var watchState = WatchState(date: Date())
@@ -361,7 +335,7 @@ index 19e7594a5..32b44fd40 100644
  
                  // Set lastLoopDate
                  let lastLoopMinutes = Int((Date().timeIntervalSince(self.apsManager.lastLoopDate) - 30) / 60) + 1
-@@ -313,6 +374,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -314,6 +374,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      return watchState
                  }
  
@@ -375,7 +349,7 @@ index 19e7594a5..32b44fd40 100644
                  // Assign currentGlucose and its color
                  /// Set current glucose with proper formatting
                  if self.units == .mgdL {
-@@ -323,52 +391,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -324,52 +391,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.currentGlucose = "\(latestGlucoseValue)"
                  }
  
@@ -433,7 +407,7 @@ index 19e7594a5..32b44fd40 100644
                  }
                  .sorted { $0.date < $1.date }
  
-@@ -526,9 +556,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -529,9 +558,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          let results = try await CoreDataStack.shared.fetchEntitiesAsync(
              ofType: GlucoseStored.self,
              onContext: context,
@@ -446,7 +420,7 @@ index 19e7594a5..32b44fd40 100644
          )
  
          return try await context.perform {
-@@ -587,7 +618,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -590,7 +620,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          var dictionary: [String: Any] = [
              WatchMessageKeys.date: state.date.timeIntervalSince1970,
              WatchMessageKeys.currentGlucose: state.currentGlucose ?? "--",
@@ -454,7 +428,7 @@ index 19e7594a5..32b44fd40 100644
              WatchMessageKeys.trend: state.trend ?? "",
              WatchMessageKeys.delta: state.delta ?? "",
              WatchMessageKeys.iob: state.iob ?? "",
-@@ -595,9 +625,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -598,9 +627,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.lastLoopTime: state.lastLoopTime ?? "",
              WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                  [
@@ -466,7 +440,7 @@ index 19e7594a5..32b44fd40 100644
                  ]
              },
              WatchMessageKeys.minYAxisValue: state.minYAxisValue,
-@@ -625,6 +654,31 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -628,6 +656,31 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.isForecastCone: state.isForecastCone
          ]
  
@@ -498,7 +472,7 @@ index 19e7594a5..32b44fd40 100644
          var forecastData: [String: Any] = [
              WatchMessageKeys.forecastConeMin: state.forecastConeMin,
              WatchMessageKeys.forecastConeMax: state.forecastConeMax,
-@@ -636,12 +690,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -639,12 +692,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          dictionary[WatchMessageKeys.forecastData] = forecastData
@@ -511,7 +485,7 @@ index 19e7594a5..32b44fd40 100644
          return dictionary
      }
  
-@@ -862,13 +910,35 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -865,13 +912,35 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
          // R3: Build complication payload from explicit allowlist.
          // Uses safe if-let inserts to avoid Optional-as-Any bridging issues.
