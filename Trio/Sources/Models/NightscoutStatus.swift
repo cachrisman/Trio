@@ -5,6 +5,8 @@ struct NightscoutStatus: JSON {
     let openaps: OpenAPSStatus
     let pump: NSPumpStatus
     let uploader: Uploader
+    /// Trio‑specific advanced algorithm settings (optional).
+    let trioSettings: NightscoutAlgorithmSettings?
 }
 
 struct OpenAPSStatus: JSON {
