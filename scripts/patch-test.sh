@@ -1,8 +1,13 @@
 #!/bin/bash
 #
-# patch-test.sh — Validate the full patch stack applies cleanly (v1.1)
+# patch-test.sh — Validate the full patch stack applies cleanly (v1.2)
 #
 # CHANGELOG:
+#   v1.2  Per-command bot identity: a single GIT_BOT array (-c user.name /
+#         user.email / commit.gpgsign=false) is passed to the sync commit and
+#         to git am. No git config writes at all — the previous in-worktree
+#         'git config user.*' block is gone, so the shared .git/config of a
+#         linked worktree is never touched and commits never try to sign.
 #   v1.1  Commit copied patches in test worktree before git am so dirty
 #         baseline patches don't cause "local changes would be overwritten"
 #         errors. Fail loudly if the sync commit fails instead of masking
@@ -32,6 +37,8 @@ include_submodules=()
 skip_patches=()
 preserve_worktree=false
 run_audit=true
+# Identity + no-signing for every throwaway commit this script creates; passed per command, the shared .git/config is never touched.
+GIT_BOT=(-c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false)
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -198,7 +205,7 @@ rm -f "$PATCH_LIST_FILE"
 # the copy creates dirty files in the tracked patches/ directory, which
 # causes git am --3way to refuse ("local changes would be overwritten").
 (cd "$TEST_WORKTREE" && git add patches/ 2>/dev/null && \
-  git commit -m "sync patches for test" --no-verify --allow-empty 2>/dev/null) || {
+  git "${GIT_BOT[@]}" commit -m "sync patches for test" --no-verify --allow-empty 2>/dev/null) || {
   echo "Failed to commit synced patches into test worktree"
   exit 1
 }
@@ -231,10 +238,6 @@ if ! git checkout -b tmp/test-apply-patches; then
   echo "Failed to create test branch"
   exit 1
 fi
-
-# Configure git identity for git am operations
-git config user.name "Trio Patch Bot" || true
-git config user.email "patch-bot@users.noreply.github.com" || true
 
 # Show which patches will be tested
 echo ""
@@ -275,7 +278,7 @@ while IFS= read -r p; do
   echo "=========================================="
   
   # Apply mailbox patch using git am
-  am_output=$(git am --3way --keep-cr --whitespace=nowarn "$p" 2>&1)
+  am_output=$(git "${GIT_BOT[@]}" am --3way --keep-cr --whitespace=nowarn "$p" 2>&1)
   am_status=$?
   if [ $am_status -eq 0 ]; then
     echo "✅ Applied: $patch_name"

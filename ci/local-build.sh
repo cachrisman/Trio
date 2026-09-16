@@ -48,6 +48,8 @@ USAGE
 }
 
 BUNDLER_VERSION="2.6.2"
+# Identity + no-signing for the throwaway patch commits in the build worktree; passed per command so the shared .git/config is never touched.
+GIT_BOT=(-c user.name="Trio Build Bot" -c user.email="build-bot@users.noreply.github.com" -c commit.gpgsign=false)
 
 BASE_BRANCH="dev"
 BASE_BRANCH_SET=false
@@ -1459,11 +1461,6 @@ echo "[build] Running 'Customize Trio' step (patches)..."
 if [[ "$SKIP_PATCHES" = "1" ]]; then
   echo "[build] Skipping patch application."
 elif [[ -d "$PATCHES_DIR" ]]; then
-  # Configure git identity for git am operations (local repo only)
-  git -C "$BUILD_DIR" config user.name "Trio Build Bot" || true
-  git -C "$BUILD_DIR" config user.email "build-bot@users.noreply.github.com" || true
-  git -C "$BUILD_DIR" config commit.gpgsign false || true
-
   # Collect patches deterministically (bash 3.2 compatible)
   PATCH_LIST_FILE=$(mktemp)
   (cd "$PATCHES_DIR" 2>/dev/null && ls -1 *.patch 2>/dev/null | sort) \
@@ -1498,12 +1495,12 @@ elif [[ -d "$PATCHES_DIR" ]]; then
       _pname="$(basename "$patch")"
       _phash="$(shasum -a 256 "$patch" 2>/dev/null | cut -c1-12)"
       echo "[build] Applying: $_pname (sha256:$_phash)"
-      if git am --3way --keep-cr --whitespace=nowarn "$patch" >/dev/null 2>&1; then
+      if git "${GIT_BOT[@]}" am --3way --keep-cr --whitespace=nowarn "$patch" >/dev/null 2>&1; then
         echo "[build] ✅ Applied: $_pname"
       else
         echo "[build] ❌ Failed to apply patch: $patch"
         git am --abort >/dev/null 2>&1 || true
-        git am --3way --keep-cr --whitespace=nowarn "$patch" 2>&1 | sed 's/^/    /' || true
+        git "${GIT_BOT[@]}" am --3way --keep-cr --whitespace=nowarn "$patch" 2>&1 | sed 's/^/    /' || true
         rm -f "$PATCH_LIST_FILE"
         exit 1
       fi
