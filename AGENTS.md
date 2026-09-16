@@ -1,4 +1,4 @@
-# AGENTS.md — v19
+# AGENTS.md — v22
 
 Instructions for AI agents working in this repository.
 
@@ -29,8 +29,10 @@ Read first:
 	-	When adding files, put them in the correct repo location and update `scripts/sync_project_files_config.rb` (e.g. `TARGET_GLOBS`, `TARGET_BUILD_SETTINGS`, `TARGET_PACKAGE_DEPS`) only if explicitly required by the requested change. Otherwise, leave project refresh to the canonical workflow.
 	-	In summaries, state when project membership refresh is expected later and confirm that the agent did not edit `project.pbxproj` or run sync.
 
-7) **Do not commit/push** unless explicitly asked.
-   - Summarize changes first.
+7) **Do not commit or push on your own initiative.** This repo is *attributed* (`git config --get agent.signing` → `deny`): commits here carry the user's signature, not an agent's.
+   - Default: summarize changes first, `git add` the work, write the proposed commit message to a file, and stop.
+   - If explicitly asked to commit, use the normal signing path (1Password / Touch ID). Never use the agent signing key (`~/.ssh/agent-signing`) in this repo, and never `--no-gpg-sign` — an unsigned commit is the user's call, per instance.
+   - Never push, under any circumstances. Pushing is the user's in every repo.
 
 8) **For plan/workflow document edits, increment the document version and update the changelog.**
    - When editing plan/workflow docs (e.g., `*.plan.md`, `*.cursor.md`, workflow prompts/checklists), always increment the document's version number and update the changelog section in the same change.
@@ -83,6 +85,12 @@ completing this protocol.
 - **Verify OS / SDK facts against the authoritative source before acting on them** — especially raw enum values seen in logs or telemetry. A raw `WKExtendedRuntimeSessionState(rawValue: 2)` was read as `.invalid` from memory + a stale in-code comment; it is actually `.running` (the enum is `notStarted=0, scheduled=1, running=2, invalid=3`). That single misread produced a wrong user-facing diagnosis and a misguided "fix". Grep the SDK header instead of trusting memory/comments: `find /Applications/Xcode.app -name '<Type>.h'`. And prefer logging a **mapped name**, never `String(describing:)` of an imported `NS_ENUM` (it prints the opaque `Type(rawValue: N)`).
 - **When data/telemetry contradicts your hypothesis, doubt the hypothesis first**, not the data. (An `ext_session_active=true` + `rawValue 2` + readings-still-flowing heartbeat was the tell that the session was running — it was initially explained away.)
 - **Don't propagate an unverified interpretation across steps or subagents.** A claim that "every event is logged twice → halve the counts" was actually an s3-query artifact; it spread into multiple analyses before being caught. State assumptions as assumptions and verify the load-bearing ones before building on them.
+
+## Show the test failing without the change
+
+A test that passes both before and after a fix is a test of nothing, and it will keep passing after someone deletes the behaviour later. Before trusting a new or modified test as proof, check it out against the pre-fix commit (a throwaway `git worktree` is enough) and confirm it actually goes red there. This is not machine-checkable — nothing in `patch-test.sh`, the deletion-footprint audit, or a build can distinguish a test that proves the fix from one that only decorates it.
+
+Aim the falsification at **each distinct claim** a test makes, not the test as a whole. A test with two assertions on either side of a state transition (e.g. "acceptance suppresses staleness, and reopening restores it") usually needs *opposite* mutations — a mutation that only breaks the first half says nothing about whether the second half can ever fail. Adopted from the `task-relay` repo, where a test reported as verified on the strength of one mutation turned out to have an assertion that could not fail at all; a diverse review caught it, not the suite. No equivalent incident is recorded in this repo yet — this is inherited convention, not local scar tissue, unlike safety rules 10–12 above, which are.
 
 ## Untracked files and clean / reset
 
@@ -179,9 +187,35 @@ ci/local-build.sh --base-branch dev --build-only
 ```
 **Important:** Run this from the `Trio-dev` worktree with `dev` checked out. If the current branch is not `dev`, the build script sets `REAPPLY_STASH=0` and silently excludes uncommitted changes to patch files. If you must build from a non-dev branch, add `--reapply-stash` explicitly.
 
+## Build tasks (one epic per build)
+
+Every build that leaves this machine — a TestFlight deploy, or a `--build-only` run whose IPA gets uploaded or installed anywhere — has exactly one task file of `kind = "epic"`, tagged `build`, titled `Build NNN — <app version> (<upstream base>) …`. It is the record of what shipped, from what, and how it went: the build log and the GitHub release are pointers, the task is the index. Build 226 (`TRIO-059`) is the template.
+
+Create it with `task-relay tasks new --kind epic --tags build,testflight …` **before** launching `ci/local-build.sh`, at status `in-progress`. Never hand-write frontmatter.
+
+Then launch the build with **`ci/local-build.sh --task <EPIC-KEY>`**. With that flag the script records the mechanical parts itself through the task-relay CLI (never by editing the file): an `## Attempt <time>` block at start (command line, log path, base ref, `dev` and `upstream/dev` SHAs, Xcode version) and an outcome block at exit — on success the build number, TestFlight result, public/private release URLs and the stage-summary table; on failure the failing stage and the last error lines. It also passes the key to `scripts/record-release.sh`, which renders a **"What's in this build"** section at the top of the GitHub release body from the epic's `## Contains` children (`scripts/build-task-notes.py`) and writes `tasks.epic` / `tasks.contains` into the release manifest. Recording is best-effort and never fails a build; a build run without `--task` records nothing, so the agent then fills those fields by hand.
+
+Two conventions follow from that: the epic's `## Contains` list must be complete **before** the build is launched, because the release body is rendered from it during `Record Release`; and every child task that ships user-visible behaviour carries a `## Release note` section — one user-facing paragraph — which is what appears in the release body (a child without one falls back to its title).
+
+The body records, updated as the build proceeds:
+
+- **Build facts** — build number and app version; the exact `dev` SHA built and the upstream base it contains (tag or SHA); the ordered patch list with the `sha256:` prefixes the log prints at `Applying:`; the Xcode version; the exact command line.
+- **Attempts** — one block per `ci/local-build.sh` run: log path (`build/artifacts/ci-local-build-<ts>.log`), outcome, and for a failure the failing stage and cause (written by `--task`; add the *cause* and the task carrying the fix by hand). Retries stay in the same epic; never open a second epic for the same build number.
+- **Stage summary** — the `BUILD STAGE SUMMARY` block from the successful attempt's log, as a markdown table (stage, duration, total).
+- **Release** — the GitHub release URL(s) printed by the `Record Release` stage (private backup, and the public one when made), plus the TestFlight upload result and time.
+- **Contains** — the child tasks whose work is in the build, linked both ways: list their keys under `## Contains` in the epic, and set `parent` on each child to the epic's `uid` (`task-relay tasks edit <KEY> --set parent=<epic uid>`). A fix or feature has no "shipped" state of its own — it shipped when its build epic did, so a child also notes `shipped in build NNN (TRIO-nnn)` in its own body.
+- **Known issues** — tasks opened for problems found *on* this build. They are not children; they belong to the build that fixes them.
+- **Acceptance criteria** — uploaded and release recorded; installed on the operator's devices; whatever post-build verification the child tasks called for (e.g. a BetterStack check keyed on the new build number); the operator pushing `dev` when the agent could not.
+
+Status: `in-progress` while building; `review` once uploaded and the body is complete; the operator accepts it once the build is on their devices and verified. A build that never uploaded stays `in-progress` with its failed attempts listed until a later attempt succeeds or the operator drops it.
+
 ## When the user instructs a build
 
 When asked to run a build, do the following.
+
+### 0) Open the build task first
+
+- Create the build epic (see "Build tasks" above) before anything else, make sure its `## Contains` list is complete, and pass its key to every build run as `--task <KEY>` so attempts, outcomes, stage summary and release URLs are recorded by the script. What the script cannot know — the cause of a failure and which task carries the fix — is added by hand as it happens, not at the end.
 
 ### 1) Upstream sync (automatic)
 
@@ -240,6 +274,12 @@ When asked to run a build, do the following.
   - Run `scripts/patch-test.sh` to validate the patch stack.
   - If patch test passes, start a **new** build in the background and again give the user a `tail -f` command for the new log.
 - If the fix is not minor (e.g. architectural or multi-file), report the findings and proposed fix to the user and do not automatically implement or start a new build unless asked.
+- Whatever the outcome, record the attempt in the build epic: log path, failing stage, cause, and the task that carries the fix.
+
+### 7) Close out the build task
+
+- On success: paste the stage summary table, the release URL(s) and the TestFlight result into the epic, list the child tasks under `## Contains` and set their `parent`, tick the upload criterion, move the epic to `review`, and tell the user which criteria remain theirs (install/verify on device, push `dev`).
+- On a build that will not be retried now: leave the epic `in-progress` with the failed attempts listed and say so in the report.
 
 ### Validate patch stack (authoritative)
 ```bash
@@ -623,6 +663,15 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v22 (2026-09-16 CEST)
+- **New section "Build tasks (one epic per build)"** plus steps 0 and 7 in "When the user instructs a build": every build gets a `kind = epic` task recording the `dev` SHA and upstream base, the patch list with `sha256` prefixes, every attempt with its log path and failing stage, the stage-summary table, the GitHub release URL and TestFlight result, and two-way links (`parent` on the children, `## Contains` on the epic) to the fix/feature tasks it ships. Motivated by build 226 (2026-09-16): four attempts, an Xcode major-version change with an unaccepted licence, and a compile fix were spread across chat and three task files with nothing tying the build number to what it shipped or where its log was. Build 226 was recorded retroactively as `TRIO-059` and is the template. Same version: `ci/local-build.sh --task <KEY>` (TRIO-060) automates the mechanical fields — attempt start/outcome blocks, stage table, release URLs — via the task-relay CLI, and `scripts/record-release.sh` (v1.4.0, with the new `scripts/build-task-notes.py`) renders a "What's in this build" section into the release body from the epic's `## Contains` children and their `## Release note` sections, and records `tasks.epic`/`tasks.contains` in the manifest. `record-release.sh` also stops leaking two progress lines into the captured private-release URL.
+
+### v21 (2026-08-03 CET)
+- **New section "Show the test failing without the change"**, placed after Verification discipline. Not machine-checkable by anything this repo runs (`patch-test.sh`, the deletion-footprint audit, or a build), so it lives here rather than being enforced. Adopted from the `task-relay` repo, which records it after a test reported as mutation-verified turned out to have an assertion that could not fail at all — only a diverse review caught it. Explicitly noted as inherited convention with no recorded catch in this repo, unlike safety rules 10–12 (the 2026-06 dropped-pod incident), which already cover the sibling rule — "verify against the real thing, not fixtures" — in sharper, patch-specific form, so it was deliberately not restated generically here.
+
+### v20 (2026-07-31 CET)
+- **Commit attribution tier.** Rule 7 rewritten. This repo is *attributed* (`agent.signing = deny` in local git config): agent sessions stage work and stop rather than committing on their own initiative, and when explicitly asked to commit they use the normal 1Password / Touch ID path — never the agent signing key, never `--no-gpg-sign`. Pushing is never an agent's, in any repo. Part of a machine-wide two-tier policy: *permissive* repos (task-relay, specwright, contentful-app-builder, Fusion, remodex, and the personal projects) let agents commit as `Charlie Chrisman <agent@chrisman.io>` signed with a dedicated `~/.ssh/agent-signing` key that never touches 1Password; *attributed* repos (this one, Trio, G7SensorKit, nightscout-nextjs) do not. A repo with no `agent.signing` marker is treated as attributed. Motivated by an autonomous run on 2026-07-24 that, blocked by a locked 1Password, decided on its own to drop signing and pushed five unsigned commits to a remote.
 
 ### v19 (2026-06-22 CET)
 - **Patch/build tooling hardening.** Cherry-pick gate: `mid-stack-update.sh` (v1.11) now **enforces** the cherry-pick-vs-`--from-feature-branch` choice — `--from-feature-branch` is refused when recorded provenance shows cherry-pick applies cleanly (or when the patch has no provenance), and allowed automatically only when history has genuinely diverged; override with the audited `--force-from-feature-branch "<reason>"`. New **`scripts/repin-g7.sh`** automates the G7SensorKit fork push + patch-02 SHA repin (both SHA sites, validated by `patch-test.sh`) so patch 02 is never hand-edited. `ci/local-build.sh`: derives the submodule-change list from `.gitmodules` (was a drifting hardcoded list that omitted OmnipodKit/MedtrumKit); **preserves the worktree on a failed build** by default for investigation (`--no-preserve-on-error` to opt out). New **`scripts/cleanup-build-leftovers.sh`** prunes stale build worktrees/logs/`ci-build/*` remote branches (dry-run by default; remote deletion opt-in); invoked logs-only after a successful deploy. Design/decision log: `docs/in-progress/patch-build-tooling-hardening/01-design.md`.
