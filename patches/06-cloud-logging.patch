@@ -1,22 +1,24 @@
-From e45ff55e6ba32404d0a5094697d19acbf68c9418 Mon Sep 17 00:00:00 2001
+From 13d8d16a4ab366041271e109ef1d29e73462e8a8 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 15 Sep 2026 00:15:02 +0200
+Date: Wed, 16 Sep 2026 13:04:58 +0200
 Subject: [PATCH] feat: cloud-logging
 
 Trio-Patch-Source-Branch: feature/cloud-logging
-Trio-Patch-Base: 1900ad76c43c42918e650a7863f7ae315bf689d2
-Trio-Patch-Feature-Tip: cd08bec1244e4e360ef26679f706608f98f41942
-Trio-Patch-Generated: 2026-09-14T22:14:52Z
+Trio-Patch-Base: 2516b23c414128c9a3dc5055be896936b1a7d52c
+Trio-Patch-Feature-Tip: 47b993221c3ae0075030eeb62bbb1ccee1672db6
+Trio-Patch-Generated: 2026-09-16T11:04:47Z
 Trio-Patch-Source-Commits:
  fc417ef5189f50f479dea4579a726fa7dc6677e6 feat: ns-richer-settings
  c7c8d208badaa588d5eb2050dd74ef4487ce4efe feat: g7-reading-time-with-seconds
  d915e6309ac10843ec2e66f6e4e9b16e2726b8ef feat: watch-error-reporting
  cd08bec1244e4e360ef26679f706608f98f41942 feat: cloud-logging
+ 47b993221c3ae0075030eeb62bbb1ccee1672db6 Merge dev (1.0.0.3) into feature/cloud-logging
 Trio-Patch-Source-PatchIds:
  f19d9363a9ac847de8e6c12a5acd685d05be56fa
  bca2c9a93345d165f68dc257dd7cee8ca4cee7fc
  d64aec69341345cffa16e72b239ed51922d813e4
  155ae686f2d7b0cac8d1446cb5acca53e406843d
+ 8fe7265ccb8c7a92799a829b48c791e3a4d0c346
 ---
  .../WatchConnectivityPayloadIds.swift         |   59 +
  Trio Watch App Extension/WatchLogger.swift    | 1208 ++++++++++++++---
@@ -1504,11 +1506,11 @@ index 3f9a83de5..0f81f3475 100644
      }
  }
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
-index b23092e76..1b11b9cf4 100644
+index 1a0377ad0..7cc707240 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
 +++ b/Trio/Sources/Application/AppDelegate.swift
-@@ -5,7 +5,7 @@ import UserNotifications
- class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNotificationCenterDelegate {
+@@ -11,7 +11,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+ 
      func application(
          _: UIApplication,
 -        didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]?
@@ -1516,9 +1518,9 @@ index b23092e76..1b11b9cf4 100644
      ) -> Bool {
          // Default to `true` if the key doesn't exist — Trio is opt-out, not opt-in.
          // Read before touching Firebase: an explicit opt-out means we never
-@@ -38,15 +38,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
-             TelemetryClient.shared.checkAndSendIfOverdue(reason: .coldLaunch)
-         }
+@@ -19,15 +19,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+         let crashReportingEnabled: Bool = PropertyPersistentFlags.shared.crashlyticsSharingEnabled ?? true
+         CrashReportingGate.configureAtLaunch(enabled: crashReportingEnabled)
  
 +        // Check for unexpected termination from previous launch, then mark this launch.
 +        // Note: AppTerminationTracker uses UserDefaults for state persistence. In rare cases
@@ -1552,7 +1554,7 @@ index b23092e76..1b11b9cf4 100644
 +    /// doesn't fire while suspended; no-op if a send landed within 24h)
 +    /// and notifies `AppTerminationTracker` so lifecycle state is fresh.
      func applicationWillEnterForeground(_: UIApplication) {
-         TelemetryClient.shared.checkAndSendIfOverdue(reason: .foreground)
+         telemetry?.checkAndSendIfOverdue(reason: .foreground)
 +        AppTerminationTracker.shared.markAppWillEnterForeground()
 +    }
 +
@@ -3427,10 +3429,10 @@ index 4c595ff8e..2bbd74fb1 100644
                          Text("Apple Health").navigationLink(to: .healthkit, from: self)
                      }
 diff --git a/Trio/Sources/Router/Screen.swift b/Trio/Sources/Router/Screen.swift
-index e4710d9ee..4cc536839 100644
+index b7d111602..76e4ab666 100644
 --- a/Trio/Sources/Router/Screen.swift
 +++ b/Trio/Sources/Router/Screen.swift
-@@ -44,6 +44,7 @@ enum Screen: Identifiable, Hashable {
+@@ -43,6 +43,7 @@ enum Screen: Identifiable, Hashable {
      case calendarEventSettings
      case contactImage
      case serviceSettings
@@ -3438,7 +3440,7 @@ index e4710d9ee..4cc536839 100644
      case remoteControlConfig
      case autosensSettings
      case smbSettings
-@@ -158,6 +159,8 @@ extension Screen {
+@@ -155,6 +156,8 @@ extension Screen {
              ContactImage.RootView(resolver: resolver)
          case .serviceSettings:
              ServicesView(resolver: resolver, state: Settings.StateModel())
