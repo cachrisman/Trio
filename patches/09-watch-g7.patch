@@ -1,15 +1,15 @@
-From 85dd1cabaf84fca4f8e919bc378175f226c54a77 Mon Sep 17 00:00:00 2001
+From 9b36704b93d60a2db47ed38ace2d6713aa543019 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 18 Aug 2026 08:37:06 +0200
+Date: Tue, 22 Sep 2026 23:50:11 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
-Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: dd3e08ce4d2867a3b667676d0b1a83883e0e8d7e
-Trio-Patch-Generated: 2026-08-18T06:36:56Z
+Trio-Patch-Base: 460a35322bdef45f2468182f6ed703dc6e439614
+Trio-Patch-Feature-Tip: a61265484dd58ce50b3c702f0cb0d4b779d04d9b
+Trio-Patch-Generated: 2026-09-22T21:49:58Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -49,6 +49,7 @@ Trio-Patch-Source-Commits:
  d689bec9e443d0895e93121f5bab3c6deeb8bf1a watch: compute the delta from the history store so backfill readings count (TRIO-045)
  6c89bfb5b1b38d42cf03aafecfc05f902c31574d watch: ACK only after the payload has actually been handled (TRIO-043)
  dd3e08ce4d2867a3b667676d0b1a83883e0e8d7e watch: correct two TRIO-043 comments that overstated their guarantees
+ a61265484dd58ce50b3c702f0cb0d4b779d04d9b Merge dev (1.0.1.5) into feature/watch-g7
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -93,6 +94,9 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  dd5e04ecf41c87100b6367f1b54319f413289f3c
  1b5a384b6b47f57836e0777c3a3c3a88ddc64c11
  40b36224e87fd6e18c9a38873bd375cfcdc8133e
+ 10e82116cc9c5fee4d9b1f1fa084a952de41b692
+8fe7265ccb8c7a92799a829b48c791e3a4d0c346
+77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -114,7 +118,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  Trio Watch App/TrioWatchApp.entitlements      |   14 +
  Trio Watch Complication/Info.plist            |    2 +
  .../TrioWatchComplication.entitlements        |   10 +
- .../TrioWatchComplication.swift               |  600 +++-
+ .../TrioWatchComplication.swift               |  625 +++-
  .../TrioWatchComplicationPreview.swift        |  124 +
  Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
  .../TrioComplicationDataStore.swift           | 1296 +++++++++
@@ -123,7 +127,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  604 +++-
- 29 files changed, 9801 insertions(+), 544 deletions(-)
+ 29 files changed, 9809 insertions(+), 561 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -4984,10 +4988,10 @@ index 0f81f3475..77fe94b3a 100644
              forKey: lastInventoryKey
          )
 diff --git a/Trio Watch App Extension/WatchState+Requests.swift b/Trio Watch App Extension/WatchState+Requests.swift
-index d47a971c9..e6e00e3da 100644
+index ea6c9f146..f3ed61337 100644
 --- a/Trio Watch App Extension/WatchState+Requests.swift	
 +++ b/Trio Watch App Extension/WatchState+Requests.swift	
-@@ -234,6 +234,8 @@ extension WatchState {
+@@ -252,6 +252,8 @@ extension WatchState {
              Task {
                  await WatchLogger.shared.log("⌚️ No session available for state update")
              }
@@ -4996,7 +5000,7 @@ index d47a971c9..e6e00e3da 100644
              return
          }
  
-@@ -242,6 +244,8 @@ extension WatchState {
+@@ -260,6 +262,8 @@ extension WatchState {
                  await WatchLogger.shared.log("⌚️ Session not activated. Activating...")
              }
              session.activate()
@@ -5005,7 +5009,7 @@ index d47a971c9..e6e00e3da 100644
              return
          }
  
-@@ -258,11 +262,31 @@ extension WatchState {
+@@ -276,11 +280,31 @@ extension WatchState {
                      await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
                      await WatchLogger.shared.flushPersistedLogs()
                  }
@@ -8252,10 +8256,10 @@ index 000000000..9a37de423
 +</dict>
 +</plist>
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
-index 411968936..97b676b94 100644
+index a8721530a..97b676b94 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
 +++ b/Trio Watch Complication/TrioWatchComplication.swift	
-@@ -1,105 +1,627 @@
+@@ -1,114 +1,627 @@
 +import Foundation
  import SwiftUI
  import WidgetKit
@@ -8583,8 +8587,12 @@ index 411968936..97b676b94 100644
          switch widgetFamily {
          case .accessoryCircular:
              TrioAccessoryCircularView(entry: entry)
-         case .accessoryCorner:
-             TrioAccessoryCornerView(entry: entry)
+-        #if os(watchOS)
+-            case .accessoryCorner:
+-                TrioAccessoryCornerView(entry: entry)
+-        #endif
++        case .accessoryCorner:
++            TrioAccessoryCornerView(entry: entry)
 +        case .accessoryInline:
 +            TrioAccessoryInlineView(entry: entry)
 +        case .accessoryRectangular:
@@ -8597,7 +8605,10 @@ index 411968936..97b676b94 100644
      }
  }
  
--/// Corner Complication
+-#if os(watchOS)
+-    /// Corner Complication
+-    struct TrioAccessoryCornerView: View {
+-        var entry: TrioWatchComplicationProvider.Entry
 +// F-2: single source of truth for the staleness/recency color used across complication
 +// families (corner's widgetLabel, circular's trend text, rectangular's relative-time text).
 +// Returns nil for a fresh reading (< 5 min) so callers keep their own fresh-state color.
@@ -8611,20 +8622,24 @@ index 411968936..97b676b94 100644
 +        return .red
 +    }
 +}
-+
- struct TrioAccessoryCornerView: View {
--    var entry: TrioWatchComplicationProvider.Entry
-+    var entry: TrioWatchComplicationEntry
  
-     var body: some View {
--        Text("")
+-        var body: some View {
+-            Text("")
+-                .widgetCurvesContent()
+-                .widgetLabel {
+-                    Text("Trio")
+-                }
+-                .widgetBackground(backgroundView: Color.clear)
++struct TrioAccessoryCornerView: View {
++    var entry: TrioWatchComplicationEntry
++
++    var body: some View {
 +        Text(attributedGlucoseLine)
 +            .font(.system(size: 12, weight: .semibold, design: .rounded))
 +            .minimumScaleFactor(0.6)
 +            .widgetAccentable()
-             .widgetCurvesContent()
-             .widgetLabel {
--                Text("Trio")
++            .widgetCurvesContent()
++            .widgetLabel {
 +                let recencyColor = recencyColor(for: entry) ?? .green
 +                let deltaText = entry.deltaDisplayText
 +                let timeText = shortRelativeTime(from: entry.readingDate, now: entry.date)
@@ -8643,8 +8658,7 @@ index 411968936..97b676b94 100644
 +                .lineLimit(1)
 +                .minimumScaleFactor(0.5)
 +                .truncationMode(.tail)
-             }
--            .widgetBackground(backgroundView: Color.clear)
++            }
 +    }
 +
 +    private var attributedGlucoseLine: AttributedString {
@@ -8670,11 +8684,13 @@ index 411968936..97b676b94 100644
 +            var trendAttr = AttributedString(entry.trendSymbolOnly)
 +            trendAttr.foregroundColor = .white
 +            result.append(trendAttr)
-+        }
+         }
 +
 +        return result
-+    }
-+
+     }
+-#endif
+ 
+-/// Circular Complication
 +    private func attributedSecondLine(
 +        deltaText: String,
 +        timeText: String,
@@ -8714,10 +8730,9 @@ index 411968936..97b676b94 100644
 +        }
 +
 +        return result
-     }
- }
- 
--/// Circular Complication
++    }
++}
++
  struct TrioAccessoryCircularView: View {
 -    var entry: TrioWatchComplicationProvider.Entry
 +    var entry: TrioWatchComplicationEntry
@@ -8737,9 +8752,10 @@ index 411968936..97b676b94 100644
 +                .foregroundColor(recencyColor(for: entry) ?? .white)
 +        }
 +        .widgetAccentable()
-+    }
-+}
-+
+     }
+ }
+ 
+-// MARK: - Widget Configuration
 +// V-1: accessoryInline renders a single line of text (no layout control beyond that), so
 +// this is intentionally a plain, short Text; color styling is not honored in this family.
 +struct TrioAccessoryInlineView: View {
@@ -8751,10 +8767,9 @@ index 411968936..97b676b94 100644
 +        Text(hasDelta
 +            ? "\(entry.glucoseNumber) \(entry.trendSymbolOnly) \(deltaText)"
 +            : "\(entry.glucoseNumber) \(entry.trendSymbolOnly)")
-     }
- }
- 
--// MARK: - Widget Configuration
++    }
++}
++
 +// C-217 V-2b: glucose + trend + delta + age line, with a 2h sparkline beneath when the snapshot
 +// carries `recentReadings` (bridged from the extension's WatchGlucoseHistoryStore via the saved
 +// snapshot). Falls back to text-only when the series is nil / < 2 points.
@@ -8846,32 +8861,30 @@ index 411968936..97b676b94 100644
          }
 -        .configurationDisplayName("Trio")
 -        .description("Displays Trio app icon as complication")
+-        .supportedFamilies(supportedFamilies)
 +        .configurationDisplayName(String(localized: "Trio Glucose"))
 +        .description(String(localized: "Shows current glucose, delta, and trend data."))
-         .supportedFamilies([
-             .accessoryCorner,
--            .accessoryCircular
++        .supportedFamilies([
++            .accessoryCorner,
 +            .accessoryCircular,
 +            .accessoryInline,
 +            .accessoryRectangular
-         ])
++        ])
      }
- }
- 
--extension View {
--    func widgetBackground(backgroundView: some View) -> some View {
--        if #available(watchOS 10.0, iOSApplicationExtension 17.0, iOS 17.0, *) {
--            return containerBackground(for: .widget) {
--                backgroundView
--            }
--        } else {
--            return background(backgroundView)
++}
++
 +private func shortRelativeTime(from readingDate: Date, now: Date = Date()) -> String {
 +    if readingDate == .distantPast { return "--" }
 +
 +    let interval = max(0, now.timeIntervalSince(readingDate))
 +    if interval < 60 { return "NOW" }
-+
+ 
+-    private var supportedFamilies: [WidgetFamily] {
+-        #if os(watchOS)
+-            return [.accessoryCorner, .accessoryCircular]
+-        #else
+-            return [.accessoryCircular]
+-        #endif
 +    // Use floor division to avoid rounding up (e.g., 61 minutes should show "1h", not "2h")
 +    let totalMinutes = Int(interval / 60)
 +
@@ -8885,9 +8898,17 @@ index 411968936..97b676b94 100644
 +    } else {
 +        let days = totalMinutes / 1440
 +        return "\(days)d"
-+    }
-+}
-+
+     }
+ }
+ 
+-extension View {
+-    func widgetBackground(backgroundView: some View) -> some View {
+-        if #available(watchOS 10.0, iOSApplicationExtension 17.0, iOS 17.0, *) {
+-            return containerBackground(for: .widget) {
+-                backgroundView
+-            }
+-        } else {
+-            return background(backgroundView)
 +extension Color {
 +    init?(hex: String) {
 +        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
@@ -10872,7 +10893,7 @@ index e939aba00..85dfce140 100644
      }
  }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 02c883a38..1c8b499ed 100644
+index 9887c93fb..e9fc30002 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,6 +2,7 @@ import Combine
@@ -10898,7 +10919,7 @@ index 02c883a38..1c8b499ed 100644
      @Injected() private var determinationStorage: DeterminationStorage!
      @Injected() private var overrideStorage: OverrideStorage!
      @Injected() private var tempTargetStorage: TempTargetsStorage!
-@@ -40,6 +44,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -41,6 +45,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
      private var subscriptions = Set<AnyCancellable>()
  
@@ -10927,7 +10948,7 @@ index 02c883a38..1c8b499ed 100644
      // Processed payload IDs for deduplication (LRU with TTL)
      private let processedIdsKey = "watchProcessedIds"
      private let processedIdsMaxCount = 100
-@@ -74,27 +100,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -75,27 +101,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
          // Observer for glucose and manual glucose
          glucoseStorage.updatePublisher
@@ -10959,7 +10980,7 @@ index 02c883a38..1c8b499ed 100644
              }
              .store(in: &subscriptions)
  
-@@ -102,26 +117,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -103,26 +118,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      }
  
      private func registerHandlers() {
@@ -10996,7 +11017,7 @@ index 02c883a38..1c8b499ed 100644
  
          coreDataPublisher?.filteredByEntityName("PumpEventStored").sink { [weak self] _ in
              guard let self = self else { return }
-@@ -130,25 +137,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -131,25 +138,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              }
          }.store(in: &subscriptions)
  
@@ -11032,7 +11053,7 @@ index 02c883a38..1c8b499ed 100644
      }
  
      /// Sets up the WatchConnectivity session if the device supports it
-@@ -160,11 +159,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -161,11 +160,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              self.session = session
  
              debug(.watchManager, "📱 Phone session setup - isPaired: \(session.isPaired)")
@@ -11083,7 +11104,7 @@ index 02c883a38..1c8b499ed 100644
      /// Attempts to reestablish the Watch connection if it becomes unreachable
      private func retryConnection() {
          guard let session = session else { return }
-@@ -179,11 +217,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -180,11 +218,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      /// - Returns: WatchState containing current glucose readings and trends and determination infos for displaying cob and iob in the view
      func setupWatchState() async -> WatchState {
          // Check if a watch is paired and reachable before doing expensive calculations
@@ -11114,7 +11135,7 @@ index 02c883a38..1c8b499ed 100644
          // Skip if watch session is not activated
          guard session.activationState == .activated else {
              debug(.watchManager, "⌚️❌ Skipping setupWatchState - Watch session not activated")
-@@ -253,6 +308,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -254,6 +309,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.currentGlucose = "\(latestGlucoseValue)"
                  }
  
@@ -11133,7 +11154,7 @@ index 02c883a38..1c8b499ed 100644
                  /// Calculate latest color
                  let hardCodedLow = Decimal(55)
                  let hardCodedHigh = Decimal(220)
-@@ -280,6 +347,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -281,6 +348,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
                  // Map glucose values
                  watchState.glucoseValues = glucoseObjects.compactMap { glucose in
@@ -11142,7 +11163,7 @@ index 02c883a38..1c8b499ed 100644
                      let glucoseValue = self.units == .mgdL
                          ? Double(glucose.glucose)
                          : Double(truncating: Decimal(glucose.glucose).asMmolL as NSNumber)
-@@ -293,7 +362,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -294,7 +363,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      )
  
                      return WatchGlucoseObject(
@@ -11151,7 +11172,7 @@ index 02c883a38..1c8b499ed 100644
                          glucose: glucoseValue,
                          color: glucoseColor.toHexString()
                      )
-@@ -330,12 +399,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -331,12 +400,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
                  // Calculate delta if we have at least 2 readings
                  if glucoseObjects.count >= 2 {
@@ -11169,7 +11190,7 @@ index 02c883a38..1c8b499ed 100644
                      let formattedDelta = Formatter.glucoseFormatter(for: self.units)
                          .string(from: deltaValue as NSNumber) ?? "0"
                      watchState.delta = deltaValue < 0 ? "\(formattedDelta)" : "+\(formattedDelta)"
-@@ -428,12 +499,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -429,12 +500,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.forecastLines = [:]
                  }
  
@@ -11183,7 +11204,7 @@ index 02c883a38..1c8b499ed 100644
                  debug(.watchManager, "📱 Setup WatchState - \(glucoseInfo)")
  
                  return watchState
-@@ -526,7 +595,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -527,7 +596,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                  [
                      "glucose": value.glucose,
@@ -11192,7 +11213,7 @@ index 02c883a38..1c8b499ed 100644
                      "color": value.color
                  ]
              },
-@@ -566,12 +635,202 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -567,12 +636,202 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          dictionary[WatchMessageKeys.forecastData] = forecastData
@@ -11397,7 +11418,7 @@ index 02c883a38..1c8b499ed 100644
          guard let session = session else { return }
  
          guard session.isPaired else {
-@@ -580,7 +839,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -581,7 +840,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          guard session.isWatchAppInstalled else {
@@ -11406,7 +11427,7 @@ index 02c883a38..1c8b499ed 100644
              return
          }
  
-@@ -598,17 +857,141 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -599,17 +858,141 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          var state = state
          state.date = Date()
  
@@ -11555,7 +11576,7 @@ index 02c883a38..1c8b499ed 100644
          }
          WatchStateSnapshot.saveLatestDateToDisk(state.date)
      }
-@@ -638,10 +1021,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -639,10 +1022,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -11580,7 +11601,7 @@ index 02c883a38..1c8b499ed 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -766,14 +1160,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -767,14 +1161,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
      /// Implements the replyHandler version of didReceiveMessage for ACK support.
      func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
@@ -11600,7 +11621,7 @@ index 02c883a38..1c8b499ed 100644
          if type == "queryAcks" {
              if let pendingIds = message["pendingIds"] as? [String] {
                  let ackIds = getAcknowledgedIds(from: pendingIds)
-@@ -782,16 +1178,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -783,16 +1179,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      "ackIds": ackIds
                  ]
                  replyHandler(batchAck)
@@ -11618,7 +11639,7 @@ index 02c883a38..1c8b499ed 100644
          }
  
          // Deduplicate BEFORE any Crashlytics calls
-@@ -827,6 +1215,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -828,6 +1216,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = message["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -11626,7 +11647,7 @@ index 02c883a38..1c8b499ed 100644
                  }
              } else if type == "watchError" {
                  if let errorData = message["data"] as? [String: Any] {
-@@ -851,10 +1240,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -852,10 +1241,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Check if this is an envelope message
              if let type = message["type"] as? String,
                 let payloadId = message["payloadId"] as? String {
@@ -11641,7 +11662,7 @@ index 02c883a38..1c8b499ed 100644
                      }
                  } else if type == "watchError" {
                      if let errorData = message["data"] as? [String: Any] {
-@@ -867,6 +1259,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -868,6 +1260,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Legacy message format
              if let logs = message["watchLogs"] as? String {
                  SimpleLogReporter.appendToWatchLog(logs)
@@ -11649,7 +11670,7 @@ index 02c883a38..1c8b499ed 100644
              }
  
              // Handle watch errors forwarded for Crashlytics logging
-@@ -879,9 +1272,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -880,9 +1273,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              {
                  debug(.watchManager, "📱 Watch requested watch state data update.")
                  guard let self = self else { return }
@@ -11662,7 +11683,7 @@ index 02c883a38..1c8b499ed 100644
                  Task {
                      let state = await self.setupWatchState()
                      await self.sendDataToWatch(state)
-@@ -1005,6 +1398,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1011,6 +1404,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -11677,7 +11698,7 @@ index 02c883a38..1c8b499ed 100644
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
          // Check if this is an envelope message
          if let type = userInfo["type"] as? String,
-@@ -1024,6 +1425,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1030,6 +1431,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = userInfo["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -11685,7 +11706,7 @@ index 02c883a38..1c8b499ed 100644
                  }
              } else if type == "watchError" {
                  if let errorData = userInfo["data"] as? [String: Any] {
-@@ -1074,10 +1476,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1080,10 +1482,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      #endif
  
      func sessionReachabilityDidChange(_ session: WCSession) {
@@ -11701,7 +11722,7 @@ index 02c883a38..1c8b499ed 100644
              Task {
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
-@@ -1562,11 +1967,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1360,11 +1765,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -11715,7 +11736,7 @@ index 02c883a38..1c8b499ed 100644
          }
      }
  
-@@ -1577,12 +1979,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1375,12 +1777,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
