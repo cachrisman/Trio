@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.11)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.12)
 #
 # CHANGELOG:
+#   v1.12 - Every throwaway commit this script creates (git am, cherry-pick,
+#           from-feature-branch snapshot, squash) passes a bot identity and
+#           commit.gpgsign=false per command via GIT_BOT, so the shared
+#           .git/config (operator identity, 1Password signing) is never touched
+#           and a locked 1Password cannot hang a regeneration.
 #   v1.11 - Cherry-pick-viability gate: --from-feature-branch is now refused when
 #           recorded provenance shows cherry-pick would apply cleanly (aligned
 #           history) or when the patch has no provenance to verify; it is allowed
@@ -274,6 +279,8 @@ DRY_RUN=false
 SKIP_TEST=false
 ALLOW_BEHIND_ORIGIN=false   # forwarded to generate-patch.sh to bypass its behind-origin guard
 EXCLUDE_FROM_STASH=""       # comma-separated paths kept in the working tree (not stashed) during the run
+# Identity + no-signing for every throwaway commit this script creates; passed per command, the shared .git/config is never touched.
+GIT_BOT=(-c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false)
 
 show_help() {
     awk '
@@ -1038,7 +1045,7 @@ git checkout -b "$BASELINE_BRANCH" dev || die "Failed to create $BASELINE_BRANCH
 if [ ${#BASELINE_PATCHES[@]} -gt 0 ]; then
     for p in "${BASELINE_PATCHES[@]}"; do
         pname=$(basename "$p")
-        if ! git am --3way --keep-cr --whitespace=nowarn "$p" 2>/dev/null; then
+        if ! git "${GIT_BOT[@]}" am --3way --keep-cr --whitespace=nowarn "$p" 2>/dev/null; then
             git am --abort 2>/dev/null || true
             die "Failed to apply baseline patch: $pname
   This means the patch stack has a problem before patch $PATCH_NUM.
@@ -1164,12 +1171,12 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
                 git add -f -- "$f" 2>/dev/null || die "Failed to stage: $f"
             fi
         done
-        git commit -m "feat: $PATCH_DESC" || die "Failed to commit from-feature-branch state"
+        git "${GIT_BOT[@]}" commit -m "feat: $PATCH_DESC" || die "Failed to commit from-feature-branch state"
         print_success "Committed current state of patch-scope files from $FEATURE_BRANCH"
     fi
 else
     # Apply the current patch
-    if ! git am --3way --keep-cr --whitespace=nowarn "$PATCH_FILE" 2>/dev/null; then
+    if ! git "${GIT_BOT[@]}" am --3way --keep-cr --whitespace=nowarn "$PATCH_FILE" 2>/dev/null; then
         git am --abort 2>/dev/null || true
         die "Failed to apply current patch: $PATCH_BASENAME
   The patch may need regeneration against the current baseline."
@@ -1186,7 +1193,7 @@ else
         sha_trimmed=$(echo "$sha" | tr -d '[:space:]')
         short=$(git log -1 --format='%h %s' "$sha_trimmed" 2>/dev/null || echo "$sha_trimmed")
 
-        if ! git cherry-pick "$sha_trimmed" 2>/dev/null; then
+        if ! git "${GIT_BOT[@]}" cherry-pick "$sha_trimmed" 2>/dev/null; then
             # Capture conflict info before aborting
             conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null | sed 's/^/    /')
             git cherry-pick --abort 2>/dev/null || true
@@ -1219,7 +1226,7 @@ commit_count=$(git rev-list --count "$BASELINE_BRANCH".."$UPDATE_BRANCH")
 if [ "$commit_count" -gt 1 ]; then
     # Soft reset to baseline keeping all changes staged
     git reset --soft "$BASELINE_BRANCH" || die "Failed to soft reset for squash"
-    git commit -m "feat: $PATCH_DESC" || die "Failed to create squashed commit"
+    git "${GIT_BOT[@]}" commit -m "feat: $PATCH_DESC" || die "Failed to create squashed commit"
     print_success "Squashed $commit_count commits into one"
 else
     print_success "Already a single commit (no squash needed)"

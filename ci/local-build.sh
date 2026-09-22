@@ -29,6 +29,7 @@ Options:
   --preserve-worktree        Preserve worktree after build, even on success (for debugging)
   --no-preserve-on-error     Remove the worktree even when the build fails
                              (default: a failed build keeps its worktree to investigate)
+  --task <KEY>               Record this attempt on the build epic task (e.g. TRIO-059) via task-relay
   -h, --help                 Show this help
 
 Examples:
@@ -47,6 +48,8 @@ USAGE
 }
 
 BUNDLER_VERSION="2.6.2"
+# Identity + no-signing for the throwaway patch commits in the build worktree; passed per command so the shared .git/config is never touched.
+GIT_BOT=(-c user.name="Trio Build Bot" -c user.email="build-bot@users.noreply.github.com" -c commit.gpgsign=false)
 
 BASE_BRANCH="dev"
 BASE_BRANCH_SET=false
@@ -63,6 +66,11 @@ IPA_PATH=""
 PRESERVE_WORKTREE=0
 NO_PRESERVE_ON_ERROR=0   # by default, a failed build keeps its worktree for investigation
 SYNC_UPSTREAM=""
+BUILD_TASK=""
+RECORD_RELEASE_OUT=""   # temp file holding record-release.sh output (release URLs for --task)
+
+# Keep the verbatim command line for the --task attempt record.
+ORIGINAL_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -127,6 +135,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-preserve-on-error)
       NO_PRESERVE_ON_ERROR=1
+      ;;
+    --task=*)
+      BUILD_TASK="${1#*=}"
+      ;;
+    --task)
+      shift
+      BUILD_TASK="${1:-}"
       ;;
     -h|--help)
       usage
@@ -270,6 +285,172 @@ format_duration() {
   fi
 }
 
+########################################
+# Task-relay attempt recording (--task)
+########################################
+# Best-effort by design: recording must never fail the build or alter its exit
+# code. The ONLY write path is the task-relay CLI reading the body text from
+# stdin (task files are never edited directly; status/frontmatter untouched).
+task_record() {
+  local rc=0
+  if [[ -z "$BUILD_TASK" ]]; then
+    cat >/dev/null
+    return 0
+  fi
+  if ! command -v task-relay >/dev/null 2>&1; then
+    cat >/dev/null
+    echo "[build] WARNING: could not record attempt on $BUILD_TASK (task-relay not on PATH)"
+    return 0
+  fi
+  task-relay tasks body "$BUILD_TASK" --repo "$ROOT_DIR" --append-file - || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "[build] WARNING: could not record attempt on $BUILD_TASK (task-relay tasks body exited $rc)"
+  fi
+  return 0
+}
+
+# Record the attempt start on the build epic task (best-effort). Called once,
+# right after the log tee is established — before environment validation and
+# the upstream sync — so base_ref is never computed yet; fall back to
+# BASE_BRANCH. The dev SHA printed here is kept in TASK_START_DEV_SHA so the
+# post-sync value can be noted if it changes.
+TASK_START_DEV_SHA=""
+task_record_attempt_start() {
+  [[ -n "$BUILD_TASK" ]] || return 0
+  local _task_cmd _task_log_rel _task_dev_sha _task_upstream_sha _task_xcode _task_shas
+  _task_cmd="./ci/local-build.sh"
+  if [[ ${#ORIGINAL_ARGS[@]} -gt 0 ]]; then
+    _task_cmd="$_task_cmd ${ORIGINAL_ARGS[*]}"
+  fi
+  _task_log_rel="${LOGFILE#"$ROOT_DIR"/}"
+  _task_dev_sha="$(git rev-parse --short dev 2>/dev/null || true)"
+  TASK_START_DEV_SHA="$_task_dev_sha"
+  _task_upstream_sha="$(git rev-parse --short upstream/dev 2>/dev/null || true)"
+  _task_xcode="$(xcodebuild -version 2>/dev/null | head -1 || true)"
+  _task_shas=""
+  if [[ -n "$_task_dev_sha" ]]; then
+    _task_shas="- dev: \`$_task_dev_sha\`"
+  fi
+  if [[ -n "$_task_upstream_sha" ]]; then
+    _task_shas="${_task_shas:+$_task_shas
+}- upstream/dev: \`$_task_upstream_sha\`"
+  fi
+  task_record <<TASK_NOTE
+
+## Attempt $(date '+%Y-%m-%d %H:%M') local
+
+- Command: \`$_task_cmd\`
+- Log: \`$_task_log_rel\`
+- Base ref: \`${base_ref:-$BASE_BRANCH}\`
+${_task_shas:+$_task_shas
+}- Xcode: ${_task_xcode:-unknown}
+TASK_NOTE
+  return 0
+}
+
+# Record the attempt outcome on the build epic task and drop the synchronous
+# record-release capture. Called from cleanup(), from the provisional EXIT trap
+# installed before cleanup() exists, and from the --release-only exits; the
+# TASK_END_RECORDED guard makes every call after the first a no-op. Must never
+# propagate a failure or change the caller's exit code: the body runs in a
+# subshell with errexit off.
+TASK_END_RECORDED=false
+task_record_attempt_end() {
+  local exit_code="${1:-0}"
+  if [[ "$TASK_END_RECORDED" = true ]]; then
+    return 0
+  fi
+  TASK_END_RECORDED=true
+  (
+  set +e
+  # stage-summary.txt is fresh when called after print_stage_summary. Build
+  # number / TestFlight lines are recovered from $LOGFILE (printed minutes
+  # earlier, long since flushed);
+  # release URLs come from $RECORD_RELEASE_OUT, captured synchronously, since
+  # the 'exec > >(tee …)' logger is async and may not have flushed them yet.
+  if [[ -n "$BUILD_TASK" ]]; then
+    local _task_failed_stage _task_ended _task_build_no _task_tf _task_tf_line _task_tf_time
+    local _task_pub_url _task_priv_url _task_stages _task_errors
+    # cleanup() has already ended the in-progress stage (so it is the last
+    # STAGE_NAMES entry); on the early/provisional paths it is still current.
+    _task_failed_stage="$CURRENT_STAGE"
+    _task_ended="$(date '+%Y-%m-%d %H:%M')"
+    if [[ $exit_code -eq 0 ]]; then
+      _task_build_no=""
+      _task_tf="not uploaded"
+      _task_pub_url=""
+      _task_priv_url=""
+      if [[ -n "${LOGFILE:-}" && -f "$LOGFILE" ]]; then
+        _task_build_no="$(grep 'agvtool new-version -all' "$LOGFILE" | tail -1 | sed -E 's/.*agvtool new-version -all ([0-9]+).*/\1/' || true)"
+        _task_tf_line="$(grep 'Successfully uploaded the new binary to App Store Connect' "$LOGFILE" | tail -1 || true)"
+        if [[ -n "$_task_tf_line" ]]; then
+          _task_tf="uploaded"
+          _task_tf_time="$(printf '%s\n' "$_task_tf_line" | grep -oE '\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' | head -1 | tr -d '[]' || true)"
+          if [[ -n "$_task_tf_time" ]]; then
+            _task_tf="uploaded at $_task_tf_time"
+          fi
+        fi
+      fi
+      if [[ -n "${RECORD_RELEASE_OUT:-}" && -r "$RECORD_RELEASE_OUT" ]]; then
+        _task_pub_url="$(grep 'Public Release URL:' "$RECORD_RELEASE_OUT" | tail -1 | sed 's/.*Public Release URL: *//' || true)"
+        _task_priv_url="$(grep 'Private Backup Release URL (draft):' "$RECORD_RELEASE_OUT" | tail -1 | sed 's/.*Private Backup Release URL (draft): *//' || true)"
+      fi
+      _task_stages="$(stage_summary_markdown)"
+      task_record <<TASK_NOTE
+
+- Outcome: success (ended $_task_ended)
+- Build number: ${_task_build_no:-unknown}
+- TestFlight: $_task_tf
+${_task_pub_url:+- Public release: $_task_pub_url
+}${_task_priv_url:+- Private backup release (draft): $_task_priv_url
+}
+$_task_stages
+TASK_NOTE
+    else
+      if [[ -z "$_task_failed_stage" && ${#STAGE_NAMES[@]} -gt 0 ]]; then
+        _task_failed_stage="${STAGE_NAMES[${#STAGE_NAMES[@]}-1]}"
+      fi
+      _task_errors=""
+      if [[ -n "${LOGFILE:-}" && -f "$LOGFILE" ]]; then
+        _task_errors="$(grep -iE 'error:|❌|FAILED|Patch failed' "$LOGFILE" | grep -vE 'TOTAL \(Failed\)|No error lines with|Fastlane Error Details|cleanup invoked' | tail -3 || true)"
+      fi
+      task_record <<TASK_NOTE
+
+- Outcome: FAILED (exit $exit_code) (ended $_task_ended)
+- Failed stage: ${_task_failed_stage:-unknown}
+- Last errors:
+
+\`\`\`
+${_task_errors:-(no matching lines in log)}
+\`\`\`
+TASK_NOTE
+    fi
+  fi
+  ) || true
+  [[ -n "${RECORD_RELEASE_OUT:-}" ]] && rm -f "$RECORD_RELEASE_OUT" 2>/dev/null || true
+  return 0
+}
+
+# Convert build/artifacts/stage-summary.txt (written by print_stage_summary:
+# 'name  duration' rows, a dashed separator, then the TOTAL row) into a
+# markdown table. Columns are split at the first run of 2+ spaces.
+stage_summary_markdown() {
+  local summary_file="$ROOT_DIR/build/artifacts/stage-summary.txt"
+  [[ -f "$summary_file" ]] || return 0
+  local line name duration
+  echo "| Stage | Duration |"
+  echo "|---|---|"
+  while IFS= read -r line; do
+    if [[ -z "$line" || "$line" == --* ]]; then
+      continue
+    fi
+    name="${line%%  *}"
+    duration="${line#"$name"}"
+    duration="${duration#"${duration%%[! ]*}"}"
+    echo "| $name | $duration |"
+  done < "$summary_file"
+}
+
 print_stage_summary() {
   local final_status="${1:-success}"
   local total_duration=0
@@ -404,6 +585,14 @@ LOGFILE="$ROOT_DIR/build/artifacts/ci-local-build-$(date +%Y%m%d-%H%M%S).log"
 # capture all output to logfile and stdout (once, safely)
 # this prevents intermittent 'tee: ... No such file or directory' caused by race/dir absence
 exec > >(tee -a "$LOGFILE") 2>&1
+
+# --task: record the attempt start now (LOGFILE and ROOT_DIR are known) so an
+# attempt exists even when environment validation fails below; the dev /
+# upstream SHAs are pre-sync values. The provisional EXIT trap records the
+# outcome until 'trap cleanup EXIT' replaces it (cleanup() calls the same
+# guarded function, so nothing is recorded twice).
+task_record_attempt_start
+trap 'task_record_attempt_end $?' EXIT
 
 # Silence Fastlane & Bundler noise globally for this build
 export FASTLANE_SKIP_UPDATE_CHECK=1
@@ -697,6 +886,7 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
       echo "[build]      2. Specify path: ./ci/local-build.sh --release-only --ipa-path /path/to/Trio.ipa"
     fi
     echo ""
+    task_record_attempt_end 1
     exit 1
   fi
 
@@ -729,6 +919,7 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
   release_exit_code=0
   capture_fastlane_errors "bundle _${BUNDLER_VERSION}_ exec fastlane release" "Release step" || release_exit_code=$?
   if [[ $release_exit_code -ne 0 ]]; then
+    task_record_attempt_end "$release_exit_code"
     exit "$release_exit_code"
   fi
   stage_end
@@ -743,7 +934,11 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
   echo "[build] Recording release to GitHub..."
 
   if [[ -f "$ROOT_DIR/Trio.ipa" ]]; then
-    if IPA_PATH="$ROOT_DIR/Trio.ipa" "$ROOT_DIR/scripts/record-release.sh"; then
+    # Capture the output synchronously (still shown) so cleanup() can read the
+    # release URLs without racing the async $LOGFILE tee. pipefail keeps the
+    # if on record-release.sh's exit status.
+    RECORD_RELEASE_OUT="$(mktemp 2>/dev/null || true)"
+    if IPA_PATH="$ROOT_DIR/Trio.ipa" BUILD_TASK_KEY="$BUILD_TASK" TASKS_DIR="$ROOT_DIR/tasks" "$ROOT_DIR/scripts/record-release.sh" 2>&1 | tee "${RECORD_RELEASE_OUT:-/dev/null}"; then
       echo "[build] Release recorded successfully."
     else
       echo "[build] WARNING: Release recording failed, but build/upload succeeded."
@@ -761,6 +956,7 @@ if [[ "$RELEASE_ONLY" = "1" ]]; then
   fi
 
   print_stage_summary "success"
+  task_record_attempt_end 0
   exit 0
 fi
 
@@ -963,9 +1159,13 @@ cleanup() {
     fi
   fi
 
+  # --task: record the attempt outcome (best-effort; no-op if already recorded).
+  task_record_attempt_end "$exit_code"
+
   if [[ "$cleanup_enabled" != true ]]; then
     echo "=== cleanup invoked (exit code: $exit_code) ==="
     echo "[cleanup] Cleanup not initialized; skipping git cleanup"
+    [[ -n "${RECORD_RELEASE_OUT:-}" ]] && rm -f "$RECORD_RELEASE_OUT" 2>/dev/null || true
     echo "=== cleanup complete ==="
     exit "$exit_code"
   fi
@@ -1013,6 +1213,7 @@ cleanup() {
     echo "[cleanup] Removing ephemeral build keychain: $BUILD_KC"
     security delete-keychain "$BUILD_KC" 2>/dev/null || true
   fi
+  [[ -n "${RECORD_RELEASE_OUT:-}" ]] && rm -f "$RECORD_RELEASE_OUT" 2>/dev/null || true
 
   echo "=== cleanup complete ==="
   exit "$exit_code"
@@ -1103,6 +1304,17 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     fi
   elif [[ "$SYNC_UPSTREAM" = "0" ]]; then
     echo "[build] Upstream sync: disabled (--no-sync-upstream)"
+  fi
+
+  # --task: the attempt start (recorded before validation) printed the pre-sync
+  # dev SHA; note the post-sync one when the upstream merge moved it.
+  if [[ -n "$BUILD_TASK" ]]; then
+    _task_dev_sha_now="$(git rev-parse --short dev 2>/dev/null || true)"
+    if [[ -n "$_task_dev_sha_now" && "$_task_dev_sha_now" != "$TASK_START_DEV_SHA" ]]; then
+      task_record <<TASK_NOTE
+- dev after upstream sync: \`$_task_dev_sha_now\`
+TASK_NOTE
+    fi
   fi
 
   # Log source patch hashes for provenance (before worktree setup).
@@ -1249,11 +1461,6 @@ echo "[build] Running 'Customize Trio' step (patches)..."
 if [[ "$SKIP_PATCHES" = "1" ]]; then
   echo "[build] Skipping patch application."
 elif [[ -d "$PATCHES_DIR" ]]; then
-  # Configure git identity for git am operations (local repo only)
-  git -C "$BUILD_DIR" config user.name "Trio Build Bot" || true
-  git -C "$BUILD_DIR" config user.email "build-bot@users.noreply.github.com" || true
-  git -C "$BUILD_DIR" config commit.gpgsign false || true
-
   # Collect patches deterministically (bash 3.2 compatible)
   PATCH_LIST_FILE=$(mktemp)
   (cd "$PATCHES_DIR" 2>/dev/null && ls -1 *.patch 2>/dev/null | sort) \
@@ -1288,12 +1495,12 @@ elif [[ -d "$PATCHES_DIR" ]]; then
       _pname="$(basename "$patch")"
       _phash="$(shasum -a 256 "$patch" 2>/dev/null | cut -c1-12)"
       echo "[build] Applying: $_pname (sha256:$_phash)"
-      if git am --3way --keep-cr --whitespace=nowarn "$patch" >/dev/null 2>&1; then
+      if git "${GIT_BOT[@]}" am --3way --keep-cr --whitespace=nowarn "$patch" >/dev/null 2>&1; then
         echo "[build] ✅ Applied: $_pname"
       else
         echo "[build] ❌ Failed to apply patch: $patch"
         git am --abort >/dev/null 2>&1 || true
-        git am --3way --keep-cr --whitespace=nowarn "$patch" 2>&1 | sed 's/^/    /' || true
+        git "${GIT_BOT[@]}" am --3way --keep-cr --whitespace=nowarn "$patch" 2>&1 | sed 's/^/    /' || true
         rm -f "$PATCH_LIST_FILE"
         exit 1
       fi
@@ -1537,8 +1744,12 @@ if [[ -n "$ipa_path_for_release" ]]; then
   # Ensure we're in the build directory (where patches are applied)
   cd "$BUILD_DIR"
   
-  # Run record-release.sh (it will handle errors internally)
-  if IPA_PATH="$ipa_path_for_release" DSYM_PATH="$dsym_path_for_release" "$ROOT_DIR/scripts/record-release.sh"; then
+  # Run record-release.sh (it will handle errors internally). Capture the
+  # output synchronously (still shown) so cleanup() can read the release URLs
+  # without racing the async $LOGFILE tee. pipefail keeps the if on
+  # record-release.sh's exit status.
+  RECORD_RELEASE_OUT="$(mktemp 2>/dev/null || true)"
+  if IPA_PATH="$ipa_path_for_release" DSYM_PATH="$dsym_path_for_release" BUILD_TASK_KEY="$BUILD_TASK" TASKS_DIR="$ROOT_DIR/tasks" "$ROOT_DIR/scripts/record-release.sh" 2>&1 | tee "${RECORD_RELEASE_OUT:-/dev/null}"; then
     echo "[build] Release recorded successfully."
   else
     echo "[build] WARNING: Release recording failed, but build/upload succeeded."

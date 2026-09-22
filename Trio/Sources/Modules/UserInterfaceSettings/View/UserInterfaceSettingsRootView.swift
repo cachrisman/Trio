@@ -61,6 +61,8 @@ extension UserInterfaceSettings {
                                 .font(.footnote)
                                 .foregroundColor(.secondary)
                                 .lineLimit(nil)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
                                 Spacer()
                                 Button(
                                     action: {
@@ -116,6 +118,8 @@ extension UserInterfaceSettings {
                             .font(.footnote)
                             .foregroundColor(.secondary)
                             .lineLimit(nil)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
                             Spacer()
                             Button(
                                 action: {
@@ -177,6 +181,8 @@ extension UserInterfaceSettings {
                                 .font(.footnote)
                                 .foregroundColor(.secondary)
                                 .lineLimit(nil)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
                                 Spacer()
                                 Button(
                                     action: {
@@ -330,6 +336,8 @@ extension UserInterfaceSettings {
                                     "Set low and high glucose values for the main screen, watch app, live activity, and contact image colors."
                                 )
                                 .lineLimit(nil)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .font(.footnote)
                                 .foregroundColor(.secondary)
 
@@ -384,6 +392,8 @@ extension UserInterfaceSettings {
                             .font(.footnote)
                             .foregroundColor(.secondary)
                             .lineLimit(nil)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
                             Spacer()
                             Button(
                                 action: {
@@ -438,6 +448,8 @@ extension UserInterfaceSettings {
                             .font(.footnote)
                             .foregroundColor(.secondary)
                             .lineLimit(nil)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
                             Spacer()
                             Button(
                                 action: {
@@ -482,6 +494,8 @@ extension UserInterfaceSettings {
                                 .font(.footnote)
                                 .foregroundColor(.secondary)
                                 .lineLimit(nil)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
                                 Spacer()
                                 Button(
                                     action: {
@@ -523,6 +537,8 @@ extension UserInterfaceSettings {
                             .font(.footnote)
                             .foregroundColor(.secondary)
                             .lineLimit(nil)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
                             Spacer()
                             Button(
                                 action: {
@@ -602,6 +618,8 @@ extension UserInterfaceSettings {
                             .font(.footnote)
                             .foregroundColor(.secondary)
                             .lineLimit(nil)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
                             Spacer()
                             Button(
                                 action: {
@@ -609,7 +627,7 @@ extension UserInterfaceSettings {
                                     selectedVerboseHint =
                                         AnyView(
                                             Text(
-                                                "Choose what the statistics panel on the home screen shows by default. Tapping the panel always opens the full statistics view.\n\nTime in Range: today's time in range percentage with a glucose distribution bar.\n\nDistribution Bar Only: just the glucose distribution bar, without the percentage.\n\nToday's Averages: today's average glucose and GMI (Glucose Management Index)."
+                                                "Choose what the statistics panel on the home screen shows by default. Tapping the panel always opens the full statistics view.\n\nTime in Range: today's time in range percentage with a glucose distribution bar.\n\nDistribution Bar Only: just the glucose distribution bar, without the percentage.\n\nToday's Averages: today's average glucose and GMI (Glucose Management Index).\n\nHide Statistics: shows no data at all, just a \"View Statistics\" shortcut."
                                             )
                                         )
                                     shouldDisplayHint.toggle()

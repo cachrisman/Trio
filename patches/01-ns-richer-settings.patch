@@ -1,18 +1,20 @@
-From 7beb00bec72116030f1dbcbc1dd9ba732ea8b78e Mon Sep 17 00:00:00 2001
+From 4c5dc3d50b3890ba6d346e3788c3e92fab0bf99d Mon Sep 17 00:00:00 2001
 From: Trio Build Bot <build-bot@users.noreply.github.com>
-Date: Thu, 18 Jun 2026 21:53:14 +0200
+Date: Wed, 16 Sep 2026 13:18:02 +0200
 Subject: [PATCH] feat: ns-richer-settings
 
 Trio-Patch-Source-Branch: feature/ns-richer-settings
-Trio-Patch-Base: 3191d6296f8a3857bf15f5bd90db45f358bf163e
-Trio-Patch-Feature-Tip: 26d560d0040aaaa153a435a191a38046423eb9e5
-Trio-Patch-Generated: 2026-06-18T19:53:08Z
+Trio-Patch-Base: 227d9cf2883548ab0b1c6261db0c8a788eb29842
+Trio-Patch-Feature-Tip: 8e339387239e12bd711f6181a1d677879ba141a2
+Trio-Patch-Generated: 2026-09-16T11:17:50Z
 Trio-Patch-Source-Commits:
  53ac829f5ef436c0f39e72d97eaff2a9da665b98 feat: ns-richer-settings
  26d560d0040aaaa153a435a191a38046423eb9e5 Extend Nightscout trioSettings with remaining treatment prefs.
+ 8e339387239e12bd711f6181a1d677879ba141a2 Merge dev (1.0.0.3) into feature/ns-richer-settings
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  81b01addc8d4ef227d05cb28521816e521cfc3f9
+ 0e0174ba6ac9b1106fd3848d005d84e97153f97a
 ---
  .../Models/NightscoutAlgorithmSettings.swift  |  93 ++++++++++++++
  Trio/Sources/Models/NightscoutStatus.swift    |   2 +
@@ -120,7 +122,7 @@ index 000000000..88ddb6d0e
 +    let maxBasal: Decimal?
 +}
 diff --git a/Trio/Sources/Models/NightscoutStatus.swift b/Trio/Sources/Models/NightscoutStatus.swift
-index 6212c61b0..2ca345b96 100644
+index f4c06557e..4760dd8f9 100644
 --- a/Trio/Sources/Models/NightscoutStatus.swift
 +++ b/Trio/Sources/Models/NightscoutStatus.swift
 @@ -5,6 +5,8 @@ struct NightscoutStatus: JSON {
@@ -133,10 +135,10 @@ index 6212c61b0..2ca345b96 100644
  
  struct OpenAPSStatus: JSON {
 diff --git a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
-index bd4d51ce3..31a72a36b 100644
+index bcf71a1dc..a2506e5d6 100644
 --- a/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
 +++ b/Trio/Sources/Services/Network/Nightscout/NightscoutManager.swift
-@@ -550,11 +550,100 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
+@@ -681,11 +681,100 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
              battery: Int(batteryLevel * 100),
              isCharging: batteryState == .charging || batteryState == .full
          )
@@ -151,7 +153,7 @@ index bd4d51ce3..31a72a36b 100644
 +            units: s.units.rawValue,
 +            preferencesTimestamp: p.timestamp,
 +
-+            closedLoop: s.closedLoop,
++            closedLoop: s.dosingMode == .closed,
 +            enableUAM: p.enableUAM,
 +            enableSMBAlways: p.enableSMBAlways,
 +            enableSMBWithCOB: p.enableSMBWithCOB,
@@ -238,7 +240,7 @@ index bd4d51ce3..31a72a36b 100644
          )
  
          do {
-@@ -1175,6 +1264,29 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
+@@ -1357,6 +1446,29 @@ final class BaseNightscoutManager: NightscoutManager, Injectable {
  //            await uploadTreatments([noteTreatment], fileToSave: OpenAPS.Nightscout.uploadedNotes)
          }
      }
@@ -269,5 +271,5 @@ index bd4d51ce3..31a72a36b 100644
  
  extension Array {
 -- 
-2.50.1 (Apple Git-155)
+2.55.0
 

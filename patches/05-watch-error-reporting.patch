@@ -1,12 +1,12 @@
-From 92b1b43a690b4681d58580cedfed6065cd9d5935 Mon Sep 17 00:00:00 2001
+From 2feb8746fc4ee1f79d501d91c615146d7ef01449 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 18 Aug 2026 08:36:50 +0200
+Date: Tue, 15 Sep 2026 00:09:10 +0200
 Subject: [PATCH] feat: watch-error-reporting
 
 Trio-Patch-Source-Branch: feature/watch-error-reporting
-Trio-Patch-Base: e4e760ff9e273a6d51d361a8689916d7fec4a6c3
-Trio-Patch-Feature-Tip: fb198cc959e2df51eb3473f04bd8c08f3bdcb544
-Trio-Patch-Generated: 2026-08-18T06:36:41Z
+Trio-Patch-Base: 1900ad76c43c42918e650a7863f7ae315bf689d2
+Trio-Patch-Feature-Tip: e053775c27b457eb702bc287e7537a55c7f1eea8
+Trio-Patch-Generated: 2026-09-14T22:09:01Z
 Trio-Patch-Source-Commits:
  53ac829f5ef436c0f39e72d97eaff2a9da665b98 feat: ns-richer-settings
  7efe8a135fd76228c8f952603da8fe2d0ec788bf feat: g7-reading-time-with-seconds
@@ -17,6 +17,7 @@ Trio-Patch-Source-Commits:
  f6ca271f440094b91b405627145849bfeebf0966 watch: set isUploadedToHealth/Tidepool on watch-entered carbs (TRIO-037)
  5a40d8ad656bcff6b5a51c8b924a1047e6a4f22e watch: ACK only after the payload has actually been handled (TRIO-043)
  fb198cc959e2df51eb3473f04bd8c08f3bdcb544 watch: correct two TRIO-043 comments that overstated their guarantees
+ e053775c27b457eb702bc287e7537a55c7f1eea8 Merge dev (0.8.4.106) into feature/watch-error-reporting
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -27,6 +28,9 @@ Trio-Patch-Source-PatchIds:
  effa4e5be63dad9f77a8743b6aba4e27dce7a277
  6ac3161235528aac14b650a1cc40eae8c437fe2f
  40b36224e87fd6e18c9a38873bd375cfcdc8133e
+ 5560470aadb1706fcb843cabf5981f33df1fe39d
+10e82116cc9c5fee4d9b1f1fa084a952de41b692
+77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
 ---
  Trio Watch App Extension/TrioWatchApp.swift   |  10 +-
  .../WatchErrorReporter.swift                  | 363 +++++++++++++++
@@ -815,7 +819,7 @@ index ff6d87f13..3f9a83de5 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState+Requests.swift b/Trio Watch App Extension/WatchState+Requests.swift
-index 59b3a0652..d47a971c9 100644
+index eefd5b5f1..ea6c9f146 100644
 --- a/Trio Watch App Extension/WatchState+Requests.swift	
 +++ b/Trio Watch App Extension/WatchState+Requests.swift	
 @@ -61,7 +61,7 @@ extension WatchState {
@@ -863,16 +867,16 @@ index 59b3a0652..d47a971c9 100644
              }
          }
  
-@@ -224,7 +224,7 @@ extension WatchState {
+@@ -239,7 +239,7 @@ extension WatchState {
              Task {
                  await WatchLogger.shared.log("Error requesting bolus recommendation: \(error)")
                  await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
 -                await WatchLogger.shared.persistLogsLocally()
 +                await WatchLogger.shared.flushPersistedLogs()
              }
-         }
-     }
-@@ -256,7 +256,7 @@ extension WatchState {
+             DispatchQueue.main.async {
+                 self.showBolusCalculationProgress = false
+@@ -274,7 +274,7 @@ extension WatchState {
                  Task {
                      await WatchLogger.shared.log("⌚️ Error requesting WatchState update: \(error)")
                      await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
@@ -904,7 +908,7 @@ index 805f52895..164175cf5 100644
          }
      }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 21187db44..02c883a38 100644
+index 88d75f711..9887c93fb 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -1,5 +1,6 @@
@@ -914,7 +918,7 @@ index 21187db44..02c883a38 100644
  import Foundation
  import Swinject
  import UIKit
-@@ -39,6 +40,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -40,6 +41,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
      private var subscriptions = Set<AnyCancellable>()
  
@@ -927,7 +931,7 @@ index 21187db44..02c883a38 100644
      typealias PumpEvent = PumpEventStored.EventType
  
      let viewContext = CoreDataStack.shared.persistentContainer.viewContext
-@@ -323,14 +330,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -324,14 +331,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
                  // Calculate delta if we have at least 2 readings
                  if glucoseObjects.count >= 2 {
@@ -945,7 +949,7 @@ index 21187db44..02c883a38 100644
                      let formattedDelta = Formatter.glucoseFormatter(for: self.units)
                          .string(from: deltaValue as NSNumber) ?? "0"
                      watchState.delta = deltaValue < 0 ? "\(formattedDelta)" : "+\(formattedDelta)"
-@@ -423,11 +428,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -424,11 +429,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.forecastLines = [:]
                  }
  
@@ -963,7 +967,7 @@ index 21187db44..02c883a38 100644
  
                  return watchState
              }
-@@ -641,19 +648,237 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -642,19 +649,237 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -1206,7 +1210,7 @@ index 21187db44..02c883a38 100644
                  // Skip if no watch is paired or app not installed
                  guard let session = self.session, session.isPaired, session.isReachable,
                        session.isWatchAppInstalled else { return }
-@@ -666,21 +891,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -667,21 +892,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
              if let snoozeMinutes = message[WatchMessageKeys.snoozeDuration] as? Int {
                  debug(.watchManager, "📱 Received snooze request from watch: \(snoozeMinutes) minutes")
@@ -1234,13 +1238,17 @@ index 21187db44..02c883a38 100644
              } else if let bolusAmount = message[WatchMessageKeys.bolus] as? Double,
                        let carbsAmount = message[WatchMessageKeys.carbs] as? Int,
                        let timestamp = message[WatchMessageKeys.date] as? TimeInterval
-@@ -690,11 +918,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -691,7 +919,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      .watchManager,
                      "📱 Received meal bolus combo request from watch: \(bolusAmount)U, \(carbsAmount)g at \(date)"
                  )
 -                self.handleCombinedRequest(bolusAmount: Decimal(bolusAmount), carbsAmount: Decimal(carbsAmount), date: date)
 +                self?.handleCombinedRequest(bolusAmount: Decimal(bolusAmount), carbsAmount: Decimal(carbsAmount), date: date)
-             } else {
+             } else if message[WatchMessageKeys.cancelOverride] == nil,
+                       message[WatchMessageKeys.activateOverride] == nil,
+                       message[WatchMessageKeys.cancelTempTarget] == nil,
+@@ -700,7 +928,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             {
                  debug(.watchManager, "📱 Invalid or incomplete data received from watch. Received:  \(message)")
                  // Acknowledge failure
 -                self.sendAcknowledgment(
@@ -1248,7 +1256,7 @@ index 21187db44..02c883a38 100644
                      toWatch: false,
                      message: "Error! Invalid or incomplete data received from watch.",
                      ackCode: .genericFailure
-@@ -703,22 +931,22 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -709,22 +937,22 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
              if message[WatchMessageKeys.cancelOverride] as? Bool == true {
                  debug(.watchManager, "📱 Received cancel override request from watch")
@@ -1275,7 +1283,7 @@ index 21187db44..02c883a38 100644
              }
  
              if message[WatchMessageKeys.requestBolusRecommendation] as? Bool == true {
-@@ -778,14 +1006,61 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -784,14 +1012,61 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      }
  
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
@@ -1339,7 +1347,7 @@ index 21187db44..02c883a38 100644
                  await self.notificationsManager.applySnooze(for: TimeInterval(snoozeMinutes * 60))
              }
          }
-@@ -807,6 +1082,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -813,6 +1088,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
              }
@@ -1349,7 +1357,7 @@ index 21187db44..02c883a38 100644
          } else {
              // Try to reconnect after a short delay
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-@@ -1356,6 +1634,91 @@ extension BaseWatchManager {
+@@ -1154,6 +1432,91 @@ extension BaseWatchManager {
  
          return nil
      }

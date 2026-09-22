@@ -48,7 +48,7 @@ extension Home {
             ?? BGTargets(units: .mgdL, userPreferredUnits: .mgdL, targets: [])
         var targetProfiles: [TargetProfile] = []
         var timerDate = Date()
-        var closedLoop = false
+        var dosingMode: DosingMode = .open
         var isLooping = false
         var statusTitle = ""
         var lastLoopDate: Date = .distantPast
@@ -68,7 +68,6 @@ extension Home {
         var errorDate: Date?
         var bolusProgress: Decimal?
         var eventualBG: Int?
-        var allowManualTemp = false
         var units: GlucoseUnits = .mgdL
         var pumpDisplayState: PumpDisplayState?
         var alarm: GlucoseAlarm?
@@ -126,6 +125,47 @@ extension Home {
         var cgmCurrent = cgmDefaultModel
         var pumpInitialSettings = PumpConfig.PumpInitialSettings.default
         var shouldRunDeleteOnSettingsChange = true
+
+        /// Newest CGM reading. `glucoseFromPersistence` is ascending, so the last entry is the newest.
+        var lastGlucoseDate: Date? { glucoseFromPersistence.last?.date }
+
+        /// Last time the pump reported status; the battery row is restamped on every status update.
+        var lastPumpCommsDate: Date? { batteryFromPersistence.first?.date }
+
+        /// A device has stopped reporting: the pump raised a status highlight, or readings have dried up.
+        var hasDeviceIssue: Bool {
+            if pumpStatusHighlightMessage != nil { return true }
+            return timerDate.timeIntervalSince(lastGlucoseDate ?? .distantPast) > MultiUsePanelState.cgmStaleAfter
+        }
+
+        /// What the pump is delivering right now.
+        var activeBasalDelivery: ScheduledBasalInference.Delivery? {
+            // no pump, no delivery to report
+            guard !pumpName.isEmpty else { return nil }
+
+            // the tick only drives re-evaluation; the real clock decides
+            let now = max(timerDate, Date())
+
+            return ScheduledBasalInference.delivery(
+                events: tempBasals.map { event in
+                    let start = event.timestamp ?? .distantPast
+                    // stored duration is whole minutes, rounded
+                    let end = event.tempBasal?.endDate
+                        ?? start.addingTimeInterval(Double(event.tempBasal?.duration ?? 0) * 60)
+                    return ScheduledBasalInference.BasalEvent(
+                        start: start,
+                        end: end,
+                        rate: event.tempBasal?.rate?.decimalValue ?? 0,
+                        isScheduled: event.tempBasal?.isScheduledBasal ?? false
+                    )
+                },
+                suspensions: suspendAndResumeEvents.compactMap { event in
+                    event.timestamp.map { ($0, event.type == EventType.pumpSuspend.rawValue) }
+                },
+                profile: basalProfile,
+                now: now
+            )
+        }
 
         var showCarbsRequiredBadge: Bool = true
         var enableQuickPickTreatments: Bool = false
@@ -506,6 +546,10 @@ extension Home {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.timerDate = Date()
+                    // pump status is not observable; a status-only change writes no event
+                    if self.manualTempBasal != self.apsManager.isManualTempBasal {
+                        self.manualTempBasal = self.apsManager.isManualTempBasal
+                    }
                     // The publisher only re-emits on state changes; re-pull
                     // so the arc + countdowns + status text advance during
                     // warmup / stabilizing / expiry. Simulator has no
@@ -651,8 +695,7 @@ extension Home {
 
         @MainActor private func setupSettings() async {
             units = settingsManager.settings.units
-            allowManualTemp = !settingsManager.settings.closedLoop
-            closedLoop = settingsManager.settings.closedLoop
+            dosingMode = settingsManager.settings.dosingMode
             lastLoopDate = apsManager.lastLoopDate
             alarm = provider.glucoseStorage.alarm
             manualTempBasal = apsManager.isManualTempBasal
@@ -928,8 +971,7 @@ extension Home.StateModel:
     }
 
     func settingsDidChange(_ settings: TrioSettings) {
-        allowManualTemp = !settings.closedLoop
-        closedLoop = settingsManager.settings.closedLoop
+        dosingMode = settings.dosingMode
         units = settingsManager.settings.units
         manualTempBasal = apsManager.isManualTempBasal
         isSmoothingEnabled = settingsManager.settings.smoothGlucose

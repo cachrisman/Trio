@@ -1098,14 +1098,15 @@ fi
 if [ -n "$FLAG_TRAILERS_FILE" ] && [ -s "$FLAG_TRAILERS_FILE" ]; then
   _commit_msg_file=$(mktemp)
   { printf 'feat: %s\n\n' "${PATCH_DESC}"; cat "$FLAG_TRAILERS_FILE"; } > "$_commit_msg_file"
-  if ! git commit -F "$_commit_msg_file"; then
+  # Throwaway commit in a temp worktree: bot identity + no signing, passed per command so the shared .git/config is never touched.
+  if ! git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false commit -F "$_commit_msg_file"; then
     rm -f "$_commit_msg_file"
     print_error "Failed to create commit in temporary worktree"
     exit 1
   fi
   rm -f "$_commit_msg_file"
 else
-  if ! git commit -m "feat: ${PATCH_DESC}"; then
+  if ! git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false commit -m "feat: ${PATCH_DESC}"; then
     print_error "Failed to create commit in temporary worktree"
     exit 1
   fi
@@ -1231,7 +1232,7 @@ if git help worktree >/dev/null 2>&1; then
             cd "$wt_dir"
             print_info "Patch summary (git apply --stat) on target branch '${TARGET_BRANCH}':"
             git apply --stat "$PATCH_ABS_PATH" 2>&1 || true
-            if git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" \
+            if git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false \
               am --3way --keep-cr --whitespace=nowarn "$PATCH_ABS_PATH" >/dev/null 2>&1; then
                 echo "SUCCESS" > "$apply_result"
                 # Reset to clean state before removing worktree (no abort needed on success)
@@ -1239,7 +1240,7 @@ if git help worktree >/dev/null 2>&1; then
             else
                 echo "FAILED" > "$apply_result"
                 git am --abort >/dev/null 2>&1 || true
-                git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" \
+                git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false \
                   am --3way --keep-cr --whitespace=nowarn "$PATCH_ABS_PATH" 2>&1 | head -10 > "$apply_error" || true
             fi
         )
