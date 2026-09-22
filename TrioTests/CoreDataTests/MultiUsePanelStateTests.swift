@@ -12,15 +12,36 @@ import Testing
         notificationsDisabled: Bool = false,
         pumpTimeMismatch: Bool = false,
         lastGlucoseDate: Date?,
-        maxIOB: Decimal = 10
+        maxIOB: Decimal = 10,
+        hasUnacknowledgedReleaseNotes: Bool = false,
+        dosingMode: DosingMode = .closed
     ) -> MultiUsePanelState {
         MultiUsePanelState.resolve(
             notificationsDisabled: notificationsDisabled,
             pumpTimeMismatch: pumpTimeMismatch,
             lastGlucoseDate: lastGlucoseDate,
             maxIOB: maxIOB,
+            hasUnacknowledgedReleaseNotes: hasUnacknowledgedReleaseNotes,
+            dosingMode: dosingMode,
             now: now
         )
+    }
+
+    @Test("Constrained modes announce themselves even with a non-zero stored Max IOB") func testDosingModeLimited() {
+        for mode in [DosingMode.lowGlucoseSuspend, .basalTesting] {
+            #expect(resolve(lastGlucoseDate: fresh, maxIOB: 10, dosingMode: mode) == .dosingModeLimited(mode))
+        }
+    }
+
+    @Test("Open and closed loop fall through to the stored Max IOB") func testUnconstrainedModes() {
+        for mode in [DosingMode.closed, .open] {
+            #expect(resolve(lastGlucoseDate: fresh, maxIOB: 10, dosingMode: mode) == .stats)
+            #expect(resolve(lastGlucoseDate: fresh, maxIOB: 0, dosingMode: mode) == .maxIOBZero)
+        }
+    }
+
+    @Test("A stale CGM still outranks the mode banner") func testCgmStaleOutranksMode() {
+        #expect(resolve(lastGlucoseDate: stale, dosingMode: .lowGlucoseSuspend) == .cgmStale)
     }
 
     @Test("All healthy shows stats") func testStatsDefault() {
@@ -54,5 +75,32 @@ import Testing
 
     @Test("MaxIOB zero shows its warning") func testMaxIOBZero() {
         #expect(resolve(lastGlucoseDate: fresh, maxIOB: 0) == .maxIOBZero)
+    }
+
+    @Test("Unacknowledged release notes displace the stats") func testWhatsNewOverStats() {
+        #expect(resolve(lastGlucoseDate: fresh, hasUnacknowledgedReleaseNotes: true) == .whatsNew)
+    }
+
+    @Test("Every warning outranks release notes") func testWhatsNewYieldsToWarnings() {
+        #expect(resolve(
+            notificationsDisabled: true,
+            lastGlucoseDate: fresh,
+            hasUnacknowledgedReleaseNotes: true
+        ) == .notificationsDisabled)
+        #expect(resolve(
+            pumpTimeMismatch: true,
+            lastGlucoseDate: fresh,
+            hasUnacknowledgedReleaseNotes: true
+        ) == .pumpTimeMismatch)
+        #expect(resolve(lastGlucoseDate: stale, hasUnacknowledgedReleaseNotes: true) == .cgmStale)
+        #expect(resolve(
+            lastGlucoseDate: fresh,
+            maxIOB: 0,
+            hasUnacknowledgedReleaseNotes: true
+        ) == .maxIOBZero)
+    }
+
+    @Test("Acknowledged release notes fall back to stats") func testAcknowledgedShowsStats() {
+        #expect(resolve(lastGlucoseDate: fresh, hasUnacknowledgedReleaseNotes: false) == .stats)
     }
 }

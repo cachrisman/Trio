@@ -3,6 +3,12 @@ import UIKit
 import UserNotifications
 
 class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNotificationCenterDelegate {
+    /// Assigned by `TrioApp.loadServices()` once the Core Data stack is up.
+    /// Resolving `TelemetryClient` constructs the APS/device graph, whose first
+    /// pump/CGM save crashes if the persistent stores are not loaded yet — so
+    /// this delegate never resolves it, and pre-init foreground transitions no-op.
+    var telemetry: TelemetryClient?
+
     func application(
         _: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -12,28 +18,6 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
         // configure it, so no component can queue or upload anything.
         let crashReportingEnabled: Bool = PropertyPersistentFlags.shared.crashlyticsSharingEnabled ?? true
         CrashReportingGate.configureAtLaunch(enabled: crashReportingEnabled)
-
-        // Telemetry: record this cold launch into the sliding 7-day window,
-        // then drive cadence via three layered triggers — listed below in
-        // priority of reliability:
-        //
-        //   1. SHA-change ping: build updated since last send. Awaited so
-        //      the lastSentAt stamp is fresh before the overdue check.
-        //   2. checkAndSendIfOverdue: covers the regular cold launch on the
-        //      same build when >24h has passed since the last successful
-        //      send. Together with the foreground-transition hook below
-        //      (`applicationWillEnterForeground`), this keeps daily pings
-        //      flowing on iOS.
-        //   3. scheduleRecurring: best-effort fallback for the rare case
-        //      where the app stays foregrounded for a full 24h.
-        TelemetryClient.shared.recordColdLaunch()
-        Task.detached {
-            if TelemetryClient.shared.buildShaChangedSinceLastSend() {
-                await TelemetryClient.shared.maybeSend()
-            }
-            TelemetryClient.shared.scheduleRecurring()
-            TelemetryClient.shared.checkAndSendIfOverdue()
-        }
 
         // Check for unexpected termination from previous launch, then mark this launch.
         // Note: AppTerminationTracker uses UserDefaults for state persistence. In rare cases
@@ -63,7 +47,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
     /// doesn't fire while suspended; no-op if a send landed within 24h)
     /// and notifies `AppTerminationTracker` so lifecycle state is fresh.
     func applicationWillEnterForeground(_: UIApplication) {
-        TelemetryClient.shared.checkAndSendIfOverdue()
+        telemetry?.checkAndSendIfOverdue(reason: .foreground)
         AppTerminationTracker.shared.markAppWillEnterForeground()
     }
 

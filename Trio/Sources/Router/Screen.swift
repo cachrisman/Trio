@@ -16,7 +16,6 @@ enum Screen: Identifiable, Hashable {
     case crEditor
     case targetsEditor
     case treatmentView
-    case manualTempBasal
     case history
     case cgm
     case healthkit
@@ -97,8 +96,6 @@ extension Screen {
             TargetsEditor.RootView(resolver: resolver)
         case .treatmentView:
             Treatments.RootView(resolver: resolver)
-        case .manualTempBasal:
-            ManualTempBasal.RootView(resolver: resolver)
         case .history:
             History.RootView(resolver: resolver)
         case .cgm:

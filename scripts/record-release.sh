@@ -4,9 +4,14 @@ set -euo pipefail
 # record-release.sh
 # Creates/updates GitHub Release for shipped builds (after TestFlight upload)
 #
-# Version: 1.3.2
+# Version: 1.4.0
 #
 # Changelog:
+#   1.4.0 - Wire task-graph release notes via scripts/build-task-notes.py
+#         - Add BUILD_TASK_KEY and TASKS_DIR env vars (task notes are best-effort, never fail the release)
+#         - Insert "What's in this build:" block + "Build task:" line into the release body
+#         - Record tasks.epic + tasks.contains in manifest JSON
+#         - Manifest "tasks" object is present only when BUILD_TASK_KEY is set; the key is validated (^[A-Z][A-Z0-9]*-[0-9]+$)
 #   1.3.2 - Document upstream lookup env vars in usage output
 #         - Rename upstream SHA helper/locals to branch-agnostic naming
 #         - Record upstreamBranch + upstreamBranchSha in manifest base metadata
@@ -42,6 +47,8 @@ Environment variables:
   TRIO_BUILDS_PRIVATE_REPO    - Private backup repository (default: cachrisman/trio-builds-private)
   UPSTREAM_REPO               - Upstream repository for base SHA lookup (default: nightscout/Trio)
   UPSTREAM_BRANCH             - Upstream branch for base SHA lookup (default: dev)
+  BUILD_TASK_KEY              - Key of the build epic task, e.g. TRIO-059 (optional; adds task notes to release)
+  TASKS_DIR                   - Directory holding task files (default: <repo-root>/tasks next to this script)
 USAGE
 }
 
@@ -424,6 +431,55 @@ get_stage_summary() {
   echo ""
 }
 
+# Absolute path of the directory holding this script (this script is normally
+# invoked from inside a separate build worktree, so never resolve relative to cwd)
+get_script_dir() {
+  cd "$(dirname "${BASH_SOURCE[0]}")" && pwd
+}
+
+# Directory holding the task files: TASKS_DIR, or <repo-root>/tasks next to this script
+get_tasks_dir() {
+  if [[ -n "${TASKS_DIR:-}" ]]; then
+    echo "$TASKS_DIR"
+  else
+    echo "$(cd "$(get_script_dir)/.." && pwd)/tasks"
+  fi
+}
+
+# Run scripts/build-task-notes.py for BUILD_TASK_KEY and print its stdout.
+# Format is "markdown" (default) or "json". Prints nothing when BUILD_TASK_KEY is
+# unset, the helper is missing, or the helper fails — a warning goes to stderr in
+# the latter two cases. Release recording must never fail because of task notes.
+run_task_notes_helper() {
+  local format="${1:-markdown}"
+  if [[ -z "${BUILD_TASK_KEY:-}" ]]; then
+    return 0
+  fi
+
+  local helper tasks_dir
+  helper="$(get_script_dir)/build-task-notes.py"
+  tasks_dir="$(get_tasks_dir)"
+  if [[ ! -f "$helper" ]]; then
+    echo "[record-release] WARNING: task notes helper not found at $helper — skipping task notes for $BUILD_TASK_KEY" >&2
+    return 0
+  fi
+
+  local helper_args=(--epic "$BUILD_TASK_KEY" --tasks-dir "$tasks_dir")
+  if [[ "$format" == "json" ]]; then
+    helper_args+=(--format json)
+  fi
+
+  local output="" status=0
+  output="$(python3 "$helper" "${helper_args[@]}")" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    echo "[record-release] WARNING: task notes helper failed (exit $status) for $BUILD_TASK_KEY — skipping task notes" >&2
+    return 0
+  fi
+  if [[ -n "$output" ]]; then
+    echo "$output"
+  fi
+}
+
 # Generate release description body
 generate_release_body() {
   local version="$1"
@@ -435,9 +491,26 @@ generate_release_body() {
   local fork_sha="$7"
   local patches_json="$8"
 
-  local body="Trio v${version} (${build}) ${context}
+  local body="Trio v${version} (${build}) ${context}"
 
-Tag: ${tag}
+  # Task-graph release notes (optional, best-effort): "What's in this build:" block
+  local task_notes=""
+  task_notes="$(run_task_notes_helper markdown)"
+  if [[ -n "$task_notes" ]]; then
+    body+="
+
+${task_notes}"
+  fi
+
+  body+="
+
+Tag: ${tag}"
+  if [[ -n "${BUILD_TASK_KEY:-}" ]]; then
+    body+="
+Build task: ${BUILD_TASK_KEY}"
+  fi
+
+  body+="
 
 Built from:
 - upstream/${upstream_branch}: ${upstream_branch_sha}
@@ -507,7 +580,7 @@ record_private_backup_release() {
   local ipa_path="$6"
   local dsym_path="${7:-}"
 
-  echo "[record-release] Creating/updating private backup release (draft)..."
+  echo "[record-release] Creating/updating private backup release (draft)..." >&2
 
   # Sanity check: ensure GH_TOKEN can access the private repo (fail fast)
   if ! gh api "repos/$private_repo" --silent >/dev/null 2>&1; then
@@ -544,7 +617,7 @@ record_private_backup_release() {
     assets+=("$dsym_path")
   fi
 
-  echo "[record-release] Uploading assets to private backup release..."
+  echo "[record-release] Uploading assets to private backup release..." >&2
   if ! gh release upload "$tag" \
     --repo "$private_repo" \
     "${assets[@]}" \
@@ -565,6 +638,13 @@ main() {
   echo "[record-release] Build context: $context"
 
   validate_prerequisites
+
+  # Validate BUILD_TASK_KEY once; every later consumer (release body, task notes
+  # helper, manifest) sees the sanitized value. A malformed key is ignored.
+  if [[ -n "${BUILD_TASK_KEY:-}" && ! "$BUILD_TASK_KEY" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    echo "[record-release] WARNING: ignoring malformed BUILD_TASK_KEY ${BUILD_TASK_KEY}" >&2
+    unset BUILD_TASK_KEY
+  fi
 
   local repo_info
   repo_info="$(get_repo_info)"
@@ -643,24 +723,46 @@ main() {
   fi
   build_context_json+="}"
 
+  # Task-graph metadata for the manifest (epic + child keys); empty when unset/unavailable
+  local tasks_json=""
+  tasks_json="$(run_task_notes_helper json)"
+
   # Create manifest JSON (use temp files to avoid quoting issues with JSON)
-  local temp_patches_file temp_context_file
+  local temp_patches_file temp_context_file temp_tasks_file
   temp_patches_file="$(mktemp)"
   temp_context_file="$(mktemp)"
+  temp_tasks_file="$(mktemp)"
   
-  # Write patches and context JSON to temp files
+  # Write patches, context and tasks JSON to temp files
   echo "$patches_json" > "$temp_patches_file"
   echo "$build_context_json" > "$temp_context_file"
+  echo "$tasks_json" > "$temp_tasks_file"
   
+  # Pass the (validated) task key via the environment, never by interpolating into Python source
+  export RR_BUILD_TASK_KEY="${BUILD_TASK_KEY:-}"
+
   local manifest_json
   manifest_json="$(python3 <<PYTHON_EOF
 import json
+import os
+import sys
 
-# Read patches and context from temp files
+# Read patches, context and tasks from temp files
 with open('$temp_patches_file', 'r') as f:
     patches = json.load(f)
 with open('$temp_context_file', 'r') as f:
     build_context = json.load(f)
+with open('$temp_tasks_file', 'r') as f:
+    tasks_raw = f.read().strip()
+
+# tasks: {"epic": BUILD_TASK_KEY, "contains": [child keys...]} — only added when a key is set
+build_task_key = os.environ.get('RR_BUILD_TASK_KEY') or None
+tasks_contains = []
+if tasks_raw:
+    try:
+        tasks_contains = [c.get("key") for c in json.loads(tasks_raw).get("children", []) if c.get("key")]
+    except Exception as e:
+        print(f"[record-release] WARNING: could not parse task notes JSON: {e}", file=sys.stderr)
 
 manifest = {
     "timestampUtc": "$timestamp_utc",
@@ -681,11 +783,17 @@ manifest = {
     "patches": patches
 }
 
+if build_task_key:
+    manifest["tasks"] = {
+        "epic": build_task_key,
+        "contains": tasks_contains
+    }
+
 print(json.dumps(manifest, indent=2))
 PYTHON_EOF
 )"
   
-  rm -f "$temp_patches_file" "$temp_context_file"
+  rm -f "$temp_patches_file" "$temp_context_file" "$temp_tasks_file"
 
   # Write manifest file
   local artifacts_dir="build/artifacts"
