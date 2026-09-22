@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# repin-g7.sh — Push the G7SensorKit fork and re-pin patch 02 to the new SHA (v1.0)
+# repin-g7.sh — Push the G7SensorKit fork and re-pin patch 02 to the new SHA (v1.1)
+#
+# CHANGELOG
+#   v1.1  Early-exit guard now also compares the patch's base '-Subproject commit'
+#         SHA against dev's G7SensorKit gitlink; when only the base is stale
+#         (fork pin unchanged) the script continues to rewrite the base side.
+#          Post-rewrite sanity skips the 'old +Subproject commit' check when
+#          OLD_SHA equals NEW_SHA (base-only refresh).
 #
 # WHY THIS EXISTS
 #   Patch 02 (02-g7-reading-time-with-seconds.patch) pins the G7SensorKit
@@ -130,9 +137,17 @@ OLD_SHA=$(grep -E '^\+Subproject commit [0-9a-f]{40}' "$PATCH_FILE" | head -1 | 
 print_info "Currently pinned: $OLD_SHA"
 print_info "New (clone HEAD): $NEW_SHA"
 
-if [ "$OLD_SHA" = "$NEW_SHA" ]; then
-    print_success "Patch 02 already pins the clone HEAD; nothing to do."
+# Read the base side now so the early-exit can also check it.
+PATCH_BASE_SHA=$(grep -E '^-Subproject commit [0-9a-f]{40}' "$PATCH_FILE" | head -1 | awk '{print $3}')
+[ -n "$PATCH_BASE_SHA" ] || die "Could not read the base '-Subproject commit <sha>' from $PATCH_FILE"
+BASE_SHA=$(git -C "$REPO_ROOT" rev-parse "dev:G7SensorKit") \
+     || die "Could not resolve dev's G7SensorKit gitlink (dev:G7SensorKit)"
+
+if [ "$OLD_SHA" = "$NEW_SHA" ] && [ "$PATCH_BASE_SHA" = "$BASE_SHA" ]; then
+    print_success "Patch 02 already pins the clone HEAD and the base matches dev; nothing to do."
     exit 0
+elif [ "$OLD_SHA" = "$NEW_SHA" ]; then
+    print_info "Fork pin unchanged ($OLD_SHA); only the base is stale ($PATCH_BASE_SHA -> $BASE_SHA). Refreshing base side."
 fi
 
 #-------------------------------------------------------------------------------
@@ -180,10 +195,6 @@ NEW_ABBR=$(git -C "$G7_CLONE" rev-parse --short="$ABBR_LEN" "$NEW_SHA")
 # whenever upstream bumps G7SensorKit on dev (first hit: 0.8.4 moved 4d0780d -> 0c87905,
 # 2026-07-04). Re-derive it from dev's tree and rewrite the '-Subproject commit' line
 # and the 'index <before>..' abbreviation when they differ.
-PATCH_BASE_SHA=$(grep -E '^-Subproject commit [0-9a-f]{40}' "$PATCH_FILE" | head -1 | awk '{print $3}')
-[ -n "$PATCH_BASE_SHA" ] || die "Could not read the base '-Subproject commit <sha>' from $PATCH_FILE"
-BASE_SHA=$(git -C "$REPO_ROOT" rev-parse "dev:G7SensorKit") \
-    || die "Could not resolve dev's G7SensorKit gitlink (dev:G7SensorKit)"
 BASE_ABBR=${BASE_SHA:0:$ABBR_LEN}
 if [ "$PATCH_BASE_SHA" != "$BASE_SHA" ]; then
     print_info "Base gitlink moved on dev: $PATCH_BASE_SHA -> $BASE_SHA (rewriting '-' side too)"
@@ -239,7 +250,9 @@ mv "$tmp" "$PATCH_FILE"
 
 # Sanity: exactly the new SHA is now pinned, old gone; base side matches dev's gitlink.
 grep -q "^+Subproject commit $NEW_SHA" "$PATCH_FILE" || die "Rewrite failed: new +Subproject commit line not present."
-grep -q "^+Subproject commit $OLD_SHA" "$PATCH_FILE" && die "Rewrite failed: old +Subproject commit line still present."
+if [ "$OLD_SHA" != "$NEW_SHA" ]; then
+    grep -q "^+Subproject commit $OLD_SHA" "$PATCH_FILE" && die "Rewrite failed: old +Subproject commit line still present."
+fi
 grep -q "^-Subproject commit $BASE_SHA" "$PATCH_FILE" || die "Rewrite failed: base -Subproject commit line does not match dev's gitlink ($BASE_SHA)."
 print_success "Patch 02 re-pinned to $NEW_SHA (index after-abbrev $NEW_ABBR)."
 
