@@ -88,3 +88,27 @@ struct GlucoseBobbleContactView: View {
         .frame(width: Layout.nativeSize, height: Layout.nativeSize)
     }
 }
+
+extension GlucoseBobbleContactView {
+    // Keyed on raw direction strings so targets without the phone's BloodGlucose model can share it.
+    static func rotationDegrees(forTrend trend: String?) -> Double {
+        switch trend {
+        case "DoubleUp",
+             "SingleUp",
+             "TripleUp":
+            return -90
+        case "FortyFiveUp":
+            return -45
+        case "Flat":
+            return 0
+        case "FortyFiveDown":
+            return 45
+        case "DoubleDown",
+             "SingleDown",
+             "TripleDown":
+            return 90
+        default:
+            return 0
+        }
+    }
+}
