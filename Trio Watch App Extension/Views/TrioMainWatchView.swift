@@ -59,6 +59,19 @@ struct TrioMainWatchView: View {
         endPoint: .bottom
     )
 
+    private var directBLEIndicatorText: String {
+        let status = TrioComplicationDataStore.shared.directBLEStatus().rawValue
+        let source = state.displayedReadingSource.rawValue
+        let ageText: String
+        if let lastEvent = TrioComplicationDataStore.shared.lastDirectBLEEventAt() {
+            let age = max(0, Int(Date().timeIntervalSince(lastEvent) / 60))
+            ageText = "\(age)m"
+        } else {
+            ageText = "--"
+        }
+        return "src:\(source) · ble:\(status) · last:\(ageText)"
+    }
+
     var body: some View {
         NavigationStack(path: $navigationPath) {
             TabView(selection: $currentPage) {
@@ -69,6 +82,15 @@ struct TrioMainWatchView: View {
                         rotationDegrees: rotationDegrees,
                         isWatchStateDated: isWatchStateDated || isSessionUnreachable
                     )
+                    VStack {
+                        Spacer()
+                        Text(directBLEIndicatorText)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.8))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                            .padding(.bottom, 8)
+                    }
 
                     if state.showSyncingAnimation {
                         Image(systemName: "iphone.radiowaves.left.and.right")
