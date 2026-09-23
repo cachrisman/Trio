@@ -1,25 +1,27 @@
-From 8f4a8dd3c1a8d40c8aa2de409111b0a0566e2681 Mon Sep 17 00:00:00 2001
+From 532882b79331647bc0c47d96a1af7eb06da9d1c3 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 01:45:59 +0200
+Date: Thu, 24 Sep 2026 01:50:07 +0200
 Subject: [PATCH] feat: glucose-bobble-shared
 
 Trio-Patch-Source-Branch: feature/glucose-bobble-shared
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 846a186d1af3deaa5a9ef91be188bd0f8cfaab6c
-Trio-Patch-Generated: 2026-09-23T23:45:49Z
+Trio-Patch-Feature-Tip: 7f88431a504240a6b807a2026590840a6623ed52
+Trio-Patch-Generated: 2026-09-23T23:49:57Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  846a186d1af3deaa5a9ef91be188bd0f8cfaab6c Let the Glucose Bobble place its trend arrow inside the ring
+ 7f88431a504240a6b807a2026590840a6623ed52 Glucose Bobble: inside-ring arrow tip touches the ring
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
  04fb9fcec1ce411cde0770607333ea1b615c4d7b
+ 46ca92c5cb5e705436a834c1651f44b456f40a19
 ---
  .../Home/View/Header/CurrentGlucoseView.swift |  15 ---
  .../ContactImage/ContactPicture.swift         |  19 +--
- .../GlucoseBobbleContactView.swift            | 117 ++++++++++++++++--
+ .../GlucoseBobbleContactView.swift            | 116 ++++++++++++++++--
  Trio/Sources/Views/Triangle.swift             |  17 +++
- 4 files changed, 123 insertions(+), 45 deletions(-)
+ 4 files changed, 122 insertions(+), 45 deletions(-)
  create mode 100644 Trio/Sources/Views/Triangle.swift
 
 diff --git a/Trio/Sources/Modules/Home/View/Header/CurrentGlucoseView.swift b/Trio/Sources/Modules/Home/View/Header/CurrentGlucoseView.swift
@@ -79,10 +81,10 @@ index f6de2873b..67906ed05 100644
  
      private static func makeGlucoseBobbleImage(
 diff --git a/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift b/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift
-index f1322b5c5..c2030d6b1 100644
+index f1322b5c5..c16378b28 100644
 --- a/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift
 +++ b/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift
-@@ -9,23 +9,92 @@ struct GlucoseBobbleContactView: View {
+@@ -9,23 +9,91 @@ struct GlucoseBobbleContactView: View {
      let deltaText: String?
      let glucoseColor: Color
      let rotationDegrees: Double
@@ -131,10 +133,9 @@ index f1322b5c5..c2030d6b1 100644
 +            case .outsideRing:
 +                return Layout.ringOuterRadius
 +            case .insideRing:
-+                // Tip sits 3pt inside the ring's inner edge.
++                // Tip touches the ring's inner edge.
 +                let ringInnerRadius = ringDiameter / 2 - Layout.ringLineWidth / 2
-+                let tipRadius = ringInnerRadius - 3
-+                return tipRadius - Layout.triangleSize / 2
++                return ringInnerRadius - Layout.triangleSize / 2
 +            }
 +        }
 +
@@ -181,7 +182,7 @@ index f1322b5c5..c2030d6b1 100644
      }
  
      private var triangleColor: Color {
-@@ -51,19 +120,19 @@ struct GlucoseBobbleContactView: View {
+@@ -51,19 +119,19 @@ struct GlucoseBobbleContactView: View {
              ZStack {
                  Circle()
                      .stroke(angularGradient, lineWidth: Layout.ringLineWidth)
@@ -205,7 +206,7 @@ index f1322b5c5..c2030d6b1 100644
                      .foregroundStyle(glucoseColor)
                      .minimumScaleFactor(0.4)
                      .lineLimit(1)
-@@ -77,14 +146,38 @@ struct GlucoseBobbleContactView: View {
+@@ -77,14 +145,38 @@ struct GlucoseBobbleContactView: View {
                              Text(deltaText)
                          }
                      }
