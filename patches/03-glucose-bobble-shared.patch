@@ -1,0 +1,127 @@
+From 7719ea34983ae079647c7ba46ba6e16315ce3ed0 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 00:09:53 +0200
+Subject: [PATCH] feat: glucose-bobble-shared
+
+---
+ .../Home/View/Header/CurrentGlucoseView.swift | 15 ------------
+ .../ContactImage/ContactPicture.swift         | 19 +--------------
+ .../GlucoseBobbleContactView.swift            | 24 +++++++++++++++++++
+ Trio/Sources/Views/Triangle.swift             | 17 +++++++++++++
+ 4 files changed, 42 insertions(+), 33 deletions(-)
+ create mode 100644 Trio/Sources/Views/Triangle.swift
+
+diff --git a/Trio/Sources/Modules/Home/View/Header/CurrentGlucoseView.swift b/Trio/Sources/Modules/Home/View/Header/CurrentGlucoseView.swift
+index 53f3c8696..f4ce894f0 100644
+--- a/Trio/Sources/Modules/Home/View/Header/CurrentGlucoseView.swift
++++ b/Trio/Sources/Modules/Home/View/Header/CurrentGlucoseView.swift
+@@ -383,21 +383,6 @@ struct CurrentGlucoseView: View {
+     }
+ }
+ 
+-struct Triangle: Shape {
+-    func path(in rect: CGRect) -> Path {
+-        var path = Path()
+-
+-        path.move(to: CGPoint(x: rect.midX, y: rect.minY + 15))
+-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+-
+-        path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY), control: CGPoint(x: rect.midX, y: rect.midY + 10))
+-
+-        path.closeSubpath()
+-
+-        return path
+-    }
+-}
+-
+ struct TrendShape: View {
+     @Environment(\.colorScheme) var colorScheme
+ 
+diff --git a/Trio/Sources/Services/ContactImage/ContactPicture.swift b/Trio/Sources/Services/ContactImage/ContactPicture.swift
+index f6de2873b..67906ed05 100644
+--- a/Trio/Sources/Services/ContactImage/ContactPicture.swift
++++ b/Trio/Sources/Services/ContactImage/ContactPicture.swift
+@@ -318,24 +318,7 @@ struct ContactPicture: View {
+ 
+     // Matches CurrentGlucoseView's onChange(of: glucose.last?.directionEnum) mapping.
+     private static func rotationDegrees(for direction: BloodGlucose.Direction?) -> Double {
+-        switch direction {
+-        case .doubleUp,
+-             .singleUp,
+-             .tripleUp:
+-            return -90
+-        case .fortyFiveUp:
+-            return -45
+-        case .flat:
+-            return 0
+-        case .fortyFiveDown:
+-            return 45
+-        case .doubleDown,
+-             .singleDown,
+-             .tripleDown:
+-            return 90
+-        default:
+-            return 0
+-        }
++        GlucoseBobbleContactView.rotationDegrees(forTrend: direction?.rawValue)
+     }
+ 
+     private static func makeGlucoseBobbleImage(
+diff --git a/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift b/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift
+index f1322b5c5..a51201d11 100644
+--- a/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift
++++ b/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift
+@@ -88,3 +88,27 @@ struct GlucoseBobbleContactView: View {
+         .frame(width: Layout.nativeSize, height: Layout.nativeSize)
+     }
+ }
++
++extension GlucoseBobbleContactView {
++    // Keyed on raw direction strings so targets without the phone's BloodGlucose model can share it.
++    static func rotationDegrees(forTrend trend: String?) -> Double {
++        switch trend {
++        case "DoubleUp",
++             "SingleUp",
++             "TripleUp":
++            return -90
++        case "FortyFiveUp":
++            return -45
++        case "Flat":
++            return 0
++        case "FortyFiveDown":
++            return 45
++        case "DoubleDown",
++             "SingleDown",
++             "TripleDown":
++            return 90
++        default:
++            return 0
++        }
++    }
++}
+diff --git a/Trio/Sources/Views/Triangle.swift b/Trio/Sources/Views/Triangle.swift
+new file mode 100644
+index 000000000..1339ba9ff
+--- /dev/null
++++ b/Trio/Sources/Views/Triangle.swift
+@@ -0,0 +1,17 @@
++import SwiftUI
++
++// Trend-arrow shape used by the home-screen glucose HUD (CurrentGlucoseView) and the Glucose Bobble contact image, kept in its own file so other targets can share it.
++struct Triangle: Shape {
++    func path(in rect: CGRect) -> Path {
++        var path = Path()
++
++        path.move(to: CGPoint(x: rect.midX, y: rect.minY + 15))
++        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
++
++        path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY), control: CGPoint(x: rect.midX, y: rect.midY + 10))
++
++        path.closeSubpath()
++
++        return path
++    }
++}
+-- 
+2.55.0
+
