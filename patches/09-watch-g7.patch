@@ -1,15 +1,15 @@
-From 6b0a8ae230222ed0a8aa41e754852f9c53d3e842 Mon Sep 17 00:00:00 2001
+From c76c708d179d4e6fd9cc100e809e4980515d578c Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Wed, 23 Sep 2026 21:43:32 +0200
+Date: Thu, 24 Sep 2026 00:36:37 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
-Trio-Patch-Base: 460a35322bdef45f2468182f6ed703dc6e439614
-Trio-Patch-Feature-Tip: b1f2e41bfff2338284da6b0c94f6274c9fd79ceb
-Trio-Patch-Generated: 2026-09-23T19:43:19Z
+Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
+Trio-Patch-Feature-Tip: 00473e0da4660c59c007ce8549be75c196d08ba8
+Trio-Patch-Generated: 2026-09-23T22:36:23Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -51,6 +51,11 @@ Trio-Patch-Source-Commits:
  dd3e08ce4d2867a3b667676d0b1a83883e0e8d7e watch: correct two TRIO-043 comments that overstated their guarantees
  a61265484dd58ce50b3c702f0cb0d4b779d04d9b Merge dev (1.0.1.5) into feature/watch-g7
  b1f2e41bfff2338284da6b0c94f6274c9fd79ceb watch: apply forecast fields on the raw-data path, not in the complication save (TRIO-058)
+ 03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
+ 799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
+ fb3bdabfa8e19992c2519fc204d934a52d85bcea Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063)
+ e4bfe0db8c27043c0cec7fe3e0739f903ab426da watch: feed the circular Glucose Bobble complication from the fork store (TRIO-063)
+ 00473e0da4660c59c007ce8549be75c196d08ba8 watch: record the reload generation from the circular complication (TRIO-063)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -91,6 +96,10 @@ Trio-Patch-Source-PatchIds:
  1b5a384b6b47f57836e0777c3a3c3a88ddc64c11
  40b36224e87fd6e18c9a38873bd375cfcdc8133e
  b9a134ac3b6ec68ce081f9613b58a7be9b085e93
+ 5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
+ 4a9cbf79710c3565a2e3c61cdab80df2350d6a5d
+ eee96649b35ca94a9e3d431250146734375e8dbb
+ 7d87ddf9cd8b93d8387071bbc53f76d8ab3222d1
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -105,23 +114,24 @@ Trio-Patch-Source-PatchIds:
  .../WatchGlucoseHistoryStore.swift            |  229 ++
  Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 2566 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2572 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  138 +
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
- Trio Watch App/TrioWatchApp.entitlements      |   14 +
+ Trio Watch App/TrioWatchApp.entitlements      |    4 +
+ .../GlucoseBobbleComplication.swift           |    7 +
  Trio Watch Complication/Info.plist            |    2 +
- .../TrioWatchComplication.entitlements        |   10 +
  .../TrioWatchComplication.swift               |  625 +++-
  .../TrioWatchComplicationPreview.swift        |  124 +
  Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
- .../TrioComplicationDataStore.swift           | 1296 +++++++++
+ .../GlucoseComplicationSnapshot.swift         |   15 +-
+ .../TrioComplicationDataStore.swift           | 1299 +++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  604 +++-
- 29 files changed, 9815 insertions(+), 562 deletions(-)
+ 30 files changed, 9815 insertions(+), 573 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -129,8 +139,6 @@ Trio-Patch-Source-PatchIds:
  create mode 100644 Trio Watch App Extension/WatchGlucoseColorComputer.swift
  create mode 100644 Trio Watch App Extension/WatchGlucoseHistoryStore.swift
  create mode 100644 Trio Watch App Extension/WatchTelemetryRing.swift
- create mode 100644 Trio Watch App/TrioWatchApp.entitlements
- create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
  create mode 100644 Trio Watch Complication/TrioWatchComplicationPreview.swift
  create mode 100644 Trio Watch Shared/ComplicationLogBuffer.swift
  create mode 100644 Trio Watch Shared/TrioComplicationDataStore.swift
@@ -5036,14 +5044,15 @@ index ea6c9f146..f3ed61337 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 164175cf5..0a6af27b4 100644
+index 90d9dd4ed..0a6af27b4 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
-@@ -1,22 +1,103 @@
+@@ -1,23 +1,103 @@
  import Foundation
 +import HealthKit
  import SwiftUI
  import WatchConnectivity
+-import WidgetKit
 +import WatchKit
 +
 +// MARK: - BackgroundTaskWindowCounter (Phase 2.2)
@@ -5150,7 +5159,7 @@ index 164175cf5..0a6af27b4 100644
      var trend: String? = ""
      var delta: String? = "--"
      var glucoseValues: [(date: Date, glucose: Double, color: Color)] = []
-@@ -25,24 +106,57 @@ import WatchConnectivity
+@@ -26,24 +106,57 @@ import WidgetKit
      var cob: String? = "--"
      var iob: String? = "--"
      var lastLoopTime: String? = "--"
@@ -5212,7 +5221,7 @@ index 164175cf5..0a6af27b4 100644
      var bolusIncrement: Decimal = 0.05
      var confirmBolusFaster: Bool = false
  
-@@ -54,46 +168,477 @@ import WatchConnectivity
+@@ -55,46 +168,477 @@ import WidgetKit
      var forecastConeMax: [Double] = []
      var forecastLines: [String: [Double]] = [:] // "iob" / "cob" / "uam" / "zt" -> values
  
@@ -5240,10 +5249,10 @@ index 164175cf5..0a6af27b4 100644
 -    /// methods. Single source of truth for both `didReceiveMessage` and
 -    /// `didReceiveUserInfo`.
 -    private static let maxAcceptableMessageAgeInMinutes: TimeInterval = 15 * 60
+-
+-    // MARK: - Debouncing and batch processing helpers
 +    // MARK: - Debouncing and sync helpers
  
--    // MARK: - Debouncing and batch processing helpers
--
 -    /// Temporary storage for new data arriving via WatchConnectivity.
      private var pendingData: [String: Any] = [:]
 -
@@ -5707,16 +5716,15 @@ index 164175cf5..0a6af27b4 100644
      private func setupSession() {
          if WCSession.isSupported() {
              let session = WCSession.default
-@@ -101,16 +646,554 @@ import WatchConnectivity
+@@ -102,16 +646,554 @@ import WidgetKit
              session.activate()
              self.session = session
              Task {
 -                await WatchLogger.shared.log("⌚️ WCSession setup complete.")
 +                await WatchLogger.shared.log("WCSession setup complete.")
-             }
-         } else {
-             Task {
--                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
++            }
++        } else {
++            Task {
 +                await WatchLogger.shared.log("WCSession is not supported on this device")
 +            }
 +        }
@@ -5987,9 +5995,10 @@ index 164175cf5..0a6af27b4 100644
 +                Task {
 +                    await WatchLogger.shared.log("⚠️ hk_anchor_decode_failed fire_id=\(fireId)")
 +                }
-+            }
-+        } else {
-+            Task {
+             }
+         } else {
+             Task {
+-                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
 +                await WatchLogger.shared.log("⚠️ hk_observer_nil_anchor fire_id=\(fireId)")
 +            }
 +        }
@@ -6066,7 +6075,7 @@ index 164175cf5..0a6af27b4 100644
 +                    mgDlUnit: mgDlUnit,
 +                    completionHandler: completionHandler
 +                )
-+            }
+             }
 +        )
 +        store.execute(query)
 +    }
@@ -6081,9 +6090,10 @@ index 164175cf5..0a6af27b4 100644
 +        case 10 ..< 20: return "FortyFiveUp"
 +        case 20 ..< 30: return "SingleUp"
 +        default: return "DoubleUp"
-+        }
-+    }
-+
+         }
+     }
+ 
+-    // MARK: – Handle Acknowledgement Messages FROM Phone
 +    static func trendString(fromDirectBleRate trendRate: Double?) -> String {
 +        guard let trendRate else { return "" }
 +        let fiveMinuteDelta = Int((trendRate * 5.0).rounded())
@@ -6252,20 +6262,19 @@ index 164175cf5..0a6af27b4 100644
 +                gvCount = -1
 +            } else {
 +                gvCount = 0
-             }
++            }
 +            let epoch = (ws[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
 +            let wsKeys = ws.keys.sorted().joined(separator: ",")
 +            parts.append("watchState_keys=\(wsKeys) glucoseValues_count=\(gvCount) reading_epoch=\(epoch)")
-         }
++        }
 +        return parts.joined(separator: " ")
-     }
- 
--    // MARK: – Handle Acknowledgement Messages FROM Phone
++    }
++
 +    // MARK: - Acknowledgement handling
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
          Task {
-@@ -119,21 +1202,17 @@ import WatchConnectivity
+@@ -120,21 +1202,17 @@ import WidgetKit
  
          if success {
              Task {
@@ -6289,7 +6298,7 @@ index 164175cf5..0a6af27b4 100644
              DispatchQueue.main.async {
                  self.showCommsAnimation = false
              }
-@@ -148,7 +1227,7 @@ import WatchConnectivity
+@@ -149,7 +1227,7 @@ import WidgetKit
  
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                  self.showAcknowledgmentBanner = false
@@ -6298,7 +6307,7 @@ index 164175cf5..0a6af27b4 100644
                  Task {
                      await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                  }
-@@ -158,14 +1237,12 @@ import WatchConnectivity
+@@ -159,14 +1237,12 @@ import WidgetKit
  
      // MARK: - WCSessionDelegate
  
@@ -6315,7 +6324,7 @@ index 164175cf5..0a6af27b4 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -173,165 +1250,651 @@ import WatchConnectivity
+@@ -174,165 +1250,651 @@ import WidgetKit
  
              if activationState == .activated {
                  Task {
@@ -6358,8 +6367,12 @@ index 164175cf5..0a6af27b4 100644
          Task {
 -            await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
 +            await WatchLogger.shared.log(Self.watchConnectivityInboundSummary(message))
-+        }
-+
+         }
+ 
+-        // Ack at top level — no `watchState` wrapper, no staleness check.
+-        if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
+-           let ackMessage = message[WatchMessageKeys.message] as? String,
+-           let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
 +        // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
 +        // G7 sensor identity must sync whenever watchState is present, even when this method later skips UI (stale `date`, monotonic guard in scheduleUIUpdate, missing/invalid `date` — downstream branches must still run).
 +        let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any]
@@ -6367,12 +6380,8 @@ index 164175cf5..0a6af27b4 100644
 +            DispatchQueue.main.async { @MainActor in
 +                self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(ws)
 +            }
-         }
- 
--        // Ack at top level — no `watchState` wrapper, no staleness check.
--        if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
--           let ackMessage = message[WatchMessageKeys.message] as? String,
--           let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
++        }
++
 +        if let watchStateDict,
 +           let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
 +        {
@@ -6429,6 +6438,10 @@ index 164175cf5..0a6af27b4 100644
                  self.showBolusCalculationProgress = false
              }
 -            return
+-        }
+-
+-        handleIncomingWatchStatePayload(message)
+-    }
 +            return
 +        } else {
 +            Task {
@@ -6818,7 +6831,9 @@ index 164175cf5..0a6af27b4 100644
 +                clearDeferredConnectivityCompletionRetryOnMain()
 +                return
 +            }
-+
+ 
+-    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+-        handleIncomingWatchStatePayload(userInfo)
 +            Task {
 +                await WatchLogger.shared.log(
 +                    "event=complication_bgtask_completion_retry_pending path=\(path)"
@@ -6829,17 +6844,11 @@ index 164175cf5..0a6af27b4 100644
 +                )
 +            }
 +            scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
-         }
--
--        handleIncomingWatchStatePayload(message)
++        }
 +        deferredConnectivityCompletionWorkItem = work
 +        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
      }
  
--    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
--        handleIncomingWatchStatePayload(userInfo)
--    }
--
 -    /// Shared path for watch-state payloads from either delegate method.
 -    /// Enforces the freshness contract in one place so the two delivery paths
 -    /// can't drift.
@@ -7064,7 +7073,7 @@ index 164175cf5..0a6af27b4 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -342,7 +1905,7 @@ import WatchConnectivity
+@@ -343,7 +1905,7 @@ import WidgetKit
                  }
  
                  Task {
@@ -7073,7 +7082,7 @@ index 164175cf5..0a6af27b4 100644
                  }
  
                  switch ackCode {
-@@ -365,26 +1928,66 @@ import WatchConnectivity
+@@ -366,26 +1928,66 @@ import WidgetKit
                  }
              }
  
@@ -7149,7 +7158,7 @@ index 164175cf5..0a6af27b4 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -393,84 +1996,175 @@ import WatchConnectivity
+@@ -394,84 +1996,175 @@ import WidgetKit
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -7267,8 +7276,7 @@ index 164175cf5..0a6af27b4 100644
 +                await WatchLogger.shared.log("event=complication_finalize_begin window_id=\(wid) pending_count=\(pendingCountBeforeCompletion)")
 +            }
 +        } else {
-             Task {
--                await WatchLogger.shared.log("Updated lastWatchStateUpdate: \(timestamp)")
++            Task {
 +                await WatchLogger.shared.log(
 +                    "event=complication_finalize_no_pending_tasks window_id=\(wid)"
 +                        + " path=\(pendingConnectivityCompletionPath)"
@@ -7280,7 +7288,8 @@ index 164175cf5..0a6af27b4 100644
 +            recordMarkerWithoutPendingTasks: true
 +        )
 +        if clearedCount > 0 {
-+            Task {
+             Task {
+-                await WatchLogger.shared.log("Updated lastWatchStateUpdate: \(timestamp)")
 +                await WatchLogger.shared.log("event=complication_finalize_end window_id=\(wid) cleared_count=\(clearedCount)")
              }
          }
@@ -7358,7 +7367,7 @@ index 164175cf5..0a6af27b4 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -486,31 +2180,26 @@ import WatchConnectivity
+@@ -487,31 +2180,26 @@ import WidgetKit
          }
  
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
@@ -7406,7 +7415,7 @@ index 164175cf5..0a6af27b4 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -531,43 +2220,53 @@ import WatchConnectivity
+@@ -532,43 +2220,53 @@ import WidgetKit
              }
          }
  
@@ -7485,11 +7494,11 @@ index 164175cf5..0a6af27b4 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -584,5 +2283,416 @@ import WatchConnectivity
-             forecastConeMax = forecastPayload[WatchMessageKeys.forecastConeMax] as? [Double] ?? []
+@@ -586,25 +2284,415 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
-+
+ 
+-        publishComplicationSnapshot()
 +        saveComplicationSnapshot(from: message, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
 +
 +        emitResidentMemorySample(
@@ -7592,8 +7601,12 @@ index 164175cf5..0a6af27b4 100644
 +        if fromUserInfo {
 +            lastUserInfoReceiveTimestamp = nil
 +        }
-+    }
-+
+     }
+ 
+-    // The complication extension is a separate process, so the latest reading is handed over
+-    // through the shared App Group and the complication's timelines reloaded; unchanged readings are skipped to preserve WidgetKit's reload budget.
+-    private func publishComplicationSnapshot() {
+-        guard let readingDate = glucoseValues.map(\.date).max(), currentGlucose != "--" else { return }
 +    func forceComplicationUpdate() {
 +        Task {
 +            await WatchLogger.shared.log("🔄 forceComplicationUpdate called")
@@ -7630,9 +7643,14 @@ index 164175cf5..0a6af27b4 100644
 +            }
 +            return
 +        }
-+
+ 
+-        let snapshot = GlucoseComplicationSnapshot(
 +        let snapshot = TrioComplicationSnapshot(
-+            glucose: currentGlucose,
+             glucose: currentGlucose,
+-            trend: trend,
+-            delta: delta,
+-            glucoseColorHex: currentGlucoseColorString,
+-            readingDate: readingDate
 +            trend: trend ?? "",
 +            delta: delta ?? "",
 +            readingDate: effectiveReadingDate,
@@ -7641,8 +7659,9 @@ index 164175cf5..0a6af27b4 100644
 +            glucoseColor: currentGlucoseMgDl != nil ? currentGlucoseColorString : nil,
 +            source: displayedReadingSource,
 +            sequence: displayedReadingAttributedSequence
-+        )
-+
+         )
+ 
+-        guard snapshot != GlucoseComplicationSnapshot.load() else { return }
 +        Task {
 +            await WatchLogger.shared.log("🔄 forceComplicationUpdate: glucose=\(currentGlucose), readingDate=\(effectiveReadingDate)")
 +        }
@@ -7883,7 +7902,9 @@ index 164175cf5..0a6af27b4 100644
 +        case rejectedDateOnly
 +        case missing
 +    }
-+
+ 
+-        snapshot.save()
+-        WidgetCenter.shared.reloadAllTimelines()
 +    /// Resolves the CGM reading timestamp from a watch state / complication payload.
 +    /// Uses `dateValue(from:)` for `reading_epoch` so bridged `NSNumber` / `Date` / `TimeInterval` match other timestamp fields.
 +    /// Order: `reading_epoch` (R1a), then newest `glucoseValues` sample.
@@ -8209,25 +8230,38 @@ index 8d15acbed..244892dc7 100644
  </dict>
  </plist>
 diff --git a/Trio Watch App/TrioWatchApp.entitlements b/Trio Watch App/TrioWatchApp.entitlements
-new file mode 100644
-index 000000000..54e6e8145
---- /dev/null
+index 9a37de423..54e6e8145 100644
+--- a/Trio Watch App/TrioWatchApp.entitlements	
 +++ b/Trio Watch App/TrioWatchApp.entitlements	
-@@ -0,0 +1,14 @@
-+<?xml version="1.0" encoding="UTF-8"?>
-+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-+<plist version="1.0">
-+<dict>
+@@ -2,6 +2,10 @@
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <plist version="1.0">
+ <dict>
 +	<key>com.apple.developer.healthkit</key>
 +	<true/>
 +	<key>com.apple.developer.healthkit.background-delivery</key>
 +	<true/>
-+	<key>com.apple.security.application-groups</key>
-+	<array>
-+		<string>$(TRIO_APP_GROUP_ID)</string>
-+	</array>
-+</dict>
-+</plist>
+ 	<key>com.apple.security.application-groups</key>
+ 	<array>
+ 		<string>$(TRIO_APP_GROUP_ID)</string>
+diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
+index 87f2a08f9..1235f8461 100644
+--- a/Trio Watch Complication/GlucoseBobbleComplication.swift	
++++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
+@@ -42,6 +42,13 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+     }
+ 
+     func getTimeline(in _: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
++        // fork — record that this complication serviced the current reload generation, so
++        // TrioComplicationDataStore does not treat the reload as dropped when this is the only Trio complication on the face.
++        let store = TrioComplicationDataStore.shared
++        if store.isAppGroupAvailable(), let generation = store.currentReloadGeneration() {
++            store.recordWidgetObservedGeneration(generation)
++        }
++
+         let now = Date()
+ 
+         guard let snapshot = GlucoseComplicationSnapshot.load() else {
 diff --git a/Trio Watch Complication/Info.plist b/Trio Watch Complication/Info.plist
 index 0f118fb75..f3aa654f6 100644
 --- a/Trio Watch Complication/Info.plist	
@@ -8241,27 +8275,11 @@ index 0f118fb75..f3aa654f6 100644
  	<key>NSExtension</key>
  	<dict>
  		<key>NSExtensionPointIdentifier</key>
-diff --git a/Trio Watch Complication/TrioWatchComplication.entitlements b/Trio Watch Complication/TrioWatchComplication.entitlements
-new file mode 100644
-index 000000000..9a37de423
---- /dev/null
-+++ b/Trio Watch Complication/TrioWatchComplication.entitlements	
-@@ -0,0 +1,10 @@
-+<?xml version="1.0" encoding="UTF-8"?>
-+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-+<plist version="1.0">
-+<dict>
-+	<key>com.apple.security.application-groups</key>
-+	<array>
-+		<string>$(TRIO_APP_GROUP_ID)</string>
-+	</array>
-+</dict>
-+</plist>
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
-index a8721530a..97b676b94 100644
+index 695bd6a54..0bdcdfbe6 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
 +++ b/Trio Watch Complication/TrioWatchComplication.swift	
-@@ -1,114 +1,627 @@
+@@ -1,112 +1,635 @@
 +import Foundation
  import SwiftUI
  import WidgetKit
@@ -8624,6 +8642,9 @@ index a8721530a..97b676b94 100644
 +        return .red
 +    }
 +}
++
++struct TrioAccessoryCornerView: View {
++    var entry: TrioWatchComplicationEntry
  
 -        var body: some View {
 -            Text("")
@@ -8632,9 +8653,6 @@ index a8721530a..97b676b94 100644
 -                    Text("Trio")
 -                }
 -                .widgetBackground(backgroundView: Color.clear)
-+struct TrioAccessoryCornerView: View {
-+    var entry: TrioWatchComplicationEntry
-+
 +    var body: some View {
 +        Text(attributedGlucoseLine)
 +            .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -8680,13 +8698,13 @@ index a8721530a..97b676b94 100644
 +            var spaceAttr = AttributedString(" ")
 +            spaceAttr.foregroundColor = .white
 +            result.append(spaceAttr)
-+        }
+         }
 +
 +        if !entry.trendSymbolOnly.isEmpty {
 +            var trendAttr = AttributedString(entry.trendSymbolOnly)
 +            trendAttr.foregroundColor = .white
 +            result.append(trendAttr)
-         }
++        }
 +
 +        return result
      }
@@ -8852,7 +8870,7 @@ index a8721530a..97b676b94 100644
 +    }
 +}
  
- @main struct TrioWatchComplication: Widget {
+ struct TrioWatchComplication: Widget {
 -    let kind: String = "TrioWatchComplication"
 +    let kind: String = ComplicationDefaults.widgetKind
  
@@ -8877,9 +8895,6 @@ index a8721530a..97b676b94 100644
 +
 +private func shortRelativeTime(from readingDate: Date, now: Date = Date()) -> String {
 +    if readingDate == .distantPast { return "--" }
-+
-+    let interval = max(0, now.timeIntervalSince(readingDate))
-+    if interval < 60 { return "NOW" }
  
 -    private var supportedFamilies: [WidgetFamily] {
 -        #if os(watchOS)
@@ -8887,6 +8902,9 @@ index a8721530a..97b676b94 100644
 -        #else
 -            return [.accessoryCircular]
 -        #endif
++    let interval = max(0, now.timeIntervalSince(readingDate))
++    if interval < 60 { return "NOW" }
++
 +    // Use floor division to avoid rounding up (e.g., 61 minutes should show "1h", not "2h")
 +    let totalMinutes = Int(interval / 60)
 +
@@ -8900,17 +8918,9 @@ index a8721530a..97b676b94 100644
 +    } else {
 +        let days = totalMinutes / 1440
 +        return "\(days)d"
-     }
- }
- 
--extension View {
--    func widgetBackground(backgroundView: some View) -> some View {
--        if #available(watchOS 10.0, iOSApplicationExtension 17.0, iOS 17.0, *) {
--            return containerBackground(for: .widget) {
--                backgroundView
--            }
--        } else {
--            return background(backgroundView)
++    }
++}
++
 +extension Color {
 +    init?(hex: String) {
 +        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
@@ -8926,7 +8936,7 @@ index a8721530a..97b676b94 100644
 +            (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
 +        default:
 +            return nil
-         }
++        }
 +
 +        self.init(
 +            .sRGB,
@@ -8945,6 +8955,17 @@ index a8721530a..97b676b94 100644
 +        return calendar.date(from: components) ?? self
      }
  }
+ 
+ extension View {
+     func widgetBackground(backgroundView: some View) -> some View {
+         if #available(watchOS 10.0, iOSApplicationExtension 17.0, iOS 17.0, *) {
+-            return containerBackground(for: .widget) {
+-                backgroundView
+-            }
++            return containerBackground(for: .widget) { backgroundView }
+         } else {
+             return background(backgroundView)
+         }
 diff --git a/Trio Watch Complication/TrioWatchComplicationPreview.swift b/Trio Watch Complication/TrioWatchComplicationPreview.swift
 new file mode 100644
 index 000000000..e4bce5153
@@ -9432,12 +9453,41 @@ index 000000000..b85a47a93
 +
 +/// Anchor class for Bundle(for:) lookup since the enum has no instances.
 +private final class _BundleAnchor { }
+diff --git a/Trio Watch Shared/GlucoseComplicationSnapshot.swift b/Trio Watch Shared/GlucoseComplicationSnapshot.swift
+index 15144e1c7..95223ccbe 100644
+--- a/Trio Watch Shared/GlucoseComplicationSnapshot.swift	
++++ b/Trio Watch Shared/GlucoseComplicationSnapshot.swift	
+@@ -20,11 +20,22 @@ struct GlucoseComplicationSnapshot: Codable, Equatable {
+         return UserDefaults(suiteName: suiteName)
+     }
+ 
++    // fork — TrioComplicationDataStore is the single source for every watch complication here
++    // (it also holds watch-side G7 readings), so the circular complication reads it rather than
++    // the upstream App Group key; save() is unused in this fork.
+     static func load() -> GlucoseComplicationSnapshot? {
+-        guard let data = sharedDefaults?.data(forKey: defaultsKey) else {
++        guard let s = TrioComplicationDataStore.shared.latestSnapshot(),
++              s.glucose != "--", s.glucose != "!!"
++        else {
+             return nil
+         }
+-        return try? JSONDecoder().decode(GlucoseComplicationSnapshot.self, from: data)
++        return GlucoseComplicationSnapshot(
++            glucose: s.glucose,
++            trend: s.trend,
++            delta: s.delta == "--" ? nil : s.delta,
++            glucoseColorHex: s.glucoseColor ?? "",
++            readingDate: s.readingDate
++        )
+     }
+ 
+     func save() {
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..6e7d8c5ea
+index 000000000..f9c6e076d
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,1296 @@
+@@ -0,0 +1,1299 @@
 +import Foundation
 +import os
 +#if os(watchOS)
@@ -9645,6 +9695,8 @@ index 000000000..6e7d8c5ea
 +final class TrioComplicationDataStore {
 +    static let shared = TrioComplicationDataStore()
 +    static let complicationKind = "TrioWatchComplication"
++    /// Must match the kind declared in GlucoseBobbleComplication.swift; repeated here because this file is also compiled into targets that cannot see that type.
++    static let glucoseBobbleComplicationKind = "TrioGlucoseBobbleComplication"
 +
 +    /// C-217 V-2b: set once by the watch extension (ExtensionDelegate) to supply the rolling 2h
 +    /// sparkline series from the extension-local WatchGlucoseHistoryStore, which the Shared target
@@ -10538,6 +10590,7 @@ index 000000000..6e7d8c5ea
 +            let reloadBlock = {
 +                if #available(watchOS 10.0, *) {
 +                    WidgetCenter.shared.reloadTimelines(ofKind: Self.complicationKind)
++                    WidgetCenter.shared.reloadTimelines(ofKind: Self.glucoseBobbleComplicationKind)
 +                } else {
 +                    WidgetCenter.shared.reloadAllTimelines()
 +                }
