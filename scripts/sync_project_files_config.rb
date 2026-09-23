@@ -25,7 +25,9 @@ module SyncProjectFilesConfig
     "Trio Watch Complication Extension" => [
       "Trio Watch Complication/**/*.{swift,m,mm}",
       "Trio Watch Shared/ComplicationLogBuffer.swift",
-      "Trio Watch Shared/TrioComplicationDataStore.swift"
+      "Trio Watch Shared/TrioComplicationDataStore.swift",
+      "Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift",
+      "Trio/Sources/Views/Triangle.swift"
     ],
     "LiveActivityExtension" => ["LiveActivity/**/*.{swift,m,mm}"]
   }.freeze
