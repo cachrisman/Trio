@@ -20,11 +20,22 @@ struct GlucoseComplicationSnapshot: Codable, Equatable {
         return UserDefaults(suiteName: suiteName)
     }
 
+    // fork — TrioComplicationDataStore is the single source for every watch complication here
+    // (it also holds watch-side G7 readings), so the circular complication reads it rather than
+    // the upstream App Group key; save() is unused in this fork.
     static func load() -> GlucoseComplicationSnapshot? {
-        guard let data = sharedDefaults?.data(forKey: defaultsKey) else {
+        guard let s = TrioComplicationDataStore.shared.latestSnapshot(),
+              s.glucose != "--", s.glucose != "!!"
+        else {
             return nil
         }
-        return try? JSONDecoder().decode(GlucoseComplicationSnapshot.self, from: data)
+        return GlucoseComplicationSnapshot(
+            glucose: s.glucose,
+            trend: s.trend,
+            delta: s.delta == "--" ? nil : s.delta,
+            glucoseColorHex: s.glucoseColor ?? "",
+            readingDate: s.readingDate
+        )
     }
 
     func save() {

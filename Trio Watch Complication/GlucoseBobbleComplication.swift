@@ -42,6 +42,13 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
     }
 
     func getTimeline(in _: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
+        // fork — record that this complication serviced the current reload generation, so
+        // TrioComplicationDataStore does not treat the reload as dropped when this is the only Trio complication on the face.
+        let store = TrioComplicationDataStore.shared
+        if store.isAppGroupAvailable(), let generation = store.currentReloadGeneration() {
+            store.recordWidgetObservedGeneration(generation)
+        }
+
         let now = Date()
 
         guard let snapshot = GlucoseComplicationSnapshot.load() else {
