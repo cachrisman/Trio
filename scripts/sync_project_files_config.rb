@@ -20,14 +20,16 @@ module SyncProjectFilesConfig
       # the Trio/Sources/** glob; the watch needs this explicit entry to see it.
       "Trio/Sources/Helpers/GlucoseHueColor.swift",
       "Trio Watch Shared/ComplicationLogBuffer.swift",
-      "Trio Watch Shared/TrioComplicationDataStore.swift"
+      "Trio Watch Shared/TrioComplicationDataStore.swift",
+      "Trio Watch Shared/GlucoseComplicationSnapshot.swift"
     ],
     "Trio Watch Complication Extension" => [
       "Trio Watch Complication/**/*.{swift,m,mm}",
       "Trio Watch Shared/ComplicationLogBuffer.swift",
       "Trio Watch Shared/TrioComplicationDataStore.swift",
       "Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift",
-      "Trio/Sources/Views/Triangle.swift"
+      "Trio/Sources/Views/Triangle.swift",
+      "Trio Watch Shared/GlucoseComplicationSnapshot.swift"
     ],
     "LiveActivityExtension" => ["LiveActivity/**/*.{swift,m,mm}"]
   }.freeze
