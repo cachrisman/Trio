@@ -1,6 +1,6 @@
-From c76c708d179d4e6fd9cc100e809e4980515d578c Mon Sep 17 00:00:00 2001
+From 2afea3401c83f9bca96b9471caf18415e83c7d00 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 00:36:37 +0200
+Date: Thu, 24 Sep 2026 01:47:52 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 00473e0da4660c59c007ce8549be75c196d08ba8
-Trio-Patch-Generated: 2026-09-23T22:36:23Z
+Trio-Patch-Feature-Tip: 53e8df3e89b7810e468345e6f846da206af341a7
+Trio-Patch-Generated: 2026-09-23T23:47:38Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -56,6 +56,9 @@ Trio-Patch-Source-Commits:
  fb3bdabfa8e19992c2519fc204d934a52d85bcea Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063)
  e4bfe0db8c27043c0cec7fe3e0739f903ab426da watch: feed the circular Glucose Bobble complication from the fork store (TRIO-063)
  00473e0da4660c59c007ce8549be75c196d08ba8 watch: record the reload generation from the circular complication (TRIO-063)
+ b3959693a67bd13135d89d8dc683553c3a29e950 Let the Glucose Bobble place its trend arrow inside the ring
+ 9a32a194db7ac0374b38ba2a459204e02cf42861 Glucose Bobble complication: bigger bobble, visible background, minute-aligned age
+ 53e8df3e89b7810e468345e6f846da206af341a7 Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -100,6 +103,8 @@ Trio-Patch-Source-PatchIds:
  4a9cbf79710c3565a2e3c61cdab80df2350d6a5d
  eee96649b35ca94a9e3d431250146734375e8dbb
  7d87ddf9cd8b93d8387071bbc53f76d8ab3222d1
+ 04fb9fcec1ce411cde0770607333ea1b615c4d7b
+ 07710c7734bf6a83f928c8ebc06fb65b88128ac9
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -8245,7 +8250,7 @@ index 9a37de423..54e6e8145 100644
  	<array>
  		<string>$(TRIO_APP_GROUP_ID)</string>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
-index 87f2a08f9..1235f8461 100644
+index 2aa232b3f..6e288e817 100644
 --- a/Trio Watch Complication/GlucoseBobbleComplication.swift	
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
 @@ -42,6 +42,13 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
@@ -8259,7 +8264,7 @@ index 87f2a08f9..1235f8461 100644
 +            store.recordWidgetObservedGeneration(generation)
 +        }
 +
-         let now = Date()
+         let anchor = Self.roundedDownToMinute(Date())
  
          guard let snapshot = GlucoseComplicationSnapshot.load() else {
 diff --git a/Trio Watch Complication/Info.plist b/Trio Watch Complication/Info.plist

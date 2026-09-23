@@ -1,16 +1,31 @@
-From 035f2a835e12ddd948f5ef4f0e547ab39ceec83e Mon Sep 17 00:00:00 2001
+From 23c550cecde7dda6fb8376b47a10047d083b4ac4 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 00:20:59 +0200
+Date: Thu, 24 Sep 2026 01:46:27 +0200
 Subject: [PATCH] feat: glucose-circular-complication
 
+Trio-Patch-Source-Branch: feature/glucose-circular-complication
+Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
+Trio-Patch-Feature-Tip: 9a32a194db7ac0374b38ba2a459204e02cf42861
+Trio-Patch-Generated: 2026-09-23T23:46:18Z
+Trio-Patch-Source-Commits:
+ 03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
+ 799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
+ b3959693a67bd13135d89d8dc683553c3a29e950 Let the Glucose Bobble place its trend arrow inside the ring
+ 9a32a194db7ac0374b38ba2a459204e02cf42861 Glucose Bobble complication: bigger bobble, visible background, minute-aligned age
+Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
+Trio-Patch-Source-PatchIds:
+ 5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
+ 4a9cbf79710c3565a2e3c61cdab80df2350d6a5d
+ 04fb9fcec1ce411cde0770607333ea1b615c4d7b
+ 07710c7734bf6a83f928c8ebc06fb65b88128ac9
 ---
  Trio Watch App Extension/WatchState.swift     |  22 ++
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
- .../GlucoseBobbleComplication.swift           | 201 ++++++++++++++++++
+ .../GlucoseBobbleComplication.swift           | 235 ++++++++++++++++++
  .../TrioWatchComplication.entitlements        |  10 +
  .../TrioWatchComplication.swift               |   2 +-
- .../GlucoseComplicationSnapshot.swift         |  38 ++++
- 6 files changed, 282 insertions(+), 1 deletion(-)
+ .../GlucoseComplicationSnapshot.swift         |  38 +++
+ 6 files changed, 316 insertions(+), 1 deletion(-)
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
  create mode 100644 Trio Watch Complication/GlucoseBobbleComplication.swift
  create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
@@ -73,10 +88,10 @@ index 000000000..9a37de423
 +</plist>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
 new file mode 100644
-index 000000000..87f2a08f9
+index 000000000..2aa232b3f
 --- /dev/null
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,235 @@
 +import SwiftUI
 +import WidgetKit
 +
@@ -121,21 +136,36 @@ index 000000000..87f2a08f9
 +    }
 +
 +    func getTimeline(in _: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
-+        let now = Date()
++        let anchor = Self.roundedDownToMinute(Date())
 +
 +        guard let snapshot = GlucoseComplicationSnapshot.load() else {
-+            let entry = GlucoseBobbleComplicationEntry(date: now, snapshot: nil)
++            let entry = GlucoseBobbleComplicationEntry(date: anchor, snapshot: nil)
 +            completion(Timeline(entries: [entry], policy: .never))
 +            return
 +        }
 +
 +        // One entry per minute so the minutes-ago text advances on screen without WidgetKit
 +        // reloading the timeline; the watch app requests a reload once fresh data arrives.
-+        let entries = (0 ..< 60).map { offset in
-+            GlucoseBobbleComplicationEntry(date: now.addingTimeInterval(TimeInterval(offset * 60)), snapshot: snapshot)
++        var entries = (0 ..< 30).map { offset in
++            GlucoseBobbleComplicationEntry(date: anchor.addingTimeInterval(TimeInterval(offset * 60)), snapshot: snapshot)
 +        }
-+        let timeline = Timeline(entries: entries, policy: .after(now.addingTimeInterval(60 * 60)))
++        // Entries are budget-free (only reloads cost WidgetKit budget), so extending the horizon
++        // with a coarser tail keeps the reading age honest through a multi-hour reload drought
++        // instead of freezing on the last dense entry once reloads are throttled.
++        entries += stride(from: 35, through: 55, by: 5).map { offset in
++            GlucoseBobbleComplicationEntry(date: anchor.addingTimeInterval(TimeInterval(offset * 60)), snapshot: snapshot)
++        }
++        entries += stride(from: 60, through: 240, by: 15).map { offset in
++            GlucoseBobbleComplicationEntry(date: anchor.addingTimeInterval(TimeInterval(offset * 60)), snapshot: snapshot)
++        }
++        let timeline = Timeline(entries: entries, policy: .after(anchor.addingTimeInterval(60 * 60)))
 +        completion(timeline)
++    }
++
++    static func roundedDownToMinute(_ date: Date) -> Date {
++        let calendar = Calendar.current
++        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
++        return calendar.date(from: components) ?? date
 +    }
 +}
 +
@@ -148,7 +178,7 @@ index 000000000..87f2a08f9
 +        StaticConfiguration(kind: kind, provider: GlucoseBobbleComplicationProvider()) { entry in
 +            GlucoseBobbleComplicationView(entry: entry)
 +        }
-+        .configurationDisplayName("Trio Glucose")
++        .configurationDisplayName("Trio Glucose Bobble")
 +        .description("Current glucose, trend, delta and reading age.")
 +        .supportedFamilies([.accessoryCircular])
 +    }
@@ -180,11 +210,7 @@ index 000000000..87f2a08f9
 +    // wall clock at render time isn't the entry's intended "now" — only entry.date is.
 +    private var minutesAgoText: String? {
 +        guard let snapshot = entry.snapshot else { return nil }
-+        let minutes = Int(entry.date.timeIntervalSince(snapshot.readingDate) / 60)
-+        if minutes < 1 {
-+            return "<\u{00A0}1\u{00A0}m"
-+        }
-+        return "\(minutes)\u{00A0}m"
++        return Self.ageText(readingDate: snapshot.readingDate, entryDate: entry.date)
 +    }
 +
 +    private var accessibilityLabelText: String {
@@ -197,7 +223,7 @@ index 000000000..87f2a08f9
 +
 +    @ViewBuilder private var background: some View {
 +        if renderingMode == .fullColor, entry.snapshot != nil, !isStale {
-+            valueColor.opacity(0.3)
++            Circle().fill(valueColor.opacity(0.3))
 +        } else {
 +            AccessoryWidgetBackground()
 +        }
@@ -207,19 +233,27 @@ index 000000000..87f2a08f9
 +        GeometryReader { geometry in
 +            let side = min(geometry.size.width, geometry.size.height)
 +
-+            GlucoseBobbleContactView(
-+                glucoseText: entry.snapshot?.glucose ?? "--",
-+                minutesAgoText: entry.snapshot == nil ? nil : minutesAgoText,
-+                deltaText: entry.snapshot?.delta,
-+                glucoseColor: valueColor,
-+                rotationDegrees: GlucoseBobbleContactView.rotationDegrees(forTrend: entry.snapshot?.trend)
-+            )
-+            .scaleEffect(side / GlucoseBobbleContactView.Layout.nativeSize)
-+            .frame(width: side, height: side)
-+            .opacity(isStale ? 0.55 : 1)
++            ZStack {
++                background
++
++                GlucoseBobbleContactView(
++                    glucoseText: entry.snapshot?.glucose ?? "--",
++                    minutesAgoText: entry.snapshot == nil ? nil : minutesAgoText,
++                    deltaText: entry.snapshot?.delta,
++                    glucoseColor: valueColor,
++                    rotationDegrees: GlucoseBobbleContactView.rotationDegrees(forTrend: entry.snapshot?.trend),
++                    trendArrowPlacement: .insideRing
++                )
++                .scaleEffect(side / GlucoseBobbleContactView.Layout.nativeSize)
++                .frame(width: side, height: side)
++                .opacity(isStale ? 0.55 : 1)
++            }
 +            .frame(width: geometry.size.width, height: geometry.size.height)
 +        }
-+        .widgetBackground(backgroundView: background)
++        // containerBackground(for: .widget) (what widgetBackground(backgroundView:) becomes) doesn't
++        // paint on watch faces here, so the background is drawn as content instead; Color.clear still
++        // satisfies watchOS 10's containerBackground requirement.
++        .widgetBackground(backgroundView: Color.clear)
 +        .accessibilityLabel(accessibilityLabelText)
 +    }
 +}
@@ -236,6 +270,21 @@ index 000000000..87f2a08f9
 +        let green = Double((rgb >> 8) & 0xFF) / 255
 +        let blue = Double(rgb & 0xFF) / 255
 +        return Color(red: red, green: green, blue: blue)
++    }
++
++    // readingDate == .distantPast means no reading has ever been recorded; interval is clamped to
++    // 0 so a slightly-ahead entry.date (e.g. from timeline rounding) never prints a negative age.
++    static func ageText(readingDate: Date, entryDate: Date) -> String {
++        if readingDate == .distantPast { return "--" }
++
++        let interval = max(0, entryDate.timeIntervalSince(readingDate))
++        if interval < 60 { return "NOW" }
++
++        // Floor division throughout so e.g. 61 minutes reads "1h", never rounds up to "2h".
++        let minutes = Int(interval / 60)
++        if minutes < 60 { return "\(minutes)m" }
++        if minutes < 1440 { return "\(minutes / 60)h" }
++        return "\(minutes / 1440)d"
 +    }
 +}
 +
