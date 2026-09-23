@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import WatchConnectivity
+import WidgetKit
 
 /// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
 /// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
@@ -584,5 +585,26 @@ import WatchConnectivity
             forecastConeMax = forecastPayload[WatchMessageKeys.forecastConeMax] as? [Double] ?? []
             forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
         }
+
+        publishComplicationSnapshot()
+    }
+
+    // The complication extension is a separate process, so the latest reading is handed over
+    // through the shared App Group and the complication's timelines reloaded; unchanged readings are skipped to preserve WidgetKit's reload budget.
+    private func publishComplicationSnapshot() {
+        guard let readingDate = glucoseValues.map(\.date).max(), currentGlucose != "--" else { return }
+
+        let snapshot = GlucoseComplicationSnapshot(
+            glucose: currentGlucose,
+            trend: trend,
+            delta: delta,
+            glucoseColorHex: currentGlucoseColorString,
+            readingDate: readingDate
+        )
+
+        guard snapshot != GlucoseComplicationSnapshot.load() else { return }
+
+        snapshot.save()
+        WidgetCenter.shared.reloadAllTimelines()
     }
 }
