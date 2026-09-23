@@ -11,9 +11,20 @@ import UserNotifications
     var body: some Scene {
         WindowGroup {
             TrioMainWatchView()
+                .task {
+                    if scenePhase == .active {
+                        G7DirectBLEObserver.shared.start()
+                    }
+                }
         }
         .onChange(of: scenePhase) { _, newScenePhase in
-            if newScenePhase == .background {
+            Task {
+                await WatchLogger.shared.log("event=g7_ble_lifecycle scene_phase=\(String(describing: newScenePhase))")
+            }
+
+            if newScenePhase == .active {
+                G7DirectBLEObserver.shared.start()
+            } else if newScenePhase == .background {
                 Task {
                     await WatchLogger.shared.flushPersistedLogs()
                 }
