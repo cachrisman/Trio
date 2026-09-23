@@ -1,6 +1,6 @@
-From 9b36704b93d60a2db47ed38ace2d6713aa543019 Mon Sep 17 00:00:00 2001
+From 6b0a8ae230222ed0a8aa41e754852f9c53d3e842 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Tue, 22 Sep 2026 23:50:11 +0200
+Date: Wed, 23 Sep 2026 21:43:32 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 460a35322bdef45f2468182f6ed703dc6e439614
-Trio-Patch-Feature-Tip: a61265484dd58ce50b3c702f0cb0d4b779d04d9b
-Trio-Patch-Generated: 2026-09-22T21:49:58Z
+Trio-Patch-Feature-Tip: b1f2e41bfff2338284da6b0c94f6274c9fd79ceb
+Trio-Patch-Generated: 2026-09-23T19:43:19Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -50,6 +50,8 @@ Trio-Patch-Source-Commits:
  6c89bfb5b1b38d42cf03aafecfc05f902c31574d watch: ACK only after the payload has actually been handled (TRIO-043)
  dd3e08ce4d2867a3b667676d0b1a83883e0e8d7e watch: correct two TRIO-043 comments that overstated their guarantees
  a61265484dd58ce50b3c702f0cb0d4b779d04d9b Merge dev (1.0.1.5) into feature/watch-g7
+ b1f2e41bfff2338284da6b0c94f6274c9fd79ceb watch: apply forecast fields on the raw-data path, not in the complication save (TRIO-058)
+Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
  ed97df36e4b18886dc68346ea67ceb00ed61b72f
@@ -81,12 +83,6 @@ Trio-Patch-Source-PatchIds:
  a694bf08ece4afe5c2deb07e1b00cb8c866ac927
  67539b1a7777edd52c81aa2795014fc80bfe13e5
  399e06e6c509520321d82e16d3849b14718ffcb6
- 5560470aadb1706fcb843cabf5981f33df1fe39d
-d544b10a73968114b66b4358f788fde42bbdb38b
-937d56001c55b6873c232c5feee035618186411a
-8fe7265ccb8c7a92799a829b48c791e3a4d0c346
-7a05334d6a1075450395c10f0e16bbda00b449d5
-77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
  659ba69719ccb1774143d441bba70239f6ef99fb
  5645703ac8e969779a2f2c87646aef07fc3e0702
  17827e87392a8919ba6f1014215f40bbf7bef53f
@@ -94,9 +90,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  dd5e04ecf41c87100b6367f1b54319f413289f3c
  1b5a384b6b47f57836e0777c3a3c3a88ddc64c11
  40b36224e87fd6e18c9a38873bd375cfcdc8133e
- 10e82116cc9c5fee4d9b1f1fa084a952de41b692
-8fe7265ccb8c7a92799a829b48c791e3a4d0c346
-77ce1d1b7af7f3f2426f340bd7d0edba19cc069a
+ b9a134ac3b6ec68ce081f9613b58a7be9b085e93
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -111,7 +105,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  .../WatchGlucoseHistoryStore.swift            |  229 ++
  Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 2559 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2566 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  138 +
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
@@ -127,7 +121,7 @@ d544b10a73968114b66b4358f788fde42bbdb38b
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  604 +++-
- 29 files changed, 9809 insertions(+), 561 deletions(-)
+ 29 files changed, 9815 insertions(+), 562 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -5042,7 +5036,7 @@ index ea6c9f146..f3ed61337 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 164175cf5..157c748cd 100644
+index 164175cf5..0a6af27b4 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,22 +1,103 @@
@@ -5778,14 +5772,13 @@ index 164175cf5..157c748cd 100644
 +            guard let self else {
 +                completionHandler()
 +                return
-             }
++            }
 +            self.fetchLatestGlucoseFromHealthKit(fireId: fireId, completionHandler: completionHandler)
-         }
++        }
 +        store.execute(query)
 +        glucoseObserverQuery = query
-     }
- 
--    // MARK: – Handle Acknowledgement Messages FROM Phone
++    }
++
 +    /// Path B4 — shared post-fetch processing for **both** bootstrap (`HKSampleQuery`) and incremental (`HKAnchoredObjectQuery`) paths. Persists `HKQueryAnchor` when `newAnchor` is non-nil (incremental path). Bootstrap anchor persistence is handled separately via `establishHealthKitGlucoseTimelineAnchorAfterBootstrap` after a successful sample query.
 +    private func finishHKGlucoseObserverFetch(
 +        fireId: UUID,
@@ -6259,14 +6252,15 @@ index 164175cf5..157c748cd 100644
 +                gvCount = -1
 +            } else {
 +                gvCount = 0
-+            }
+             }
 +            let epoch = (ws[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
 +            let wsKeys = ws.keys.sorted().joined(separator: ",")
 +            parts.append("watchState_keys=\(wsKeys) glucoseValues_count=\(gvCount) reading_epoch=\(epoch)")
-+        }
+         }
 +        return parts.joined(separator: " ")
-+    }
-+
+     }
+ 
+-    // MARK: – Handle Acknowledgement Messages FROM Phone
 +    // MARK: - Acknowledgement handling
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
@@ -6420,15 +6414,21 @@ index 164175cf5..157c748cd 100644
              }
              processWatchMessage(message)
              return
+-        }
+-
+-        // Recommended bolus is also not part of the WatchState message.
+-        if let recommendedBolus = message[WatchMessageKeys.recommendedBolus] as? NSNumber {
 +        } else if let recommendedBolus = message[WatchMessageKeys.recommendedBolus] as? NSNumber {
-+            Task {
+             Task {
+-                await WatchLogger.shared.log("⌚️ Received recommended bolus: \(recommendedBolus)")
 +                await WatchLogger.shared.log("Received recommended bolus: \(recommendedBolus)")
-+            }
+             }
 +
-+            DispatchQueue.main.async {
-+                self.recommendedBolus = recommendedBolus.decimalValue
-+                self.showBolusCalculationProgress = false
-+            }
+             DispatchQueue.main.async {
+                 self.recommendedBolus = recommendedBolus.decimalValue
+                 self.showBolusCalculationProgress = false
+             }
+-            return
 +            return
 +        } else {
 +            Task {
@@ -6442,7 +6442,7 @@ index 164175cf5..157c748cd 100644
 +                    requiresNoPendingContent: true
 +                )
 +            }
-         }
++        }
 +    }
 +
 +    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
@@ -6818,15 +6818,8 @@ index 164175cf5..157c748cd 100644
 +                clearDeferredConnectivityCompletionRetryOnMain()
 +                return
 +            }
- 
--        // Recommended bolus is also not part of the WatchState message.
--        if let recommendedBolus = message[WatchMessageKeys.recommendedBolus] as? NSNumber {
-             Task {
--                await WatchLogger.shared.log("⌚️ Received recommended bolus: \(recommendedBolus)")
--            }
--            DispatchQueue.main.async {
--                self.recommendedBolus = recommendedBolus.decimalValue
--                self.showBolusCalculationProgress = false
++
++            Task {
 +                await WatchLogger.shared.log(
 +                    "event=complication_bgtask_completion_retry_pending path=\(path)"
 +                        + " window_id=\(wid)"
@@ -6834,20 +6827,19 @@ index 164175cf5..157c748cd 100644
 +                        + " pending_count=\(pendingConnectivityTasks.count)"
 +                        + " pending_content=true"
 +                )
-             }
--            return
++            }
 +            scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
          }
 -
 -        handleIncomingWatchStatePayload(message)
--    }
--
--    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
--        handleIncomingWatchStatePayload(userInfo)
 +        deferredConnectivityCompletionWorkItem = work
 +        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
      }
  
+-    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+-        handleIncomingWatchStatePayload(userInfo)
+-    }
+-
 -    /// Shared path for watch-state payloads from either delegate method.
 -    /// Enforces the freshness contract in one place so the two delivery paths
 -    /// can't drift.
@@ -6917,10 +6909,10 @@ index 164175cf5..157c748cd 100644
 +                        + " pending_count=\(pendingCount)"
 +                        + " pending_content=true"
 +                )
-             }
++            }
 +            if pendingCount > 0 {
 +                scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
-+            }
+             }
 +            return 0
          }
 -    }
@@ -7275,7 +7267,8 @@ index 164175cf5..157c748cd 100644
 +                await WatchLogger.shared.log("event=complication_finalize_begin window_id=\(wid) pending_count=\(pendingCountBeforeCompletion)")
 +            }
 +        } else {
-+            Task {
+             Task {
+-                await WatchLogger.shared.log("Updated lastWatchStateUpdate: \(timestamp)")
 +                await WatchLogger.shared.log(
 +                    "event=complication_finalize_no_pending_tasks window_id=\(wid)"
 +                        + " path=\(pendingConnectivityCompletionPath)"
@@ -7287,8 +7280,7 @@ index 164175cf5..157c748cd 100644
 +            recordMarkerWithoutPendingTasks: true
 +        )
 +        if clearedCount > 0 {
-             Task {
--                await WatchLogger.shared.log("Updated lastWatchStateUpdate: \(timestamp)")
++            Task {
 +                await WatchLogger.shared.log("event=complication_finalize_end window_id=\(wid) cleared_count=\(clearedCount)")
              }
          }
@@ -7414,7 +7406,7 @@ index 164175cf5..157c748cd 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -531,42 +2220,150 @@ import WatchConnectivity
+@@ -531,43 +2220,53 @@ import WatchConnectivity
              }
          }
  
@@ -7446,24 +7438,37 @@ index 164175cf5..157c748cd 100644
 +           let decimalValue = (maxFatValue as? NSNumber)?.decimalValue
 +        {
 +            maxFat = decimalValue
-+        }
-+
+         }
+ 
+-        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
+-            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
+-                maxProtein = decimalValue
+-            }
 +        if let maxProteinValue = message[WatchMessageKeys.maxProtein],
 +           let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue
 +        {
 +            maxProtein = decimalValue
-+        }
-+
+         }
+ 
+-        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
+-            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
+-                // limit minimum to 0.05 to avoid dealing with 0.025 increments
+-                self.bolusIncrement = max(decimalValue, 0.05)
+-            }
 +        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement],
 +           let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue
 +        {
 +            self.bolusIncrement = max(decimalValue, 0.05)
-+        }
-+
+         }
+ 
+-        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] {
+-            if let booleanValue = confirmBolusFaster as? Bool {
+-                self.confirmBolusFaster = booleanValue
+-            }
 +        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] as? Bool {
 +            self.confirmBolusFaster = confirmBolusFaster
-+        }
-+
+         }
+ 
 +        // Build 205 / W3: cache IOB/COB/lastLoopTime keyed to lastWatchStateUpdate (the phone's
 +        // WatchState build time), so a cold open within 30 min restores them. Caching the build time
 +        // (not Date()) preserves correct staleness — a payload built 20 min ago stays 20 min old.
@@ -7471,6 +7476,19 @@ index 164175cf5..157c748cd 100644
 +        UserDefaults.standard.set(cob, forKey: "WatchState.cachedCOB")
 +        UserDefaults.standard.set(lastLoopTime, forKey: "WatchState.cachedLastLoopTime")
 +        UserDefaults.standard.set(lastWatchStateUpdate?.timeIntervalSince1970, forKey: "WatchState.cachedWCTimestamp")
++
++        // Forecast fields must be applied on the raw-data path, not in
++        // saveComplicationSnapshot: that function returns early on the
++        // pre-dispatch complication dedup, which normally fires for the
++        // full-state payload (the phone sends a complication-only payload
++        // first), so the forecast would be dropped on most cycles.
+         if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
+             self.showForecast = showForecast
+         }
+@@ -584,5 +2283,416 @@ import WatchConnectivity
+             forecastConeMax = forecastPayload[WatchMessageKeys.forecastConeMax] as? [Double] ?? []
+             forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
+         }
 +
 +        saveComplicationSnapshot(from: message, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
 +
@@ -7497,11 +7515,8 @@ index 164175cf5..157c748cd 100644
 +    private func saveComplicationSnapshot(from message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
 +        Task {
 +            await WatchLogger.shared.log("📸 saveComplicationSnapshot called with keys: \(message.keys.joined(separator: ", "))")
-         }
- 
--        if let maxProteinValue = message[WatchMessageKeys.maxProtein] {
--            if let decimalValue = (maxProteinValue as? NSNumber)?.decimalValue {
--                maxProtein = decimalValue
++        }
++
 +        // Ensure the bake below uses the freshest settings even on a complication-only path that didn't
 +        // run processRawDataForWatchState (review #5).
 +        applyColorSettingsFromPayloadIfPresent(message)
@@ -7525,14 +7540,10 @@ index 164175cf5..157c748cd 100644
 +                    "📸 saveComplicationSnapshot SKIPPED: no valid CGM reading timestamp"
 +                        + " (no reading_epoch, glucoseValues, or parseable date)"
 +                )
-             }
++            }
 +            return
-         }
- 
--        if let bolusIncrement = message[WatchMessageKeys.bolusIncrement] {
--            if let decimalValue = (bolusIncrement as? NSNumber)?.decimalValue {
--                // limit minimum to 0.05 to avoid dealing with 0.025 increments
--                self.bolusIncrement = max(decimalValue, 0.05)
++        }
++
 +        let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
 +        let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
 +        let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
@@ -7541,7 +7552,7 @@ index 164175cf5..157c748cd 100644
 +        let glucoseColorValue: String? = {
 +            if let mgDlNumber = message[WatchMessageKeys.currentGlucoseMgDl] as? NSNumber, mgDlNumber.intValue >= 25 {
 +                return WatchGlucoseColorComputer.shared.bubbleColorHex(for: mgDlNumber.intValue)
-             }
++            }
 +            return nil
 +        }()
 +
@@ -7564,11 +7575,8 @@ index 164175cf5..157c748cd 100644
 +        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
 +        if TrioComplicationDataStore.shared.shouldSkipPreDispatch(for: snapshot, handler: "message") {
 +            return
-         }
- 
--        if let confirmBolusFaster = message[WatchMessageKeys.confirmBolusFaster] {
--            if let booleanValue = confirmBolusFaster as? Bool {
--                self.confirmBolusFaster = booleanValue
++        }
++
 +        TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
 +        lastPhoneEGVDate = readingDate // C-210-4: phone-path freshness for direct-BLE stall detection
 +
@@ -7579,18 +7587,12 @@ index 164175cf5..157c748cd 100644
 +            let readingEpoch = Int(readingDate.timeIntervalSince1970)
 +            Task {
 +                await WatchLogger.shared.log("⏱️ userInfo_decoded reading_epoch=\(readingEpoch) decode_ms=\(decodeMs)")
-             }
-         }
++            }
++        }
 +        if fromUserInfo {
 +            lastUserInfoReceiveTimestamp = nil
 +        }
- 
-         if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
-             self.showForecast = showForecast
-@@ -585,4 +2382,312 @@ import WatchConnectivity
-             forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
-         }
-     }
++    }
 +
 +    func forceComplicationUpdate() {
 +        Task {
@@ -7898,7 +7900,7 @@ index 164175cf5..157c748cd 100644
 +            return .rejectedDateOnly
 +        }
 +        return .missing
-+    }
+     }
  }
 diff --git a/Trio Watch App Extension/WatchTelemetryRing.swift b/Trio Watch App Extension/WatchTelemetryRing.swift
 new file mode 100644
