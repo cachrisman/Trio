@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.12)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.13)
 #
 # CHANGELOG:
+#   v1.13 - TRIO-057: _patch_id() could emit multiple lines for a merge commit
+#           (git patch-id --stable on a combined diff), silently truncating the
+#           recorded Trio-Patch-Source-PatchIds: trailer and hiding later source
+#           commits from the cherry-pick-viability gate and drift checks. Fixed:
+#           _patch_id() now returns empty for merge commits and is capped to one
+#           line; the three git log invocations that enumerate commits for
+#           patch-id purposes (--cherry-pick auto-detect, --from-feature-branch
+#           alignment check, and the generator's PatchIds loop) now pass
+#           --no-merges to match, so a merge never shows up as a spurious "new"
+#           commit to cherry-pick; _recorded_patch_ids() now warns to stderr and
+#           keeps scanning on a malformed line instead of silently truncating,
+#           so a legacy patch written by the old buggy generator still yields its
+#           full id list.
 #   v1.12 - Every throwaway commit this script creates (git am, cherry-pick,
 #           from-feature-branch snapshot, squash) passes a bot identity and
 #           commit.gpgsign=false per command via GIT_BOT, so the shared
@@ -487,19 +500,35 @@ done
 # --- Provenance helpers (deterministic cherry-pick via recorded patch-ids) -----
 # Stable patch-id of a single commit's diff (empty on failure). A patch-id hashes the
 # diff content, so it is stable across rebase/amend — the canonical identity for
-# "is this change already represented in the patch?".
+# "is this change already represented in the patch?". Always at most one line of
+# output; a merge commit has no single meaningful patch-id and yields empty.
 _patch_id() {
+    if [ "$(git rev-list --no-walk --count --merges "$1" 2>/dev/null || echo 0)" != 0 ]; then
+        return 0
+    fi
+    git show --no-color "$1" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}' | head -1
+}
+# Every patch-id line of a commit's diff, including the multiple lines a merge
+# commit's combined diff produces. Exists only for legacy-trailer compatibility:
+# patches generated before v1.13 could record a merge-derived id, and the
+# alignment gate must still be able to match those. Never use this to build a
+# cherry-pick candidate list.
+_patch_ids_all() {
     git show --no-color "$1" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}'
 }
 
 # Extract patch-ids recorded in a patch file under the `Trio-Patch-Source-PatchIds:`
-# trailer (one indented hex id per line until the block ends). Empty if none recorded.
+# trailer (one indented hex id per line until the block ends). The block ends at a
+# blank line, a new `Key:`-style trailer line, or a bare `---` (the mail-body/diff
+# separator in a git-am patch). A malformed line inside the block warns on stderr
+# and scanning continues. Empty if none recorded.
 _recorded_patch_ids() {
-    awk '
+    awk -v f="$1" '
         /^Trio-Patch-Source-PatchIds:[[:space:]]*$/ { cap=1; next }
         cap && /^[[:space:]]+[0-9a-f]{7,}[[:space:]]*$/ { gsub(/[[:space:]]/,""); print; next }
-        cap { cap=0 }
-    ' "$1" 2>/dev/null
+        cap && (/^[[:space:]]*$/ || /^[A-Za-z][A-Za-z0-9-]*:/ || /^[[:space:]]*---[[:space:]]*$/) { cap=0; next }
+        cap { printf "warning: %s: unrecognized line in Trio-Patch-Source-PatchIds block: %s\n", f, $0 > "/dev/stderr"; next }
+    ' "$1"
 }
 
 # Branch name recorded in the patch's `Trio-Patch-Source-Branch:` trailer (empty if none).
@@ -530,7 +559,7 @@ if [ "$CHERRY_PICK_DEFERRED_CHECK" = true ]; then
     if [ -n "$_auto_branch" ]; then
         _merge_base=$(git merge-base dev "$_auto_branch" 2>/dev/null || true)
         if [ -n "$_merge_base" ]; then
-            _all_shas=$(git log --reverse --format='%H' "$_merge_base..$_auto_branch" 2>/dev/null || true)
+            _all_shas=$(git log --reverse --no-merges --format='%H' "$_merge_base..$_auto_branch" 2>/dev/null || true)
             if [ -n "$_all_shas" ]; then
                 _recorded=$(_recorded_patch_ids "$PATCH_FILE")
                 if [ -n "$_recorded" ]; then
@@ -627,7 +656,7 @@ if [ "$FROM_FEATURE_BRANCH" = true ] && [ "$FORCE_FROM_FEATURE_BRANCH" = false ]
 
     _mb=$(git merge-base dev "$_fb" 2>/dev/null || true)
     _shalist=""
-    [ -n "$_mb" ] && _shalist=$(git log --reverse --format='%H' "$_mb..$_fb" 2>/dev/null || true)
+    [ -n "$_mb" ] && _shalist=$(git log --reverse --no-merges --format='%H' "$_mb..$_fb" 2>/dev/null || true)
     _rec=$(_recorded_patch_ids "$PATCH_FILE")
 
     if [ -z "$_rec" ]; then
@@ -648,6 +677,16 @@ if [ "$FROM_FEATURE_BRANCH" = true ] && [ "$FORCE_FROM_FEATURE_BRANCH" = false ]
         _p=$(_patch_id "$_c")
         [ -n "$_p" ] && _branch_pids="${_branch_pids}${_p}"$'\n'
     done <<< "$_shalist"
+    # Legacy-trailer compatibility: patches generated before v1.13 could record a
+    # merge-derived patch-id. _shalist is merge-free, so without this the gate would
+    # see those ids as missing, read the branch as rewritten history, and auto-allow
+    # --from-feature-branch — disabling the very gate this block implements.
+    while read -r _mc; do
+        [ -n "$_mc" ] || continue
+        while read -r _mp; do
+            [ -n "$_mp" ] && _branch_pids="${_branch_pids}${_mp}"$'\n'
+        done <<< "$(_patch_ids_all "$_mc")"
+    done <<< "$(git log --reverse --merges --format='%H' "$_mb..$_fb" 2>/dev/null || true)"
 
     # Count how many of the patch's recorded commits are still present on the
     # branch. "Diverged history" means SOME (not all, not none) are gone.
@@ -1316,8 +1355,9 @@ if [ -n "$FEATURE_BRANCH" ]; then
             echo "Trio-Patch-Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "Trio-Patch-Source-Commits:"
             git log --reverse --format=' %H %s' "$_prov_mb..$_prov_tip" 2>/dev/null
+            echo "Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history"
             echo "Trio-Patch-Source-PatchIds:"
-            git log --reverse --format='%H' "$_prov_mb..$_prov_tip" 2>/dev/null | while read -r _pc; do
+            git log --reverse --no-merges --format='%H' "$_prov_mb..$_prov_tip" 2>/dev/null | while read -r _pc; do
                 [ -n "$_pc" ] || continue
                 _ppid=$(_patch_id "$_pc")
                 [ -n "$_ppid" ] && echo " $_ppid"
