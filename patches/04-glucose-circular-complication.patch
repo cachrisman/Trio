@@ -1,23 +1,29 @@
-From 23c550cecde7dda6fb8376b47a10047d083b4ac4 Mon Sep 17 00:00:00 2001
+From 6d7852e187d736d63a6e058dbbc4a4f3a346384b Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 01:46:27 +0200
+Date: Thu, 24 Sep 2026 01:52:49 +0200
 Subject: [PATCH] feat: glucose-circular-complication
 
 Trio-Patch-Source-Branch: feature/glucose-circular-complication
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 9a32a194db7ac0374b38ba2a459204e02cf42861
-Trio-Patch-Generated: 2026-09-23T23:46:18Z
+Trio-Patch-Feature-Tip: 5375f1d1bbedc60812593da6ea7b95a7eeb7e18c
+Trio-Patch-Generated: 2026-09-23T23:52:39Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
  b3959693a67bd13135d89d8dc683553c3a29e950 Let the Glucose Bobble place its trend arrow inside the ring
  9a32a194db7ac0374b38ba2a459204e02cf42861 Glucose Bobble complication: bigger bobble, visible background, minute-aligned age
+ a4af888888c383233cbeaafac507ae5677b5bddb Glucose Bobble: inside-ring arrow tip touches the ring
+ 09592b7ace4aac197046e213e14de5ae9ae28e60 Glucose Bobble: keep inside-ring text clear of a 45 degree arrow
+ 5375f1d1bbedc60812593da6ea7b95a7eeb7e18c Glucose Bobble complication: start the 5-minute tail at 30 so the age never holds for six minutes
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
  4a9cbf79710c3565a2e3c61cdab80df2350d6a5d
  04fb9fcec1ce411cde0770607333ea1b615c4d7b
  07710c7734bf6a83f928c8ebc06fb65b88128ac9
+ 46ca92c5cb5e705436a834c1651f44b456f40a19
+ def34e438c168472070067e0e2605e5a6f11564c
+ 1f586ab8f25b49f547938f8b42505809dc3f2ac9
 ---
  Trio Watch App Extension/WatchState.swift     |  22 ++
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
@@ -88,7 +94,7 @@ index 000000000..9a37de423
 +</plist>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
 new file mode 100644
-index 000000000..2aa232b3f
+index 000000000..084eeb542
 --- /dev/null
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
 @@ -0,0 +1,235 @@
@@ -152,7 +158,7 @@ index 000000000..2aa232b3f
 +        // Entries are budget-free (only reloads cost WidgetKit budget), so extending the horizon
 +        // with a coarser tail keeps the reading age honest through a multi-hour reload drought
 +        // instead of freezing on the last dense entry once reloads are throttled.
-+        entries += stride(from: 35, through: 55, by: 5).map { offset in
++        entries += stride(from: 30, through: 55, by: 5).map { offset in
 +            GlucoseBobbleComplicationEntry(date: anchor.addingTimeInterval(TimeInterval(offset * 60)), snapshot: snapshot)
 +        }
 +        entries += stride(from: 60, through: 240, by: 15).map { offset in
