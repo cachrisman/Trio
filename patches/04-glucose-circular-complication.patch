@@ -1,0 +1,356 @@
+From 035f2a835e12ddd948f5ef4f0e547ab39ceec83e Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 00:20:59 +0200
+Subject: [PATCH] feat: glucose-circular-complication
+
+---
+ Trio Watch App Extension/WatchState.swift     |  22 ++
+ Trio Watch App/TrioWatchApp.entitlements      |  10 +
+ .../GlucoseBobbleComplication.swift           | 201 ++++++++++++++++++
+ .../TrioWatchComplication.entitlements        |  10 +
+ .../TrioWatchComplication.swift               |   2 +-
+ .../GlucoseComplicationSnapshot.swift         |  38 ++++
+ 6 files changed, 282 insertions(+), 1 deletion(-)
+ create mode 100644 Trio Watch App/TrioWatchApp.entitlements
+ create mode 100644 Trio Watch Complication/GlucoseBobbleComplication.swift
+ create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
+ create mode 100644 Trio Watch Shared/GlucoseComplicationSnapshot.swift
+
+diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
+index 805f52895..0132c1650 100644
+--- a/Trio Watch App Extension/WatchState.swift	
++++ b/Trio Watch App Extension/WatchState.swift	
+@@ -1,6 +1,7 @@
+ import Foundation
+ import SwiftUI
+ import WatchConnectivity
++import WidgetKit
+ 
+ /// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
+ /// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
+@@ -584,5 +585,26 @@ import WatchConnectivity
+             forecastConeMax = forecastPayload[WatchMessageKeys.forecastConeMax] as? [Double] ?? []
+             forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
+         }
++
++        publishComplicationSnapshot()
++    }
++
++    // The complication extension is a separate process, so the latest reading is handed over
++    // through the shared App Group and the complication's timelines reloaded; unchanged readings are skipped to preserve WidgetKit's reload budget.
++    private func publishComplicationSnapshot() {
++        guard let readingDate = glucoseValues.map(\.date).max(), currentGlucose != "--" else { return }
++
++        let snapshot = GlucoseComplicationSnapshot(
++            glucose: currentGlucose,
++            trend: trend,
++            delta: delta,
++            glucoseColorHex: currentGlucoseColorString,
++            readingDate: readingDate
++        )
++
++        guard snapshot != GlucoseComplicationSnapshot.load() else { return }
++
++        snapshot.save()
++        WidgetCenter.shared.reloadAllTimelines()
+     }
+ }
+diff --git a/Trio Watch App/TrioWatchApp.entitlements b/Trio Watch App/TrioWatchApp.entitlements
+new file mode 100644
+index 000000000..9a37de423
+--- /dev/null
++++ b/Trio Watch App/TrioWatchApp.entitlements	
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>com.apple.security.application-groups</key>
++	<array>
++		<string>$(TRIO_APP_GROUP_ID)</string>
++	</array>
++</dict>
++</plist>
+diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
+new file mode 100644
+index 000000000..87f2a08f9
+--- /dev/null
++++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
+@@ -0,0 +1,201 @@
++import SwiftUI
++import WidgetKit
++
++// MARK: - Widget Bundle
++
++// A widget extension has a single @main, so it is this bundle, which lists every complication
++// the extension offers — including the app-icon one declared in TrioWatchComplication.swift.
++@main struct TrioWatchComplicationBundle: WidgetBundle {
++    var body: some Widget {
++        TrioWatchComplication()
++        TrioGlucoseBobbleComplication()
++    }
++}
++
++// MARK: - Timeline Entry
++
++struct GlucoseBobbleComplicationEntry: TimelineEntry {
++    let date: Date
++    let snapshot: GlucoseComplicationSnapshot?
++}
++
++// MARK: - Provider
++
++struct GlucoseBobbleComplicationProvider: TimelineProvider {
++    private static var sampleSnapshot: GlucoseComplicationSnapshot {
++        GlucoseComplicationSnapshot(
++            glucose: "112",
++            trend: "Flat",
++            delta: "+2",
++            glucoseColorHex: "#4CD964",
++            readingDate: Date().addingTimeInterval(-60)
++        )
++    }
++
++    func placeholder(in _: Context) -> GlucoseBobbleComplicationEntry {
++        GlucoseBobbleComplicationEntry(date: Date(), snapshot: Self.sampleSnapshot)
++    }
++
++    func getSnapshot(in _: Context, completion: @escaping (GlucoseBobbleComplicationEntry) -> Void) {
++        let snapshot = GlucoseComplicationSnapshot.load() ?? Self.sampleSnapshot
++        completion(GlucoseBobbleComplicationEntry(date: Date(), snapshot: snapshot))
++    }
++
++    func getTimeline(in _: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
++        let now = Date()
++
++        guard let snapshot = GlucoseComplicationSnapshot.load() else {
++            let entry = GlucoseBobbleComplicationEntry(date: now, snapshot: nil)
++            completion(Timeline(entries: [entry], policy: .never))
++            return
++        }
++
++        // One entry per minute so the minutes-ago text advances on screen without WidgetKit
++        // reloading the timeline; the watch app requests a reload once fresh data arrives.
++        let entries = (0 ..< 60).map { offset in
++            GlucoseBobbleComplicationEntry(date: now.addingTimeInterval(TimeInterval(offset * 60)), snapshot: snapshot)
++        }
++        let timeline = Timeline(entries: entries, policy: .after(now.addingTimeInterval(60 * 60)))
++        completion(timeline)
++    }
++}
++
++// MARK: - Widget Configuration
++
++struct TrioGlucoseBobbleComplication: Widget {
++    let kind: String = "TrioGlucoseBobbleComplication"
++
++    var body: some WidgetConfiguration {
++        StaticConfiguration(kind: kind, provider: GlucoseBobbleComplicationProvider()) { entry in
++            GlucoseBobbleComplicationView(entry: entry)
++        }
++        .configurationDisplayName("Trio Glucose")
++        .description("Current glucose, trend, delta and reading age.")
++        .supportedFamilies([.accessoryCircular])
++    }
++}
++
++// MARK: - View
++
++struct GlucoseBobbleComplicationView: View {
++    let entry: GlucoseBobbleComplicationEntry
++
++    @Environment(\.widgetRenderingMode) private var renderingMode
++
++    // Matches the 12-minute CGM freshness window the phone uses elsewhere.
++    private static let staleAfter: TimeInterval = 12 * 60
++
++    private var isStale: Bool {
++        guard let snapshot = entry.snapshot else { return false }
++        return entry.date.timeIntervalSince(snapshot.readingDate) > Self.staleAfter
++    }
++
++    private var valueColor: Color {
++        guard let snapshot = entry.snapshot, !isStale, let color = Self.color(fromHex: snapshot.glucoseColorHex) else {
++            return .gray
++        }
++        return color
++    }
++
++    // Derived from entry.date, not Date(): timeline entries are rendered ahead of time, so the
++    // wall clock at render time isn't the entry's intended "now" — only entry.date is.
++    private var minutesAgoText: String? {
++        guard let snapshot = entry.snapshot else { return nil }
++        let minutes = Int(entry.date.timeIntervalSince(snapshot.readingDate) / 60)
++        if minutes < 1 {
++            return "<\u{00A0}1\u{00A0}m"
++        }
++        return "\(minutes)\u{00A0}m"
++    }
++
++    private var accessibilityLabelText: String {
++        guard let snapshot = entry.snapshot else { return "No glucose data" }
++        var parts = [snapshot.glucose]
++        if let delta = snapshot.delta { parts.append(delta) }
++        if let minutesAgoText { parts.append(minutesAgoText) }
++        return parts.joined(separator: ", ")
++    }
++
++    @ViewBuilder private var background: some View {
++        if renderingMode == .fullColor, entry.snapshot != nil, !isStale {
++            valueColor.opacity(0.3)
++        } else {
++            AccessoryWidgetBackground()
++        }
++    }
++
++    var body: some View {
++        GeometryReader { geometry in
++            let side = min(geometry.size.width, geometry.size.height)
++
++            GlucoseBobbleContactView(
++                glucoseText: entry.snapshot?.glucose ?? "--",
++                minutesAgoText: entry.snapshot == nil ? nil : minutesAgoText,
++                deltaText: entry.snapshot?.delta,
++                glucoseColor: valueColor,
++                rotationDegrees: GlucoseBobbleContactView.rotationDegrees(forTrend: entry.snapshot?.trend)
++            )
++            .scaleEffect(side / GlucoseBobbleContactView.Layout.nativeSize)
++            .frame(width: side, height: side)
++            .opacity(isStale ? 0.55 : 1)
++            .frame(width: geometry.size.width, height: geometry.size.height)
++        }
++        .widgetBackground(backgroundView: background)
++        .accessibilityLabel(accessibilityLabelText)
++    }
++}
++
++private extension GlucoseBobbleComplicationView {
++    static func color(fromHex hex: String) -> Color? {
++        var sanitized = hex
++        if sanitized.hasPrefix("#") {
++            sanitized.removeFirst()
++        }
++        guard sanitized.count == 6, let rgb = UInt32(sanitized, radix: 16) else { return nil }
++
++        let red = Double((rgb >> 16) & 0xFF) / 255
++        let green = Double((rgb >> 8) & 0xFF) / 255
++        let blue = Double(rgb & 0xFF) / 255
++        return Color(red: red, green: green, blue: blue)
++    }
++}
++
++// MARK: - Previews
++
++#Preview("Fresh", as: .accessoryCircular) {
++    TrioGlucoseBobbleComplication()
++} timeline: {
++    let now = Date()
++    GlucoseBobbleComplicationEntry(
++        date: now,
++        snapshot: GlucoseComplicationSnapshot(
++            glucose: "112",
++            trend: "Flat",
++            delta: "+2",
++            glucoseColorHex: "#4CD964",
++            readingDate: now.addingTimeInterval(-60)
++        )
++    )
++}
++
++#Preview("Stale", as: .accessoryCircular) {
++    TrioGlucoseBobbleComplication()
++} timeline: {
++    let now = Date()
++    GlucoseBobbleComplicationEntry(
++        date: now,
++        snapshot: GlucoseComplicationSnapshot(
++            glucose: "98",
++            trend: "FortyFiveDown",
++            delta: "-4",
++            glucoseColorHex: "#4CD964",
++            readingDate: now.addingTimeInterval(-20 * 60)
++        )
++    )
++}
++
++#Preview("No Data", as: .accessoryCircular) {
++    TrioGlucoseBobbleComplication()
++} timeline: {
++    GlucoseBobbleComplicationEntry(date: Date(), snapshot: nil)
++}
+diff --git a/Trio Watch Complication/TrioWatchComplication.entitlements b/Trio Watch Complication/TrioWatchComplication.entitlements
+new file mode 100644
+index 000000000..9a37de423
+--- /dev/null
++++ b/Trio Watch Complication/TrioWatchComplication.entitlements	
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>com.apple.security.application-groups</key>
++	<array>
++		<string>$(TRIO_APP_GROUP_ID)</string>
++	</array>
++</dict>
++</plist>
+diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
+index a8721530a..695bd6a54 100644
+--- a/Trio Watch Complication/TrioWatchComplication.swift	
++++ b/Trio Watch Complication/TrioWatchComplication.swift	
+@@ -80,7 +80,7 @@ struct TrioAccessoryCircularView: View {
+ 
+ // MARK: - Widget Configuration
+ 
+-@main struct TrioWatchComplication: Widget {
++struct TrioWatchComplication: Widget {
+     let kind: String = "TrioWatchComplication"
+ 
+     var body: some WidgetConfiguration {
+diff --git a/Trio Watch Shared/GlucoseComplicationSnapshot.swift b/Trio Watch Shared/GlucoseComplicationSnapshot.swift
+new file mode 100644
+index 000000000..15144e1c7
+--- /dev/null
++++ b/Trio Watch Shared/GlucoseComplicationSnapshot.swift	
+@@ -0,0 +1,38 @@
++import Foundation
++
++/// The latest glucose reading handed from the watch app to its complication through the shared
++/// App Group, because the two are separate processes.
++struct GlucoseComplicationSnapshot: Codable, Equatable {
++    let glucose: String
++    let trend: String?
++    let delta: String?
++    let glucoseColorHex: String
++    let readingDate: Date
++
++    static let defaultsKey = "glucoseComplicationSnapshot"
++
++    static var sharedDefaults: UserDefaults? {
++        guard let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String,
++              !suiteName.isEmpty
++        else {
++            return nil
++        }
++        return UserDefaults(suiteName: suiteName)
++    }
++
++    static func load() -> GlucoseComplicationSnapshot? {
++        guard let data = sharedDefaults?.data(forKey: defaultsKey) else {
++            return nil
++        }
++        return try? JSONDecoder().decode(GlucoseComplicationSnapshot.self, from: data)
++    }
++
++    func save() {
++        guard let defaults = Self.sharedDefaults,
++              let data = try? JSONEncoder().encode(self)
++        else {
++            return
++        }
++        defaults.set(data, forKey: Self.defaultsKey)
++    }
++}
+-- 
+2.55.0
+
