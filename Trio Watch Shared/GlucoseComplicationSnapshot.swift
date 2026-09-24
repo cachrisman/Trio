@@ -21,11 +21,44 @@ struct GlucoseComplicationSnapshot: Codable, Equatable {
         return UserDefaults(suiteName: suiteName)
     }
 
-    static func load() -> GlucoseComplicationSnapshot? {
-        guard let data = sharedDefaults?.data(forKey: defaultsKey) else {
+    // fork — Phase C: this fork's load() never decodes the Codable snapshot below (it reads
+    // TrioComplicationDataStore instead — see load()), so the phone-configured last loop date is
+    // stored under its own App Group key instead of riding inside that snapshot's own encoding.
+    static let lastLoopDateKey = "glucoseComplicationLastLoopDate"
+
+    static func storedLastLoopDate() -> Date? {
+        guard let defaults = sharedDefaults, defaults.object(forKey: lastLoopDateKey) != nil else {
             return nil
         }
-        return try? JSONDecoder().decode(GlucoseComplicationSnapshot.self, from: data)
+        return Date(timeIntervalSince1970: defaults.double(forKey: lastLoopDateKey))
+    }
+
+    static func storeLastLoopDate(_ date: Date?) {
+        guard let defaults = sharedDefaults else { return }
+        if let date {
+            defaults.set(date.timeIntervalSince1970, forKey: lastLoopDateKey)
+        } else {
+            defaults.removeObject(forKey: lastLoopDateKey)
+        }
+    }
+
+    // fork — TrioComplicationDataStore is the single source for every watch complication here
+    // (it also holds watch-side G7 readings), so the circular complication reads it rather than
+    // the upstream App Group key; save() is unused in this fork.
+    static func load() -> GlucoseComplicationSnapshot? {
+        guard let s = TrioComplicationDataStore.shared.latestSnapshot(),
+              s.glucose != "--", s.glucose != "!!"
+        else {
+            return nil
+        }
+        return GlucoseComplicationSnapshot(
+            glucose: s.glucose,
+            trend: s.trend,
+            delta: s.delta == "--" ? nil : s.delta,
+            glucoseColorHex: s.glucoseColor ?? "",
+            readingDate: s.readingDate,
+            lastLoopDate: storedLastLoopDate()
+        )
     }
 
     func save() {
