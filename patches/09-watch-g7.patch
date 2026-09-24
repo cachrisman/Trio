@@ -1,6 +1,6 @@
-From 421e72cfeb2753f023b198e1c61c7ba6e2ec3fcc Mon Sep 17 00:00:00 2001
+From c35d1f6a4264000a4bad7602c6ef2f7f1b8300d9 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 14:56:14 +0200
+Date: Thu, 24 Sep 2026 14:59:14 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 96ab57ae162305513ff3a63dbc2bb6d0a87a9656
-Trio-Patch-Generated: 2026-09-24T12:55:57Z
+Trio-Patch-Feature-Tip: 8310772074a7df5a36c1d0f39b5347ccd76cb362
+Trio-Patch-Generated: 2026-09-24T12:58:57Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -84,6 +84,7 @@ Trio-Patch-Source-Commits:
  31673c0cb431114728721e449f338f7b7cdd7f8d Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063)
  19b1d3993111fe4e1d9507349cd0249a34a778fd watch: telemetry for the circular Glucose Bobble complication (TRIO-063)
  96ab57ae162305513ff3a63dbc2bb6d0a87a9656 watch: circular complication telemetry reports the real reload generation (TRIO-063)
+ 8310772074a7df5a36c1d0f39b5347ccd76cb362 watch: read the reload generation once for recording and telemetry (TRIO-063)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -149,6 +150,7 @@ Trio-Patch-Source-PatchIds:
  b19bc3bb4664130e59987eff56666cada522df72
  cf37992a98d67edbd7058477a6ed311f9dca2795
  a1d8e96652e549a66f781353bcc5164cea052af1
+ d82cd2d011dceba7a5f68c5a9d46529e9213ac9c
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -168,7 +170,7 @@ Trio-Patch-Source-PatchIds:
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |    4 +
- .../GlucoseBobbleComplication.swift           |   70 +-
+ .../GlucoseBobbleComplication.swift           |   73 +-
  Trio Watch Complication/Info.plist            |    2 +
  .../TrioWatchComplication.swift               |  625 +++-
  .../TrioWatchComplicationPreview.swift        |  124 +
@@ -180,7 +182,7 @@ Trio-Patch-Source-PatchIds:
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  603 +++-
- 30 files changed, 9948 insertions(+), 580 deletions(-)
+ 30 files changed, 9951 insertions(+), 580 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -8346,10 +8348,10 @@ index 9a37de423..54e6e8145 100644
  	<array>
  		<string>$(TRIO_APP_GROUP_ID)</string>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
-index d7d135215..83a3f16d2 100644
+index d7d135215..3367d5f1f 100644
 --- a/Trio Watch Complication/GlucoseBobbleComplication.swift	
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
-@@ -41,22 +41,63 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+@@ -41,22 +41,66 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
          )
      }
  
@@ -8378,10 +8380,13 @@ index d7d135215..83a3f16d2 100644
 +        // fork — record that this complication serviced the current reload generation, so
 +        // TrioComplicationDataStore does not treat the reload as dropped when this is the only Trio complication on the face.
 +        let store = TrioComplicationDataStore.shared
-+        if store.isAppGroupAvailable(), let generation = store.currentReloadGeneration() {
-+            store.recordWidgetObservedGeneration(generation)
++        // Read the generation once so the telemetry below reports the one actually recorded.
++        let appGroupAvailable = store.isAppGroupAvailable()
++        let currentGeneration = appGroupAvailable ? store.currentReloadGeneration() : nil
++        if let currentGeneration {
++            store.recordWidgetObservedGeneration(currentGeneration)
 +        }
-+        let observedReloadGeneration = Self.telemetryReloadGeneration(store)
++        let observedReloadGeneration = appGroupAvailable ? (currentGeneration ?? 0) : -1
 +
          let anchor = Self.roundedDownToMinute(Date())
          let settings = GlucoseBobbleComplicationSettings.load() ?? GlucoseBobbleComplicationSettings()
@@ -8416,7 +8421,7 @@ index d7d135215..83a3f16d2 100644
          // One entry per minute so the minutes-ago text advances on screen without WidgetKit
          // reloading the timeline; the watch app requests a reload once fresh data arrives.
          var entries = (0 ..< 30).map { offset in
-@@ -92,6 +133,29 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+@@ -92,6 +136,29 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
      static func roundedDownToMinute(_ date: Date) -> Date {
          Date(timeIntervalSinceReferenceDate: (date.timeIntervalSinceReferenceDate / 60).rounded(.down) * 60)
      }
