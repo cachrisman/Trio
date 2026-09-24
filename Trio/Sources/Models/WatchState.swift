@@ -14,6 +14,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
     var iob: String?
     var cob: String?
     var lastLoopTime: String?
+    var lastLoopDate: Date? = nil
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
@@ -34,6 +35,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
     var forecastConeMin: [Double] = []
     var forecastConeMax: [Double] = []
     var forecastLines: [String: [Double]] = [:] // "iob" / "cob" / "uam" / "zt" -> values
+    var glucoseBobbleComplication = GlucoseBobbleComplicationSettings()
 
     static func == (lhs: WatchState, rhs: WatchState) -> Bool {
         lhs.date == rhs.date &&
@@ -50,6 +52,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
             lhs.iob == rhs.iob &&
             lhs.cob == rhs.cob &&
             lhs.lastLoopTime == rhs.lastLoopTime &&
+            lhs.lastLoopDate == rhs.lastLoopDate &&
             lhs.overridePresets == rhs.overridePresets &&
             lhs.tempTargetPresets == rhs.tempTargetPresets &&
             lhs.maxBolus == rhs.maxBolus &&
@@ -63,7 +66,8 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
             lhs.forecastStartDate == rhs.forecastStartDate &&
             lhs.forecastConeMin == rhs.forecastConeMin &&
             lhs.forecastConeMax == rhs.forecastConeMax &&
-            lhs.forecastLines == rhs.forecastLines
+            lhs.forecastLines == rhs.forecastLines &&
+            lhs.glucoseBobbleComplication == rhs.glucoseBobbleComplication
     }
 
     func hash(into hasher: inout Hasher) {
@@ -82,6 +86,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
         hasher.combine(iob)
         hasher.combine(cob)
         hasher.combine(lastLoopTime)
+        hasher.combine(lastLoopDate)
         hasher.combine(overridePresets)
         hasher.combine(tempTargetPresets)
         hasher.combine(maxBolus)
@@ -96,5 +101,6 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
         hasher.combine(forecastConeMin)
         hasher.combine(forecastConeMax)
         hasher.combine(forecastLines)
+        hasher.combine(glucoseBobbleComplication)
     }
 }

@@ -65,6 +65,19 @@ struct WatchConfigAppleWatchView: BaseView {
             )
 
             Section(
+                header: Text("Complications"),
+                content: {
+                    VStack {
+                        HStack {
+                            NavigationLink("Glucose Bobble Complication") {
+                                GlucoseBobbleComplicationSettingsView(state: state)
+                            }.foregroundStyle(Color.accentColor)
+                        }
+                    }
+                }
+            ).listRowBackground(Color.chart)
+
+            Section(
                 header: Text("Contact Image"),
                 content: {
                     VStack {
