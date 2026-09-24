@@ -1,6 +1,6 @@
-From 8b1c034e157bdf2a26b229fb56bcdebb47ed2402 Mon Sep 17 00:00:00 2001
+From f2eb1ad52dc87f22abd2e6f74b8486f93f4c20b1 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 06:36:43 +0200
+Date: Thu, 24 Sep 2026 06:43:05 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 8701a587ba9fb42e042f91d838c648f00372b225
-Trio-Patch-Generated: 2026-09-24T04:36:29Z
+Trio-Patch-Feature-Tip: 35653c15e7ce9d537e495feb6ced671e5bc4caf9
+Trio-Patch-Generated: 2026-09-24T04:42:52Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -76,6 +76,7 @@ Trio-Patch-Source-Commits:
  f342c0140999ea4ebe364267e15a1fa8fe7cba8b Hand the Glucose Bobble settings and last loop date to the watch complication
  214fadf9e88679e7c69b60e07fd5c713c2157ae2 Glucose Bobble complication: apply the phone settings
  8701a587ba9fb42e042f91d838c648f00372b225 Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063 Phase C)
+ 35653c15e7ce9d537e495feb6ced671e5bc4caf9 watch: take the Glucose Bobble loop date from background payloads too (TRIO-063)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -134,6 +135,7 @@ Trio-Patch-Source-PatchIds:
  7f69f05ad15ff24e60952556d23ab85709283d36
  c307f1a9550c9abf302424a8c4d77711ab3cd493
  d35612efdf63bc01a9c77480b92450872c86922d
+ b53f344c41cb3a98560b250c7a231e2324f3aa2e
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -148,7 +150,7 @@ Trio-Patch-Source-PatchIds:
  .../WatchGlucoseHistoryStore.swift            |  229 ++
  Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 2599 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2603 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  138 +
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
@@ -165,7 +167,7 @@ Trio-Patch-Source-PatchIds:
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  603 +++-
- 30 files changed, 9858 insertions(+), 578 deletions(-)
+ 30 files changed, 9863 insertions(+), 577 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -5078,7 +5080,7 @@ index ea6c9f146..f3ed61337 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f9798e473..2efa41dac 100644
+index f9798e473..4681d3e04 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,104 @@
@@ -7399,17 +7401,20 @@ index f9798e473..2efa41dac 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -486,42 +2180,41 @@ import WidgetKit
- 
-         if let lastLoopTime = message[WatchMessageKeys.lastLoopTime] as? String {
+@@ -488,40 +2182,45 @@ import WidgetKit
              self.lastLoopTime = lastLoopTime
-+            // fork — gated on lastLoopTime's presence (a full watch-state message): partial
-+            // payloads pass through this function too and must not clear a previously-received date.
-+            lastLoopDate = (message[WatchMessageKeys.lastLoopDate] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
          }
  
 -        lastLoopDate = (message[WatchMessageKeys.lastLoopDate] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
--
++        // fork — the background channels carry lastLoopDate in their allowlisted subset but not
++        // lastLoopTime, so take the date whenever it is present; clear it only on a full watch-state
++        // message (lastLoopTime present) that omits it, which is how the phone says "no loop in a day".
++        if let lastLoopEpoch = message[WatchMessageKeys.lastLoopDate] as? TimeInterval {
++            lastLoopDate = Date(timeIntervalSince1970: lastLoopEpoch)
++        } else if message[WatchMessageKeys.lastLoopTime] != nil {
++            lastLoopDate = nil
++        }
+ 
          if let settingsData = message[WatchMessageKeys.glucoseBobbleComplicationSettings] as? Data,
             let decodedSettings = try? JSONDecoder().decode(GlucoseBobbleComplicationSettings.self, from: settingsData)
          {
@@ -7464,7 +7469,7 @@ index f9798e473..2efa41dac 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -542,43 +2235,53 @@ import WidgetKit
+@@ -542,43 +2241,53 @@ import WidgetKit
              }
          }
  
@@ -7543,7 +7548,7 @@ index f9798e473..2efa41dac 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -596,37 +2299,439 @@ import WidgetKit
+@@ -596,37 +2305,439 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
