@@ -1,6 +1,6 @@
-From 3d25c6c9641718fec0c8f4b8c658c8b8483c92d4 Mon Sep 17 00:00:00 2001
+From 218524b6ed343679bd0e8fe68eeb083232f2a161 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 06:46:02 +0200
+Date: Thu, 24 Sep 2026 06:53:01 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 4905675d9442884a1c5659eae2a6384dff4f1f73
-Trio-Patch-Generated: 2026-09-24T04:45:46Z
+Trio-Patch-Feature-Tip: ab7113e3a11fa2d5262de667c0152543f680c413
+Trio-Patch-Generated: 2026-09-24T04:52:43Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -78,6 +78,7 @@ Trio-Patch-Source-Commits:
  8701a587ba9fb42e042f91d838c648f00372b225 Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063 Phase C)
  35653c15e7ce9d537e495feb6ced671e5bc4caf9 watch: take the Glucose Bobble loop date from background payloads too (TRIO-063)
  4905675d9442884a1c5659eae2a6384dff4f1f73 watch: store the Glucose Bobble inputs before the snapshot reload; reload only for settings changes (TRIO-063)
+ ab7113e3a11fa2d5262de667c0152543f680c413 watch: apply the Glucose Bobble inputs on every payload path before the snapshot save (TRIO-063)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -138,6 +139,7 @@ Trio-Patch-Source-PatchIds:
  d35612efdf63bc01a9c77480b92450872c86922d
  b53f344c41cb3a98560b250c7a231e2324f3aa2e
  5b49160b6a56d153855569bc7200eec69f02b58b
+ 05268d14c78eb4795b9ee2a4624875c48c40f556
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -152,7 +154,7 @@ Trio-Patch-Source-PatchIds:
  .../WatchGlucoseHistoryStore.swift            |  229 ++
  Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 2603 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2605 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  138 +
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
@@ -169,7 +171,7 @@ Trio-Patch-Source-PatchIds:
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  603 +++-
- 30 files changed, 9860 insertions(+), 580 deletions(-)
+ 30 files changed, 9865 insertions(+), 577 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -5082,7 +5084,7 @@ index ea6c9f146..f3ed61337 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f9798e473..f2fd32d23 100644
+index f9798e473..ffa2fe04f 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,104 @@
@@ -5289,10 +5291,10 @@ index f9798e473..f2fd32d23 100644
 -    /// methods. Single source of truth for both `didReceiveMessage` and
 -    /// `didReceiveUserInfo`.
 -    private static let maxAcceptableMessageAgeInMinutes: TimeInterval = 15 * 60
--
--    // MARK: - Debouncing and batch processing helpers
 +    // MARK: - Debouncing and sync helpers
  
+-    // MARK: - Debouncing and batch processing helpers
+-
 -    /// Temporary storage for new data arriving via WatchConnectivity.
      private var pendingData: [String: Any] = [:]
 -
@@ -5762,9 +5764,10 @@ index f9798e473..f2fd32d23 100644
              Task {
 -                await WatchLogger.shared.log("⌚️ WCSession setup complete.")
 +                await WatchLogger.shared.log("WCSession setup complete.")
-+            }
-+        } else {
-+            Task {
+             }
+         } else {
+             Task {
+-                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
 +                await WatchLogger.shared.log("WCSession is not supported on this device")
 +            }
 +        }
@@ -5800,12 +5803,13 @@ index f9798e473..f2fd32d23 100644
 +                        await WatchLogger.shared.log("⚠️ hk_background_delivery_registered success=false low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)")
 +                    }
 +                }
-+            }
+             }
 +
 +            self.setupGlucoseObserverQuery(store: store, sampleType: bgType)
-+        }
-+    }
-+
+         }
+     }
+ 
+-    // MARK: – Handle Acknowledgement Messages FROM Phone
 +    private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuantityType) {
 +        healthKitStore = store
 +        let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { [weak self] _, completionHandler, error in
@@ -6035,10 +6039,9 @@ index f9798e473..f2fd32d23 100644
 +                Task {
 +                    await WatchLogger.shared.log("⚠️ hk_anchor_decode_failed fire_id=\(fireId)")
 +                }
-             }
-         } else {
-             Task {
--                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
++            }
++        } else {
++            Task {
 +                await WatchLogger.shared.log("⚠️ hk_observer_nil_anchor fire_id=\(fireId)")
 +            }
 +        }
@@ -6115,7 +6118,7 @@ index f9798e473..f2fd32d23 100644
 +                    mgDlUnit: mgDlUnit,
 +                    completionHandler: completionHandler
 +                )
-             }
++            }
 +        )
 +        store.execute(query)
 +    }
@@ -6171,10 +6174,9 @@ index f9798e473..f2fd32d23 100644
 +                g7Session: sid
 +            )
 +            await WatchLogger.shared.log(line)
-         }
-     }
- 
--    // MARK: – Handle Acknowledgement Messages FROM Phone
++        }
++    }
++
 +    /// Aligns attribution watermarks from a complication snapshot unless that would regress a newer in-memory reading (e.g. store lagging BLE).
 +    /// Also call when hydrating the main watch UI from `latestSnapshot()` (`onAppear`) so `tryAttributeDisplayedReadingSource` gates match the screen.
 +    func alignDisplayedReadingAttributionWithComplicationSnapshot(_ snapshot: TrioComplicationSnapshot) {
@@ -6490,10 +6492,24 @@ index f9798e473..f2fd32d23 100644
 +                    requiresNoPendingContent: true
 +                )
 +            }
-+        }
-+    }
-+
-+    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+         }
+-
+-        handleIncomingWatchStatePayload(message)
+     }
+ 
+     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+-        handleIncomingWatchStatePayload(userInfo)
+-    }
+-
+-    /// Shared path for watch-state payloads from either delegate method.
+-    /// Enforces the freshness contract in one place so the two delivery paths
+-    /// can't drift.
+-    private func handleIncomingWatchStatePayload(_ dictionary: [String: Any]) {
+-        guard let payload = dictionary[WatchMessageKeys.watchState] as? [String: Any],
+-              let timestamp = payload[WatchMessageKeys.date] as? TimeInterval
+-        else {
+-            Task { await WatchLogger.shared.log("⌚️ Faulty watch state payload — skipping", force: true) }
+-            DispatchQueue.main.async { self.showSyncingAnimation = false }
 +        if let type = userInfo["type"] as? String, type == "watchLogConfirm" {
 +            let payloadIds = WatchConnectivityPayloadIds.payloadIdStrings(
 +                from: userInfo["payloadIds"]
@@ -6507,9 +6523,16 @@ index f9798e473..f2fd32d23 100644
 +                    requiresNoPendingContent: true
 +                )
 +            }
-+            return
-+        }
-+
+             return
+         }
+-        let date = Date(timeIntervalSince1970: timestamp)
+ 
+-        // Wall-clock staleness gate. Drops the queued backlog cheaply when
+-        // the watch app wakes after long disuse; without it, every payload
+-        // schedules merge + UI work.
+-        guard date >= Date().addingTimeInterval(-Self.maxAcceptableMessageAgeInMinutes) else {
+-            Task { await WatchLogger.shared.log("⌚️ Skipping stale watch state (\(date))") }
+-            DispatchQueue.main.async { self.showSyncingAnimation = false }
 +        Task {
 +            await WatchLogger.shared.log("Received userInfo with keys: \(userInfo.keys.joined(separator: ", "))")
 +        }
@@ -6537,7 +6560,7 @@ index f9798e473..f2fd32d23 100644
 +                    requiresNoPendingContent: true
 +                )
 +            }
-+            return
+             return
 +        case .missing:
 +            Task {
 +                await WatchLogger.shared.log(
@@ -6562,8 +6585,12 @@ index f9798e473..f2fd32d23 100644
 +        let userInfoReceiveWallClock = Date()
 +        Task {
 +            await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
-+        }
-+
+         }
+ 
+-        // Monotonicity dedup.
+-        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
+-        guard date > lastProcessed else {
+-            Task { await WatchLogger.shared.log("⌚️ Skipping duplicate watch state (\(date))") }
 +        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
 +        // state is not populated here (defaults to nil) because no call site currently sets it.
 +        // If state is ever set during snapshot construction, add it here too — otherwise this
@@ -6584,9 +6611,12 @@ index f9798e473..f2fd32d23 100644
 +                    requiresNoPendingContent: true
 +                )
 +            }
-+            return
-+        }
-+
+             return
+         }
+ 
+-        WatchStateSnapshot.saveLatestDateToDisk(date)
+-        DispatchQueue.main.async {
+-            self.scheduleUIUpdate(with: payload)
 +        DispatchQueue.main.async { @MainActor [self] in
 +            lastUserInfoReceiveTimestamp = userInfoReceiveWallClock // C-208-6: main-confined write
 +            // R5d: compute gap BEFORE updating timestamp
@@ -6638,16 +6668,18 @@ index f9798e473..f2fd32d23 100644
 +                }
 +                forceWidgetReloadIfStale(receivedGap: gap)
 +            }
-+        }
-+    }
-+
-+    func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
-+        if let error = error {
-+            Task {
+         }
+     }
+ 
+     func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
+         if let error = error {
+             Task {
+-                await WatchLogger.shared.log("⌚️ transferUserInfo failed with error: \(error)")
+-                await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
 +                await WatchLogger.shared.log("transferUserInfo failed with error: \(error)")
 +                await WatchLogger.shared.log("Saving logs to disk as fallback.")
-+                await WatchLogger.shared.flushPersistedLogs()
-+            }
+                 await WatchLogger.shared.flushPersistedLogs()
+             }
 +
 +            if transferRetryCount < maxTransferRetries {
 +                transferRetryCount += 1
@@ -6877,63 +6909,26 @@ index f9798e473..f2fd32d23 100644
 +                )
 +            }
 +            scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
-         }
--
--        handleIncomingWatchStatePayload(message)
--    }
--
--    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
--        handleIncomingWatchStatePayload(userInfo)
++        }
 +        deferredConnectivityCompletionWorkItem = work
 +        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-     }
- 
--    /// Shared path for watch-state payloads from either delegate method.
--    /// Enforces the freshness contract in one place so the two delivery paths
--    /// can't drift.
--    private func handleIncomingWatchStatePayload(_ dictionary: [String: Any]) {
--        guard let payload = dictionary[WatchMessageKeys.watchState] as? [String: Any],
--              let timestamp = payload[WatchMessageKeys.date] as? TimeInterval
--        else {
--            Task { await WatchLogger.shared.log("⌚️ Faulty watch state payload — skipping", force: true) }
--            DispatchQueue.main.async { self.showSyncingAnimation = false }
--            return
--        }
--        let date = Date(timeIntervalSince1970: timestamp)
++    }
++
 +    private func recentConnectivityTerminalBasePathOnMain() -> String? {
 +        assert(Thread.isMainThread, "recentConnectivityTerminalBasePathOnMain must be called on main thread")
- 
--        // Wall-clock staleness gate. Drops the queued backlog cheaply when
--        // the watch app wakes after long disuse; without it, every payload
--        // schedules merge + UI work.
--        guard date >= Date().addingTimeInterval(-Self.maxAcceptableMessageAgeInMinutes) else {
--            Task { await WatchLogger.shared.log("⌚️ Skipping stale watch state (\(date))") }
--            DispatchQueue.main.async { self.showSyncingAnimation = false }
--            return
--        }
++
 +        guard let terminalAt = lastConnectivityTerminalAt,
 +              let terminalPath = lastConnectivityTerminalPath else { return nil }
- 
--        // Monotonicity dedup.
--        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
--        guard date > lastProcessed else {
--            Task { await WatchLogger.shared.log("⌚️ Skipping duplicate watch state (\(date))") }
--            return
++
 +        guard Date().timeIntervalSince(terminalAt) <= connectivityLateTaskWindowSeconds else {
 +            lastConnectivityTerminalAt = nil
 +            lastConnectivityTerminalPath = nil
 +            return nil
-         }
- 
--        WatchStateSnapshot.saveLatestDateToDisk(date)
--        DispatchQueue.main.async {
--            self.scheduleUIUpdate(with: payload)
--        }
++        }
++
 +        return terminalPath
-     }
- 
--    func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
--        if let error = error {
++    }
++
 +    @discardableResult
 +    private func completePendingConnectivityTasksOnMain(
 +        path: String,
@@ -6946,10 +6941,7 @@ index f9798e473..f2fd32d23 100644
 +        let hasPendingContent = connectivitySessionHasPendingContent()
 +        if requiresNoPendingContent, hasPendingContent {
 +            let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
-             Task {
--                await WatchLogger.shared.log("⌚️ transferUserInfo failed with error: \(error)")
--                await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
--                await WatchLogger.shared.flushPersistedLogs()
++            Task {
 +                await WatchLogger.shared.log(
 +                    "event=complication_bgtask_completion_deferred path=\(path)"
 +                        + " window_id=\(wid)"
@@ -6957,7 +6949,7 @@ index f9798e473..f2fd32d23 100644
 +                        + " pending_count=\(pendingCount)"
 +                        + " pending_content=true"
 +                )
-             }
++            }
 +            if pendingCount > 0 {
 +                scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
 +            }
@@ -7197,7 +7189,7 @@ index f9798e473..f2fd32d23 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -396,84 +1999,175 @@ import WidgetKit
+@@ -396,84 +1999,176 @@ import WidgetKit
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -7368,6 +7360,7 @@ index f9798e473..f2fd32d23 100644
 +        // (settings, not a CGM reading) and cached by the computer in UserDefaults so colors survive a
 +        // restart before the first payload arrives.
 +        applyColorSettingsFromPayloadIfPresent(message)
++        applyGlucoseBobbleComplicationInputsFromPayload(message)
 +
 +        if shouldApplyCGMFields {
 +            if let currentGlucose = message[WatchMessageKeys.currentGlucose] as? String {
@@ -7406,29 +7399,18 @@ index f9798e473..f2fd32d23 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -488,40 +2182,45 @@ import WidgetKit
+@@ -488,40 +2183,27 @@ import WidgetKit
              self.lastLoopTime = lastLoopTime
          }
  
 -        lastLoopDate = (message[WatchMessageKeys.lastLoopDate] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
-+        // fork — the background channels carry lastLoopDate in their allowlisted subset but not
-+        // lastLoopTime, so take the date whenever it is present; clear it only on a full watch-state
-+        // message (lastLoopTime present) that omits it, which is how the phone says "no loop in a day".
-+        if let lastLoopEpoch = message[WatchMessageKeys.lastLoopDate] as? TimeInterval {
-+            lastLoopDate = Date(timeIntervalSince1970: lastLoopEpoch)
-+        } else if message[WatchMessageKeys.lastLoopTime] != nil {
-+            lastLoopDate = nil
-+        }
- 
-         if let settingsData = message[WatchMessageKeys.glucoseBobbleComplicationSettings] as? Data,
-            let decodedSettings = try? JSONDecoder().decode(GlucoseBobbleComplicationSettings.self, from: settingsData)
-         {
-             glucoseBobbleComplicationSettings = decodedSettings
-         }
-+        // fork — Phase C: store the inputs now, before saveComplicationSnapshot below triggers the
-+        // store's reload of both complication kinds, so that reload already sees them.
-+        publishGlucoseBobbleComplicationInputs()
- 
+-
+-        if let settingsData = message[WatchMessageKeys.glucoseBobbleComplicationSettings] as? Data,
+-           let decodedSettings = try? JSONDecoder().decode(GlucoseBobbleComplicationSettings.self, from: settingsData)
+-        {
+-            glucoseBobbleComplicationSettings = decodedSettings
+-        }
+-
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
 -            glucoseValues = glucoseData.compactMap { data in
 -                guard let glucose = data["glucose"] as? Double,
@@ -7474,7 +7456,7 @@ index f9798e473..f2fd32d23 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -542,43 +2241,53 @@ import WidgetKit
+@@ -542,43 +2224,53 @@ import WidgetKit
              }
          }
  
@@ -7553,7 +7535,7 @@ index f9798e473..f2fd32d23 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -596,37 +2305,433 @@ import WidgetKit
+@@ -596,37 +2288,458 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
@@ -7564,6 +7546,29 @@ index f9798e473..f2fd32d23 100644
 +            checkpoint: "first_watch_state_apply",
 +            activationSequence: startupCurrentActivationSequence
 +        )
++    }
++
++    // fork — Phase C: parse the Glucose Bobble inputs from any payload shape and persist them. Called at
++    // the top of both processRawDataForWatchState and saveComplicationSnapshot (like the colour settings),
++    // because the background application-context and sleep-gap paths save the snapshot — and so reload
++    // the complication — before processRawDataForWatchState runs. The background channels carry
++    // lastLoopDate in their allowlisted subset but not lastLoopTime, so take the date whenever it is
++    // present; clear it only on a full watch-state message (lastLoopTime present) that omits it, which is
++    // how the phone says "no loop in a day".
++    private func applyGlucoseBobbleComplicationInputsFromPayload(_ message: [String: Any]) {
++        if let lastLoopEpoch = message[WatchMessageKeys.lastLoopDate] as? TimeInterval {
++            lastLoopDate = Date(timeIntervalSince1970: lastLoopEpoch)
++        } else if message[WatchMessageKeys.lastLoopTime] != nil {
++            lastLoopDate = nil
++        }
++
++        if let settingsData = message[WatchMessageKeys.glucoseBobbleComplicationSettings] as? Data,
++           let decodedSettings = try? JSONDecoder().decode(GlucoseBobbleComplicationSettings.self, from: settingsData)
++        {
++            glucoseBobbleComplicationSettings = decodedSettings
++        }
++
++        publishGlucoseBobbleComplicationInputs()
      }
  
 -    // The complication extension is a separate process, so the latest reading is handed over
@@ -7612,10 +7617,7 @@ index f9798e473..f2fd32d23 100644
 +        let unitsRaw = (message[WatchMessageKeys.units] as? String) ?? WatchGlucoseColorComputer.shared.cachedUnitsRaw
 +        WatchGlucoseColorComputer.shared.apply(low: low, high: high, target: target, dynamic: dynamic, unitsRaw: unitsRaw)
 +    }
- 
--            if snapshot != GlucoseComplicationSnapshot.load() {
--                snapshot.save()
--                didSave = true
++
 +    private func saveComplicationSnapshot(from message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
 +        Task {
 +            await WatchLogger.shared.log("📸 saveComplicationSnapshot called with keys: \(message.keys.joined(separator: ", "))")
@@ -7624,6 +7626,8 @@ index f9798e473..f2fd32d23 100644
 +        // Ensure the bake below uses the freshest settings even on a complication-only path that didn't
 +        // run processRawDataForWatchState (review #5).
 +        applyColorSettingsFromPayloadIfPresent(message)
++        // fork — Phase C: same for the Glucose Bobble inputs, so the reload this save triggers sees them.
++        applyGlucoseBobbleComplicationInputsFromPayload(message)
 +
 +        // R3: effective CGM reading time (shared resolver; see `resolveEffectiveCGMReadingDate`)
 +        let readingDate: Date
@@ -7790,7 +7794,7 @@ index f9798e473..f2fd32d23 100644
 +        if isStaleBacklog {
 +            Task {
 +                await WatchLogger.shared.log("⚠️ sleep_gap_reload_stale_backlog reading_epoch=\(snapshotEpoch) snapshot_age=\(snapshotAgeDisplay) gap=\(gapDisplay)s read_ms=\(snapshotReadMs)")
-             }
++            }
 +        } else {
 +            Task {
 +                await WatchLogger.shared.log("💤 sleep_gap_reload_firing reading_epoch=\(snapshotEpoch) snapshot_age=\(snapshotAgeDisplay) gap=\(gapDisplay)s read_ms=\(snapshotReadMs)")
@@ -7936,7 +7940,10 @@ index f9798e473..f2fd32d23 100644
 +            }
 +            return
 +        }
-+
+ 
+-            if snapshot != GlucoseComplicationSnapshot.load() {
+-                snapshot.save()
+-                didSave = true
 +        DispatchQueue.main.async {
 +            // Re-check after deferral: BLE may have advanced the watermark before this block runs.
 +            if let attributed = self.displayedReadingAttributedForDate,
@@ -7950,7 +7957,7 @@ index f9798e473..f2fd32d23 100644
 +            self.delta = snapshot.delta
 +            if let glucoseColor = snapshot.glucoseColor {
 +                self.currentGlucoseColorString = glucoseColor
-+            }
+             }
 +            self.lastWatchStateUpdate = snapshot.readingDate
 +            self.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
 +            self.showSyncingAnimation = false
@@ -11055,7 +11062,7 @@ index bb855d0ab..8b9ec687a 100644
      }
  }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 1a82850ab..11b2f66a3 100644
+index 1a50a60d5..1699e0fe5 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -2,6 +2,7 @@ import Combine
@@ -11297,7 +11304,7 @@ index 1a82850ab..11b2f66a3 100644
          // Skip if watch session is not activated
          guard session.activationState == .activated else {
              debug(.watchManager, "⌚️❌ Skipping setupWatchState - Watch session not activated")
-@@ -255,6 +310,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -258,6 +313,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.currentGlucose = "\(latestGlucoseValue)"
                  }
  
@@ -11316,7 +11323,7 @@ index 1a82850ab..11b2f66a3 100644
                  /// Calculate latest color
                  let hardCodedLow = Decimal(55)
                  let hardCodedHigh = Decimal(220)
-@@ -282,6 +349,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -285,6 +352,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
                  // Map glucose values
                  watchState.glucoseValues = glucoseObjects.compactMap { glucose in
@@ -11325,7 +11332,7 @@ index 1a82850ab..11b2f66a3 100644
                      let glucoseValue = self.units == .mgdL
                          ? Double(glucose.glucose)
                          : Double(truncating: Decimal(glucose.glucose).asMmolL as NSNumber)
-@@ -295,7 +364,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -298,7 +367,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      )
  
                      return WatchGlucoseObject(
@@ -11334,7 +11341,7 @@ index 1a82850ab..11b2f66a3 100644
                          glucose: glucoseValue,
                          color: glucoseColor.toHexString()
                      )
-@@ -332,12 +401,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -335,12 +404,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
                  // Calculate delta if we have at least 2 readings
                  if glucoseObjects.count >= 2 {
@@ -11352,7 +11359,7 @@ index 1a82850ab..11b2f66a3 100644
                      let formattedDelta = Formatter.glucoseFormatter(for: self.units)
                          .string(from: deltaValue as NSNumber) ?? "0"
                      watchState.delta = deltaValue < 0 ? "\(formattedDelta)" : "+\(formattedDelta)"
-@@ -431,12 +502,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -433,12 +504,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.forecastLines = [:]
                  }
  
@@ -11366,7 +11373,7 @@ index 1a82850ab..11b2f66a3 100644
                  debug(.watchManager, "📱 Setup WatchState - \(glucoseInfo)")
  
                  return watchState
-@@ -529,7 +598,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -531,7 +600,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                  [
                      "glucose": value.glucose,
@@ -11375,7 +11382,7 @@ index 1a82850ab..11b2f66a3 100644
                      "color": value.color
                  ]
              },
-@@ -578,12 +647,201 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -580,12 +649,201 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              dictionary[WatchMessageKeys.glucoseBobbleComplicationSettings] = glucoseBobbleData
          }
  
@@ -11579,7 +11586,7 @@ index 1a82850ab..11b2f66a3 100644
          guard let session = session else { return }
  
          guard session.isPaired else {
-@@ -592,7 +850,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -594,7 +852,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          guard session.isWatchAppInstalled else {
@@ -11588,7 +11595,7 @@ index 1a82850ab..11b2f66a3 100644
              return
          }
  
-@@ -610,17 +868,141 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -612,17 +870,141 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          var state = state
          state.date = Date()
  
@@ -11737,7 +11744,7 @@ index 1a82850ab..11b2f66a3 100644
          }
          WatchStateSnapshot.saveLatestDateToDisk(state.date)
      }
-@@ -650,10 +1032,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -652,10 +1034,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -11762,7 +11769,7 @@ index 1a82850ab..11b2f66a3 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -778,14 +1171,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -780,14 +1173,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
      /// Implements the replyHandler version of didReceiveMessage for ACK support.
      func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
@@ -11782,7 +11789,7 @@ index 1a82850ab..11b2f66a3 100644
          if type == "queryAcks" {
              if let pendingIds = message["pendingIds"] as? [String] {
                  let ackIds = getAcknowledgedIds(from: pendingIds)
-@@ -794,16 +1189,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -796,16 +1191,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      "ackIds": ackIds
                  ]
                  replyHandler(batchAck)
@@ -11800,7 +11807,7 @@ index 1a82850ab..11b2f66a3 100644
          }
  
          // Deduplicate BEFORE any Crashlytics calls
-@@ -839,6 +1226,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -841,6 +1228,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = message["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -11808,7 +11815,7 @@ index 1a82850ab..11b2f66a3 100644
                  }
              } else if type == "watchError" {
                  if let errorData = message["data"] as? [String: Any] {
-@@ -863,10 +1251,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -865,10 +1253,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Check if this is an envelope message
              if let type = message["type"] as? String,
                 let payloadId = message["payloadId"] as? String {
@@ -11823,7 +11830,7 @@ index 1a82850ab..11b2f66a3 100644
                      }
                  } else if type == "watchError" {
                      if let errorData = message["data"] as? [String: Any] {
-@@ -879,6 +1270,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -881,6 +1272,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              // Legacy message format
              if let logs = message["watchLogs"] as? String {
                  SimpleLogReporter.appendToWatchLog(logs)
@@ -11831,7 +11838,7 @@ index 1a82850ab..11b2f66a3 100644
              }
  
              // Handle watch errors forwarded for Crashlytics logging
-@@ -891,9 +1283,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -893,9 +1285,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              {
                  debug(.watchManager, "📱 Watch requested watch state data update.")
                  guard let self = self else { return }
@@ -11844,7 +11851,7 @@ index 1a82850ab..11b2f66a3 100644
                  Task {
                      let state = await self.setupWatchState()
                      await self.sendDataToWatch(state)
-@@ -1022,6 +1414,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1024,6 +1416,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -11859,7 +11866,7 @@ index 1a82850ab..11b2f66a3 100644
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
          // Check if this is an envelope message
          if let type = userInfo["type"] as? String,
-@@ -1041,6 +1441,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1043,6 +1443,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              if type == "watchLogs" {
                  if let logData = userInfo["data"] as? String {
                      SimpleLogReporter.appendToWatchLog(logData)
@@ -11867,7 +11874,7 @@ index 1a82850ab..11b2f66a3 100644
                  }
              } else if type == "watchError" {
                  if let errorData = userInfo["data"] as? [String: Any] {
-@@ -1091,10 +1492,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1093,10 +1494,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      #endif
  
      func sessionReachabilityDidChange(_ session: WCSession) {
@@ -11883,7 +11890,7 @@ index 1a82850ab..11b2f66a3 100644
              Task {
                  let state = await self.setupWatchState()
                  await self.sendDataToWatch(state)
-@@ -1371,11 +1775,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1373,11 +1777,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -11897,7 +11904,7 @@ index 1a82850ab..11b2f66a3 100644
          }
      }
  
-@@ -1386,12 +1787,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1388,12 +1789,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  

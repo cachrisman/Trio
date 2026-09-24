@@ -1,12 +1,12 @@
-From f983e982455590d3f76fdc4b500c10040be4fc84 Mon Sep 17 00:00:00 2001
+From b3e06634ffc86742459563cfe6a318961bcd174c Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 06:27:17 +0200
+Date: Thu, 24 Sep 2026 06:52:20 +0200
 Subject: [PATCH] feat: glucose-circular-complication
 
 Trio-Patch-Source-Branch: feature/glucose-circular-complication
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 214fadf9e88679e7c69b60e07fd5c713c2157ae2
-Trio-Patch-Generated: 2026-09-24T04:27:07Z
+Trio-Patch-Feature-Tip: 621d2e17c3b3067285194e410d968c0677c60f7a
+Trio-Patch-Generated: 2026-09-24T04:52:08Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
@@ -22,6 +22,7 @@ Trio-Patch-Source-Commits:
  408ca476ecee8942498fee9c29a4fc65a7e05a5c Add a Glucose Bobble Complication settings page to the Apple Watch settings
  f342c0140999ea4ebe364267e15a1fa8fe7cba8b Hand the Glucose Bobble settings and last loop date to the watch complication
  214fadf9e88679e7c69b60e07fd5c713c2157ae2 Glucose Bobble complication: apply the phone settings
+ 621d2e17c3b3067285194e410d968c0677c60f7a Send the Glucose Bobble settings even when there is no glucose reading
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
@@ -38,6 +39,7 @@ Trio-Patch-Source-PatchIds:
  7f69f05ad15ff24e60952556d23ab85709283d36
  c307f1a9550c9abf302424a8c4d77711ab3cd493
  d35612efdf63bc01a9c77480b92450872c86922d
+ 09c266963acddd16224101605b9adaef157d3875
 ---
  Trio Watch App Extension/WatchState.swift     |  44 +++
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
@@ -52,8 +54,8 @@ Trio-Patch-Source-PatchIds:
  ...lucoseBobbleComplicationSettingsView.swift | 123 +++++++
  .../View/WatchConfigAppleWatchView.swift      |  13 +
  .../WatchConfig/WatchConfigStateModel.swift   |   2 +
- .../WatchManager/AppleWatchManager.swift      |  11 +
- 14 files changed, 663 insertions(+), 2 deletions(-)
+ .../WatchManager/AppleWatchManager.swift      |  13 +
+ 14 files changed, 665 insertions(+), 2 deletions(-)
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
  create mode 100644 Trio Watch Complication/GlucoseBobbleComplication.swift
  create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
@@ -902,26 +904,23 @@ index b4cb129c5..f2253751f 100644
              devices = garmin.devices
          }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 88d75f711..679e1217c 100644
+index 88d75f711..9306335f9 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-@@ -214,6 +214,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -214,8 +214,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.lastLoopTime = "--"
                  } else {
                      watchState.lastLoopTime = "\(lastLoopMinutes) min"
 +                    watchState.lastLoopDate = self.apsManager.lastLoopDate
                  }
  
-                 // Set IOB and COB from latest determination
-@@ -358,6 +359,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
- 
-                 watchState.showForecast = self.settingsManager.settings.showForecastWatch
-                 watchState.isForecastCone = self.settingsManager.settings.forecastDisplayType == .cone
++                // Set before the no-glucose early return below, or a CGM outage would send the defaults
 +                watchState.glucoseBobbleComplication = self.settingsManager.settings.glucoseBobbleComplication
- 
-                 // Forecast data comes from OrefDetermination's `forecasts` CoreData
-                 // relationship (Set<Forecast>), NOT a `.predictions` property.
-@@ -560,6 +562,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
++
+                 // Set IOB and COB from latest determination
+                 let iob = self.iobService.currentIOB ?? 0
+                 watchState.iob = Formatter.decimalFormatterWithTwoFractionDigits.string(from: iob as NSNumber)
+@@ -560,6 +564,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          dictionary[WatchMessageKeys.forecastData] = forecastData
