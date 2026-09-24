@@ -1,6 +1,6 @@
-From f2eb1ad52dc87f22abd2e6f74b8486f93f4c20b1 Mon Sep 17 00:00:00 2001
+From 3d25c6c9641718fec0c8f4b8c658c8b8483c92d4 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 06:43:05 +0200
+Date: Thu, 24 Sep 2026 06:46:02 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 35653c15e7ce9d537e495feb6ced671e5bc4caf9
-Trio-Patch-Generated: 2026-09-24T04:42:52Z
+Trio-Patch-Feature-Tip: 4905675d9442884a1c5659eae2a6384dff4f1f73
+Trio-Patch-Generated: 2026-09-24T04:45:46Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -77,6 +77,7 @@ Trio-Patch-Source-Commits:
  214fadf9e88679e7c69b60e07fd5c713c2157ae2 Glucose Bobble complication: apply the phone settings
  8701a587ba9fb42e042f91d838c648f00372b225 Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063 Phase C)
  35653c15e7ce9d537e495feb6ced671e5bc4caf9 watch: take the Glucose Bobble loop date from background payloads too (TRIO-063)
+ 4905675d9442884a1c5659eae2a6384dff4f1f73 watch: store the Glucose Bobble inputs before the snapshot reload; reload only for settings changes (TRIO-063)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -136,6 +137,7 @@ Trio-Patch-Source-PatchIds:
  c307f1a9550c9abf302424a8c4d77711ab3cd493
  d35612efdf63bc01a9c77480b92450872c86922d
  b53f344c41cb3a98560b250c7a231e2324f3aa2e
+ 5b49160b6a56d153855569bc7200eec69f02b58b
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -167,7 +169,7 @@ Trio-Patch-Source-PatchIds:
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  603 +++-
- 30 files changed, 9863 insertions(+), 577 deletions(-)
+ 30 files changed, 9860 insertions(+), 580 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -5080,7 +5082,7 @@ index ea6c9f146..f3ed61337 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f9798e473..4681d3e04 100644
+index f9798e473..f2fd32d23 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,104 @@
@@ -5287,10 +5289,10 @@ index f9798e473..4681d3e04 100644
 -    /// methods. Single source of truth for both `didReceiveMessage` and
 -    /// `didReceiveUserInfo`.
 -    private static let maxAcceptableMessageAgeInMinutes: TimeInterval = 15 * 60
+-
+-    // MARK: - Debouncing and batch processing helpers
 +    // MARK: - Debouncing and sync helpers
  
--    // MARK: - Debouncing and batch processing helpers
--
 -    /// Temporary storage for new data arriving via WatchConnectivity.
      private var pendingData: [String: Any] = [:]
 -
@@ -5760,10 +5762,9 @@ index f9798e473..4681d3e04 100644
              Task {
 -                await WatchLogger.shared.log("⌚️ WCSession setup complete.")
 +                await WatchLogger.shared.log("WCSession setup complete.")
-             }
-         } else {
-             Task {
--                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
++            }
++        } else {
++            Task {
 +                await WatchLogger.shared.log("WCSession is not supported on this device")
 +            }
 +        }
@@ -5887,10 +5888,10 @@ index f9798e473..4681d3e04 100644
 +        if knownEpoch, sameValue {
 +            Task {
 +                await WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
-             }
++            }
 +            completionHandler()
 +            return
-         }
++        }
 +
 +        var previousMgDl: Double?
 +        var previousEpoch: TimeInterval?
@@ -6010,9 +6011,8 @@ index f9798e473..4681d3e04 100644
 +            }
 +        )
 +        store.execute(anchorQuery)
-     }
- 
--    // MARK: – Handle Acknowledgement Messages FROM Phone
++    }
++
 +    private func fetchLatestGlucoseFromHealthKit(fireId: UUID, completionHandler: @escaping () -> Void) {
 +        guard let store = healthKitStore,
 +              let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else {
@@ -6035,9 +6035,10 @@ index f9798e473..4681d3e04 100644
 +                Task {
 +                    await WatchLogger.shared.log("⚠️ hk_anchor_decode_failed fire_id=\(fireId)")
 +                }
-+            }
-+        } else {
-+            Task {
+             }
+         } else {
+             Task {
+-                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
 +                await WatchLogger.shared.log("⚠️ hk_observer_nil_anchor fire_id=\(fireId)")
 +            }
 +        }
@@ -6114,7 +6115,7 @@ index f9798e473..4681d3e04 100644
 +                    mgDlUnit: mgDlUnit,
 +                    completionHandler: completionHandler
 +                )
-+            }
+             }
 +        )
 +        store.execute(query)
 +    }
@@ -6170,9 +6171,10 @@ index f9798e473..4681d3e04 100644
 +                g7Session: sid
 +            )
 +            await WatchLogger.shared.log(line)
-+        }
-+    }
-+
+         }
+     }
+ 
+-    // MARK: – Handle Acknowledgement Messages FROM Phone
 +    /// Aligns attribution watermarks from a complication snapshot unless that would regress a newer in-memory reading (e.g. store lagging BLE).
 +    /// Also call when hydrating the main watch UI from `latestSnapshot()` (`onAppear`) so `tryAttributeDisplayedReadingSource` gates match the screen.
 +    func alignDisplayedReadingAttributionWithComplicationSnapshot(_ snapshot: TrioComplicationSnapshot) {
@@ -6405,8 +6407,12 @@ index f9798e473..4681d3e04 100644
          Task {
 -            await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
 +            await WatchLogger.shared.log(Self.watchConnectivityInboundSummary(message))
-+        }
-+
+         }
+ 
+-        // Ack at top level — no `watchState` wrapper, no staleness check.
+-        if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
+-           let ackMessage = message[WatchMessageKeys.message] as? String,
+-           let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
 +        // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
 +        // G7 sensor identity must sync whenever watchState is present, even when this method later skips UI (stale `date`, monotonic guard in scheduleUIUpdate, missing/invalid `date` — downstream branches must still run).
 +        let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any]
@@ -6414,12 +6420,8 @@ index f9798e473..4681d3e04 100644
 +            DispatchQueue.main.async { @MainActor in
 +                self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(ws)
 +            }
-         }
- 
--        // Ack at top level — no `watchState` wrapper, no staleness check.
--        if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
--           let ackMessage = message[WatchMessageKeys.message] as? String,
--           let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
++        }
++
 +        if let watchStateDict,
 +           let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
 +        {
@@ -6488,13 +6490,10 @@ index f9798e473..4681d3e04 100644
 +                    requiresNoPendingContent: true
 +                )
 +            }
-         }
--
--        handleIncomingWatchStatePayload(message)
-     }
- 
-     func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
--        handleIncomingWatchStatePayload(userInfo)
++        }
++    }
++
++    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
 +        if let type = userInfo["type"] as? String, type == "watchLogConfirm" {
 +            let payloadIds = WatchConnectivityPayloadIds.payloadIdStrings(
 +                from: userInfo["payloadIds"]
@@ -6878,7 +6877,13 @@ index f9798e473..4681d3e04 100644
 +                )
 +            }
 +            scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
-+        }
+         }
+-
+-        handleIncomingWatchStatePayload(message)
+-    }
+-
+-    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+-        handleIncomingWatchStatePayload(userInfo)
 +        deferredConnectivityCompletionWorkItem = work
 +        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
      }
@@ -6952,10 +6957,10 @@ index f9798e473..4681d3e04 100644
 +                        + " pending_count=\(pendingCount)"
 +                        + " pending_content=true"
 +                )
-+            }
+             }
 +            if pendingCount > 0 {
 +                scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
-             }
++            }
 +            return 0
          }
 -    }
@@ -7420,9 +7425,9 @@ index f9798e473..4681d3e04 100644
          {
              glucoseBobbleComplicationSettings = decodedSettings
          }
-+        // fork — Phase C: publish whatever lastLoopDate/glucoseBobbleComplicationSettings hold once
-+        // this function returns, on every path (defer so a future early return can't skip it).
-+        defer { publishGlucoseBobbleComplicationInputs() }
++        // fork — Phase C: store the inputs now, before saveComplicationSnapshot below triggers the
++        // store's reload of both complication kinds, so that reload already sees them.
++        publishGlucoseBobbleComplicationInputs()
  
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
 -            glucoseValues = glucoseData.compactMap { data in
@@ -7548,7 +7553,7 @@ index f9798e473..4681d3e04 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -596,37 +2305,439 @@ import WidgetKit
+@@ -596,37 +2305,433 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
@@ -7567,10 +7572,13 @@ index f9798e473..4681d3e04 100644
 -        var didSave = false
 +    // fork — Phase C: persist the phone-configured Glucose Bobble settings and last loop date to
 +    // the App Group so the circular complication (a separate process, reading them back through
-+    // GlucoseComplicationSnapshot) picks them up, then reload only that complication's kind — not
-+    // reloadAllTimelines — to spare the corner complication's WidgetKit reload budget.
++    // GlucoseComplicationSnapshot) picks them up. A new loop date rides the store's next reading-driven
++    // reload (loops follow readings), so only a settings change — rare — spends an extra reload, and
++    // only on the circular complication's kind.
 +    private func publishGlucoseBobbleComplicationInputs() {
-+        var didChange = false
++        if lastLoopDate != GlucoseComplicationSnapshot.storedLastLoopDate() {
++            GlucoseComplicationSnapshot.storeLastLoopDate(lastLoopDate)
++        }
  
 -        if let glucoseBobbleComplicationSettings, glucoseBobbleComplicationSettings != GlucoseBobbleComplicationSettings.load() {
 +        if let glucoseBobbleComplicationSettings,
@@ -7578,8 +7586,9 @@ index f9798e473..4681d3e04 100644
 +        {
              glucoseBobbleComplicationSettings.save()
 -            didSave = true
-+            didChange = true
++            WidgetCenter.shared.reloadTimelines(ofKind: TrioComplicationDataStore.glucoseBobbleComplicationKind)
          }
++    }
  
 -        if let readingDate = glucoseValues.map(\.date).max(), currentGlucose != "--" {
 -            let snapshot = GlucoseComplicationSnapshot(
@@ -7590,16 +7599,6 @@ index f9798e473..4681d3e04 100644
 -                readingDate: readingDate,
 -                lastLoopDate: lastLoopDate
 -            )
-+        if lastLoopDate != GlucoseComplicationSnapshot.storedLastLoopDate() {
-+            GlucoseComplicationSnapshot.storeLastLoopDate(lastLoopDate)
-+            didChange = true
-+        }
-+
-+        if didChange {
-+            WidgetCenter.shared.reloadTimelines(ofKind: TrioComplicationDataStore.glucoseBobbleComplicationKind)
-+        }
-+    }
-+
 +    /// Build 205 / review #5: apply the phone's glucose color settings + display units to the color
 +    /// computer when present in the payload. Called from both `processRawDataForWatchState` and
 +    /// `saveComplicationSnapshot` so a background complication bake never uses stale cached settings
