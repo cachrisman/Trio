@@ -1,6 +1,6 @@
-From 218524b6ed343679bd0e8fe68eeb083232f2a161 Mon Sep 17 00:00:00 2001
+From e784f4fbc8f43cba8a3f9150d0b687bce3c5ca84 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 06:53:01 +0200
+Date: Thu, 24 Sep 2026 14:52:47 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: ab7113e3a11fa2d5262de667c0152543f680c413
-Trio-Patch-Generated: 2026-09-24T04:52:43Z
+Trio-Patch-Feature-Tip: 19b1d3993111fe4e1d9507349cd0249a34a778fd
+Trio-Patch-Generated: 2026-09-24T12:52:30Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -78,7 +78,11 @@ Trio-Patch-Source-Commits:
  8701a587ba9fb42e042f91d838c648f00372b225 Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063 Phase C)
  35653c15e7ce9d537e495feb6ced671e5bc4caf9 watch: take the Glucose Bobble loop date from background payloads too (TRIO-063)
  4905675d9442884a1c5659eae2a6384dff4f1f73 watch: store the Glucose Bobble inputs before the snapshot reload; reload only for settings changes (TRIO-063)
+ 621d2e17c3b3067285194e410d968c0677c60f7a Send the Glucose Bobble settings even when there is no glucose reading
  ab7113e3a11fa2d5262de667c0152543f680c413 watch: apply the Glucose Bobble inputs on every payload path before the snapshot save (TRIO-063)
+ 89fab892b8ed9ba823d32779d4e4cf5e84967d56 Glucose Bobble settings preview: keep the glucose tint in White mode, as the complication does
+ 31673c0cb431114728721e449f338f7b7cdd7f8d Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063)
+ 19b1d3993111fe4e1d9507349cd0249a34a778fd watch: telemetry for the circular Glucose Bobble complication (TRIO-063)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -139,7 +143,10 @@ Trio-Patch-Source-PatchIds:
  d35612efdf63bc01a9c77480b92450872c86922d
  b53f344c41cb3a98560b250c7a231e2324f3aa2e
  5b49160b6a56d153855569bc7200eec69f02b58b
+ 09c266963acddd16224101605b9adaef157d3875
  05268d14c78eb4795b9ee2a4624875c48c40f556
+ b19bc3bb4664130e59987eff56666cada522df72
+ cf37992a98d67edbd7058477a6ed311f9dca2795
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
@@ -159,19 +166,19 @@ Trio-Patch-Source-PatchIds:
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |    4 +
- .../GlucoseBobbleComplication.swift           |    7 +
+ .../GlucoseBobbleComplication.swift           |   63 +-
  Trio Watch Complication/Info.plist            |    2 +
  .../TrioWatchComplication.swift               |  625 +++-
  .../TrioWatchComplicationPreview.swift        |  124 +
  Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
  .../GlucoseComplicationSnapshot.swift         |   37 +-
- .../TrioComplicationDataStore.swift           | 1299 ++++++++
+ .../TrioComplicationDataStore.swift           | 1322 +++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  603 +++-
- 30 files changed, 9865 insertions(+), 577 deletions(-)
+ 30 files changed, 9941 insertions(+), 580 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -8337,23 +8344,99 @@ index 9a37de423..54e6e8145 100644
  	<array>
  		<string>$(TRIO_APP_GROUP_ID)</string>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
-index d7d135215..92fd7a399 100644
+index d7d135215..a92c15864 100644
 --- a/Trio Watch Complication/GlucoseBobbleComplication.swift	
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
-@@ -48,6 +48,13 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+@@ -41,22 +41,64 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+         )
      }
  
-     func getTimeline(in _: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
+-    func getSnapshot(in _: Context, completion: @escaping (GlucoseBobbleComplicationEntry) -> Void) {
+-        let snapshot = GlucoseComplicationSnapshot.load() ?? Self.sampleSnapshot
++    func getSnapshot(in context: Context, completion: @escaping (GlucoseBobbleComplicationEntry) -> Void) {
++        let realSnapshot = GlucoseComplicationSnapshot.load()
++        let snapshot = realSnapshot ?? Self.sampleSnapshot
+         let settings = GlucoseBobbleComplicationSettings.load() ?? GlucoseBobbleComplicationSettings()
++        // fork — telemetry for the circular complication's getSnapshot path; ages come from the
++        // real loaded snapshot, not the sample fallback used for display.
++        TrioComplicationDataStore.shared.logGlucoseBobbleProviderCall(
++            call: "snapshot",
++            isPreview: context.isPreview,
++            hasSnapshot: realSnapshot != nil,
++            dataAgeSeconds: Self.ageSeconds(since: realSnapshot?.readingDate),
++            loopAgeSeconds: Self.ageSeconds(since: realSnapshot?.lastLoopDate),
++            observedReloadGeneration: -1,
++            settingsSummary: Self.settingsSummary(settings)
++        )
+         completion(GlucoseBobbleComplicationEntry(date: Date(), snapshot: snapshot, settings: settings))
+     }
+ 
+-    func getTimeline(in _: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
++    func getTimeline(in context: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
 +        // fork — record that this complication serviced the current reload generation, so
 +        // TrioComplicationDataStore does not treat the reload as dropped when this is the only Trio complication on the face.
 +        let store = TrioComplicationDataStore.shared
++        var observedReloadGeneration = -1
 +        if store.isAppGroupAvailable(), let generation = store.currentReloadGeneration() {
 +            store.recordWidgetObservedGeneration(generation)
++            observedReloadGeneration = generation
 +        }
 +
          let anchor = Self.roundedDownToMinute(Date())
          let settings = GlucoseBobbleComplicationSettings.load() ?? GlucoseBobbleComplicationSettings()
  
+         guard let snapshot = GlucoseComplicationSnapshot.load() else {
++            // fork — telemetry for the circular complication's getTimeline path (no-snapshot case).
++            store.logGlucoseBobbleProviderCall(
++                call: "timeline",
++                isPreview: context.isPreview,
++                hasSnapshot: false,
++                dataAgeSeconds: -1,
++                loopAgeSeconds: -1,
++                observedReloadGeneration: observedReloadGeneration,
++                settingsSummary: Self.settingsSummary(settings)
++            )
+             let entry = GlucoseBobbleComplicationEntry(date: anchor, snapshot: nil, settings: settings)
+             completion(Timeline(entries: [entry], policy: .never))
+             return
+         }
+ 
++        // fork — telemetry for the circular complication's getTimeline path.
++        store.logGlucoseBobbleProviderCall(
++            call: "timeline",
++            isPreview: context.isPreview,
++            hasSnapshot: true,
++            dataAgeSeconds: Self.ageSeconds(since: snapshot.readingDate),
++            loopAgeSeconds: Self.ageSeconds(since: snapshot.lastLoopDate),
++            observedReloadGeneration: observedReloadGeneration,
++            settingsSummary: Self.settingsSummary(settings)
++        )
++
+         // One entry per minute so the minutes-ago text advances on screen without WidgetKit
+         // reloading the timeline; the watch app requests a reload once fresh data arrives.
+         var entries = (0 ..< 30).map { offset in
+@@ -92,6 +134,21 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+     static func roundedDownToMinute(_ date: Date) -> Date {
+         Date(timeIntervalSinceReferenceDate: (date.timeIntervalSinceReferenceDate / 60).rounded(.down) * 60)
+     }
++
++    // fork — telemetry helper: whole seconds from `date` to now, floored at 0; -1 when `date` is nil.
++    private static func ageSeconds(since date: Date?) -> Int {
++        guard let date else { return -1 }
++        return max(0, Int(Date().timeIntervalSince(date)))
++    }
++
++    // fork — telemetry helper: compact settings summary for logGlucoseBobbleProviderCall.
++    private static func settingsSummary(_ settings: GlucoseBobbleComplicationSettings) -> String {
++        "color_mode=\(settings.colorMode.rawValue)"
++            + " show_minutes=\(settings.showMinutesAgo)"
++            + " show_delta=\(settings.showDelta)"
++            + " background=\(settings.backgroundStyle.rawValue)"
++            + " ring=\(settings.ringStyle.rawValue)"
++    }
+ }
+ 
+ // MARK: - Widget Configuration
 diff --git a/Trio Watch Complication/Info.plist b/Trio Watch Complication/Info.plist
 index 0f118fb75..f3aa654f6 100644
 --- a/Trio Watch Complication/Info.plist	
@@ -9598,10 +9681,10 @@ index 91bf25ddc..afe9f30f4 100644
      func save() {
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..f9c6e076d
+index 000000000..f9f7ea169
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,1299 @@
+@@ -0,0 +1,1322 @@
 +import Foundation
 +import os
 +#if os(watchOS)
@@ -10891,6 +10974,29 @@ index 000000000..f9c6e076d
 +            "event=complication_get_snapshot_called"
 +            + " get_snapshot_at_epoch_seconds=\(getSnapshotAtEpochSeconds)"
 +            + " data_age_seconds=\(dataAgeSeconds)"
++        )
++    }
++
++    // fork — distinct event names keep the corner complication's complication_get_timeline_called
++    // metrics unaffected; -1 means unavailable for the ages and generation.
++    func logGlucoseBobbleProviderCall(
++        call: String,
++        isPreview: Bool,
++        hasSnapshot: Bool,
++        dataAgeSeconds: Int,
++        loopAgeSeconds: Int,
++        observedReloadGeneration: Int,
++        settingsSummary: String
++    ) {
++        log(
++            "event=glucose_bobble_complication_\(call)"
++            + " kind=TrioGlucoseBobbleComplication"
++            + " is_preview=\(isPreview)"
++            + " has_snapshot=\(hasSnapshot)"
++            + " data_age_seconds=\(dataAgeSeconds)"
++            + " loop_age_seconds=\(loopAgeSeconds)"
++            + " observed_reload_generation=\(observedReloadGeneration)"
++            + " \(settingsSummary)"
 +        )
 +    }
 +#endif
