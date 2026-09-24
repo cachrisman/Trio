@@ -21,7 +21,8 @@ module SyncProjectFilesConfig
       "Trio/Sources/Helpers/GlucoseHueColor.swift",
       "Trio Watch Shared/ComplicationLogBuffer.swift",
       "Trio Watch Shared/TrioComplicationDataStore.swift",
-      "Trio Watch Shared/GlucoseComplicationSnapshot.swift"
+      "Trio Watch Shared/GlucoseComplicationSnapshot.swift",
+      "Trio/Sources/Models/GlucoseBobbleComplicationSettings.swift"
     ],
     "Trio Watch Complication Extension" => [
       "Trio Watch Complication/**/*.{swift,m,mm}",
@@ -29,7 +30,8 @@ module SyncProjectFilesConfig
       "Trio Watch Shared/TrioComplicationDataStore.swift",
       "Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift",
       "Trio/Sources/Views/Triangle.swift",
-      "Trio Watch Shared/GlucoseComplicationSnapshot.swift"
+      "Trio Watch Shared/GlucoseComplicationSnapshot.swift",
+      "Trio/Sources/Models/GlucoseBobbleComplicationSettings.swift"
     ],
     "LiveActivityExtension" => ["LiveActivity/**/*.{swift,m,mm}"]
   }.freeze
