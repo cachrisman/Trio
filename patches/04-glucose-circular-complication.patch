@@ -1,12 +1,12 @@
-From b3e06634ffc86742459563cfe6a318961bcd174c Mon Sep 17 00:00:00 2001
+From 5ce4b799c7a8c4232b9e3f51997be37e282fd9fb Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 06:52:20 +0200
+Date: Thu, 24 Sep 2026 06:58:01 +0200
 Subject: [PATCH] feat: glucose-circular-complication
 
 Trio-Patch-Source-Branch: feature/glucose-circular-complication
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 621d2e17c3b3067285194e410d968c0677c60f7a
-Trio-Patch-Generated: 2026-09-24T04:52:08Z
+Trio-Patch-Feature-Tip: 89fab892b8ed9ba823d32779d4e4cf5e84967d56
+Trio-Patch-Generated: 2026-09-24T04:57:48Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
@@ -23,6 +23,7 @@ Trio-Patch-Source-Commits:
  f342c0140999ea4ebe364267e15a1fa8fe7cba8b Hand the Glucose Bobble settings and last loop date to the watch complication
  214fadf9e88679e7c69b60e07fd5c713c2157ae2 Glucose Bobble complication: apply the phone settings
  621d2e17c3b3067285194e410d968c0677c60f7a Send the Glucose Bobble settings even when there is no glucose reading
+ 89fab892b8ed9ba823d32779d4e4cf5e84967d56 Glucose Bobble settings preview: keep the glucose tint in White mode, as the complication does
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
@@ -40,6 +41,7 @@ Trio-Patch-Source-PatchIds:
  c307f1a9550c9abf302424a8c4d77711ab3cd493
  d35612efdf63bc01a9c77480b92450872c86922d
  09c266963acddd16224101605b9adaef157d3875
+ b19bc3bb4664130e59987eff56666cada522df72
 ---
  Trio Watch App Extension/WatchState.swift     |  44 +++
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
@@ -51,11 +53,11 @@ Trio-Patch-Source-PatchIds:
  Trio/Sources/Models/TrioSettings.swift        |   8 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   4 +
  Trio/Sources/Models/WatchState.swift          |   8 +-
- ...lucoseBobbleComplicationSettingsView.swift | 123 +++++++
+ ...lucoseBobbleComplicationSettingsView.swift | 124 +++++++
  .../View/WatchConfigAppleWatchView.swift      |  13 +
  .../WatchConfig/WatchConfigStateModel.swift   |   2 +
  .../WatchManager/AppleWatchManager.swift      |  13 +
- 14 files changed, 665 insertions(+), 2 deletions(-)
+ 14 files changed, 666 insertions(+), 2 deletions(-)
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
  create mode 100644 Trio Watch Complication/GlucoseBobbleComplication.swift
  create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
@@ -732,10 +734,10 @@ index e939aba00..bb855d0ab 100644
  }
 diff --git a/Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift b/Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
 new file mode 100644
-index 000000000..cd4a5def5
+index 000000000..c73d9ec4c
 --- /dev/null
 +++ b/Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,124 @@
 +import SwiftUI
 +
 +struct GlucoseBobbleComplicationSettingsView: View {
@@ -768,7 +770,8 @@ index 000000000..cd4a5def5
 +
 +                        switch state.glucoseBobbleComplication.backgroundStyle {
 +                        case .glucoseTint:
-+                            Circle().fill(sampleGlucoseColor.opacity(0.3))
++                            // The complication tints with the glucose colour even when the number is white.
++                            Circle().fill(Color.green.opacity(0.3))
 +                        case .system:
 +                            Circle().fill(Color.gray.opacity(0.25))
 +                        case .none:
