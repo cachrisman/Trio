@@ -318,24 +318,7 @@ struct ContactPicture: View {
 
     // Matches CurrentGlucoseView's onChange(of: glucose.last?.directionEnum) mapping.
     private static func rotationDegrees(for direction: BloodGlucose.Direction?) -> Double {
-        switch direction {
-        case .doubleUp,
-             .singleUp,
-             .tripleUp:
-            return -90
-        case .fortyFiveUp:
-            return -45
-        case .flat:
-            return 0
-        case .fortyFiveDown:
-            return 45
-        case .doubleDown,
-             .singleDown,
-             .tripleDown:
-            return 90
-        default:
-            return 0
-        }
+        GlucoseBobbleContactView.rotationDegrees(forTrend: direction?.rawValue)
     }
 
     private static func makeGlucoseBobbleImage(
