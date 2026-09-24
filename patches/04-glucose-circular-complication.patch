@@ -1,12 +1,12 @@
-From 95331432ec27ce729dfad38fa722391d7fa01861 Mon Sep 17 00:00:00 2001
+From f983e982455590d3f76fdc4b500c10040be4fc84 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 06:12:19 +0200
+Date: Thu, 24 Sep 2026 06:27:17 +0200
 Subject: [PATCH] feat: glucose-circular-complication
 
 Trio-Patch-Source-Branch: feature/glucose-circular-complication
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: b2aa6f56f431fb104c1a3bbe15ab73c04d9701bf
-Trio-Patch-Generated: 2026-09-24T04:12:09Z
+Trio-Patch-Feature-Tip: 214fadf9e88679e7c69b60e07fd5c713c2157ae2
+Trio-Patch-Generated: 2026-09-24T04:27:07Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
@@ -16,6 +16,12 @@ Trio-Patch-Source-Commits:
  09592b7ace4aac197046e213e14de5ae9ae28e60 Glucose Bobble: keep inside-ring text clear of a 45 degree arrow
  5375f1d1bbedc60812593da6ea7b95a7eeb7e18c Glucose Bobble complication: start the 5-minute tail at 30 so the age never holds for six minutes
  b2aa6f56f431fb104c1a3bbe15ab73c04d9701bf Glucose Bobble complication: round to the minute with timestamp arithmetic, not calendar components
+ edb2c2b4116ca5cce54b97c11463b5860ac9f6a5 Add settings for the Glucose Bobble watch complication
+ c8c054e4addf7b0b18aaa87b99f4615b7aa2254e Send the Glucose Bobble complication settings and last loop date to the watch
+ da1b748af2f06cbf058e30e3be54c93035268285 Glucose Bobble: optional solid ring colour
+ 408ca476ecee8942498fee9c29a4fc65a7e05a5c Add a Glucose Bobble Complication settings page to the Apple Watch settings
+ f342c0140999ea4ebe364267e15a1fa8fe7cba8b Hand the Glucose Bobble settings and last loop date to the watch complication
+ 214fadf9e88679e7c69b60e07fd5c713c2157ae2 Glucose Bobble complication: apply the phone settings
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
@@ -26,21 +32,37 @@ Trio-Patch-Source-PatchIds:
  def34e438c168472070067e0e2605e5a6f11564c
  1f586ab8f25b49f547938f8b42505809dc3f2ac9
  13a1aa58de5f812ab659b12aa142b2d05bf1ac05
+ dedcfc27a73b9177cd5aff98d9b67d6e38be9b38
+ 164b7f04287625866343cd42f44800d52a5d774d
+ 875214c847e8fe48e027ad302e2c563cd3e17ec6
+ 7f69f05ad15ff24e60952556d23ab85709283d36
+ c307f1a9550c9abf302424a8c4d77711ab3cd493
+ d35612efdf63bc01a9c77480b92450872c86922d
 ---
- Trio Watch App Extension/WatchState.swift     |  22 ++
+ Trio Watch App Extension/WatchState.swift     |  44 +++
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
- .../GlucoseBobbleComplication.swift           | 235 ++++++++++++++++++
+ .../GlucoseBobbleComplication.swift           | 311 ++++++++++++++++++
  .../TrioWatchComplication.entitlements        |  10 +
  .../TrioWatchComplication.swift               |   2 +-
- .../GlucoseComplicationSnapshot.swift         |  38 +++
- 6 files changed, 316 insertions(+), 1 deletion(-)
+ .../GlucoseComplicationSnapshot.swift         |  39 +++
+ .../GlucoseBobbleComplicationSettings.swift   |  80 +++++
+ Trio/Sources/Models/TrioSettings.swift        |   8 +
+ Trio/Sources/Models/WatchMessageKeys.swift    |   4 +
+ Trio/Sources/Models/WatchState.swift          |   8 +-
+ ...lucoseBobbleComplicationSettingsView.swift | 123 +++++++
+ .../View/WatchConfigAppleWatchView.swift      |  13 +
+ .../WatchConfig/WatchConfigStateModel.swift   |   2 +
+ .../WatchManager/AppleWatchManager.swift      |  11 +
+ 14 files changed, 663 insertions(+), 2 deletions(-)
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
  create mode 100644 Trio Watch Complication/GlucoseBobbleComplication.swift
  create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
  create mode 100644 Trio Watch Shared/GlucoseComplicationSnapshot.swift
+ create mode 100644 Trio/Sources/Models/GlucoseBobbleComplicationSettings.swift
+ create mode 100644 Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
 
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 805f52895..0132c1650 100644
+index 805f52895..646902fc1 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,6 +1,7 @@
@@ -51,7 +73,31 @@ index 805f52895..0132c1650 100644
  
  /// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
  /// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
-@@ -584,5 +585,26 @@ import WatchConnectivity
+@@ -25,6 +26,8 @@ import WatchConnectivity
+     var cob: String? = "--"
+     var iob: String? = "--"
+     var lastLoopTime: String? = "--"
++    var lastLoopDate: Date?
++    var glucoseBobbleComplicationSettings: GlucoseBobbleComplicationSettings?
+     var overridePresets: [OverridePresetWatch] = []
+     var tempTargetPresets: [TempTargetPresetWatch] = []
+ 
+@@ -485,6 +488,14 @@ import WatchConnectivity
+             self.lastLoopTime = lastLoopTime
+         }
+ 
++        lastLoopDate = (message[WatchMessageKeys.lastLoopDate] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
++
++        if let settingsData = message[WatchMessageKeys.glucoseBobbleComplicationSettings] as? Data,
++           let decodedSettings = try? JSONDecoder().decode(GlucoseBobbleComplicationSettings.self, from: settingsData)
++        {
++            glucoseBobbleComplicationSettings = decodedSettings
++        }
++
+         if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
+             glucoseValues = glucoseData.compactMap { data in
+                 guard let glucose = data["glucose"] as? Double,
+@@ -584,5 +595,38 @@ import WatchConnectivity
              forecastConeMax = forecastPayload[WatchMessageKeys.forecastConeMax] as? [Double] ?? []
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
@@ -62,20 +108,32 @@ index 805f52895..0132c1650 100644
 +    // The complication extension is a separate process, so the latest reading is handed over
 +    // through the shared App Group and the complication's timelines reloaded; unchanged readings are skipped to preserve WidgetKit's reload budget.
 +    private func publishComplicationSnapshot() {
-+        guard let readingDate = glucoseValues.map(\.date).max(), currentGlucose != "--" else { return }
++        var didSave = false
 +
-+        let snapshot = GlucoseComplicationSnapshot(
-+            glucose: currentGlucose,
-+            trend: trend,
-+            delta: delta,
-+            glucoseColorHex: currentGlucoseColorString,
-+            readingDate: readingDate
-+        )
++        if let glucoseBobbleComplicationSettings, glucoseBobbleComplicationSettings != GlucoseBobbleComplicationSettings.load() {
++            glucoseBobbleComplicationSettings.save()
++            didSave = true
++        }
 +
-+        guard snapshot != GlucoseComplicationSnapshot.load() else { return }
++        if let readingDate = glucoseValues.map(\.date).max(), currentGlucose != "--" {
++            let snapshot = GlucoseComplicationSnapshot(
++                glucose: currentGlucose,
++                trend: trend,
++                delta: delta,
++                glucoseColorHex: currentGlucoseColorString,
++                readingDate: readingDate,
++                lastLoopDate: lastLoopDate
++            )
 +
-+        snapshot.save()
-+        WidgetCenter.shared.reloadAllTimelines()
++            if snapshot != GlucoseComplicationSnapshot.load() {
++                snapshot.save()
++                didSave = true
++            }
++        }
++
++        if didSave {
++            WidgetCenter.shared.reloadAllTimelines()
++        }
      }
  }
 diff --git a/Trio Watch App/TrioWatchApp.entitlements b/Trio Watch App/TrioWatchApp.entitlements
@@ -96,10 +154,10 @@ index 000000000..9a37de423
 +</plist>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
 new file mode 100644
-index 000000000..89aa32d3c
+index 000000000..d7d135215
 --- /dev/null
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,311 @@
 +import SwiftUI
 +import WidgetKit
 +
@@ -119,6 +177,7 @@ index 000000000..89aa32d3c
 +struct GlucoseBobbleComplicationEntry: TimelineEntry {
 +    let date: Date
 +    let snapshot: GlucoseComplicationSnapshot?
++    let settings: GlucoseBobbleComplicationSettings
 +}
 +
 +// MARK: - Provider
@@ -135,19 +194,25 @@ index 000000000..89aa32d3c
 +    }
 +
 +    func placeholder(in _: Context) -> GlucoseBobbleComplicationEntry {
-+        GlucoseBobbleComplicationEntry(date: Date(), snapshot: Self.sampleSnapshot)
++        GlucoseBobbleComplicationEntry(
++            date: Date(),
++            snapshot: Self.sampleSnapshot,
++            settings: GlucoseBobbleComplicationSettings()
++        )
 +    }
 +
 +    func getSnapshot(in _: Context, completion: @escaping (GlucoseBobbleComplicationEntry) -> Void) {
 +        let snapshot = GlucoseComplicationSnapshot.load() ?? Self.sampleSnapshot
-+        completion(GlucoseBobbleComplicationEntry(date: Date(), snapshot: snapshot))
++        let settings = GlucoseBobbleComplicationSettings.load() ?? GlucoseBobbleComplicationSettings()
++        completion(GlucoseBobbleComplicationEntry(date: Date(), snapshot: snapshot, settings: settings))
 +    }
 +
 +    func getTimeline(in _: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
 +        let anchor = Self.roundedDownToMinute(Date())
++        let settings = GlucoseBobbleComplicationSettings.load() ?? GlucoseBobbleComplicationSettings()
 +
 +        guard let snapshot = GlucoseComplicationSnapshot.load() else {
-+            let entry = GlucoseBobbleComplicationEntry(date: anchor, snapshot: nil)
++            let entry = GlucoseBobbleComplicationEntry(date: anchor, snapshot: nil, settings: settings)
 +            completion(Timeline(entries: [entry], policy: .never))
 +            return
 +        }
@@ -155,16 +220,28 @@ index 000000000..89aa32d3c
 +        // One entry per minute so the minutes-ago text advances on screen without WidgetKit
 +        // reloading the timeline; the watch app requests a reload once fresh data arrives.
 +        var entries = (0 ..< 30).map { offset in
-+            GlucoseBobbleComplicationEntry(date: anchor.addingTimeInterval(TimeInterval(offset * 60)), snapshot: snapshot)
++            GlucoseBobbleComplicationEntry(
++                date: anchor.addingTimeInterval(TimeInterval(offset * 60)),
++                snapshot: snapshot,
++                settings: settings
++            )
 +        }
 +        // Entries are budget-free (only reloads cost WidgetKit budget), so extending the horizon
 +        // with a coarser tail keeps the reading age honest through a multi-hour reload drought
 +        // instead of freezing on the last dense entry once reloads are throttled.
 +        entries += stride(from: 30, through: 55, by: 5).map { offset in
-+            GlucoseBobbleComplicationEntry(date: anchor.addingTimeInterval(TimeInterval(offset * 60)), snapshot: snapshot)
++            GlucoseBobbleComplicationEntry(
++                date: anchor.addingTimeInterval(TimeInterval(offset * 60)),
++                snapshot: snapshot,
++                settings: settings
++            )
 +        }
 +        entries += stride(from: 60, through: 240, by: 15).map { offset in
-+            GlucoseBobbleComplicationEntry(date: anchor.addingTimeInterval(TimeInterval(offset * 60)), snapshot: snapshot)
++            GlucoseBobbleComplicationEntry(
++                date: anchor.addingTimeInterval(TimeInterval(offset * 60)),
++                snapshot: snapshot,
++                settings: settings
++            )
 +        }
 +        let timeline = Timeline(entries: entries, policy: .after(anchor.addingTimeInterval(60 * 60)))
 +        completion(timeline)
@@ -207,12 +284,41 @@ index 000000000..89aa32d3c
 +        return entry.date.timeIntervalSince(snapshot.readingDate) > Self.staleAfter
 +    }
 +
-+    private var valueColor: Color {
++    // The raw glucose colour from the snapshot, independent of colorMode: the glucoseTint
++    // background always uses this, even when the number itself is forced white.
++    private var snapshotGlucoseColor: Color {
 +        guard let snapshot = entry.snapshot, !isStale, let color = Self.color(fromHex: snapshot.glucoseColorHex) else {
 +            return .gray
 +        }
 +        return color
 +    }
++
++    private var valueColor: Color {
++        guard entry.settings.colorMode == .white, entry.snapshot != nil, !isStale else {
++            return snapshotGlucoseColor
++        }
++        return .white
++    }
++
++    private var ringColor: Color? {
++        guard entry.settings.ringStyle == .loopStatus else { return nil }
++        guard let lastLoopDate = entry.snapshot?.lastLoopDate else { return Self.loopGray }
++
++        let age = entry.date.timeIntervalSince(lastLoopDate) - 30
++        if age <= 5 * 60 {
++            return Self.loopGreen
++        } else if age <= 10 * 60 {
++            return Self.loopYellow
++        } else {
++            return Self.loopRed
++        }
++    }
++
++    // This target has no loop colour assets, so the phone's loop status colours are inlined here.
++    private static let loopGreen = Color(red: 0.435, green: 0.812, blue: 0.592)
++    private static let loopYellow = Color(red: 1.0, green: 0.757, blue: 0.271)
++    private static let loopRed = Color(red: 0.922, green: 0.341, blue: 0.341)
++    private static let loopGray = Color(red: 0.741, green: 0.741, blue: 0.741)
 +
 +    // Derived from entry.date, not Date(): timeline entries are rendered ahead of time, so the
 +    // wall clock at render time isn't the entry's intended "now" — only entry.date is.
@@ -230,10 +336,17 @@ index 000000000..89aa32d3c
 +    }
 +
 +    @ViewBuilder private var background: some View {
-+        if renderingMode == .fullColor, entry.snapshot != nil, !isStale {
-+            Circle().fill(valueColor.opacity(0.3))
-+        } else {
++        switch entry.settings.backgroundStyle {
++        case .glucoseTint:
++            if renderingMode == .fullColor, entry.snapshot != nil, !isStale {
++                Circle().fill(snapshotGlucoseColor.opacity(0.3))
++            } else {
++                AccessoryWidgetBackground()
++            }
++        case .system:
 +            AccessoryWidgetBackground()
++        case .none:
++            EmptyView()
 +        }
 +    }
 +
@@ -246,11 +359,12 @@ index 000000000..89aa32d3c
 +
 +                GlucoseBobbleContactView(
 +                    glucoseText: entry.snapshot?.glucose ?? "--",
-+                    minutesAgoText: entry.snapshot == nil ? nil : minutesAgoText,
-+                    deltaText: entry.snapshot?.delta,
++                    minutesAgoText: entry.settings.showMinutesAgo ? minutesAgoText : nil,
++                    deltaText: entry.settings.showDelta ? entry.snapshot?.delta : nil,
 +                    glucoseColor: valueColor,
 +                    rotationDegrees: GlucoseBobbleContactView.rotationDegrees(forTrend: entry.snapshot?.trend),
-+                    trendArrowPlacement: .insideRing
++                    trendArrowPlacement: .insideRing,
++                    ringColor: ringColor
 +                )
 +                .scaleEffect(side / GlucoseBobbleContactView.Layout.nativeSize)
 +                .frame(width: side, height: side)
@@ -310,7 +424,8 @@ index 000000000..89aa32d3c
 +            delta: "+2",
 +            glucoseColorHex: "#4CD964",
 +            readingDate: now.addingTimeInterval(-60)
-+        )
++        ),
++        settings: GlucoseBobbleComplicationSettings()
 +    )
 +}
 +
@@ -326,14 +441,33 @@ index 000000000..89aa32d3c
 +            delta: "-4",
 +            glucoseColorHex: "#4CD964",
 +            readingDate: now.addingTimeInterval(-20 * 60)
-+        )
++        ),
++        settings: GlucoseBobbleComplicationSettings()
 +    )
 +}
 +
 +#Preview("No Data", as: .accessoryCircular) {
 +    TrioGlucoseBobbleComplication()
 +} timeline: {
-+    GlucoseBobbleComplicationEntry(date: Date(), snapshot: nil)
++    GlucoseBobbleComplicationEntry(date: Date(), snapshot: nil, settings: GlucoseBobbleComplicationSettings())
++}
++
++#Preview("Loop status, white", as: .accessoryCircular) {
++    TrioGlucoseBobbleComplication()
++} timeline: {
++    let now = Date()
++    GlucoseBobbleComplicationEntry(
++        date: now,
++        snapshot: GlucoseComplicationSnapshot(
++            glucose: "112",
++            trend: "Flat",
++            delta: "+2",
++            glucoseColorHex: "#4CD964",
++            readingDate: now.addingTimeInterval(-60),
++            lastLoopDate: now.addingTimeInterval(-7 * 60)
++        ),
++        settings: GlucoseBobbleComplicationSettings(colorMode: .white, ringStyle: .loopStatus)
++    )
 +}
 diff --git a/Trio Watch Complication/TrioWatchComplication.entitlements b/Trio Watch Complication/TrioWatchComplication.entitlements
 new file mode 100644
@@ -366,20 +500,21 @@ index a8721530a..695bd6a54 100644
      var body: some WidgetConfiguration {
 diff --git a/Trio Watch Shared/GlucoseComplicationSnapshot.swift b/Trio Watch Shared/GlucoseComplicationSnapshot.swift
 new file mode 100644
-index 000000000..15144e1c7
+index 000000000..91bf25ddc
 --- /dev/null
 +++ b/Trio Watch Shared/GlucoseComplicationSnapshot.swift	
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,39 @@
 +import Foundation
 +
-+/// The latest glucose reading handed from the watch app to its complication through the shared
-+/// App Group, because the two are separate processes.
++/// The latest glucose reading and last loop date handed from the watch app to its complication
++/// through the shared App Group, because the two are separate processes.
 +struct GlucoseComplicationSnapshot: Codable, Equatable {
 +    let glucose: String
 +    let trend: String?
 +    let delta: String?
 +    let glucoseColorHex: String
 +    let readingDate: Date
++    var lastLoopDate: Date? = nil
 +
 +    static let defaultsKey = "glucoseComplicationSnapshot"
 +
@@ -408,6 +543,400 @@ index 000000000..15144e1c7
 +        defaults.set(data, forKey: Self.defaultsKey)
 +    }
 +}
+diff --git a/Trio/Sources/Models/GlucoseBobbleComplicationSettings.swift b/Trio/Sources/Models/GlucoseBobbleComplicationSettings.swift
+new file mode 100644
+index 000000000..e4c574ab5
+--- /dev/null
++++ b/Trio/Sources/Models/GlucoseBobbleComplicationSettings.swift
+@@ -0,0 +1,80 @@
++import Foundation
++
++/// Settings for the Trio Glucose Bobble watch complication. Edited on the phone, sent to the watch
++/// in the watch-state message, and handed to the complication through the watch's App Group.
++struct GlucoseBobbleComplicationSettings: Codable, Hashable, Sendable {
++    enum ColorMode: String, Codable, CaseIterable, Sendable {
++        case glucose
++        case white
++    }
++
++    enum BackgroundStyle: String, Codable, CaseIterable, Sendable {
++        case glucoseTint
++        case system
++        case none
++    }
++
++    enum RingStyle: String, Codable, CaseIterable, Sendable {
++        case trendGradient
++        case loopStatus
++    }
++
++    var colorMode: ColorMode = .glucose
++    var showMinutesAgo: Bool = true
++    var showDelta: Bool = true
++    var backgroundStyle: BackgroundStyle = .glucoseTint
++    var ringStyle: RingStyle = .trendGradient
++
++    init(
++        colorMode: ColorMode = .glucose,
++        showMinutesAgo: Bool = true,
++        showDelta: Bool = true,
++        backgroundStyle: BackgroundStyle = .glucoseTint,
++        ringStyle: RingStyle = .trendGradient
++    ) {
++        self.colorMode = colorMode
++        self.showMinutesAgo = showMinutesAgo
++        self.showDelta = showDelta
++        self.backgroundStyle = backgroundStyle
++        self.ringStyle = ringStyle
++    }
++
++    init(from decoder: Decoder) throws {
++        let container = try decoder.container(keyedBy: CodingKeys.self)
++        let defaults = GlucoseBobbleComplicationSettings()
++
++        colorMode = try container.decodeIfPresent(ColorMode.self, forKey: .colorMode) ?? defaults.colorMode
++        showMinutesAgo = try container.decodeIfPresent(Bool.self, forKey: .showMinutesAgo) ?? defaults.showMinutesAgo
++        showDelta = try container.decodeIfPresent(Bool.self, forKey: .showDelta) ?? defaults.showDelta
++        backgroundStyle = try container.decodeIfPresent(BackgroundStyle.self, forKey: .backgroundStyle) ?? defaults
++            .backgroundStyle
++        ringStyle = try container.decodeIfPresent(RingStyle.self, forKey: .ringStyle) ?? defaults.ringStyle
++    }
++
++    static let defaultsKey = "glucoseBobbleComplicationSettings"
++
++    static var sharedDefaults: UserDefaults? {
++        guard let suiteName = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String,
++              !suiteName.isEmpty
++        else {
++            return nil
++        }
++        return UserDefaults(suiteName: suiteName)
++    }
++
++    static func load() -> GlucoseBobbleComplicationSettings? {
++        guard let data = sharedDefaults?.data(forKey: defaultsKey) else {
++            return nil
++        }
++        return try? JSONDecoder().decode(GlucoseBobbleComplicationSettings.self, from: data)
++    }
++
++    func save() {
++        guard let defaults = Self.sharedDefaults,
++              let data = try? JSONEncoder().encode(self)
++        else {
++            return
++        }
++        defaults.set(data, forKey: Self.defaultsKey)
++    }
++}
+diff --git a/Trio/Sources/Models/TrioSettings.swift b/Trio/Sources/Models/TrioSettings.swift
+index 4871d1684..11d2a1540 100644
+--- a/Trio/Sources/Models/TrioSettings.swift
++++ b/Trio/Sources/Models/TrioSettings.swift
+@@ -56,6 +56,7 @@ struct TrioSettings: JSON, Equatable, Encodable {
+     var maxProtein: Decimal = 250
+     var confirmBolusFaster: Bool = false
+     var showForecastWatch: Bool = false
++    var glucoseBobbleComplication = GlucoseBobbleComplicationSettings()
+     var overrideFactor: Decimal = 0.8
+     var fattyMeals: Bool = false
+     var fattyMealFactor: Decimal = 0.7
+@@ -313,6 +314,13 @@ extension TrioSettings: Decodable {
+             settings.showForecastWatch = showForecastWatch
+         }
+ 
++        if let glucoseBobbleComplication = try? container.decode(
++            GlucoseBobbleComplicationSettings.self,
++            forKey: .glucoseBobbleComplication
++        ) {
++            settings.glucoseBobbleComplication = glucoseBobbleComplication
++        }
++
+         if let displayPresets = try? container.decode(Bool.self, forKey: .displayPresets) {
+             settings.displayPresets = displayPresets
+         }
+diff --git a/Trio/Sources/Models/WatchMessageKeys.swift b/Trio/Sources/Models/WatchMessageKeys.swift
+index 68cac8b00..e50e0991e 100644
+--- a/Trio/Sources/Models/WatchMessageKeys.swift
++++ b/Trio/Sources/Models/WatchMessageKeys.swift
+@@ -38,6 +38,7 @@ enum WatchMessageKeys {
+     static let iob = "iob"
+     static let cob = "cob"
+     static let lastLoopTime = "lastLoopTime"
++    static let lastLoopDate = "lastLoopDate"
+     static let glucoseValues = "glucoseValues"
+     static let minYAxisValue = "minYAxisValue"
+     static let maxYAxisValue = "maxYAxisValue"
+@@ -63,4 +64,7 @@ enum WatchMessageKeys {
+     static let forecastConeMin = "forecastConeMin"
+     static let forecastConeMax = "forecastConeMax"
+     static let forecastLines = "forecastLines"
++
++    // Glucose Bobble complication
++    static let glucoseBobbleComplicationSettings = "glucoseBobbleComplicationSettings"
+ }
+diff --git a/Trio/Sources/Models/WatchState.swift b/Trio/Sources/Models/WatchState.swift
+index e939aba00..bb855d0ab 100644
+--- a/Trio/Sources/Models/WatchState.swift
++++ b/Trio/Sources/Models/WatchState.swift
+@@ -14,6 +14,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+     var iob: String?
+     var cob: String?
+     var lastLoopTime: String?
++    var lastLoopDate: Date? = nil
+     var overridePresets: [OverridePresetWatch] = []
+     var tempTargetPresets: [TempTargetPresetWatch] = []
+ 
+@@ -34,6 +35,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+     var forecastConeMin: [Double] = []
+     var forecastConeMax: [Double] = []
+     var forecastLines: [String: [Double]] = [:] // "iob" / "cob" / "uam" / "zt" -> values
++    var glucoseBobbleComplication = GlucoseBobbleComplicationSettings()
+ 
+     static func == (lhs: WatchState, rhs: WatchState) -> Bool {
+         lhs.date == rhs.date &&
+@@ -50,6 +52,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+             lhs.iob == rhs.iob &&
+             lhs.cob == rhs.cob &&
+             lhs.lastLoopTime == rhs.lastLoopTime &&
++            lhs.lastLoopDate == rhs.lastLoopDate &&
+             lhs.overridePresets == rhs.overridePresets &&
+             lhs.tempTargetPresets == rhs.tempTargetPresets &&
+             lhs.maxBolus == rhs.maxBolus &&
+@@ -63,7 +66,8 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+             lhs.forecastStartDate == rhs.forecastStartDate &&
+             lhs.forecastConeMin == rhs.forecastConeMin &&
+             lhs.forecastConeMax == rhs.forecastConeMax &&
+-            lhs.forecastLines == rhs.forecastLines
++            lhs.forecastLines == rhs.forecastLines &&
++            lhs.glucoseBobbleComplication == rhs.glucoseBobbleComplication
+     }
+ 
+     func hash(into hasher: inout Hasher) {
+@@ -82,6 +86,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+         hasher.combine(iob)
+         hasher.combine(cob)
+         hasher.combine(lastLoopTime)
++        hasher.combine(lastLoopDate)
+         hasher.combine(overridePresets)
+         hasher.combine(tempTargetPresets)
+         hasher.combine(maxBolus)
+@@ -96,5 +101,6 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+         hasher.combine(forecastConeMin)
+         hasher.combine(forecastConeMax)
+         hasher.combine(forecastLines)
++        hasher.combine(glucoseBobbleComplication)
+     }
+ }
+diff --git a/Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift b/Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
+new file mode 100644
+index 000000000..cd4a5def5
+--- /dev/null
++++ b/Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
+@@ -0,0 +1,123 @@
++import SwiftUI
++
++struct GlucoseBobbleComplicationSettingsView: View {
++    @ObservedObject var state: WatchConfig.StateModel
++
++    @Environment(\.colorScheme) var colorScheme
++    @Environment(AppState.self) var appState
++
++    private var sampleGlucoseColor: Color {
++        switch state.glucoseBobbleComplication.colorMode {
++        case .glucose: return .green
++        case .white: return .white
++        }
++    }
++
++    /// A "Loop Status" ring previews as a fresh loop (green); nil keeps the trend gradient.
++    private var previewRingColor: Color? {
++        state.glucoseBobbleComplication.ringStyle == .loopStatus ? .loopGreen : nil
++    }
++
++    var body: some View {
++        Form {
++            Section {
++                HStack {
++                    Spacer()
++
++                    ZStack {
++                        Circle()
++                            .fill(Color.black)
++
++                        switch state.glucoseBobbleComplication.backgroundStyle {
++                        case .glucoseTint:
++                            Circle().fill(sampleGlucoseColor.opacity(0.3))
++                        case .system:
++                            Circle().fill(Color.gray.opacity(0.25))
++                        case .none:
++                            EmptyView()
++                        }
++
++                        GlucoseBobbleContactView(
++                            glucoseText: "112",
++                            minutesAgoText: state.glucoseBobbleComplication.showMinutesAgo ? "3m" : nil,
++                            deltaText: state.glucoseBobbleComplication.showDelta ? "+2" : nil,
++                            glucoseColor: sampleGlucoseColor,
++                            rotationDegrees: GlucoseBobbleContactView.rotationDegrees(forTrend: "Flat"),
++                            trendArrowPlacement: .insideRing,
++                            ringColor: previewRingColor
++                        )
++                        .scaleEffect(120 / GlucoseBobbleContactView.Layout.nativeSize)
++                    }
++                    .frame(width: 120, height: 120)
++
++                    Spacer()
++                }
++            }
++            .listRowBackground(Color.chart)
++
++            Section(header: Text("Glucose Bobble Options")) {
++                Picker("Glucose Color", selection: $state.glucoseBobbleComplication.colorMode) {
++                    ForEach(GlucoseBobbleComplicationSettings.ColorMode.allCases, id: \.self) { mode in
++                        Text(mode.displayName).tag(mode)
++                    }
++                }
++
++                Toggle("Show Minutes Since Reading", isOn: $state.glucoseBobbleComplication.showMinutesAgo)
++                Toggle("Show Delta", isOn: $state.glucoseBobbleComplication.showDelta)
++            }
++            .listRowBackground(Color.chart)
++
++            Section(
++                header: Text("Appearance"),
++                footer: Text(
++                    "Loop Status colors the ring green, yellow or red by the time since the last loop, or gray when unknown. Changes reach the watch with its next update."
++                )
++            ) {
++                Picker("Background", selection: $state.glucoseBobbleComplication.backgroundStyle) {
++                    ForEach(GlucoseBobbleComplicationSettings.BackgroundStyle.allCases, id: \.self) { style in
++                        Text(style.displayName).tag(style)
++                    }
++                }
++
++                Picker("Ring", selection: $state.glucoseBobbleComplication.ringStyle) {
++                    ForEach(GlucoseBobbleComplicationSettings.RingStyle.allCases, id: \.self) { style in
++                        Text(style.displayName).tag(style)
++                    }
++                }
++            }
++            .listRowBackground(Color.chart)
++        }
++        .scrollContentBackground(.hidden)
++        .background(appState.trioBackgroundColor(for: colorScheme))
++        .navigationTitle("Glucose Bobble Complication")
++        .navigationBarTitleDisplayMode(.inline)
++    }
++}
++
++private extension GlucoseBobbleComplicationSettings.ColorMode {
++    var displayName: String {
++        switch self {
++        case .glucose: return String(localized: "Dynamic")
++        case .white: return String(localized: "White")
++        }
++    }
++}
++
++private extension GlucoseBobbleComplicationSettings.BackgroundStyle {
++    var displayName: String {
++        switch self {
++        case .glucoseTint: return String(localized: "Glucose Tint")
++        case .system: return String(localized: "System")
++        case .none: return String(localized: "None")
++        }
++    }
++}
++
++private extension GlucoseBobbleComplicationSettings.RingStyle {
++    var displayName: String {
++        switch self {
++        case .trendGradient: return String(localized: "Trend Gradient")
++        case .loopStatus: return String(localized: "Loop Status")
++        }
++    }
++}
+diff --git a/Trio/Sources/Modules/WatchConfig/View/WatchConfigAppleWatchView.swift b/Trio/Sources/Modules/WatchConfig/View/WatchConfigAppleWatchView.swift
+index e9273a72e..5384d69eb 100644
+--- a/Trio/Sources/Modules/WatchConfig/View/WatchConfigAppleWatchView.swift
++++ b/Trio/Sources/Modules/WatchConfig/View/WatchConfigAppleWatchView.swift
+@@ -64,6 +64,19 @@ struct WatchConfigAppleWatchView: BaseView {
+                 headerText: String(localized: "Apple Watch Configuration")
+             )
+ 
++            Section(
++                header: Text("Complications"),
++                content: {
++                    VStack {
++                        HStack {
++                            NavigationLink("Glucose Bobble Complication") {
++                                GlucoseBobbleComplicationSettingsView(state: state)
++                            }.foregroundStyle(Color.accentColor)
++                        }
++                    }
++                }
++            ).listRowBackground(Color.chart)
++
+             Section(
+                 header: Text("Contact Image"),
+                 content: {
+diff --git a/Trio/Sources/Modules/WatchConfig/WatchConfigStateModel.swift b/Trio/Sources/Modules/WatchConfig/WatchConfigStateModel.swift
+index b4cb129c5..f2253751f 100644
+--- a/Trio/Sources/Modules/WatchConfig/WatchConfigStateModel.swift
++++ b/Trio/Sources/Modules/WatchConfig/WatchConfigStateModel.swift
+@@ -10,6 +10,7 @@ extension WatchConfig {
+         @Published var devices: [IQDevice] = []
+         @Published var confirmBolusFaster = false
+         @Published var showForecastWatch = false
++        @Published var glucoseBobbleComplication = GlucoseBobbleComplicationSettings()
+ 
+         /// Garmin watch settings containing all watch-related configuration
+         @Published var garminSettings = GarminWatchSettings()
+@@ -24,6 +25,7 @@ extension WatchConfig {
+             subscribeSetting(\.garminSettings, on: $garminSettings) { garminSettings = $0 }
+             subscribeSetting(\.confirmBolusFaster, on: $confirmBolusFaster) { confirmBolusFaster = $0 }
+             subscribeSetting(\.showForecastWatch, on: $showForecastWatch) { showForecastWatch = $0 }
++            subscribeSetting(\.glucoseBobbleComplication, on: $glucoseBobbleComplication) { glucoseBobbleComplication = $0 }
+ 
+             devices = garmin.devices
+         }
+diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+index 88d75f711..679e1217c 100644
+--- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
++++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+@@ -214,6 +214,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+                     watchState.lastLoopTime = "--"
+                 } else {
+                     watchState.lastLoopTime = "\(lastLoopMinutes) min"
++                    watchState.lastLoopDate = self.apsManager.lastLoopDate
+                 }
+ 
+                 // Set IOB and COB from latest determination
+@@ -358,6 +359,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+                 watchState.showForecast = self.settingsManager.settings.showForecastWatch
+                 watchState.isForecastCone = self.settingsManager.settings.forecastDisplayType == .cone
++                watchState.glucoseBobbleComplication = self.settingsManager.settings.glucoseBobbleComplication
+ 
+                 // Forecast data comes from OrefDetermination's `forecasts` CoreData
+                 // relationship (Set<Forecast>), NOT a `.predictions` property.
+@@ -560,6 +562,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         }
+ 
+         dictionary[WatchMessageKeys.forecastData] = forecastData
++
++        if let lastLoopDate = state.lastLoopDate {
++            dictionary[WatchMessageKeys.lastLoopDate] = lastLoopDate.timeIntervalSince1970
++        }
++
++        if let glucoseBobbleData = try? JSONEncoder().encode(state.glucoseBobbleComplication) {
++            dictionary[WatchMessageKeys.glucoseBobbleComplicationSettings] = glucoseBobbleData
++        }
++
+         return dictionary
+     }
+ 
 -- 
 2.55.0
 
