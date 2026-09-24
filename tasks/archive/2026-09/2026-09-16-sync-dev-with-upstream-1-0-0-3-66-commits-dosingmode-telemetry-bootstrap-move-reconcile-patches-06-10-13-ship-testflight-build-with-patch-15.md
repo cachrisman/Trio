@@ -31,23 +31,7 @@ verdict = "waived"
 reviewed_commit = "1095b0957b47a10ec043a0fc2458d29d4cb7d4bc"
 reviewed_paths = ["patches/01-ns-richer-settings.patch", "patches/06-cloud-logging.patch", "patches/10-watch-session-crash-guard.patch", "patches/13-phone-ble-observer-telemetry.patch"]
 recorded_at = "2026-09-16T11:38:34+00:00"
-
-[tldr]
-source_digest = "sha256:6e03c9f592ed6772810b1df453af74cea6cc8bab3bc3e7054a3c77578e4e2560"
-prompt_version = 2
-purpose = "Adds: upstream 1.0.0.3 integration with reconciled patches, shipping a TestFlight build."
-generated = "2026-09-16T20:47:44.989112+00:00"
 +++
-
-## TL;DR
-
-- **Adds:** upstream 1.0.0.3 integration with reconciled patches, shipping a TestFlight build.
-- **State:** review. Authored by claude. 1 review: codex waived.
-- **Open:** 2 of 3 criteria unmet
-
-<!-- prose -->
-The upstream 1.0.0.3 integration and TestFlight build are in review with one of three criteria met. Remaining work is to confirm the BetterStack alert cadence on the new build and push dev to origin with the upstream PR.
-<!-- /tldr -->
 
 ## Intent
 

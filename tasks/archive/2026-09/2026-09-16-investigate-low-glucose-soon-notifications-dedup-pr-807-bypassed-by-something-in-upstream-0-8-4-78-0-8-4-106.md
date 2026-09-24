@@ -39,23 +39,7 @@ verdict = "pass"
 reviewed_commit = "cfba1ff18b012037fd094a0826119cf718d26977"
 reviewed_paths = ["Trio/Sources/Services/Alerts/GlucoseAlertCoordinator.swift", "TrioTests/GlucoseAlertCoordinatorTests.swift"]
 recorded_at = "2026-09-16T10:42:39+00:00"
-
-[tldr]
-source_digest = "sha256:6ab8f03ac1e846301386c2bd55e7635fd5786ca6501971981552333628896b05"
-prompt_version = 2
-purpose = "Fixes: CGM reading updates retract forecastedLow alarms, re-delivering \"Low Glucose Soon\" every loop cycle."
-generated = "2026-09-16T10:44:00.179325+00:00"
 +++
-
-## TL;DR
-
-- **Fixes:** CGM reading updates retract forecastedLow alarms, re-delivering "Low Glucose Soon" every loop cycle.
-- **State:** review. Authored by claude. 1 review: codex pass.
-- **Open:** All 3 criteria resolved; needs review or acceptance
-
-<!-- prose -->
-The fix for CGM updates retracting forecastedLow alarms and re-delivering "Low Glucose Soon" every loop cycle is in review. All three criteria are met, and codex has passed the review.
-<!-- /tldr -->
 
 ## Intent
 

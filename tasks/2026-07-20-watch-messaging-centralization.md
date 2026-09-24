@@ -4,13 +4,13 @@ key = "TRIO-023"
 title = "Centralize watch/phone WatchConnectivity messaging architecture"
 status = "waiting"
 kind = "code"
-waiting_on = "upstream-pr-packaging initiative (task landing/declared dead — see docs/backlog/upstream-pr-packaging) and feature/watch-g7 reaching a quiet point on WatchState/AppleWatchManager, per docs/in-progress/watch-messaging-centralization/fable-advisory.md §3.3"
 source = "human"
 source_ref = "docs/backlog/watch-messaging-centralization/watch-messaging-centralization-00-idea.md#L4"
 created = 2026-07-20
 updated = 2026-07-20
 touched = 2026-07-20
 owner = "me"
+waiting_on = "upstream-pr-packaging initiative (task landing/declared dead — see docs/backlog/upstream-pr-packaging) and feature/watch-g7 reaching a quiet point on WatchState/AppleWatchManager, per docs/in-progress/watch-messaging-centralization/fable-advisory.md §3.3"
 tags = ["watch", "architecture"]
 +++
 

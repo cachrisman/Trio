@@ -103,23 +103,7 @@ verdict = "pass"
 reviewed_commit = "5f14fe99aa5ab13db35f3a92bec908d1e0ac48b1"
 reviewed_paths = ["ci/local-build.sh", "scripts/generate-patch.sh", "scripts/mid-stack-update.sh", "scripts/patch-test.sh"]
 recorded_at = "2026-09-23T17:54:02+00:00"
-
-[tldr]
-source_digest = "sha256:19498ad24673724f3198e88a6e1b2a9173c819e895ed341af38a7ae9f970d5b2"
-prompt_version = 2
-purpose = "Fixes: build and patch scripts leak bot identity and disable signing into the shared .git/config."
-generated = "2026-09-16T20:47:45.043925+00:00"
 +++
-
-## TL;DR
-
-- **Fixes:** build and patch scripts leak bot identity and disable signing into the shared .git/config.
-- **State:** review. Authored by claude. 2 reviews: codex fail, codex pass.
-- **Open:** 2 of 5 criteria unmet
-
-<!-- prose -->
-The build and patch scripts leak the bot identity and disable signing into the shared .git/config. Claude authored the fix, which is in review with a pass and a fail from codex. Three of five criteria are met, with the remaining two pending.
-<!-- /tldr -->
 
 ## Intent
 

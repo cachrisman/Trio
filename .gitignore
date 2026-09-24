@@ -90,3 +90,9 @@ UserData/
 .claude
 .fusion
 .task-relay
+
+# Derived per-task token composition (TR-508); rebuilt, never authored.
+.task-relay/analytics/
+
+# Generated TL;DR cache (TR-562); rebuilt, never authored.
+.task-relay/tldr/

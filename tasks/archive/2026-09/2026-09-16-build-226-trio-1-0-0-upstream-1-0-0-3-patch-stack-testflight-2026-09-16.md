@@ -14,24 +14,7 @@ accepted_by = "Charlie"
 accepted_at = 2026-09-23
 owner = "me"
 tags = ["build", "testflight"]
-
-[tldr]
-source_digest = "sha256:d97f4fa51bbdac01be3f5174fe633c26c61bb7535739f0259f27de979a3dce20"
-prompt_version = 2
-purpose = "Adds: TestFlight build 226 of Trio 1.0.0, shipping low-glucose alarm re-fire fix and upstream 1.0.0.3 sync."
-generated = "2026-09-16T20:47:45.032258+00:00"
 +++
-
-## TL;DR
-
-- **Adds:** TestFlight build 226 of Trio 1.0.0, shipping low-glucose alarm re-fire fix and upstream 1.0.0.3 sync.
-- **State:** review.
-- **Open:** 2 of 4 criteria unmet
-- **Nearby:** Fixes: CGM reading updates retract forecastedLow alarms, re-delivering "Low Glucose Soon" every loop cycle.
-
-<!-- prose -->
-Build 226 of Trio 1.0.0 is in review, shipping the low-glucose alarm re-fire fix and upstream 1.0.0.3 sync. Two of four criteria are met; the remaining two are the BetterStack alert-cadence check and pushing dev 1095b0957 to origin.
-<!-- /tldr -->
 
 ## Intent
 
