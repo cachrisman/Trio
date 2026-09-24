@@ -1,6 +1,6 @@
-From c35d1f6a4264000a4bad7602c6ef2f7f1b8300d9 Mon Sep 17 00:00:00 2001
+From 4ab60bec50e9bfbce57a14fffdb850cc98365169 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 14:59:14 +0200
+Date: Thu, 24 Sep 2026 15:35:11 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 8310772074a7df5a36c1d0f39b5347ccd76cb362
-Trio-Patch-Generated: 2026-09-24T12:58:57Z
+Trio-Patch-Feature-Tip: ac4c9388584c882d3e8b500ac6d07ea36fdbf1b3
+Trio-Patch-Generated: 2026-09-24T13:34:54Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -85,6 +85,9 @@ Trio-Patch-Source-Commits:
  19b1d3993111fe4e1d9507349cd0249a34a778fd watch: telemetry for the circular Glucose Bobble complication (TRIO-063)
  96ab57ae162305513ff3a63dbc2bb6d0a87a9656 watch: circular complication telemetry reports the real reload generation (TRIO-063)
  8310772074a7df5a36c1d0f39b5347ccd76cb362 watch: read the reload generation once for recording and telemetry (TRIO-063)
+ 7936b4da3ba08fc91c89ead04a3408f28a2f308a Glucose Bobble complication: colour the reading like the chart, not the white-in-range bubble
+ a942682b4577fd708414a0684a0f2e2dd3090967 Merge feature/glucose-circular-complication into feature/watch-g7 (TRIO-063)
+ ac4c9388584c882d3e8b500ac6d07ea36fdbf1b3 watch: circular complication uses the chart colour for every reading source (TRIO-063)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -151,9 +154,11 @@ Trio-Patch-Source-PatchIds:
  cf37992a98d67edbd7058477a6ed311f9dca2795
  a1d8e96652e549a66f781353bcc5164cea052af1
  d82cd2d011dceba7a5f68c5a9d46529e9213ac9c
+ 22ff8677116d5323f0fb49d0812376a5d34a5578
+ 4e77dc0547a20d58dd747014e1dca7ea3e856cac
 ---
  .../ExtensionDelegate.swift                   |   92 +
- .../G7WatchSensorAdapter.swift                | 1900 ++++++++++++
+ .../G7WatchSensorAdapter.swift                | 1902 ++++++++++++
  .../Helper/WatchNotificationHandler.swift     |   30 +
  .../Helper/WatchResidentTelemetry.swift       |  139 +
  Trio Watch App Extension/TrioWatchApp.swift   |   54 +-
@@ -165,7 +170,7 @@ Trio-Patch-Source-PatchIds:
  .../WatchGlucoseHistoryStore.swift            |  229 ++
  Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 2605 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2632 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  138 +
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
@@ -175,14 +180,14 @@ Trio-Patch-Source-PatchIds:
  .../TrioWatchComplication.swift               |  625 +++-
  .../TrioWatchComplicationPreview.swift        |  124 +
  Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
- .../GlucoseComplicationSnapshot.swift         |   37 +-
- .../TrioComplicationDataStore.swift           | 1322 +++++++++
+ .../GlucoseComplicationSnapshot.swift         |   38 +-
+ .../TrioComplicationDataStore.swift           | 1331 +++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  603 +++-
- 30 files changed, 9951 insertions(+), 580 deletions(-)
+ 30 files changed, 9976 insertions(+), 594 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -296,10 +301,10 @@ index 000000000..27aaef3cc
 +}
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..3d472a5b4
+index 000000000..7069ef4ca
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,1900 @@
+@@ -0,0 +1,1902 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -1896,7 +1901,9 @@ index 000000000..3d472a5b4
 +            state: nil,
 +            glucoseColor: WatchGlucoseColorComputer.shared.bubbleColorHex(for: tail.glucoseMgDl), // W5
 +            source: .g7DirectBLE,
-+            sequence: tail.sequence
++            sequence: tail.sequence,
++            // fork — bake the chart/scheme colour alongside the bubble colour.
++            chartGlucoseColor: WatchGlucoseColorComputer.shared.chartColorHex(for: tail.glucoseMgDl)
 +        )
 +
 +        TrioComplicationDataStore.shared.save(snapshot, triggerReload: true, minInterval: 5)
@@ -5095,7 +5102,7 @@ index ea6c9f146..f3ed61337 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index f9798e473..ffa2fe04f 100644
+index efe8c8a2f..d8a1cd756 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,104 @@
@@ -5210,7 +5217,7 @@ index f9798e473..ffa2fe04f 100644
      var trend: String? = ""
      var delta: String? = "--"
      var glucoseValues: [(date: Date, glucose: Double, color: Color)] = []
-@@ -26,26 +107,59 @@ import WidgetKit
+@@ -26,30 +107,59 @@ import WidgetKit
      var cob: String? = "--"
      var iob: String? = "--"
      var lastLoopTime: String? = "--"
@@ -5247,6 +5254,10 @@ index f9798e473..ffa2fe04f 100644
 +    var bleLastRestoreAt: Date?
      var lastLoopDate: Date?
      var glucoseBobbleComplicationSettings: GlucoseBobbleComplicationSettings?
+-    /// The newest reading's colour in the user's glucose colour scheme, as the chart draws it.
+-    /// Unlike currentGlucoseColorString it is not white in range, so the complication can match
+-    /// the contact image's Glucose Bobble.
+-    private var latestGlucoseColorString: String?
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
@@ -5274,7 +5285,7 @@ index f9798e473..ffa2fe04f 100644
      var bolusIncrement: Decimal = 0.05
      var confirmBolusFaster: Bool = false
  
-@@ -57,46 +171,477 @@ import WidgetKit
+@@ -61,46 +171,477 @@ import WidgetKit
      var forecastConeMax: [Double] = []
      var forecastLines: [String: [Double]] = [:] // "iob" / "cob" / "uam" / "zt" -> values
  
@@ -5769,16 +5780,15 @@ index f9798e473..ffa2fe04f 100644
      private func setupSession() {
          if WCSession.isSupported() {
              let session = WCSession.default
-@@ -104,16 +649,554 @@ import WidgetKit
+@@ -108,16 +649,556 @@ import WidgetKit
              session.activate()
              self.session = session
              Task {
 -                await WatchLogger.shared.log("⌚️ WCSession setup complete.")
 +                await WatchLogger.shared.log("WCSession setup complete.")
-             }
-         } else {
-             Task {
--                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
++            }
++        } else {
++            Task {
 +                await WatchLogger.shared.log("WCSession is not supported on this device")
 +            }
 +        }
@@ -5814,13 +5824,12 @@ index f9798e473..ffa2fe04f 100644
 +                        await WatchLogger.shared.log("⚠️ hk_background_delivery_registered success=false low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)")
 +                    }
 +                }
-             }
++            }
 +
 +            self.setupGlucoseObserverQuery(store: store, sampleType: bgType)
-         }
-     }
- 
--    // MARK: – Handle Acknowledgement Messages FROM Phone
++        }
++    }
++
 +    private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuantityType) {
 +        healthKitStore = store
 +        let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { [weak self] _, completionHandler, error in
@@ -5965,7 +5974,9 @@ index f9798e473..ffa2fe04f 100644
 +            readingDate: readingDate,
 +            date: Date(),
 +            glucoseColor: WatchGlucoseColorComputer.shared.bubbleColorHex(for: hkMgDl), // W5: bake bubble hex
-+            source: .healthKit
++            source: .healthKit,
++            // fork — bake the chart/scheme colour alongside the bubble colour.
++            chartGlucoseColor: WatchGlucoseColorComputer.shared.chartColorHex(for: hkMgDl)
 +        )
 +
 +        DispatchQueue.main.async { [weak self] in
@@ -6050,9 +6061,10 @@ index f9798e473..ffa2fe04f 100644
 +                Task {
 +                    await WatchLogger.shared.log("⚠️ hk_anchor_decode_failed fire_id=\(fireId)")
 +                }
-+            }
-+        } else {
-+            Task {
+             }
+         } else {
+             Task {
+-                await WatchLogger.shared.log("⌚️ WCSession is not supported on this device")
 +                await WatchLogger.shared.log("⚠️ hk_observer_nil_anchor fire_id=\(fireId)")
 +            }
 +        }
@@ -6282,9 +6294,9 @@ index f9798e473..ffa2fe04f 100644
 +                // advance the watermark so subsequent monotonic checks remain consistent.
 +                displayedReadingAttributedForDate = date
 +                return true
-+            }
+             }
 +            return false
-+        }
+         }
 +        if let attributed = displayedReadingAttributedForDate, date <= attributed {
 +            return false
 +        }
@@ -6292,8 +6304,9 @@ index f9798e473..ffa2fe04f 100644
 +        displayedReadingAttributedForDate = date
 +        displayedReadingAttributedSequence = sequence
 +        return true
-+    }
-+
+     }
+ 
+-    // MARK: – Handle Acknowledgement Messages FROM Phone
 +    private func intForWatchMessageKey(_ key: String, in message: [String: Any]) -> Int? {
 +        if let n = message[key] as? NSNumber { return n.intValue }
 +        return message[key] as? Int
@@ -6327,7 +6340,7 @@ index f9798e473..ffa2fe04f 100644
  
      func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
          Task {
-@@ -122,21 +1205,17 @@ import WidgetKit
+@@ -126,21 +1207,17 @@ import WidgetKit
  
          if success {
              Task {
@@ -6351,7 +6364,7 @@ index f9798e473..ffa2fe04f 100644
              DispatchQueue.main.async {
                  self.showCommsAnimation = false
              }
-@@ -151,7 +1230,7 @@ import WidgetKit
+@@ -155,7 +1232,7 @@ import WidgetKit
  
              DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                  self.showAcknowledgmentBanner = false
@@ -6360,7 +6373,7 @@ index f9798e473..ffa2fe04f 100644
                  Task {
                      await WatchLogger.shared.log("Cleared ack banner and syncing animation")
                  }
-@@ -161,14 +1240,12 @@ import WidgetKit
+@@ -165,14 +1242,12 @@ import WidgetKit
  
      // MARK: - WCSessionDelegate
  
@@ -6377,7 +6390,7 @@ index f9798e473..ffa2fe04f 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -176,165 +1253,651 @@ import WidgetKit
+@@ -180,165 +1255,651 @@ import WidgetKit
  
              if activationState == .activated {
                  Task {
@@ -6420,12 +6433,8 @@ index f9798e473..ffa2fe04f 100644
          Task {
 -            await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
 +            await WatchLogger.shared.log(Self.watchConnectivityInboundSummary(message))
-         }
- 
--        // Ack at top level — no `watchState` wrapper, no staleness check.
--        if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
--           let ackMessage = message[WatchMessageKeys.message] as? String,
--           let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
++        }
++
 +        // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
 +        // G7 sensor identity must sync whenever watchState is present, even when this method later skips UI (stale `date`, monotonic guard in scheduleUIUpdate, missing/invalid `date` — downstream branches must still run).
 +        let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any]
@@ -6433,8 +6442,12 @@ index f9798e473..ffa2fe04f 100644
 +            DispatchQueue.main.async { @MainActor in
 +                self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(ws)
 +            }
-+        }
-+
+         }
+ 
+-        // Ack at top level — no `watchState` wrapper, no staleness check.
+-        if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
+-           let ackMessage = message[WatchMessageKeys.message] as? String,
+-           let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
 +        if let watchStateDict,
 +           let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
 +        {
@@ -6965,6 +6978,14 @@ index f9798e473..ffa2fe04f 100644
 +                scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
 +            }
 +            return 0
++        }
++
++        // Successful terminal paths need a short-lived marker even when the task
++        // arrives after processing completed. Guarded/no-pending paths use
++        // requiresNoPendingContent instead.
++        if pendingCount > 0 || requiresNoPendingContent || recordMarkerWithoutPendingTasks {
++            lastConnectivityTerminalAt = Date()
++            lastConnectivityTerminalPath = canonicalConnectivityTerminalPath(path)
          }
 -    }
  
@@ -6974,14 +6995,6 @@ index f9798e473..ffa2fe04f 100644
 -        DispatchQueue.main.async {
 -            Task {
 -                await WatchLogger.shared.log("⌚️ Watch reachability changed: \(session.isReachable)")
-+        // Successful terminal paths need a short-lived marker even when the task
-+        // arrives after processing completed. Guarded/no-pending paths use
-+        // requiresNoPendingContent instead.
-+        if pendingCount > 0 || requiresNoPendingContent || recordMarkerWithoutPendingTasks {
-+            lastConnectivityTerminalAt = Date()
-+            lastConnectivityTerminalPath = canonicalConnectivityTerminalPath(path)
-+        }
-+
 +        guard pendingCount > 0 else {
 +            let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
 +            if recordMarkerWithoutPendingTasks {
@@ -7115,7 +7128,7 @@ index f9798e473..ffa2fe04f 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -345,7 +1908,7 @@ import WidgetKit
+@@ -349,7 +1910,7 @@ import WidgetKit
                  }
  
                  Task {
@@ -7124,7 +7137,7 @@ index f9798e473..ffa2fe04f 100644
                  }
  
                  switch ackCode {
-@@ -368,26 +1931,66 @@ import WidgetKit
+@@ -372,26 +1933,66 @@ import WidgetKit
                  }
              }
  
@@ -7200,7 +7213,7 @@ index f9798e473..ffa2fe04f 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -396,84 +1999,176 @@ import WidgetKit
+@@ -400,84 +2001,176 @@ import WidgetKit
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -7410,7 +7423,7 @@ index f9798e473..ffa2fe04f 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -488,40 +2183,27 @@ import WidgetKit
+@@ -492,50 +2185,27 @@ import WidgetKit
              self.lastLoopTime = lastLoopTime
          }
  
@@ -7436,6 +7449,16 @@ index f9798e473..ffa2fe04f 100644
 -                )
 -            }
 -            .sorted { $0.date < $1.date }
+-
+-            latestGlucoseColorString = glucoseData
+-                .compactMap { data -> (TimeInterval, String)? in
+-                    guard let timestamp = data["date"] as? TimeInterval,
+-                          let colorString = data["color"] as? String
+-                    else { return nil }
+-                    return (timestamp, colorString)
+-                }
+-                .max { $0.0 < $1.0 }?
+-                .1
 +            // P2: canonical mg/dL entries (no color). Decode via the single StoredGlucoseReading path,
 +            // batch-insert into the rolling history store (W1), then rebuild the chart from the store
 +            // so it carries the full 24h window, not just this payload's ~2h (P1).
@@ -7467,7 +7490,7 @@ index f9798e473..ffa2fe04f 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -542,43 +2224,53 @@ import WidgetKit
+@@ -556,43 +2226,53 @@ import WidgetKit
              }
          }
  
@@ -7546,7 +7569,7 @@ index f9798e473..ffa2fe04f 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -596,37 +2288,458 @@ import WidgetKit
+@@ -610,37 +2290,469 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
@@ -7611,7 +7634,7 @@ index f9798e473..ffa2fe04f 100644
 -                glucose: currentGlucose,
 -                trend: trend,
 -                delta: delta,
--                glucoseColorHex: currentGlucoseColorString,
+-                glucoseColorHex: latestGlucoseColorString ?? currentGlucoseColorString,
 -                readingDate: readingDate,
 -                lastLoopDate: lastLoopDate
 -            )
@@ -7628,7 +7651,10 @@ index f9798e473..ffa2fe04f 100644
 +        let unitsRaw = (message[WatchMessageKeys.units] as? String) ?? WatchGlucoseColorComputer.shared.cachedUnitsRaw
 +        WatchGlucoseColorComputer.shared.apply(low: low, high: high, target: target, dynamic: dynamic, unitsRaw: unitsRaw)
 +    }
-+
+ 
+-            if snapshot != GlucoseComplicationSnapshot.load() {
+-                snapshot.save()
+-                didSave = true
 +    private func saveComplicationSnapshot(from message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
 +        Task {
 +            await WatchLogger.shared.log("📸 saveComplicationSnapshot called with keys: \(message.keys.joined(separator: ", "))")
@@ -7674,6 +7700,13 @@ index f9798e473..ffa2fe04f 100644
 +            }
 +            return nil
 +        }()
++        // fork — same gating as glucoseColorValue above, chart/scheme colour instead of the bubble colour.
++        let chartGlucoseColorValue: String? = {
++            if let mgDlNumber = message[WatchMessageKeys.currentGlucoseMgDl] as? NSNumber, mgDlNumber.intValue >= 25 {
++                return WatchGlucoseColorComputer.shared.chartColorHex(for: mgDlNumber.intValue)
++            }
++            return nil
++        }()
 +
 +        Task {
 +            await WatchLogger.shared.log("📸 Saving snapshot: glucose=\(glucoseValue), trend=\(trendValue), delta=\(deltaValue), readingDate=\(readingDate)")
@@ -7688,7 +7721,9 @@ index f9798e473..ffa2fe04f 100644
 +            date: Date(),
 +            glucoseColor: glucoseColorValue,
 +            source: .watchConnectivity,
-+            sequence: intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
++            sequence: intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message),
++            // fork — bake the chart/scheme colour alongside the bubble colour.
++            chartGlucoseColor: chartGlucoseColorValue
 +        )
 +
 +        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -7759,7 +7794,9 @@ index f9798e473..ffa2fe04f 100644
 +            // Bake the locally-computed bubble hex only when we have a valid mg/dL; nil otherwise (never red).
 +            glucoseColor: currentGlucoseMgDl != nil ? currentGlucoseColorString : nil,
 +            source: displayedReadingSource,
-+            sequence: displayedReadingAttributedSequence
++            sequence: displayedReadingAttributedSequence,
++            // fork — same gating as glucoseColor above, chart/scheme colour instead of the bubble colour.
++            chartGlucoseColor: currentGlucoseMgDl.map { WatchGlucoseColorComputer.shared.chartColorHex(for: $0) }
 +        )
 +
 +        Task {
@@ -7805,7 +7842,7 @@ index f9798e473..ffa2fe04f 100644
 +        if isStaleBacklog {
 +            Task {
 +                await WatchLogger.shared.log("⚠️ sleep_gap_reload_stale_backlog reading_epoch=\(snapshotEpoch) snapshot_age=\(snapshotAgeDisplay) gap=\(gapDisplay)s read_ms=\(snapshotReadMs)")
-+            }
+             }
 +        } else {
 +            Task {
 +                await WatchLogger.shared.log("💤 sleep_gap_reload_firing reading_epoch=\(snapshotEpoch) snapshot_age=\(snapshotAgeDisplay) gap=\(gapDisplay)s read_ms=\(snapshotReadMs)")
@@ -7951,10 +7988,7 @@ index f9798e473..ffa2fe04f 100644
 +            }
 +            return
 +        }
- 
--            if snapshot != GlucoseComplicationSnapshot.load() {
--                snapshot.save()
--                didSave = true
++
 +        DispatchQueue.main.async {
 +            // Re-check after deferral: BLE may have advanced the watermark before this block runs.
 +            if let attributed = self.displayedReadingAttributedForDate,
@@ -7968,7 +8002,7 @@ index f9798e473..ffa2fe04f 100644
 +            self.delta = snapshot.delta
 +            if let glucoseColor = snapshot.glucoseColor {
 +                self.currentGlucoseColorString = glucoseColor
-             }
++            }
 +            self.lastWatchStateUpdate = snapshot.readingDate
 +            self.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
 +            self.showSyncingAnimation = false
@@ -9643,10 +9677,10 @@ index 000000000..b85a47a93
 +/// Anchor class for Bundle(for:) lookup since the enum has no instances.
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/GlucoseComplicationSnapshot.swift b/Trio Watch Shared/GlucoseComplicationSnapshot.swift
-index 91bf25ddc..afe9f30f4 100644
+index 9137e122b..8cca3a552 100644
 --- a/Trio Watch Shared/GlucoseComplicationSnapshot.swift	
 +++ b/Trio Watch Shared/GlucoseComplicationSnapshot.swift	
-@@ -21,11 +21,44 @@ struct GlucoseComplicationSnapshot: Codable, Equatable {
+@@ -23,11 +23,45 @@ struct GlucoseComplicationSnapshot: Codable, Equatable {
          return UserDefaults(suiteName: suiteName)
      }
  
@@ -9686,7 +9720,8 @@ index 91bf25ddc..afe9f30f4 100644
 +            glucose: s.glucose,
 +            trend: s.trend,
 +            delta: s.delta == "--" ? nil : s.delta,
-+            glucoseColorHex: s.glucoseColor ?? "",
++            // fork — prefer the chart/scheme colour over the white-in-range bubble colour.
++            glucoseColorHex: s.chartGlucoseColor ?? s.glucoseColor ?? "",
 +            readingDate: s.readingDate,
 +            lastLoopDate: storedLastLoopDate()
 +        )
@@ -9695,10 +9730,10 @@ index 91bf25ddc..afe9f30f4 100644
      func save() {
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..f9f7ea169
+index 000000000..b99b001d6
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,1322 @@
+@@ -0,0 +1,1331 @@
 +import Foundation
 +import os
 +#if os(watchOS)
@@ -9757,6 +9792,12 @@ index 000000000..f9f7ea169
 +    /// text-only fallback). `var` so the store can enrich it on save. Deliberately excluded from
 +    /// ComplicationSnapshotFingerprint, so it never affects dedup.
 +    var recentReadings: [[Int]]?
++    /// fork — the reading's chart/scheme colour (same math as the phone's getDynamicGlucoseColor,
++    /// coloured in range too), as opposed to `glucoseColor` which is the white-in-range bubble
++    /// colour. Optional for clean Codable evolution, same reasoning as `recentReadings`.
++    /// Deliberately excluded from ComplicationSnapshotFingerprint, so it never affects dedup.
++    /// Used by the circular Glucose Bobble complication.
++    var chartGlucoseColor: String?
 +
 +    // INVARIANT (Phase 3.4): All display-field sanitization here.
 +    // Dedup always compares sanitized values.
@@ -9770,7 +9811,9 @@ index 000000000..f9f7ea169
 +        glucoseColor: String? = nil,
 +        source: TrioComplicationDataSource? = nil,
 +        sequence: Int? = nil,
-+        recentReadings: [[Int]]? = nil
++        recentReadings: [[Int]]? = nil,
++        // fork — the chart/scheme colour, distinct from `glucoseColor` (the bubble colour).
++        chartGlucoseColor: String? = nil
 +    ) {
 +        glucose = Self.sanitizedGlucose(from: rawGlucose)
 +        trend = rawTrend.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -9782,6 +9825,7 @@ index 000000000..f9f7ea169
 +        self.source = source
 +        self.sequence = sequence
 +        self.recentReadings = recentReadings
++        self.chartGlucoseColor = chartGlucoseColor
 +    }
 +
 +    private static func sanitizedGlucose(from value: String) -> String {

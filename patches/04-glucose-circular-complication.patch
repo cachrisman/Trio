@@ -1,12 +1,12 @@
-From 5ce4b799c7a8c4232b9e3f51997be37e282fd9fb Mon Sep 17 00:00:00 2001
+From 3bcadf7fe3601775cd486a33fc6c48e4281875af Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 06:58:01 +0200
+Date: Thu, 24 Sep 2026 15:34:44 +0200
 Subject: [PATCH] feat: glucose-circular-complication
 
 Trio-Patch-Source-Branch: feature/glucose-circular-complication
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 89fab892b8ed9ba823d32779d4e4cf5e84967d56
-Trio-Patch-Generated: 2026-09-24T04:57:48Z
+Trio-Patch-Feature-Tip: 7936b4da3ba08fc91c89ead04a3408f28a2f308a
+Trio-Patch-Generated: 2026-09-24T13:34:31Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
@@ -24,6 +24,7 @@ Trio-Patch-Source-Commits:
  214fadf9e88679e7c69b60e07fd5c713c2157ae2 Glucose Bobble complication: apply the phone settings
  621d2e17c3b3067285194e410d968c0677c60f7a Send the Glucose Bobble settings even when there is no glucose reading
  89fab892b8ed9ba823d32779d4e4cf5e84967d56 Glucose Bobble settings preview: keep the glucose tint in White mode, as the complication does
+ 7936b4da3ba08fc91c89ead04a3408f28a2f308a Glucose Bobble complication: colour the reading like the chart, not the white-in-range bubble
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
@@ -42,13 +43,14 @@ Trio-Patch-Source-PatchIds:
  d35612efdf63bc01a9c77480b92450872c86922d
  09c266963acddd16224101605b9adaef157d3875
  b19bc3bb4664130e59987eff56666cada522df72
+ 22ff8677116d5323f0fb49d0812376a5d34a5578
 ---
- Trio Watch App Extension/WatchState.swift     |  44 +++
+ Trio Watch App Extension/WatchState.swift     |  58 ++++
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
  .../GlucoseBobbleComplication.swift           | 311 ++++++++++++++++++
  .../TrioWatchComplication.entitlements        |  10 +
  .../TrioWatchComplication.swift               |   2 +-
- .../GlucoseComplicationSnapshot.swift         |  39 +++
+ .../GlucoseComplicationSnapshot.swift         |  41 +++
  .../GlucoseBobbleComplicationSettings.swift   |  80 +++++
  Trio/Sources/Models/TrioSettings.swift        |   8 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   4 +
@@ -57,7 +59,7 @@ Trio-Patch-Source-PatchIds:
  .../View/WatchConfigAppleWatchView.swift      |  13 +
  .../WatchConfig/WatchConfigStateModel.swift   |   2 +
  .../WatchManager/AppleWatchManager.swift      |  13 +
- 14 files changed, 666 insertions(+), 2 deletions(-)
+ 14 files changed, 682 insertions(+), 2 deletions(-)
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
  create mode 100644 Trio Watch Complication/GlucoseBobbleComplication.swift
  create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
@@ -66,7 +68,7 @@ Trio-Patch-Source-PatchIds:
  create mode 100644 Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
 
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 805f52895..646902fc1 100644
+index 805f52895..a8794c958 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,6 +1,7 @@
@@ -77,16 +79,20 @@ index 805f52895..646902fc1 100644
  
  /// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
  /// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
-@@ -25,6 +26,8 @@ import WatchConnectivity
+@@ -25,6 +26,12 @@ import WatchConnectivity
      var cob: String? = "--"
      var iob: String? = "--"
      var lastLoopTime: String? = "--"
 +    var lastLoopDate: Date?
 +    var glucoseBobbleComplicationSettings: GlucoseBobbleComplicationSettings?
++    /// The newest reading's colour in the user's glucose colour scheme, as the chart draws it.
++    /// Unlike currentGlucoseColorString it is not white in range, so the complication can match
++    /// the contact image's Glucose Bobble.
++    private var latestGlucoseColorString: String?
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
  
-@@ -485,6 +488,14 @@ import WatchConnectivity
+@@ -485,6 +492,14 @@ import WatchConnectivity
              self.lastLoopTime = lastLoopTime
          }
  
@@ -101,7 +107,24 @@ index 805f52895..646902fc1 100644
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
              glucoseValues = glucoseData.compactMap { data in
                  guard let glucose = data["glucose"] as? Double,
-@@ -584,5 +595,38 @@ import WatchConnectivity
+@@ -499,6 +514,16 @@ import WatchConnectivity
+                 )
+             }
+             .sorted { $0.date < $1.date }
++
++            latestGlucoseColorString = glucoseData
++                .compactMap { data -> (TimeInterval, String)? in
++                    guard let timestamp = data["date"] as? TimeInterval,
++                          let colorString = data["color"] as? String
++                    else { return nil }
++                    return (timestamp, colorString)
++                }
++                .max { $0.0 < $1.0 }?
++                .1
+         }
+ 
+         if let minYAxisValue = message[WatchMessageKeys.minYAxisValue] {
+@@ -584,5 +609,38 @@ import WatchConnectivity
              forecastConeMax = forecastPayload[WatchMessageKeys.forecastConeMax] as? [Double] ?? []
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
@@ -124,7 +147,7 @@ index 805f52895..646902fc1 100644
 +                glucose: currentGlucose,
 +                trend: trend,
 +                delta: delta,
-+                glucoseColorHex: currentGlucoseColorString,
++                glucoseColorHex: latestGlucoseColorString ?? currentGlucoseColorString,
 +                readingDate: readingDate,
 +                lastLoopDate: lastLoopDate
 +            )
@@ -504,10 +527,10 @@ index a8721530a..695bd6a54 100644
      var body: some WidgetConfiguration {
 diff --git a/Trio Watch Shared/GlucoseComplicationSnapshot.swift b/Trio Watch Shared/GlucoseComplicationSnapshot.swift
 new file mode 100644
-index 000000000..91bf25ddc
+index 000000000..9137e122b
 --- /dev/null
 +++ b/Trio Watch Shared/GlucoseComplicationSnapshot.swift	
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,41 @@
 +import Foundation
 +
 +/// The latest glucose reading and last loop date handed from the watch app to its complication
@@ -516,6 +539,8 @@ index 000000000..91bf25ddc
 +    let glucose: String
 +    let trend: String?
 +    let delta: String?
++    /// The reading's colour in the user's glucose colour scheme (as the chart and the contact
++    /// image's Glucose Bobble draw it), not the white-in-range colour of the watch's reading bubble.
 +    let glucoseColorHex: String
 +    let readingDate: Date
 +    var lastLoopDate: Date? = nil
