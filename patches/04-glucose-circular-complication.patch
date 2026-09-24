@@ -1,12 +1,12 @@
-From 6d7852e187d736d63a6e058dbbc4a4f3a346384b Mon Sep 17 00:00:00 2001
+From 95331432ec27ce729dfad38fa722391d7fa01861 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 01:52:49 +0200
+Date: Thu, 24 Sep 2026 06:12:19 +0200
 Subject: [PATCH] feat: glucose-circular-complication
 
 Trio-Patch-Source-Branch: feature/glucose-circular-complication
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 5375f1d1bbedc60812593da6ea7b95a7eeb7e18c
-Trio-Patch-Generated: 2026-09-23T23:52:39Z
+Trio-Patch-Feature-Tip: b2aa6f56f431fb104c1a3bbe15ab73c04d9701bf
+Trio-Patch-Generated: 2026-09-24T04:12:09Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
@@ -15,6 +15,7 @@ Trio-Patch-Source-Commits:
  a4af888888c383233cbeaafac507ae5677b5bddb Glucose Bobble: inside-ring arrow tip touches the ring
  09592b7ace4aac197046e213e14de5ae9ae28e60 Glucose Bobble: keep inside-ring text clear of a 45 degree arrow
  5375f1d1bbedc60812593da6ea7b95a7eeb7e18c Glucose Bobble complication: start the 5-minute tail at 30 so the age never holds for six minutes
+ b2aa6f56f431fb104c1a3bbe15ab73c04d9701bf Glucose Bobble complication: round to the minute with timestamp arithmetic, not calendar components
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
@@ -24,6 +25,7 @@ Trio-Patch-Source-PatchIds:
  46ca92c5cb5e705436a834c1651f44b456f40a19
  def34e438c168472070067e0e2605e5a6f11564c
  1f586ab8f25b49f547938f8b42505809dc3f2ac9
+ 13a1aa58de5f812ab659b12aa142b2d05bf1ac05
 ---
  Trio Watch App Extension/WatchState.swift     |  22 ++
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
@@ -94,7 +96,7 @@ index 000000000..9a37de423
 +</plist>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
 new file mode 100644
-index 000000000..084eeb542
+index 000000000..89aa32d3c
 --- /dev/null
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
 @@ -0,0 +1,235 @@
@@ -168,10 +170,10 @@ index 000000000..084eeb542
 +        completion(timeline)
 +    }
 +
++    // Absolute arithmetic, not calendar components: rebuilding a date from local components is
++    // ambiguous in the repeated hour when DST ends and can land an hour early.
 +    static func roundedDownToMinute(_ date: Date) -> Date {
-+        let calendar = Calendar.current
-+        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
-+        return calendar.date(from: components) ?? date
++        Date(timeIntervalSinceReferenceDate: (date.timeIntervalSinceReferenceDate / 60).rounded(.down) * 60)
 +    }
 +}
 +
