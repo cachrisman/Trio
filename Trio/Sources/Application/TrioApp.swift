@@ -66,32 +66,46 @@ extension Notification.Name {
     }
 
     private func loadServices() {
-        resolver.resolve(AppearanceManager.self)!.setupGlobalAppearance()
-        _ = resolver.resolve(DeviceDataManager.self)!
-        _ = resolver.resolve(APSManager.self)!
-        _ = resolver.resolve(FetchGlucoseManager.self)!
-        _ = resolver.resolve(FetchTreatmentsManager.self)!
-        _ = resolver.resolve(CalendarManager.self)!
-        _ = resolver.resolve(UserNotificationsManager.self)!
-        _ = resolver.resolve(WatchManager.self)!
-        _ = resolver.resolve(ContactImageManager.self)!
-        _ = resolver.resolve(HealthKitManager.self)!
-        _ = resolver.resolve(GarminManager.self)!
-        _ = resolver.resolve(BluetoothStateManager.self)!
-        _ = resolver.resolve(PluginManager.self)!
-        _ = resolver.resolve(AlertPermissionsChecker.self)!
-        if #available(iOS 16.2, *) {
-            _ = resolver.resolve(LiveActivityManager.self)!
+        if let appearance = resolveOrLog(AppearanceManager.self) {
+            appearance.setupGlobalAppearance()
         }
-        _ = resolver.resolve(IOBService.self)!
-        _ = resolver.resolve(GlucoseAlertCoordinator.self)!
-        _ = resolver.resolve(NotLoopingMonitor.self)!
+        resolveOrLog(DeviceDataManager.self)
+        resolveOrLog(APSManager.self)
+        resolveOrLog(FetchGlucoseManager.self)
+        resolveOrLog(FetchTreatmentsManager.self)
+        resolveOrLog(CalendarManager.self)
+        resolveOrLog(UserNotificationsManager.self)
+        resolveOrLog(WatchManager.self)
+        resolveOrLog(ContactImageManager.self)
+        resolveOrLog(HealthKitManager.self)
+        resolveOrLog(GarminManager.self)
+        resolveOrLog(BluetoothStateManager.self)
+        resolveOrLog(PluginManager.self)
+        resolveOrLog(AlertPermissionsChecker.self)
+        resolveOrLog(CloudLogUploadService.self)
+        if #available(iOS 16.2, *) {
+            resolveOrLog(LiveActivityManager.self)
+        }
+        resolveOrLog(GlucoseAlertCoordinator.self)
+        resolveOrLog(NotLoopingMonitor.self)
         _ = DeviceAlertsStore.shared
-        // Last: needs the pump manager's AlertResponder registration and the
-        // seeded DeviceAlertsStore in place before re-presenting alerts.
-        resolver.resolve(TrioAlertManager.self)!.replayUnacknowledgedAlerts()
+        resolveOrLog(IOBService.self)
+
+        // This must come last: re-presenting unacknowledged alerts requires the pump manager's
+        // AlertResponder registration and the seeded DeviceAlertsStore to already be in place.
+        // Routed through the resolveOrLog helper rather than a force unwrap.
+        _ = resolveOrLog(TrioAlertManager.self)?.replayUnacknowledgedAlerts()
 
         startTelemetry()
+    }
+
+    @discardableResult
+    private func resolveOrLog<T>(_ type: T.Type) -> T? {
+        guard let service = resolver.resolve(type) else {
+            warning(.default, "loadServices: failed to resolve \(type) — skipping")
+            return nil
+        }
+        return service
     }
 
     /// Telemetry starts here, not in `AppDelegate.didFinishLaunching`: resolving
@@ -113,7 +127,8 @@ extension Notification.Name {
     ///   3. scheduleRecurring: best-effort fallback for the rare case
     ///      where the app stays foregrounded for a full 24h.
     private func startTelemetry() {
-        let telemetry = resolver.resolve(TelemetryClient.self)!
+        // Routed through resolveOrLog rather than a force unwrap, like the rest of loadServices.
+        guard let telemetry = resolveOrLog(TelemetryClient.self) else { return }
         // hands the foreground-transition hook its reference; nil until now
         appDelegate.telemetry = telemetry
         telemetry.initializeInstallID()
