@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import WatchConnectivity
+import WidgetKit
 
 /// WatchState manages the communication between the Watch app and the iPhone app using WatchConnectivity.
 /// It handles glucose data synchronization and sending treatment requests (bolus, carbs) to the phone.
@@ -25,6 +26,8 @@ import WatchConnectivity
     var cob: String? = "--"
     var iob: String? = "--"
     var lastLoopTime: String? = "--"
+    var lastLoopDate: Date?
+    var glucoseBobbleComplicationSettings: GlucoseBobbleComplicationSettings?
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
 
@@ -485,6 +488,14 @@ import WatchConnectivity
             self.lastLoopTime = lastLoopTime
         }
 
+        lastLoopDate = (message[WatchMessageKeys.lastLoopDate] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
+
+        if let settingsData = message[WatchMessageKeys.glucoseBobbleComplicationSettings] as? Data,
+           let decodedSettings = try? JSONDecoder().decode(GlucoseBobbleComplicationSettings.self, from: settingsData)
+        {
+            glucoseBobbleComplicationSettings = decodedSettings
+        }
+
         if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
             glucoseValues = glucoseData.compactMap { data in
                 guard let glucose = data["glucose"] as? Double,
@@ -583,6 +594,39 @@ import WatchConnectivity
             forecastConeMin = forecastPayload[WatchMessageKeys.forecastConeMin] as? [Double] ?? []
             forecastConeMax = forecastPayload[WatchMessageKeys.forecastConeMax] as? [Double] ?? []
             forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
+        }
+
+        publishComplicationSnapshot()
+    }
+
+    // The complication extension is a separate process, so the latest reading is handed over
+    // through the shared App Group and the complication's timelines reloaded; unchanged readings are skipped to preserve WidgetKit's reload budget.
+    private func publishComplicationSnapshot() {
+        var didSave = false
+
+        if let glucoseBobbleComplicationSettings, glucoseBobbleComplicationSettings != GlucoseBobbleComplicationSettings.load() {
+            glucoseBobbleComplicationSettings.save()
+            didSave = true
+        }
+
+        if let readingDate = glucoseValues.map(\.date).max(), currentGlucose != "--" {
+            let snapshot = GlucoseComplicationSnapshot(
+                glucose: currentGlucose,
+                trend: trend,
+                delta: delta,
+                glucoseColorHex: currentGlucoseColorString,
+                readingDate: readingDate,
+                lastLoopDate: lastLoopDate
+            )
+
+            if snapshot != GlucoseComplicationSnapshot.load() {
+                snapshot.save()
+                didSave = true
+            }
+        }
+
+        if didSave {
+            WidgetCenter.shared.reloadAllTimelines()
         }
     }
 }

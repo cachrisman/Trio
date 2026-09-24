@@ -214,7 +214,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                     watchState.lastLoopTime = "--"
                 } else {
                     watchState.lastLoopTime = "\(lastLoopMinutes) min"
+                    watchState.lastLoopDate = self.apsManager.lastLoopDate
                 }
+
+                // Set before the no-glucose early return below, or a CGM outage would send the defaults
+                watchState.glucoseBobbleComplication = self.settingsManager.settings.glucoseBobbleComplication
 
                 // Set IOB and COB from latest determination
                 let iob = self.iobService.currentIOB ?? 0
@@ -560,6 +564,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
 
         dictionary[WatchMessageKeys.forecastData] = forecastData
+
+        if let lastLoopDate = state.lastLoopDate {
+            dictionary[WatchMessageKeys.lastLoopDate] = lastLoopDate.timeIntervalSince1970
+        }
+
+        if let glucoseBobbleData = try? JSONEncoder().encode(state.glucoseBobbleComplication) {
+            dictionary[WatchMessageKeys.glucoseBobbleComplicationSettings] = glucoseBobbleData
+        }
+
         return dictionary
     }
 
