@@ -1,4 +1,4 @@
-# AGENTS.md — v22
+# AGENTS.md — v23
 
 Instructions for AI agents working in this repository.
 
@@ -541,6 +541,19 @@ The `Trio Watch App` target uses `GENERATE_INFOPLIST_FILE = YES`. Custom keys
   even though the branch source file did. Verify the key is present in the *built*
   app's Info.plist, not just the on-disk merge file or the feature branch.
 
+## Upstream PRs to nightscout/Trio: comments
+
+Code bound for an upstream PR carries comments only where the code cannot say it. Upstream maintainers reject explanatory prose comments on sight: on PR #1573 (2026-09-24) the review was "Changes requested" solely to "remove the prosa-LLM comments", with the code and tests otherwise approved. The accepted fix was deleting every added comment, not shortening them.
+
+- **Default to no comment.** Let names carry the meaning (`retractReadingDrivenFiringAlarms()` needs no comment saying it retracts only reading-driven alarms).
+- **Never describe the change or the bug it fixes** ("…or they re-fire on every determination"). After merge that bug no longer exists; the reasoning belongs in the commit message and PR description.
+- **Never restate a `@Test("…")` title** in a `//` comment above the test.
+- **Don't take the file's existing density as permission.** Some upstream files (e.g. `GlucoseAlertCoordinator.swift`, ~17% comment lines vs ~7% across `Trio/Sources`) are comment-heavy, but a new PR's comments are judged on their own.
+- **Keep one only when it records a non-obvious constraint** a reader would otherwise break, in one or two lines.
+- Before opening or updating an upstream PR, re-read the diff's added comment lines and delete any that fail the above.
+
+This applies to upstream-bound PRs. The fork's own patch-stack code is not held to it, though the same rules are a sound default.
+
 ## Upstream sync (local)
 
 ```bash
@@ -663,6 +676,9 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v23 (2026-09-26 CEST)
+- **New section "Upstream PRs to nightscout/Trio: comments"**, placed before "Upstream sync (local)". Motivated by PR #1573 (2026-09-24): the maintainer requested changes solely to remove LLM-style prose comments (comments narrating the fix, restating function names and `@Test` titles). Default is no comment; keep one only for a non-obvious constraint.
 
 ### v22 (2026-09-16 CEST)
 - **New section "Build tasks (one epic per build)"** plus steps 0 and 7 in "When the user instructs a build": every build gets a `kind = epic` task recording the `dev` SHA and upstream base, the patch list with `sha256` prefixes, every attempt with its log path and failing stage, the stage-summary table, the GitHub release URL and TestFlight result, and two-way links (`parent` on the children, `## Contains` on the epic) to the fix/feature tasks it ships. Motivated by build 226 (2026-09-16): four attempts, an Xcode major-version change with an unaccepted licence, and a compile fix were spread across chat and three task files with nothing tying the build number to what it shipped or where its log was. Build 226 was recorded retroactively as `TRIO-059` and is the template. Same version: `ci/local-build.sh --task <KEY>` (TRIO-060) automates the mechanical fields — attempt start/outcome blocks, stage table, release URLs — via the task-relay CLI, and `scripts/record-release.sh` (v1.4.0, with the new `scripts/build-task-notes.py`) renders a "What's in this build" section into the release body from the epic's `## Contains` children and their `## Release note` sections, and records `tasks.epic`/`tasks.contains` in the manifest. `record-release.sh` also stops leaking two progress lines into the captured private-release URL.
