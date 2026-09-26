@@ -7,10 +7,34 @@ kind = "code"
 source = "human"
 source_ref = "docs/backlog/watch-debug-counter-persistence/watch-debug-counter-persistence-idea.md#L4"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["bug", "watch"]
+
+[[acceptance]]
+id = "AC-1"
+text = "Confirm root cause: `UserDefaults.standard` durability vs. an upgrade-triggered reset path vs. midnight-rollover coincidence"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "Install build N with non-zero same-day connects/EGVs, upgrade to build N+1 mid-day → debug view and status line still show accumulated totals, not 0"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "Local-midnight rollover still zeroes counters exactly once per day"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -25,8 +49,4 @@ hypothesis: `UserDefaults.standard` may not survive the watch app's upgrade/rein
 reliably; consider moving these keys to the app-group container already used by
 `TrioComplicationDataStore` / `ComplicationLogBuffer`.
 
-## Acceptance criteria
-
-- [ ] Confirm root cause: `UserDefaults.standard` durability vs. an upgrade-triggered reset path vs. midnight-rollover coincidence
-- [ ] Install build N with non-zero same-day connects/EGVs, upgrade to build N+1 mid-day → debug view and status line still show accumulated totals, not 0
-- [ ] Local-midnight rollover still zeroes counters exactly once per day
+## Notes carried over from acceptance criteria

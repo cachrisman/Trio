@@ -7,10 +7,50 @@ kind = "code"
 source = "human"
 source_ref = "docs/backlog/watch-to-phone-reading-backfill/watch-to-phone-reading-backfill.md#L3"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["watch", "g7"]
+
+[[acceptance]]
+id = "AC-1"
+text = "Resolve dedup/ordering: merge on sensor reading timestamp, not receipt time"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "Define trust model: only backfill genuine phone gaps, never let watch override/race phone's own readings"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "Decide transport: reuse existing watch-phone messaging vs. dedicated backfill channel"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-4"
+text = "Decide effect on loop: does a backfilled reading re-trigger a loop cycle, or is it display/log-only"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-5"
+text = "Sequence deliberately against watch-messaging-centralization (see that task's body) — don't let a new ad hoc payload family land mid-refactor"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -21,10 +61,4 @@ of truth. Investigate what it would take to sync watch-legitimate readings back 
 (loop/treatment store, Nightscout, charts) when the phone has a genuine gap. Evidence window logged
 for a concrete example: 2026-06-19T12:49:39Z–13:19:39Z UTC (pull from BetterStack).
 
-## Acceptance criteria
-
-- [ ] Resolve dedup/ordering: merge on sensor reading timestamp, not receipt time
-- [ ] Define trust model: only backfill genuine phone gaps, never let watch override/race phone's own readings
-- [ ] Decide transport: reuse existing watch-phone messaging vs. dedicated backfill channel
-- [ ] Decide effect on loop: does a backfilled reading re-trigger a loop cycle, or is it display/log-only
-- [ ] Sequence deliberately against watch-messaging-centralization (see that task's body) — don't let a new ad hoc payload family land mid-refactor
+## Notes carried over from acceptance criteria

@@ -7,10 +7,34 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/watch-messaging-centralization/fable-advisory.md#L91"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["watch", "architecture"]
+
+[[acceptance]]
+id = "AC-1"
+text = "All envelope/ACK string literals replaced with named constants shared between phone and watch targets"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "No behavior change; `patch-test.sh` stays green"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "Small, low-conflict diff — does not require waiting on the main centralization initiative's placement decision"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -23,8 +47,4 @@ wire protocol today is string literals (`"type"`, `"payloadId"`, `"payloadIds"`,
 Task B2 to cover these closes the biggest documented drift item cheaply, with low patch-conflict
 surface. See fable-advisory.md §3.2(c) "Hybrid slices."
 
-## Acceptance criteria
-
-- [ ] All envelope/ACK string literals replaced with named constants shared between phone and watch targets
-- [ ] No behavior change; `patch-test.sh` stays green
-- [ ] Small, low-conflict diff — does not require waiting on the main centralization initiative's placement decision
+## Notes carried over from acceptance criteria

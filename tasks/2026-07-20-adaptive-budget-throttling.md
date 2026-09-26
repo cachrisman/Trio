@@ -7,10 +7,34 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/complication-freshness/problem-and-strategy.md#L151"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["complication-freshness"]
+
+[[acceptance]]
+id = "AC-1"
+text = "Design the throttling function (inputs: remaining budget, projected burn rate, snapshot age)"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "Implement dynamic T adjustment in the stale-first gate"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "Verify budget exhaustion rate drops without early-day freshness regression"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -20,8 +44,4 @@ using remaining budget, time-of-day/projected burn, and current snapshot age as 
 40/50 transfers are used by noon, stretch T from 600s to 900-1200s to avoid exhaustion. Extends the
 budget-ok window without sacrificing early-day freshness.
 
-## Acceptance criteria
-
-- [ ] Design the throttling function (inputs: remaining budget, projected burn rate, snapshot age)
-- [ ] Implement dynamic T adjustment in the stale-first gate
-- [ ] Verify budget exhaustion rate drops without early-day freshness regression
+## Notes carried over from acceptance criteria

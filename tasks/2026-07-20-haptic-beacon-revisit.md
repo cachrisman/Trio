@@ -7,10 +7,34 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/haptic-beacon/haptic-beacon-impl-plan.md#L3"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["watch", "g7", "revisit"]
+
+[[acceptance]]
+id = "AC-1"
+text = "Determine why the 2026-05-23 revert happened (ask Charlie / check for context outside these docs)"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "Decide: re-land the reverted implementation, redesign, or drop permanently"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "If re-landing: re-verify the old Cut 1-4 + R2-R8 design against current `G7WatchSensorAdapter.swift`/`WatchState.swift` (grown since May)"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -25,8 +49,4 @@ after the removal — they still describe it as "implemented in worktree, awaiti
 verification." The reason for the revert was not found in the commit message or these docs. This
 task exists to revisit the idea if wanted, not to imply the old work is ready to resume as-is.
 
-## Acceptance criteria
-
-- [ ] Determine why the 2026-05-23 revert happened (ask Charlie / check for context outside these docs)
-- [ ] Decide: re-land the reverted implementation, redesign, or drop permanently
-- [ ] If re-landing: re-verify the old Cut 1-4 + R2-R8 design against current `G7WatchSensorAdapter.swift`/`WatchState.swift` (grown since May)
+## Notes carried over from acceptance criteria

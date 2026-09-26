@@ -7,10 +7,42 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/fpu-nightscout-reporting/fpu-nightscout-reporting-trio-impl-plan.md#L4"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["nightscout", "fpu"]
+
+[[acceptance]]
+id = "AC-1"
+text = "`Trio/Sources/Models/NightscoutTreatment.swift` (and related upload path) adds `isFPU`/`fpuID` metadata to FPU delayed-chunk uploads"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "Upload-status bookkeeping matches FPU rows on `fpuID` instead of shared `id`, so they're marked uploaded and stop re-uploading every cycle"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "Upload `id`, COB semantics, and Nightscout deletion behavior unchanged"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-4"
+text = "Parent-meal uploads (`fat`/`protein` populated) unaffected"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -29,9 +61,4 @@ Investigation: `fpu-nightscout-reporting-investigation.md`.
 A companion nightscout-nextjs task (to consume/formalize this metadata) is tracked separately in
 the nightscout-nextjs repo, not here.
 
-## Acceptance criteria
-
-- [ ] `Trio/Sources/Models/NightscoutTreatment.swift` (and related upload path) adds `isFPU`/`fpuID` metadata to FPU delayed-chunk uploads
-- [ ] Upload-status bookkeeping matches FPU rows on `fpuID` instead of shared `id`, so they're marked uploaded and stop re-uploading every cycle
-- [ ] Upload `id`, COB semantics, and Nightscout deletion behavior unchanged
-- [ ] Parent-meal uploads (`fat`/`protein` populated) unaffected
+## Notes carried over from acceptance criteria

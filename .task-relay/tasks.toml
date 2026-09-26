@@ -1,1 +1,6 @@
 prefix = "TRIO"
+
+# Tasks created on or after this date are in enforced acceptance-criteria scope (TR-566):
+# code/docs tasks need a structured [[acceptance]] entry (or `tasks ac none --reason`) before review,
+# and body checkbox lists / "## Acceptance criteria" headings are lint errors. Set the day this repo was migrated.
+acceptance_cutover = "2026-09-26"

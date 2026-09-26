@@ -7,10 +7,26 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/complication-freshness/problem-and-strategy.md#L184"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["complication-freshness", "watch", "future-work"]
+
+[[acceptance]]
+id = "AC-1"
+text = "Feasibility assessment of `WKApplicationRefreshBackgroundTask` as a fallback pull trigger"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "Decision recorded: pursue, defer further, or reject"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -21,7 +37,4 @@ watch app process, so "check for fresh data already in App Group" is not the use
 is a fallback pull trigger when no push has arrived. Heavier and more speculative than the R4/R5d
 follow-ups; explicitly deferred until product priority.
 
-## Acceptance criteria
-
-- [ ] Feasibility assessment of `WKApplicationRefreshBackgroundTask` as a fallback pull trigger
-- [ ] Decision recorded: pursue, defer further, or reject
+## Notes carried over from acceptance criteria

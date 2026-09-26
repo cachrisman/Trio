@@ -7,10 +7,18 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/complication-freshness/problem-and-strategy.md#L164"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["complication-freshness", "observability"]
+
+[[acceptance]]
+id = "AC-1"
+text = "`hk_write_epoch_seconds` field added to the transfer log line"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -18,6 +26,4 @@ tags = ["complication-freshness", "observability"]
 Add `hk_write_epoch_seconds` to the existing transfer log line — measures phone-side HK write →
 heartbeat → transfer latency, currently invisible.
 
-## Acceptance criteria
-
-- [ ] `hk_write_epoch_seconds` field added to the transfer log line
+## Notes carried over from acceptance criteria

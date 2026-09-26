@@ -7,10 +7,34 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/patch-build-tooling-hardening/01-design.md#L178"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["patch-tooling"]
+
+[[acceptance]]
+id = "AC-1"
+text = "`build-<N>.json` local provenance artifact emitted for every `--build-only` run (released builds already get a manifest via `record-release.sh` + `BuildDetails.plist`; this is the local convenience equivalent)"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "`generate-patch.sh` rejects output paths outside `patches/`"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "Drift-exclude regexes persisted in a checked-in `.patch-drift-excludes` file"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -21,8 +45,4 @@ Lower-priority follow-ups (G/H) from the patch/build tooling hardening initiativ
 Verified 2026-07-20: G/H are still unimplemented (no `build-<N>.json` provenance file found, no
 output-path guard or persisted drift-exclude regex found in `generate-patch.sh`).
 
-## Acceptance criteria
-
-- [ ] `build-<N>.json` local provenance artifact emitted for every `--build-only` run (released builds already get a manifest via `record-release.sh` + `BuildDetails.plist`; this is the local convenience equivalent)
-- [ ] `generate-patch.sh` rejects output paths outside `patches/`
-- [ ] Drift-exclude regexes persisted in a checked-in `.patch-drift-excludes` file
+## Notes carried over from acceptance criteria

@@ -7,10 +7,26 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/complication-freshness/problem-and-strategy.md#L167"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["complication-freshness", "observability"]
+
+[[acceptance]]
+id = "AC-1"
+text = "Design a correlation mechanism between reload-dispatch generation and `getTimeline` invocation"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "Re-measure the ~45% uncorrelated-dispatch rate after instrumentation lands"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -23,7 +39,4 @@ investigation found ~45% of logged reload dispatches were not followed by a corr
 between reload generation and `getTimeline` invocation to distinguish "fresh snapshot, stale UI"
 from "reload silently ignored by platform."
 
-## Acceptance criteria
-
-- [ ] Design a correlation mechanism between reload-dispatch generation and `getTimeline` invocation
-- [ ] Re-measure the ~45% uncorrelated-dispatch rate after instrumentation lands
+## Notes carried over from acceptance criteria

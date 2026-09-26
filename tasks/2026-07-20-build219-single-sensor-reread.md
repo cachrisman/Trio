@@ -7,10 +7,34 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/watch-g7-direct-ble-observer/build219-impl-plan.md#L55"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["watch", "g7", "telemetry"]
+
+[[acceptance]]
+id = "AC-1"
+text = "Pull single-sensor BetterStack telemetry (no sensor change mid-window)"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "Re-derive no-session yield on that clean window"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "Record verdict: drop confirmed (candidate for 219) vs. sensor/RF artifact (drop the lever)"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -23,8 +47,4 @@ change. Only if the drop survives sensor-stable data does it become a candidate 
 fix. See `docs/in-progress/watch-g7-direct-ble-observer/build219-impl-plan.md` §"Scope of 219" and
 `egv-intervention-index.md`.
 
-## Acceptance criteria
-
-- [ ] Pull single-sensor BetterStack telemetry (no sensor change mid-window)
-- [ ] Re-derive no-session yield on that clean window
-- [ ] Record verdict: drop confirmed (candidate for 219) vs. sensor/RF artifact (drop the lever)
+## Notes carried over from acceptance criteria

@@ -7,11 +7,43 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/complication-freshness/problem-and-strategy.md#L148"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 blocked_by = "019f8141-e117-77db-9216-aad18fed48dd"
 tags = ["complication-freshness", "watch"]
+
+[[acceptance]]
+id = "AC-1"
+text = "`proactive-transfer-foreground-sync` (Phases A-E) shipped and its Phase F gate passed"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "`didFinishUserInfoTransfer` success path checks `lastDataReceivedAt` staleness"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "If still stale, sends `requestWatchUpdate`"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-4"
+text = "66-minute dead-zone-class gap no longer requires manual recovery"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -23,9 +55,4 @@ stale, send `requestWatchUpdate`. Addresses the 66-minute dead-zone recovery gap
 §7.1/§12) — explicitly gated behind Phases A-E of `proactive-transfer-foreground-sync` shipping and
 passing the Phase F gate.
 
-## Acceptance criteria
-
-- [ ] `proactive-transfer-foreground-sync` (Phases A-E) shipped and its Phase F gate passed
-- [ ] `didFinishUserInfoTransfer` success path checks `lastDataReceivedAt` staleness
-- [ ] If still stale, sends `requestWatchUpdate`
-- [ ] 66-minute dead-zone-class gap no longer requires manual recovery
+## Notes carried over from acceptance criteria

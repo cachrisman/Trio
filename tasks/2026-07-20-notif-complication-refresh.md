@@ -7,10 +7,58 @@ kind = "code"
 source = "human"
 source_ref = "docs/backlog/notif-complication-refresh/notif-complication-refresh-idea.md#L4"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["complication-freshness", "watch"]
+
+[[acceptance]]
+id = "AC-1"
+text = "`UNUserNotificationCenterDelegate.userNotificationCenter(_:didReceive:withCompletionHandler:)` on watchOS handles Snooze, default tap, and custom-dismiss interactions uniformly"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "iOS attaches a `TrioComplicationSnapshot`-shaped payload to `content.userInfo` for notifications that should refresh the complication"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-3"
+text = "Watch handler applies staleness gating on a canonical timestamp before overwriting `TrioComplicationDataStore`"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-4"
+text = "Handler updates only the complication data store and requests a timeline reload — no WatchState/pendingData/UI merge"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-5"
+text = "Structured logging/metrics per design §4.4 (applied/skipped/parse-failed counts)"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-6"
+text = "Late interaction on an old notification does not overwrite the complication with stale data"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -21,11 +69,4 @@ deterministic, budget-free trigger to refresh the complication from a `TrioCompl
 carried in the notification payload, without adding new WatchConnectivity flows. Full design in
 `docs/backlog/notif-complication-refresh/notif-complication-refresh-idea.md`.
 
-## Acceptance criteria
-
-- [ ] `UNUserNotificationCenterDelegate.userNotificationCenter(_:didReceive:withCompletionHandler:)` on watchOS handles Snooze, default tap, and custom-dismiss interactions uniformly
-- [ ] iOS attaches a `TrioComplicationSnapshot`-shaped payload to `content.userInfo` for notifications that should refresh the complication
-- [ ] Watch handler applies staleness gating on a canonical timestamp before overwriting `TrioComplicationDataStore`
-- [ ] Handler updates only the complication data store and requests a timeline reload — no WatchState/pendingData/UI merge
-- [ ] Structured logging/metrics per design §4.4 (applied/skipped/parse-failed counts)
-- [ ] Late interaction on an old notification does not overwrite the complication with stale data
+## Notes carried over from acceptance criteria

@@ -7,10 +7,26 @@ kind = "code"
 source = "human"
 source_ref = "docs/in-progress/complication-freshness/problem-and-strategy.md#L166"
 created = 2026-07-20
-updated = 2026-07-20
-touched = 2026-07-20
+updated = 2026-09-26
+touched = 2026-09-26
 owner = "me"
 tags = ["complication-freshness", "observability"]
+
+[[acceptance]]
+id = "AC-1"
+text = "New roll-up log event emitted at snapshot save and/or reload time"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
+
+[[acceptance]]
+id = "AC-2"
+text = "Includes source, reading_epoch, receive lag, snapshot age, reload age, queue depth, remaining budget, replaced-older-data flag"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-09-26
 +++
 
 ## Intent
@@ -20,7 +36,4 @@ lag, snapshot age, reload age, queue depth, remaining complication budget, and w
 snapshot replaced older data. Makes transport vs. WidgetKit debugging much faster than correlating
 narrow logs.
 
-## Acceptance criteria
-
-- [ ] New roll-up log event emitted at snapshot save and/or reload time
-- [ ] Includes source, reading_epoch, receive lag, snapshot age, reload age, queue depth, remaining budget, replaced-older-data flag
+## Notes carried over from acceptance criteria
