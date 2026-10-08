@@ -2,7 +2,7 @@
 uid = "019f8141-e117-77db-9216-aad2b129f19e"
 key = "TRIO-018"
 title = "Post-dead-zone recovery: request refresh after stall drain"
-status = "blocked"
+status = "backlog"
 kind = "code"
 source = "human"
 source_ref = "docs/in-progress/complication-freshness/problem-and-strategy.md#L148"
@@ -10,8 +10,8 @@ created = 2026-07-20
 updated = 2026-09-26
 touched = 2026-09-26
 owner = "me"
-blocked_by = "019f8141-e117-77db-9216-aad18fed48dd"
 tags = ["complication-freshness", "watch"]
+depends_on = ["019f8141-e117-77db-9216-aad18fed48dd"]
 
 [[acceptance]]
 id = "AC-1"

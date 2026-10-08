@@ -1,4 +1,4 @@
-# AGENTS.md — v23
+# AGENTS.md — v24
 
 Instructions for AI agents working in this repository.
 
@@ -189,9 +189,9 @@ ci/local-build.sh --base-branch dev --build-only
 
 ## Build tasks (one epic per build)
 
-Every build that leaves this machine — a TestFlight deploy, or a `--build-only` run whose IPA gets uploaded or installed anywhere — has exactly one task file of `kind = "epic"`, tagged `build`, titled `Build NNN — <app version> (<upstream base>) …`. It is the record of what shipped, from what, and how it went: the build log and the GitHub release are pointers, the task is the index. Build 226 (`TRIO-059`) is the template.
+Every build that leaves this machine — a TestFlight deploy, or a `--build-only` run whose IPA gets uploaded or installed anywhere — has exactly one task file of `kind = "project"` (task-relay's name for what was `kind = "epic"`), tagged `build`, titled `Build NNN — <app version> (<upstream base>) …`. It is the record of what shipped, from what, and how it went: the build log and the GitHub release are pointers, the task is the index. Build 226 (`TRIO-059`) is the template.
 
-Create it with `task-relay tasks new --kind epic --tags build,testflight …` **before** launching `ci/local-build.sh`, at status `in-progress`. Never hand-write frontmatter.
+Create it with `task-relay tasks new --kind project --tags build,testflight …` **before** launching `ci/local-build.sh`. Leave it at the default `backlog`: a project can only be `backlog`, `done` or `dropped`, and its progress is derived from its children, so `tasks status <KEY> in-progress` is refused. Never hand-write frontmatter.
 
 Then launch the build with **`ci/local-build.sh --task <EPIC-KEY>`**. With that flag the script records the mechanical parts itself through the task-relay CLI (never by editing the file): an `## Attempt <time>` block at start (command line, log path, base ref, `dev` and `upstream/dev` SHAs, Xcode version) and an outcome block at exit — on success the build number, TestFlight result, public/private release URLs and the stage-summary table; on failure the failing stage and the last error lines. It also passes the key to `scripts/record-release.sh`, which renders a **"What's in this build"** section at the top of the GitHub release body from the epic's `## Contains` children (`scripts/build-task-notes.py`) and writes `tasks.epic` / `tasks.contains` into the release manifest. Recording is best-effort and never fails a build; a build run without `--task` records nothing, so the agent then fills those fields by hand.
 
@@ -676,6 +676,9 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v24 (2026-10-08 CEST)
+- **Build tasks are `kind = "project"`, created at `backlog`.** task-relay renamed the epic kind to project (TR-748), and `tasks migrate-kinds --apply` rewrote this repo's five build tasks (TRIO-059/062/065/066/069). A project's status can only be `backlog`, `done` or `dropped`, since its progress is derived from its children, so the old instruction to create the build task at `in-progress` would now be refused; it is dropped. `ci/local-build.sh`, `scripts/record-release.sh` and `scripts/build-task-notes.py` read neither the kind nor the status, so builds are unaffected.
 
 ### v23 (2026-09-26 CEST)
 - **New section "Upstream PRs to nightscout/Trio: comments"**, placed before "Upstream sync (local)". Motivated by PR #1573 (2026-09-24): the maintainer requested changes solely to remove LLM-style prose comments (comments narrating the fix, restating function names and `@Test` titles). Default is no comment; keep one only for a non-obvious constraint.
