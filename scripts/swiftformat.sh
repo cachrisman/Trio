@@ -119,7 +119,7 @@ trailingClosures \
 --exclude MedtrumKit \
 --exclude OmnipodKit \
 --exclude LibreLoop \
---exclude LibreCRKit \
+--exclude RoundWhiteDiscKit \
 --exclude LoopAlgorithm \
 --exclude build \
 --exclude .build \
@@ -127,4 +127,5 @@ trailingClosures \
 --exclude .trio-worktrees \
 --exclude SourcePackages \
 --exclude '**/*.pb.swift' \
---exclude AccuChekKit
+--exclude AccuChekKit \
+--exclude EversenseKit
