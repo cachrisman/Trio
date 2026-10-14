@@ -35,6 +35,7 @@ enum WatchMessageKeys {
     static let currentGlucoseColorString = "currentGlucoseColorString"
     static let trend = "trend"
     static let delta = "delta"
+    static let readingSource = "readingSource"
     static let iob = "iob"
     static let cob = "cob"
     static let lastLoopTime = "lastLoopTime"
