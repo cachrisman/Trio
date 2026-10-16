@@ -32,14 +32,18 @@ extension Home.RootView {
     /// Forcing a cycle only means something where Trio enacts one.
     var canForceLoop: Bool { state.dosingMode.automation != .off }
 
-    /// Pull hint while dragging; spinner while the loop runs.
+    /// Pull hint while dragging; spinner while Nightscout backfill or the loop runs.
     @ViewBuilder var pullToRefreshIndicator: some View {
         if !canForceLoop {
             EmptyView()
         } else if isForcingLoop {
             HStack(spacing: 8) {
                 ProgressView()
-                Text("Forcing loop…")
+                if isBackfillingGlucose {
+                    Text("Fetching Nightscout glucose…")
+                } else {
+                    Text("Forcing loop…")
+                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -74,11 +78,16 @@ extension Home.RootView {
         }
     }
 
-    /// Triggers the loop heartbeat and holds the indicator while it runs.
+    /// Backfills Nightscout glucose, then triggers the loop heartbeat and holds the indicator while it runs.
     private func forceLoop() {
-        withAnimation(.easeInOut(duration: 0.2)) { isForcingLoop = true }
-        state.runLoop()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            isForcingLoop = true
+            isBackfillingGlucose = true
+        }
         Task {
+            await state.backfillGlucoseFromNightscout()
+            withAnimation(.easeInOut(duration: 0.2)) { isBackfillingGlucose = false }
+            state.runLoop()
             let start = Date()
             while !state.isLooping, Date().timeIntervalSince(start) < 3 {
                 try? await Task.sleep(for: .milliseconds(100))
