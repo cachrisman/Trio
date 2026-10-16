@@ -270,6 +270,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# A relative trailers path must be resolved before the script cd's into the temp worktree.
+if [ -n "$FLAG_TRAILERS_FILE" ]; then
+    case "$FLAG_TRAILERS_FILE" in
+        /*) ;;
+        *) FLAG_TRAILERS_FILE="$PWD/$FLAG_TRAILERS_FILE" ;;
+    esac
+    if [ ! -f "$FLAG_TRAILERS_FILE" ]; then
+        echo "Trailers file not found: $FLAG_TRAILERS_FILE" >&2
+        exit 1
+    fi
+fi
+
 #===============================================================================
 # Helper functions
 #===============================================================================
@@ -1075,7 +1087,7 @@ else
     else
         rm -f "$AUTO_TRAILERS_FILE"
         AUTO_TRAILERS_FILE=""
-        print_warning "Could not resolve the merge-base of dev and '${SOURCE_BRANCH}'; the patch will have no provenance trailers"
+        print_warning "Could not resolve the merge-base with dev or the tip of '${SOURCE_BRANCH}'; the patch will have no provenance trailers"
     fi
 fi
 
@@ -1088,6 +1100,7 @@ echo ""
 # Create temporary worktree for patch generation
 TEMP_WORKTREE=$(mktemp -d "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
 cleanup_worktree() {
+  [ -z "${AUTO_TRAILERS_FILE:-}" ] || rm -f "${AUTO_TRAILERS_FILE:-}"
   if [ -n "$TEMP_WORKTREE" ] && [ -d "$TEMP_WORKTREE" ]; then
     cd "$REPO_ROOT" 2>/dev/null || true
     git worktree remove --force "$TEMP_WORKTREE" 2>/dev/null || true

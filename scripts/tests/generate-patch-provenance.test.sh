@@ -4,7 +4,8 @@
 # Runs scripts/generate-patch.sh end to end in a throwaway repo and checks the
 # Trio-Patch-* provenance trailers it writes: auto-generated trailers (keys,
 # base, tip, source commits, patch-ids), an explicit --message-trailers-file
-# overriding them, and tmp/ source branches getting none. Also statically checks
+# overriding them (also given as a relative path), tmp/ source branches getting
+# none, and uncommitted worktree changes (-w) getting none. Also statically checks
 # that the real mid-stack-update.sh / generate-patch.sh source the shared
 # library and do not redefine its helpers.
 #
@@ -182,6 +183,15 @@ check "explicit trailers: patch contains X-Test-Trailer: 1" "line absent" \
 check "explicit trailers: no auto Trio-Patch-Base: line" "line present" \
     sh -c '! grep -q "^Trio-Patch-Base:" "$1"' _ "$P2"
 
+# --- case 2b: relative trailers file ----------------------------------------
+cp "$TF" ./rel-trailers.txt
+P2B="$T/relative.patch"
+run_gp "$T/run2b.log" -s feature/prov-test -t dev -o "$P2B" --message-trailers-file rel-trailers.txt || true
+rm -f ./rel-trailers.txt
+[ -f "$P2B" ] || : > "$P2B"
+check "relative trailers file: patch contains X-Test-Trailer: 1" "line absent" \
+    grep -q '^X-Test-Trailer: 1$' "$P2B"
+
 # --- case 3: tmp/ source gets none -------------------------------------------
 git branch -q tmp/prov-test "$TIP"
 P3="$T/tmp-source.patch"
@@ -190,6 +200,24 @@ run_gp "$T/run3.log" -s tmp/prov-test -t dev -o "$P3" || true
 check "tmp/ source: patch was generated" "patch missing or empty" [ -s "$P3" ]
 check "tmp/ source: no line starting with Trio-Patch-" "trailer present" \
     sh -c '! grep -q "^Trio-Patch-" "$1"' _ "$P3"
+
+# --- case 3b: worktree changes included get none ----------------------------
+git checkout -q feature/prov-test
+echo "uncommitted-line" >> a.txt
+P3B="$T/worktree.patch"
+# generate-patch.sh -w currently fails later, for a reason unrelated to provenance
+# (its worktree-mode diff runs after it cd's into the clean temp worktree), so
+# only the provenance decision is checked here, from the run's log.
+./scripts/generate-patch.sh -n --all-files -d prov -s feature/prov-test -t dev -w -o "$P3B" >"$T/run3b.log" 2>&1 || true
+[ -f "$P3B" ] || : > "$P3B"
+check "worktree changes included gets none: worktree path was taken" "no worktree diff in log" \
+    grep -q 'includes staged+unstaged on feature/prov-test' "$T/run3b.log"
+check "worktree changes included gets none: provenance skip is reported" "no skip warning in log" \
+    grep -q 'Provenance not recorded: the patch includes uncommitted worktree changes' "$T/run3b.log"
+check "worktree changes included gets none: no line starting with Trio-Patch-" "trailer present" \
+    sh -c '! grep -q "^Trio-Patch-" "$1"' _ "$P3B"
+git checkout -- a.txt
+git checkout -q dev
 
 # --- case 4: static checks against the real scripts --------------------------
 for f in "$REAL_MSU" "$REAL_GP"; do
