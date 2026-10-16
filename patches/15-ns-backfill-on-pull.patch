@@ -1,29 +1,31 @@
-From bb6f2f0613dc737313a18e495d860e45c8cc5b52 Mon Sep 17 00:00:00 2001
+From a6196c95d44e2c6ae9679594faecde668a84f930 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 16 Oct 2026 16:32:36 +0200
+Date: Fri, 16 Oct 2026 21:40:54 +0200
 Subject: [PATCH] feat: ns-backfill-on-pull
 
 Trio-Patch-Source-Branch: feature/ns-backfill-on-pull
 Trio-Patch-Base: 32ded642831a1f5c788f043be392137cc245dd2a
-Trio-Patch-Feature-Tip: 5a65d702ce0e4d7aab09a0e72ded276300ae7202
-Trio-Patch-Generated: 2026-10-16T14:32:35Z
+Trio-Patch-Feature-Tip: 8707a351be2188e52456281b3d4bf0d75e7c6ec9
+Trio-Patch-Generated: 2026-10-16T19:40:53Z
 Trio-Patch-Source-Commits:
  c59e5b077ab35784390cf02e632ec94613c2b17c feat: backfill Nightscout glucose before pull-to-force-loop (TRIO-074)
  5a65d702ce0e4d7aab09a0e72ded276300ae7202 fix: store Nightscout-fetched glucose as already uploaded to Nightscout (TRIO-077)
+ 8707a351be2188e52456281b3d4bf0d75e7c6ec9 fix: keep local-source glucose eligible for Nightscout upload on backfill (TRIO-077)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  0ef556d7dca62a1469e496d297dd48480ed731dd
  0bbaf8b9cb58b805658d58fc55ab11d977f2b614
+ a7772461495a081a18616a1059891ec2dd5ac5b1
 ---
  Trio/Sources/APS/Storage/GlucoseStorage.swift |  38 +++--
  .../Modules/Home/HomeNightscoutBackfill.swift | 103 +++++++++++++
- .../Sources/Modules/Home/HomeStateModel.swift |  22 +++
+ .../Sources/Modules/Home/HomeStateModel.swift |  27 ++++
  .../Home/View/HomeRootView+Refresh.swift      |  19 ++-
  .../Modules/Home/View/HomeRootView.swift      |   1 +
- .../NightscoutConfigStateModel.swift          |   2 +-
+ .../NightscoutConfigStateModel.swift          |   4 +-
  .../CoreDataTests/GlucoseStorageTests.swift   |  88 +++++++++++
  TrioTests/LoopIndicatorTests.swift            | 140 ++++++++++++++++++
- 8 files changed, 397 insertions(+), 16 deletions(-)
+ 8 files changed, 404 insertions(+), 16 deletions(-)
  create mode 100644 Trio/Sources/Modules/Home/HomeNightscoutBackfill.swift
 
 diff --git a/Trio/Sources/APS/Storage/GlucoseStorage.swift b/Trio/Sources/APS/Storage/GlucoseStorage.swift
@@ -240,26 +242,31 @@ index 000000000..b1234c7ef
 +    }
 +}
 diff --git a/Trio/Sources/Modules/Home/HomeStateModel.swift b/Trio/Sources/Modules/Home/HomeStateModel.swift
-index f595ffe9c..c50fc98e4 100644
+index f595ffe9c..171c376b7 100644
 --- a/Trio/Sources/Modules/Home/HomeStateModel.swift
 +++ b/Trio/Sources/Modules/Home/HomeStateModel.swift
-@@ -817,6 +817,28 @@ extension Home {
+@@ -817,6 +817,33 @@ extension Home {
              }
          }
  
 +        func backfillGlucoseFromNightscout() async {
++            // A local glucose source is not the remote Nightscout, so those readings still need uploading.
++            let alreadyUploaded = !settingsManager.settings.useLocalGlucoseSource
 +            let outcome = await HomeNightscoutBackfill.run(
 +                timeout: .seconds(10),
 +                fetch: {
 +                    await self.nightscoutManager.fetchGlucose(since: Date().addingTimeInterval(-24 * 60 * 60))
 +                },
 +                store: {
-+                    try await self.glucoseStorage.backfillGlucose($0, alreadyUploadedToNightscout: true)
++                    try await self.glucoseStorage.backfillGlucose($0, alreadyUploadedToNightscout: alreadyUploaded)
 +                }
 +            )
 +            switch outcome {
 +            case let .stored(count):
-+                debug(.nightscout, "Home pull-to-refresh Nightscout backfill passed \(count) Nightscout reading(s) to backfill (deduplicated against stored glucose)")
++                debug(
++                    .nightscout,
++                    "Home pull-to-refresh Nightscout backfill passed \(count) Nightscout reading(s) to backfill (deduplicated against stored glucose)"
++                )
 +            case .empty:
 +                debug(.nightscout, "Home pull-to-refresh Nightscout backfill returned no glucose")
 +            case .timedOut:
@@ -330,15 +337,21 @@ index e84cac530..5eafe6310 100644
          /// Date under the finger while the chart is scrubbed, else nil. Owned here because the
          /// readout lives in the meal slot, outside the chart.
 diff --git a/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift b/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift
-index 8bc9d1009..aa7c0616b 100644
+index 8bc9d1009..56d5e36bb 100644
 --- a/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift
 +++ b/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift
-@@ -146,7 +146,7 @@ extension NightscoutConfig {
+@@ -142,11 +142,13 @@ extension NightscoutConfig {
+                 backfilling = true
+             }
+ 
++            // A local glucose source is not the remote Nightscout, so those readings still need uploading.
++            let alreadyUploaded = !settingsManager.settings.useLocalGlucoseSource
+             let glucose = await nightscoutManager.fetchGlucose(since: Date().addingTimeInterval(-1.days.timeInterval))
  
              if glucose.isNotEmpty {
                  do {
 -                    try await glucoseStorage.storeGlucose(glucose)
-+                    try await glucoseStorage.backfillGlucose(glucose, alreadyUploadedToNightscout: true)
++                    try await glucoseStorage.backfillGlucose(glucose, alreadyUploadedToNightscout: alreadyUploaded)
  
                      Task.detached {
                          await self.healthKitManager.uploadGlucose()
