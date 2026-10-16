@@ -817,6 +817,28 @@ extension Home {
             }
         }
 
+        func backfillGlucoseFromNightscout() async {
+            let outcome = await HomeNightscoutBackfill.run(
+                timeout: .seconds(10),
+                fetch: {
+                    await self.nightscoutManager.fetchGlucose(since: Date().addingTimeInterval(-24 * 60 * 60))
+                },
+                store: {
+                    try await self.glucoseStorage.backfillGlucose($0, alreadyUploadedToNightscout: true)
+                }
+            )
+            switch outcome {
+            case let .stored(count):
+                debug(.nightscout, "Home pull-to-refresh Nightscout backfill passed \(count) Nightscout reading(s) to backfill (deduplicated against stored glucose)")
+            case .empty:
+                debug(.nightscout, "Home pull-to-refresh Nightscout backfill returned no glucose")
+            case .timedOut:
+                debug(.nightscout, "Home pull-to-refresh Nightscout backfill timed out")
+            case .failed:
+                debug(.nightscout, "Home pull-to-refresh Nightscout backfill failed")
+            }
+        }
+
         func runLoop() {
             provider.heartbeatNow()
         }

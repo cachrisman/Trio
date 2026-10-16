@@ -202,6 +202,94 @@ import Testing
         #expect(clampedEntries?.count == 1, "Sub-39 backfilled glucose should be clamped and stored as 39")
     }
 
+    @Test("Nightscout-fetched backfill is stored as already uploaded to Nightscout") func testNightscoutBackfillMarkedUploaded() async throws {
+        // Given Nightscout-fetched readings (batch and single-row paths) and one BLE backfill reading
+        let now = Date()
+        let batchDate1 = now.addingTimeInterval(-60 * 60)
+        let batchDate2 = now.addingTimeInterval(-50 * 60)
+        let singleDate = now.addingTimeInterval(-40 * 60)
+        let bleDate = now.addingTimeInterval(-30 * 60)
+
+        let batchGlucose = [
+            BloodGlucose(
+                direction: BloodGlucose.Direction.flat,
+                date: Decimal(batchDate1.timeIntervalSince1970 * 1000),
+                dateString: batchDate1,
+                glucose: 171
+            ),
+            BloodGlucose(
+                direction: BloodGlucose.Direction.flat,
+                date: Decimal(batchDate2.timeIntervalSince1970 * 1000),
+                dateString: batchDate2,
+                glucose: 172
+            )
+        ]
+        let singleGlucose = [
+            BloodGlucose(
+                direction: BloodGlucose.Direction.flat,
+                date: Decimal(singleDate.timeIntervalSince1970 * 1000),
+                dateString: singleDate,
+                glucose: 173
+            )
+        ]
+        let bleGlucose = [
+            BloodGlucose(
+                direction: BloodGlucose.Direction.flat,
+                date: Decimal(bleDate.timeIntervalSince1970 * 1000),
+                dateString: bleDate,
+                glucose: 174
+            )
+        ]
+
+        // When
+        try await storage.backfillGlucose(batchGlucose, alreadyUploadedToNightscout: true)
+        try await storage.backfillGlucose(singleGlucose, alreadyUploadedToNightscout: true)
+        try await storage.backfillGlucose(bleGlucose)
+
+        // Then the Nightscout-fetched rows are flagged uploaded to NS only
+        let nightscoutEntries = try await coreDataStack.fetchEntitiesAsync(
+            ofType: GlucoseStored.self,
+            onContext: testContext,
+            predicate: NSPredicate(format: "glucose IN %@", [171, 172, 173]),
+            key: "date",
+            ascending: true
+        ) as? [GlucoseStored]
+
+        #expect(nightscoutEntries?.count == 3, "All Nightscout-fetched readings should be stored")
+        #expect(
+            nightscoutEntries?.allSatisfy { $0.isUploadedToNS } == true,
+            "Nightscout-fetched readings should be marked as uploaded to Nightscout"
+        )
+        #expect(
+            nightscoutEntries?.allSatisfy { !$0.isUploadedToHealth } == true,
+            "Nightscout-fetched readings should not be marked as uploaded to Apple Health"
+        )
+        #expect(
+            nightscoutEntries?.allSatisfy { !$0.isUploadedToTidepool } == true,
+            "Nightscout-fetched readings should not be marked as uploaded to Tidepool"
+        )
+
+        // And the plain backfill reading is not flagged uploaded
+        let bleEntries = try await coreDataStack.fetchEntitiesAsync(
+            ofType: GlucoseStored.self,
+            onContext: testContext,
+            predicate: NSPredicate(format: "glucose == 174"),
+            key: "date",
+            ascending: false
+        ) as? [GlucoseStored]
+
+        #expect(bleEntries?.count == 1, "BLE backfill reading should be stored")
+        #expect(bleEntries?.first?.isUploadedToNS == false, "Plain backfill should not be marked as uploaded to Nightscout")
+
+        // And only the plain backfill reading is pending upload to Nightscout
+        let pending = try await storage.getGlucoseNotYetUploadedToNightscout()
+        #expect(
+            !pending.contains { [171, 172, 173].contains($0.sgv ?? 0) },
+            "Nightscout-fetched readings must not be queued for upload"
+        )
+        #expect(pending.contains { $0.sgv == 174 }, "Plain backfill reading should be queued for upload")
+    }
+
     @Test(
         "Test glucose alarms",
         .enabled(if: false, "Flaky test, disabled while investigating")

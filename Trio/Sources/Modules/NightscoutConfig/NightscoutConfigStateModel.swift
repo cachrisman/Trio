@@ -146,7 +146,7 @@ extension NightscoutConfig {
 
             if glucose.isNotEmpty {
                 do {
-                    try await glucoseStorage.storeGlucose(glucose)
+                    try await glucoseStorage.backfillGlucose(glucose, alreadyUploadedToNightscout: true)
 
                     Task.detached {
                         await self.healthKitManager.uploadGlucose()

@@ -11,6 +11,7 @@ protocol GlucoseStorage {
     var updatePublisher: AnyPublisher<Void, Never> { get }
     func storeGlucose(_ glucose: [BloodGlucose]) async throws
     func backfillGlucose(_ glucose: [BloodGlucose]) async throws
+    func backfillGlucose(_ glucose: [BloodGlucose], alreadyUploadedToNightscout: Bool) async throws
     func addManualGlucose(glucose: Int)
     func isGlucoseDataFresh(_ glucoseDate: Date?) -> Bool
     func syncDate() -> Date
@@ -77,7 +78,12 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
     ///  to deal with source switching perfectly, so instead we will backfill glucose if and only if
     ///  it isn't within 3.5 minutes of an existing glucose reading, which is simple but not perfect.
     ///  But since this is a corner case that really shouldn't happen often, it's good enough.
+    ///  Pass `alreadyUploadedToNightscout: true` for readings fetched from Nightscout so they are not uploaded back.
     func backfillGlucose(_ glucose: [BloodGlucose]) async throws {
+        try await backfillGlucose(glucose, alreadyUploadedToNightscout: false)
+    }
+
+    func backfillGlucose(_ glucose: [BloodGlucose], alreadyUploadedToNightscout: Bool) async throws {
         let context = makeContext()
         context.name = "backfillGlucose"
         let clamped = clampToMinimum(glucose)
@@ -103,7 +109,7 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
 
             do {
                 // Store glucose values in Core Data
-                try self.storeGlucoseInCoreData(filteredGlucose, context: context)
+                try self.storeGlucoseInCoreData(filteredGlucose, context: context, isUploadedToNS: alreadyUploadedToNightscout)
             } catch {
                 throw CoreDataError.creationError(
                     function: #function,
@@ -213,18 +219,26 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
         }
     }
 
-    private func storeGlucoseInCoreData(_ glucose: [BloodGlucose], context: NSManagedObjectContext) throws {
+    private func storeGlucoseInCoreData(
+        _ glucose: [BloodGlucose],
+        context: NSManagedObjectContext,
+        isUploadedToNS: Bool = false
+    ) throws {
         if glucose.count > 1 {
-            try storeGlucoseBatch(glucose, context: context)
+            try storeGlucoseBatch(glucose, context: context, isUploadedToNS: isUploadedToNS)
         } else {
-            try storeGlucoseRegular(glucose, context: context)
+            try storeGlucoseRegular(glucose, context: context, isUploadedToNS: isUploadedToNS)
         }
     }
 
-    private func storeGlucoseRegular(_ glucose: [BloodGlucose], context: NSManagedObjectContext) throws {
+    private func storeGlucoseRegular(
+        _ glucose: [BloodGlucose],
+        context: NSManagedObjectContext,
+        isUploadedToNS: Bool = false
+    ) throws {
         for entry in glucose {
             let glucoseEntry = GlucoseStored(context: context)
-            configureGlucoseEntry(glucoseEntry, with: entry)
+            configureGlucoseEntry(glucoseEntry, with: entry, isUploadedToNS: isUploadedToNS)
         }
 
         guard context.hasChanges else { return }
@@ -232,7 +246,11 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
         updateSubject.send()
     }
 
-    private func storeGlucoseBatch(_ glucose: [BloodGlucose], context: NSManagedObjectContext) throws {
+    private func storeGlucoseBatch(
+        _ glucose: [BloodGlucose],
+        context: NSManagedObjectContext,
+        isUploadedToNS: Bool = false
+    ) throws {
         var remainingGlucose = glucose
         let batchInsert = NSBatchInsertRequest(
             entity: GlucoseStored.entity(),
@@ -243,7 +261,7 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
                     return true
                 }
                 let entry = remainingGlucose.removeFirst()
-                self.configureGlucoseEntry(glucoseEntry, with: entry)
+                self.configureGlucoseEntry(glucoseEntry, with: entry, isUploadedToNS: isUploadedToNS)
                 return false
             }
         )
@@ -251,13 +269,13 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
         updateSubject.send()
     }
 
-    private func configureGlucoseEntry(_ entry: GlucoseStored, with glucose: BloodGlucose) {
+    private func configureGlucoseEntry(_ entry: GlucoseStored, with glucose: BloodGlucose, isUploadedToNS: Bool = false) {
         entry.id = UUID()
         entry.glucose = Int16(glucose.glucose ?? 0)
         entry.date = glucose.dateString
         entry.direction = glucose.direction?.rawValue
         entry.isManual = glucose.mbg != nil
-        entry.isUploadedToNS = false
+        entry.isUploadedToNS = isUploadedToNS
         entry.isUploadedToHealth = false
         entry.isUploadedToTidepool = false
     }

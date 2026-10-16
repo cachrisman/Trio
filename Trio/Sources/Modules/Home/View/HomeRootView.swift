@@ -41,6 +41,7 @@ extension Home {
         @State var pullOffset: CGFloat = 0
         @State var isRefreshArmed = false
         @State var isForcingLoop = false
+        @State var isBackfillingGlucose = false
         @State var notificationsDisabled = false
         /// Date under the finger while the chart is scrubbed, else nil. Owned here because the
         /// readout lives in the meal slot, outside the chart.
