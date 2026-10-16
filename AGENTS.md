@@ -1,4 +1,4 @@
-# AGENTS.md — v24
+# AGENTS.md — v25
 
 Instructions for AI agents working in this repository.
 
@@ -295,11 +295,13 @@ validation. Do not bypass with `--no-audit`.
 Run from **Trio-dev** with **`dev`** checked out (see "Run from dev" above):
 
 ```bash
-./scripts/generate-patch.sh -n -d "short-description" \
+./scripts/generate-patch.sh -n -s feature/<name> -d "short-description" \
   --include-files "Trio/Sources/Foo.swift,Model/Bar.swift"
 ```
 
 Prefer `--include-files` over `--all-files` when only specific files changed.
+
+**Provenance is automatic.** When the source branch is a feature branch (anything but `dev` or `tmp/*`), `generate-patch.sh` writes the `Trio-Patch-Source-Branch`, `-Base`, `-Feature-Tip`, `-Generated`, `-Source-Commits`, `-PatchIds-Note` and `-Source-PatchIds` trailers into the patch header itself (built by `scripts/lib/patch-provenance.sh`, the same code `mid-stack-update.sh` uses; base = merge-base of `dev` and the feature branch). Pass `-s feature/<name>` explicitly so the right branch is recorded. Check the output says `Provenance: recording N source commit(s)`. No trailers are written when uncommitted worktree changes are included (`-w`), because no commit range describes that content: commit first, then generate. An explicit `--message-trailers-file` replaces the automatic trailers. **Never add or edit trailers in a patch by hand.** A patch missing them is regenerated, not patched up; without `Trio-Patch-Source-PatchIds` the next `mid-stack-update.sh` treats it as legacy (no automatic `--cherry-pick`, and `--from-feature-branch` is refused). Test: `bash scripts/tests/generate-patch-provenance.test.sh` (no network, runs inside the Claude Code Bash sandbox).
 
 #### When the new patch modifies files also changed by earlier patches
 
@@ -362,7 +364,7 @@ since merge-base with dev, plus a suggested `--cherry-pick` command:
 ```
 
 **As of v17 the candidate list is exact.** Patches carry `Trio-Patch-Source-*`
-provenance trailers (written automatically on every regen). When present, the script
+provenance trailers (written automatically on every regen, and since v25 also when a new patch is generated with `generate-patch.sh -s feature/<name>`). When present, the script
 computes the **exact** set of new commits by diffing the feature branch's `git patch-id`s
 against the recorded ones (stable across rebase/amend), auto-resolves the feature branch
 from `Trio-Patch-Source-Branch`, and prints just those commits (or "already up to date") —
@@ -676,6 +678,9 @@ Use with `table: "t491594.trio"` and `source_id: 1659391` (replace with your tea
 ---
 
 ## Changelog
+
+### v25 (2026-10-16 CEST)
+- **New patches get provenance automatically (TRIO-079).** Only `mid-stack-update.sh` used to build the `Trio-Patch-*` trailers, so every patch made with `generate-patch.sh` directly shipped without them: patches 08, 14 and 15 have no `Trio-Patch-Source-PatchIds` block, and patch 15 got a hand-added `Source-Branch` line. Trailer building and the patch-id helpers (`_patch_id`, `_patch_ids_all`, `_recorded_patch_ids`, `_recorded_source_branch`) now live in `scripts/lib/patch-provenance.sh`, sourced by both scripts (`mid-stack-update.sh` v1.14). `generate-patch.sh` writes the trailers itself for any source branch other than `dev` or `tmp/*` unless `--message-trailers-file` is given, and skips them when worktree changes are included. "Generate a NEW patch" says so and forbids hand-added trailers; the example now passes `-s feature/<name>`. New end-to-end test `scripts/tests/generate-patch-provenance.test.sh`. Existing patches without provenance are unchanged; they gain it on their next regeneration.
 
 ### v24 (2026-10-08 CEST)
 - **Build tasks are `kind = "project"`, created at `backlog`.** task-relay renamed the epic kind to project (TR-748), and `tasks migrate-kinds --apply` rewrote this repo's five build tasks (TRIO-059/062/065/066/069). A project's status can only be `backlog`, `done` or `dropped`, since its progress is derived from its children, so the old instruction to create the build task at `in-progress` would now be refused; it is dropped. `ci/local-build.sh`, `scripts/record-release.sh` and `scripts/build-task-notes.py` read neither the kind nor the status, so builds are unaffected.

@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# mid-stack-update.sh — Automate mid-stack patch updates (v1.13)
+# mid-stack-update.sh — Automate mid-stack patch updates (v1.14)
 #
 # CHANGELOG:
+#   v1.14 - TRIO-079: provenance helpers (_patch_id, _patch_ids_all,
+#           _recorded_patch_ids, _recorded_source_branch) and trailer building
+#           moved to scripts/lib/patch-provenance.sh, shared with
+#           generate-patch.sh so a patch generated directly also records
+#           provenance.
 #   v1.13 - TRIO-057: _patch_id() could emit multiple lines for a merge commit
 #           (git patch-id --stable on a combined diff), silently truncating the
 #           recorded Trio-Patch-Source-PatchIds: trailer and hiding later source
@@ -226,6 +231,15 @@ set -euo pipefail
 if [ -n "${ZSH_VERSION-}" ]; then
     setopt KSH_ARRAYS
 fi
+
+# Provenance helpers (shared with generate-patch.sh)
+_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+if [ ! -f "$_script_dir/lib/patch-provenance.sh" ]; then
+    echo "ERROR: missing library $_script_dir/lib/patch-provenance.sh" >&2
+    exit 1
+fi
+# shellcheck source=lib/patch-provenance.sh
+. "$_script_dir/lib/patch-provenance.sh"
 
 #===============================================================================
 # Colors and output helpers
@@ -497,44 +511,7 @@ for f in ${EXISTING_FILES[@]+"${EXISTING_FILES[@]}"}; do
     echo "    $f"
 done
 
-# --- Provenance helpers (deterministic cherry-pick via recorded patch-ids) -----
-# Stable patch-id of a single commit's diff (empty on failure). A patch-id hashes the
-# diff content, so it is stable across rebase/amend — the canonical identity for
-# "is this change already represented in the patch?". Always at most one line of
-# output; a merge commit has no single meaningful patch-id and yields empty.
-_patch_id() {
-    if [ "$(git rev-list --no-walk --count --merges "$1" 2>/dev/null || echo 0)" != 0 ]; then
-        return 0
-    fi
-    git show --no-color "$1" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}' | head -1
-}
-# Every patch-id line of a commit's diff, including the multiple lines a merge
-# commit's combined diff produces. Exists only for legacy-trailer compatibility:
-# patches generated before v1.13 could record a merge-derived id, and the
-# alignment gate must still be able to match those. Never use this to build a
-# cherry-pick candidate list.
-_patch_ids_all() {
-    git show --no-color "$1" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}'
-}
-
-# Extract patch-ids recorded in a patch file under the `Trio-Patch-Source-PatchIds:`
-# trailer (one indented hex id per line until the block ends). The block ends at a
-# blank line, a new `Key:`-style trailer line, or a bare `---` (the mail-body/diff
-# separator in a git-am patch). A malformed line inside the block warns on stderr
-# and scanning continues. Empty if none recorded.
-_recorded_patch_ids() {
-    awk -v f="$1" '
-        /^Trio-Patch-Source-PatchIds:[[:space:]]*$/ { cap=1; next }
-        cap && /^[[:space:]]+[0-9a-f]{7,}[[:space:]]*$/ { gsub(/[[:space:]]/,""); print; next }
-        cap && (/^[[:space:]]*$/ || /^[A-Za-z][A-Za-z0-9-]*:/ || /^[[:space:]]*---[[:space:]]*$/) { cap=0; next }
-        cap { printf "warning: %s: unrecognized line in Trio-Patch-Source-PatchIds block: %s\n", f, $0 > "/dev/stderr"; next }
-    ' "$1"
-}
-
-# Branch name recorded in the patch's `Trio-Patch-Source-Branch:` trailer (empty if none).
-_recorded_source_branch() {
-    awk -F': ' '/^Trio-Patch-Source-Branch:[[:space:]]/ { print $2; exit }' "$1" 2>/dev/null
-}
+# --- Provenance helpers now live in scripts/lib/patch-provenance.sh ---------
 
 # When --cherry-pick is not provided, try to enumerate candidates from the
 # feature branch. This automates the "pre-flight" step agents must otherwise
@@ -1344,27 +1321,14 @@ print_info "  --include-files <${#DIFF_FILES[@]} files>"
 GEN_TRAILERS_FILE=""
 GEN_TRAILERS_ARG=()
 if [ -n "$FEATURE_BRANCH" ]; then
-    _prov_mb=$(git merge-base dev "$FEATURE_BRANCH" 2>/dev/null || true)
-    _prov_tip=$(git rev-parse "$FEATURE_BRANCH" 2>/dev/null || true)
-    if [ -n "$_prov_mb" ] && [ -n "$_prov_tip" ]; then
-        GEN_TRAILERS_FILE=$(mktemp "${TMPDIR:-/tmp}/mid-stack-update.XXXXXX")
-        {
-            echo "Trio-Patch-Source-Branch: $FEATURE_BRANCH"
-            echo "Trio-Patch-Base: $_prov_mb"
-            echo "Trio-Patch-Feature-Tip: $_prov_tip"
-            echo "Trio-Patch-Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "Trio-Patch-Source-Commits:"
-            git log --reverse --format=' %H %s' "$_prov_mb..$_prov_tip" 2>/dev/null
-            echo "Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history"
-            echo "Trio-Patch-Source-PatchIds:"
-            git log --reverse --no-merges --format='%H' "$_prov_mb..$_prov_tip" 2>/dev/null | while read -r _pc; do
-                [ -n "$_pc" ] || continue
-                _ppid=$(_patch_id "$_pc")
-                [ -n "$_ppid" ] && echo " $_ppid"
-            done
-        } > "$GEN_TRAILERS_FILE"
+    GEN_TRAILERS_FILE=$(mktemp "${TMPDIR:-/tmp}/mid-stack-update.XXXXXX")
+    if write_provenance_trailers "$FEATURE_BRANCH" "$GEN_TRAILERS_FILE" dev; then
         GEN_TRAILERS_ARG=(--message-trailers-file "$GEN_TRAILERS_FILE")
-        print_info "Provenance: recording $(git rev-list --count "$_prov_mb..$_prov_tip" 2>/dev/null || echo '?') source commit(s) from '$FEATURE_BRANCH'."
+        _prov_mb=$(git merge-base dev "$FEATURE_BRANCH" 2>/dev/null || true)
+        print_info "Provenance: recording $(git rev-list --count "$_prov_mb..$FEATURE_BRANCH" 2>/dev/null || echo '?') source commit(s) from '$FEATURE_BRANCH'."
+    else
+        rm -f "$GEN_TRAILERS_FILE"
+        GEN_TRAILERS_FILE=""
     fi
 fi
 

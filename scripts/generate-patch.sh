@@ -69,6 +69,10 @@
 #       Full output path for the patch file.
 #       Overrides automatic naming with XY- prefix.
 #
+#   --message-trailers-file <path>
+#       File appended verbatim to the patch's commit message as provenance
+#       trailers. Used by mid-stack-update.sh; overrides automatic provenance.
+#
 #   -y, --yes
 #       Auto-confirm prompts (e.g., overwrite existing files).
 #
@@ -114,6 +118,16 @@
 #   The prefix ensures deterministic alphabetical ordering when patches
 #   are applied during builds.
 #
+# PROVENANCE:
+#   When the source branch is not 'dev' and not 'tmp/*', and no
+#   --message-trailers-file is given, the patch header gets the
+#   Trio-Patch-Source-Branch, -Base, -Feature-Tip, -Generated,
+#   -Source-Commits, -PatchIds-Note and -Source-PatchIds trailers, built by
+#   scripts/lib/patch-provenance.sh (base = merge-base of dev and the source
+#   branch). None are written when uncommitted worktree changes are included.
+#   mid-stack-update.sh reads them to compute --cherry-pick. Trailers are
+#   never added to a patch by hand.
+#
 # OUTPUT:
 #   - Patch file saved to ./patches/XY-<description>.patch (or custom -o path)
 #   - Validation results showing if patch applies cleanly
@@ -134,6 +148,14 @@ ORIGINAL_ARGS=("$@")
 if [ -n "${ZSH_VERSION-}" ]; then
     setopt KSH_ARRAYS
 fi
+
+_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+if [ ! -f "$_script_dir/lib/patch-provenance.sh" ]; then
+    echo "ERROR: missing library $_script_dir/lib/patch-provenance.sh" >&2
+    exit 1
+fi
+# shellcheck source=lib/patch-provenance.sh
+source "$_script_dir/lib/patch-provenance.sh"
 
 #===============================================================================
 # Command-line argument parsing
@@ -1035,6 +1057,28 @@ else
     fi
 fi
 
+# Decide provenance trailers: an explicit file wins; otherwise build them automatically
+TRAILERS_FILE="$FLAG_TRAILERS_FILE"
+AUTO_TRAILERS_FILE=""
+if [ -n "$FLAG_TRAILERS_FILE" ]; then
+    print_info "Provenance comes from --message-trailers-file (${FLAG_TRAILERS_FILE})"
+elif ! provenance_eligible_branch "$SOURCE_BRANCH"; then
+    print_info "No provenance recorded: source branch '${SOURCE_BRANCH}' is dev or a tmp/ branch"
+elif [ "$include_worktree" = "true" ]; then
+    print_warning "Provenance not recorded: the patch includes uncommitted worktree changes, so no commit range describes its content. Commit them and regenerate to record provenance."
+else
+    AUTO_TRAILERS_FILE=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
+    if write_provenance_trailers "$SOURCE_BRANCH" "$AUTO_TRAILERS_FILE" dev; then
+        TRAILERS_FILE="$AUTO_TRAILERS_FILE"
+        prov_count=$(git rev-list --count "$(git merge-base dev "$SOURCE_BRANCH")..$SOURCE_BRANCH")
+        print_info "Provenance: recording ${prov_count} source commit(s) from ${SOURCE_BRANCH}"
+    else
+        rm -f "$AUTO_TRAILERS_FILE"
+        AUTO_TRAILERS_FILE=""
+        print_warning "Could not resolve the merge-base of dev and '${SOURCE_BRANCH}'; the patch will have no provenance trailers"
+    fi
+fi
+
 # Generate mailbox patch using temporary worktree
 echo ""
 print_info "Generating mailbox patch file..."
@@ -1095,22 +1139,25 @@ if [ "${#TRACKED_FILES[@]}" -gt 0 ] || [ "${#UNTRACKED_SELECTED[@]}" -gt 0 ]; th
 fi
 
 # Commit the changes (optionally appending provenance trailers to the commit body)
-if [ -n "$FLAG_TRAILERS_FILE" ] && [ -s "$FLAG_TRAILERS_FILE" ]; then
+if [ -n "$TRAILERS_FILE" ] && [ -s "$TRAILERS_FILE" ]; then
   _commit_msg_file=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
-  { printf 'feat: %s\n\n' "${PATCH_DESC}"; cat "$FLAG_TRAILERS_FILE"; } > "$_commit_msg_file"
+  { printf 'feat: %s\n\n' "${PATCH_DESC}"; cat "$TRAILERS_FILE"; } > "$_commit_msg_file"
   # Throwaway commit in a temp worktree: bot identity + no signing, passed per command so the shared .git/config is never touched.
   if ! git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false commit -F "$_commit_msg_file"; then
     rm -f "$_commit_msg_file"
+    [ -z "$AUTO_TRAILERS_FILE" ] || rm -f "$AUTO_TRAILERS_FILE"
     print_error "Failed to create commit in temporary worktree"
     exit 1
   fi
   rm -f "$_commit_msg_file"
 else
   if ! git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false commit -m "feat: ${PATCH_DESC}"; then
+    [ -z "$AUTO_TRAILERS_FILE" ] || rm -f "$AUTO_TRAILERS_FILE"
     print_error "Failed to create commit in temporary worktree"
     exit 1
   fi
 fi
+[ -z "$AUTO_TRAILERS_FILE" ] || rm -f "$AUTO_TRAILERS_FILE"
 
 # Generate mailbox patch to temp file
 TEMP_PATCH=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
