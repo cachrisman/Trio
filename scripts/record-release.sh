@@ -117,7 +117,7 @@ get_repo_info() {
 extract_ipa_info() {
   local ipa_path="$1"
   local temp_dir
-  temp_dir="$(mktemp -d)"
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/record-release.XXXXXX")"
   trap "rm -rf '$temp_dir'" RETURN
 
   if [[ ! -f "$ipa_path" ]]; then
@@ -729,9 +729,9 @@ main() {
 
   # Create manifest JSON (use temp files to avoid quoting issues with JSON)
   local temp_patches_file temp_context_file temp_tasks_file
-  temp_patches_file="$(mktemp)"
-  temp_context_file="$(mktemp)"
-  temp_tasks_file="$(mktemp)"
+  temp_patches_file="$(mktemp "${TMPDIR:-/tmp}/record-release.XXXXXX")"
+  temp_context_file="$(mktemp "${TMPDIR:-/tmp}/record-release.XXXXXX")"
+  temp_tasks_file="$(mktemp "${TMPDIR:-/tmp}/record-release.XXXXXX")"
   
   # Write patches, context and tasks JSON to temp files
   echo "$patches_json" > "$temp_patches_file"

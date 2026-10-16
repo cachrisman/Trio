@@ -975,8 +975,8 @@ fi
 # uncommitted ones (e.g. an as-yet-uncommitted sibling phone patch). The drift check (P2a)
 # and P2b consult these so files owned by an uncommitted sibling patch are attributed
 # correctly — not false-flagged as "missing" or mis-poached. Cleaned up in cleanup().
-OWNED_OTHER_SNAPSHOT=$(mktemp)
-OWNED_PRIOR_SNAPSHOT=$(mktemp)
+OWNED_OTHER_SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/mid-stack-update.XXXXXX")
+OWNED_PRIOR_SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/mid-stack-update.XXXXXX")
 for _snp in "${ALL_PATCHES[@]}"; do
     _snpb=$(basename "$_snp")
     _snpv=$((10#${_snpb:0:2}))
@@ -1022,7 +1022,7 @@ if [ -n "$_stashable" ]; then
             _bprpath="patches/$_bpname"
             if git status --porcelain -- "$_bprpath" 2>/dev/null | grep -q .; then
                 if [ -z "$DIRTY_PATCHES_DIR" ]; then
-                    DIRTY_PATCHES_DIR=$(mktemp -d)
+                    DIRTY_PATCHES_DIR=$(mktemp -d "${TMPDIR:-/tmp}/mid-stack-update.XXXXXX")
                     print_info "Saving dirty baseline patches for correct baseline build..."
                 fi
                 cp "$_bprpath" "$DIRTY_PATCHES_DIR/$_bpname"
@@ -1158,7 +1158,7 @@ if [ "$FROM_FEATURE_BRANCH" = true ]; then
         # without needing --extra-files. Conservative on purpose: only files ABSENT on dev
         # (unambiguously new) are auto-added; files that exist on dev but were dropped stay
         # ambiguous and are caught fail-closed by the drift check (P2a).
-        _p2b_feat_tmp=$(mktemp)
+        _p2b_feat_tmp=$(mktemp "${TMPDIR:-/tmp}/mid-stack-update.XXXXXX")
         git diff --name-only dev..."$FEATURE_BRANCH" 2>/dev/null > "$_p2b_feat_tmp" || true
         _p2b_added=0
         while IFS= read -r _ff; do
@@ -1347,7 +1347,7 @@ if [ -n "$FEATURE_BRANCH" ]; then
     _prov_mb=$(git merge-base dev "$FEATURE_BRANCH" 2>/dev/null || true)
     _prov_tip=$(git rev-parse "$FEATURE_BRANCH" 2>/dev/null || true)
     if [ -n "$_prov_mb" ] && [ -n "$_prov_tip" ]; then
-        GEN_TRAILERS_FILE=$(mktemp)
+        GEN_TRAILERS_FILE=$(mktemp "${TMPDIR:-/tmp}/mid-stack-update.XXXXXX")
         {
             echo "Trio-Patch-Source-Branch: $FEATURE_BRANCH"
             echo "Trio-Patch-Base: $_prov_mb"
@@ -1480,7 +1480,7 @@ if [ -n "$FEATURE_BRANCH" ]; then
     # Three-dot diff: compare from merge-base(dev, feature) to feature tip.
     # This shows only what the feature branch actually changed, excluding any
     # files that changed on dev since the feature branch diverged.
-    FEATURE_FILES_TMP=$(mktemp)
+    FEATURE_FILES_TMP=$(mktemp "${TMPDIR:-/tmp}/mid-stack-update.XXXXXX")
     git diff --name-only dev..."$FEATURE_BRANCH" 2>/dev/null | sort -u > "$FEATURE_FILES_TMP"
 
     MISSING_FILES=()
