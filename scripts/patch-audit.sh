@@ -72,10 +72,12 @@ is_waived() {
 
 # --- throwaway worktree ------------------------------------------------------
 WT="$(mktemp -d "${TMPDIR:-/tmp}/patch-audit.XXXXXX")"
+AUDIT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/patch-audit-tmp.XXXXXX")"
 cleanup() {
   cd "$REPO" 2>/dev/null || cd / 2>/dev/null
   git worktree remove --force "$WT" >/dev/null 2>&1 || rm -rf "$WT" 2>/dev/null
   git worktree prune >/dev/null 2>&1 || true
+  rm -rf "$AUDIT_TMP"
 }
 trap cleanup EXIT
 git worktree remove --force "$WT" >/dev/null 2>&1 || true
@@ -98,9 +100,9 @@ for PATCH_FILE in ${PATCHES[@]+"${PATCHES[@]}"}; do
   echo ""
   echo "--- $PATCH_NAME ---"
 
-  if ! git -c submodule.recurse=false am --3way --quiet "$PATCH_FILE" >/tmp/pa-am.log 2>&1; then
+  if ! git -c submodule.recurse=false am --3way --quiet "$PATCH_FILE" >"$AUDIT_TMP/pa-am.log" 2>&1; then
     echo "  ERROR: failed to apply (git am): see below"
-    sed 's/^/    /' /tmp/pa-am.log | tail -8
+    sed 's/^/    /' "$AUDIT_TMP/pa-am.log" | tail -8
     git am --abort >/dev/null 2>&1 || true
     errors=$((errors + 1))
     break
@@ -140,11 +142,11 @@ done
 echo ""
 echo "--- sentinel: $SENTINEL_FILE ---"
 if [ "$errors" -eq 0 ] || true; then
-  if git show "HEAD:$SENTINEL_FILE" >/tmp/pa-ddm.swift 2>/dev/null; then
+  if git show "HEAD:$SENTINEL_FILE" >"$AUDIT_TMP/pa-ddm.swift" 2>/dev/null; then
     missing=0
     IFS='|'
     for sym in $SENTINEL_SYMBOLS; do
-      if ! grep -Fq "$sym" /tmp/pa-ddm.swift; then
+      if ! grep -Fq "$sym" "$AUDIT_TMP/pa-ddm.swift"; then
         echo "  ✗ MISSING required symbol: $sym"
         missing=1
       fi

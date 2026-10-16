@@ -165,7 +165,7 @@ cd "$REPO_ROOT" || {
 }
 
 # Create worktree
-TEST_WORKTREE=$(mktemp -d /tmp/trio-patch-test-XXXXXX)
+TEST_WORKTREE=$(mktemp -d "${TMPDIR:-/tmp}/trio-patch-test-XXXXXX")
 echo "Creating test worktree at: $TEST_WORKTREE"
 
 # Clean up any existing branch/worktree from previous runs
@@ -190,7 +190,7 @@ mkdir -p "$TEST_WORKTREE/patches"
 rm -f "$TEST_WORKTREE/patches"/*.patch 2>/dev/null || true
 
 # Collect patches (deduplicated, deterministic order)
-PATCH_LIST_FILE=$(mktemp)
+PATCH_LIST_FILE=$(mktemp "${TMPDIR:-/tmp}/patch-test.XXXXXX")
 collect_patches "$REPO_ROOT/patches" > "$PATCH_LIST_FILE"
 
 # Copy collected patches to worktree
@@ -243,7 +243,7 @@ fi
 echo ""
 echo "Patches to test:"
 found_patch=false
-PATCH_LIST_FILE=$(mktemp)
+PATCH_LIST_FILE=$(mktemp "${TMPDIR:-/tmp}/patch-test.XXXXXX")
 collect_patches "$TEST_WORKTREE/patches" > "$PATCH_LIST_FILE"
 while IFS= read -r p; do
   [ -f "$p" ] || continue
@@ -261,7 +261,7 @@ if [ "$found_patch" = false ]; then
 fi
 echo ""
 
-PATCH_LIST_FILE=$(mktemp)
+PATCH_LIST_FILE=$(mktemp "${TMPDIR:-/tmp}/patch-test.XXXXXX")
 collect_patches "$TEST_WORKTREE/patches" > "$PATCH_LIST_FILE"
 while IFS= read -r p; do
   [ -f "$p" ] || continue

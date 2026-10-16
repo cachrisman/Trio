@@ -741,8 +741,8 @@ fi
 
 print_info "Comparing files (${diff_desc})..."
 
-diff_stdout=$(mktemp)
-diff_stderr=$(mktemp)
+diff_stdout=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
+diff_stderr=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
 if ! "${diff_name_cmd[@]}" >"$diff_stdout" 2>"$diff_stderr"; then
     diff_err_out=$(cat "$diff_stderr")
     rm -f "$diff_stdout" "$diff_stderr"
@@ -945,7 +945,7 @@ fi
 
 # Deduplicate indices
 [ ${#want[@]} -gt 0 ] || die "No files selected (empty selection)"
-idx_tmp=$(mktemp)
+idx_tmp=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
 printf '%s\n' "${want[@]}" | awk '!seen[$0]++' > "$idx_tmp"
 
 # Build selected files list (expanding rename/copy pairs into both paths)
@@ -972,7 +972,7 @@ done
 SELECTED_COUNT="${#SELECTED_INDICES[@]}"
 print_info "Selected ${SELECTED_COUNT} item(s)"
 
-dedup_tmp=$(mktemp)
+dedup_tmp=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
 printf '%s\n' "${SELECTED_PATHS[@]}" | awk '!seen[$0]++' > "$dedup_tmp"
 
 DIFF_FILES=()
@@ -1042,7 +1042,7 @@ print_info "Patch direction: ${diff_desc}"
 echo ""
 
 # Create temporary worktree for patch generation
-TEMP_WORKTREE=$(mktemp -d)
+TEMP_WORKTREE=$(mktemp -d "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
 cleanup_worktree() {
   if [ -n "$TEMP_WORKTREE" ] && [ -d "$TEMP_WORKTREE" ]; then
     cd "$REPO_ROOT" 2>/dev/null || true
@@ -1096,7 +1096,7 @@ fi
 
 # Commit the changes (optionally appending provenance trailers to the commit body)
 if [ -n "$FLAG_TRAILERS_FILE" ] && [ -s "$FLAG_TRAILERS_FILE" ]; then
-  _commit_msg_file=$(mktemp)
+  _commit_msg_file=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
   { printf 'feat: %s\n\n' "${PATCH_DESC}"; cat "$FLAG_TRAILERS_FILE"; } > "$_commit_msg_file"
   # Throwaway commit in a temp worktree: bot identity + no signing, passed per command so the shared .git/config is never touched.
   if ! git -c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false commit -F "$_commit_msg_file"; then
@@ -1113,7 +1113,7 @@ else
 fi
 
 # Generate mailbox patch to temp file
-TEMP_PATCH=$(mktemp)
+TEMP_PATCH=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
 if ! git format-patch -1 --stdout HEAD > "$TEMP_PATCH"; then
   print_error "Failed to generate mailbox patch"
   exit 1
@@ -1215,7 +1215,7 @@ PATCH_ABS_PATH=$(cd "$(dirname "$PATCH_PATH")" && pwd -P)/$(basename "$PATCH_PAT
 
 # Use worktree for safe validation
 if git help worktree >/dev/null 2>&1; then
-    wt_dir=$(mktemp -d)
+    wt_dir=$(mktemp -d "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
     cleanup() {
         set +e
         git worktree remove -f "$wt_dir" >/dev/null 2>&1 || true
@@ -1226,8 +1226,8 @@ if git help worktree >/dev/null 2>&1; then
     
     if git worktree add -q --detach "$wt_dir" "$TARGET_BRANCH" >/dev/null 2>&1; then
         stat_ran=true
-        apply_result=$(mktemp)
-        apply_error=$(mktemp)
+        apply_result=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
+        apply_error=$(mktemp "${TMPDIR:-/tmp}/generate-patch.XXXXXX")
         (
             cd "$wt_dir"
             print_info "Patch summary (git apply --stat) on target branch '${TARGET_BRANCH}':"
