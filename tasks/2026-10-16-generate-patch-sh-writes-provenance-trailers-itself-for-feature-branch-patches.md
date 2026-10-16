@@ -21,12 +21,12 @@ owner = "agent"
 phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
-evidence_kind = "commit"
-evidence = "7c1fcbca5 + cba818195 — scripts/lib/patch-provenance.sh holds _patch_id, _patch_ids_all, _recorded_patch_ids, _recorded_source_branch, write_provenance_trailers; both scripts source it and neither defines the helpers (test static checks); readers give identical output to the pre-change copies on all 12 patches in patches/"
+evidence_kind = "run"
+evidence = "ec4626a35: scripts/lib/patch-provenance.sh unchanged since cba818195; both scripts source it and define neither helper (provenance test static checks ok 29-32)"
 met_at = 2026-10-16
-met_ts = "2026-10-16T15:01:01+02:00"
+met_ts = "2026-10-16T15:19:12+02:00"
 met_by = "unknown"
-met_commit = "cba818195e8b5b2dd711771a926c7b049f54a254"
+met_commit = "ec4626a35e7cc0df7d8d00fff0788e89abeff495"
 
 [[acceptance]]
 id = "AC-2"
@@ -35,12 +35,12 @@ owner = "agent"
 phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
-evidence_kind = "test"
-evidence = "bash scripts/tests/generate-patch-provenance.test.sh at cba818195: 30/30 — case 1 (auto: all seven trailers exactly once, Base/Tip/Source-Commits correct, git am applies), case 2/2b (explicit --message-trailers-file, absolute and relative, used verbatim, no auto Base line), case 3 (tmp/ source writes none), case 3b (-w writes none)"
+evidence_kind = "run"
+evidence = "ec4626a35: bash scripts/tests/generate-patch-provenance.test.sh 32/32 - case 1 all seven trailers once, correct Base/Tip/Source-Commits/PatchIds, git am applies; case 2/2b explicit file (absolute and relative) used verbatim"
 met_at = 2026-10-16
-met_ts = "2026-10-16T15:01:02+02:00"
+met_ts = "2026-10-16T15:19:13+02:00"
 met_by = "unknown"
-met_commit = "cba818195e8b5b2dd711771a926c7b049f54a254"
+met_commit = "ec4626a35e7cc0df7d8d00fff0788e89abeff495"
 
 [[acceptance]]
 id = "AC-3"
@@ -49,12 +49,12 @@ owner = "agent"
 phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
-evidence_kind = "test"
-evidence = "scripts/tests/generate-patch-provenance.test.sh at cba818195 inside the Claude Code Bash sandbox: 30/30; hermetic (GIT_CONFIG_GLOBAL=/dev/null, commit.gpgsign=false on every commit/merge/am, local bare origin); mutations (merge-base ref forced to fail; -w exclusion removed) each turn checks red"
+evidence_kind = "run"
+evidence = "ec4626a35: scripts/tests/generate-patch-provenance.test.sh 32/32 inside the Claude Code Bash sandbox; hermetic, commit.gpgsign=false on every commit; case 3b now also runs -w to completion"
 met_at = 2026-10-16
-met_ts = "2026-10-16T15:01:02+02:00"
+met_ts = "2026-10-16T15:19:13+02:00"
 met_by = "unknown"
-met_commit = "cba818195e8b5b2dd711771a926c7b049f54a254"
+met_commit = "ec4626a35e7cc0df7d8d00fff0788e89abeff495"
 
 [[acceptance]]
 id = "AC-4"
@@ -63,12 +63,12 @@ owner = "agent"
 phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
-evidence_kind = "commit"
-evidence = "7c1fcbca5 + cba818195 — AGENTS.md v25: 'Generate a NEW patch' gains 'Provenance is automatic' (never add or edit trailers by hand; -w/interactive exclusion; example passes -s feature/<name>), pre-flight note updated, v25 changelog entry"
+evidence_kind = "run"
+evidence = "ec4626a35: AGENTS.md v25 unchanged since cba818195 ('Provenance is automatic', trailers never hand-added, v25 changelog entry)"
 met_at = 2026-10-16
-met_ts = "2026-10-16T15:01:02+02:00"
+met_ts = "2026-10-16T15:19:13+02:00"
 met_by = "unknown"
-met_commit = "cba818195e8b5b2dd711771a926c7b049f54a254"
+met_commit = "ec4626a35e7cc0df7d8d00fff0788e89abeff495"
 
 [[acceptance]]
 id = "AC-5"
@@ -139,6 +139,14 @@ verdict = "pass"
 reviewed_commit = "cba818195e8b5b2dd711771a926c7b049f54a254"
 reviewed_paths = ["AGENTS.md", "scripts/generate-patch.sh", "scripts/tests/generate-patch-provenance.test.sh"]
 recorded_at = "2026-10-16T13:04:17+00:00"
+
+[[reviews]]
+run_id = "17bd644c-3838-4e18-88df-225b631f464c"
+model_family = "cursor"
+verdict = "pass"
+reviewed_commit = "ec4626a35e7cc0df7d8d00fff0788e89abeff495"
+reviewed_paths = ["scripts/lib/patch-provenance.sh", "scripts/generate-patch.sh", "scripts/mid-stack-update.sh", "scripts/tests/generate-patch-provenance.test.sh"]
+recorded_at = "2026-10-16T13:19:13+00:00"
 +++
 
 ## Intent
