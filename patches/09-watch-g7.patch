@@ -1,6 +1,6 @@
-From 2f2d7b742deb7f11967be5c4dca91e506d832394 Mon Sep 17 00:00:00 2001
+From 0d0b8ba56db1e33f88682ba0e3b90d9345407b78 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 18:40:55 +0200
+Date: Fri, 16 Oct 2026 13:52:46 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 9523b7a2630005d6040ad295a98b23daf0cb1c1a
-Trio-Patch-Generated: 2026-09-24T16:40:38Z
+Trio-Patch-Feature-Tip: 73372979f6cd99a226d3ad221ac2db2b6129dcb1
+Trio-Patch-Generated: 2026-10-16T11:52:27Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -90,6 +90,8 @@ Trio-Patch-Source-Commits:
  ac4c9388584c882d3e8b500ac6d07ea36fdbf1b3 watch: circular complication uses the chart colour for every reading source (TRIO-063)
  a7106053242fe77e9eda2f1b1456af0d3ae2d25a watch: circular complication records the reload generation like the corner; reload log names both kinds (TRIO-063)
  9523b7a2630005d6040ad295a98b23daf0cb1c1a watch: keep recording only a generation that exists; clearer reload log line (TRIO-063)
+ a679782ba372b413198057edce941b5f7667a63b watch: diagnostics shows how long ago the last phone data arrived (TRIO-004)
+ 73372979f6cd99a226d3ad221ac2db2b6129dcb1 watch: log each userInfo transfer's outcome and retry position (TRIO-025)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -160,6 +162,8 @@ Trio-Patch-Source-PatchIds:
  4e77dc0547a20d58dd747014e1dca7ea3e856cac
  8f32b10295e8d7bc1f1a781c9f611eb3e27116c4
  4f9359a37610aae21b3ff49392cf06ae6f815187
+ bbdd03faa5f5734b473183a1b7497f0fcf44020e
+ 7550fe8e545d1a8b3294b7cdea4bbeeaf3d9a81e
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1902 ++++++++++++
@@ -168,13 +172,13 @@ Trio-Patch-Source-PatchIds:
  Trio Watch App Extension/TrioWatchApp.swift   |   54 +-
  .../Views/GlucoseTrendView.swift              |   59 +-
  .../Views/TrioMainWatchView.swift             |  204 +-
- .../Views/WatchDiagnosticsView.swift          | 1000 +++++++
+ .../Views/WatchDiagnosticsView.swift          | 1024 +++++++
  .../WatchErrorReporter.swift                  |  108 +-
  .../WatchGlucoseColorComputer.swift           |  179 ++
  .../WatchGlucoseHistoryStore.swift            |  229 ++
  Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 2632 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2640 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  138 +
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
@@ -191,7 +195,7 @@ Trio-Patch-Source-PatchIds:
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  603 +++-
- 30 files changed, 9981 insertions(+), 594 deletions(-)
+ 30 files changed, 10013 insertions(+), 594 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -2837,10 +2841,10 @@ index 4066e9352..e0d82b335 100644
              .fullScreenCover(isPresented: $showingTreatmentMenuSheet) {
 diff --git a/Trio Watch App Extension/Views/WatchDiagnosticsView.swift b/Trio Watch App Extension/Views/WatchDiagnosticsView.swift
 new file mode 100644
-index 000000000..31de71566
+index 000000000..a3cb7657c
 --- /dev/null
 +++ b/Trio Watch App Extension/Views/WatchDiagnosticsView.swift	
-@@ -0,0 +1,1000 @@
+@@ -0,0 +1,1024 @@
 +import G7SensorKit // C-217-D1/D2: G7BLEDiagnosticsSnapshot
 +import SwiftUI
 +import WatchKit
@@ -3147,6 +3151,16 @@ index 000000000..31de71566
 +                    .minimumScaleFactor(0.6)
 +            }
 +
++            // TRIO-004
++            HStack {
++                Text("Last data:")
++                Spacer()
++                Text(formatDataAge(dataStore.lastDataReceivedAt(), relativeTo: now))
++                    .foregroundColor(dataStore.lastDataReceivedAt().map { ageColor($0, relativeTo: now) })
++                    .lineLimit(1)
++                    .minimumScaleFactor(0.6)
++            }
++
 +            HStack {
 +                Text("Debounce:")
 +                Spacer()
@@ -3429,6 +3443,20 @@ index 000000000..31de71566
 +    private func formatTime(_ date: Date) -> String {
 +        if date == .distantPast { return "--" }
 +        return Self.timeFormatter.string(from: date)
++    }
++
++    private func formatDataAge(_ date: Date?, relativeTo now: Date) -> String {
++        guard let date else { return "—" }
++        let age = max(0, Int(now.timeIntervalSince(date)))
++        if age < 60 { return "\(age)s ago" }
++        if age < 3600 {
++            let m = age / 60
++            let s = age % 60
++            return "\(m)m \(s)s ago"
++        }
++        let h = age / 3600
++        let m = (age % 3600) / 60
++        return "\(h)h \(m)m ago"
 +    }
 +
 +    private func ageColor(_ date: Date, relativeTo now: Date = Date()) -> Color {
@@ -5106,7 +5134,7 @@ index ea6c9f146..f3ed61337 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index efe8c8a2f..d8a1cd756 100644
+index efe8c8a2f..ec77d2a34 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,104 @@
@@ -5317,10 +5345,10 @@ index efe8c8a2f..d8a1cd756 100644
 -    /// methods. Single source of truth for both `didReceiveMessage` and
 -    /// `didReceiveUserInfo`.
 -    private static let maxAcceptableMessageAgeInMinutes: TimeInterval = 15 * 60
+-
+-    // MARK: - Debouncing and batch processing helpers
 +    // MARK: - Debouncing and sync helpers
  
--    // MARK: - Debouncing and batch processing helpers
--
 -    /// Temporary storage for new data arriving via WatchConnectivity.
      private var pendingData: [String: Any] = [:]
 -
@@ -6145,7 +6173,7 @@ index efe8c8a2f..d8a1cd756 100644
 +                    mgDlUnit: mgDlUnit,
 +                    completionHandler: completionHandler
 +                )
-+            }
+             }
 +        )
 +        store.execute(query)
 +    }
@@ -6201,9 +6229,10 @@ index efe8c8a2f..d8a1cd756 100644
 +                g7Session: sid
 +            )
 +            await WatchLogger.shared.log(line)
-+        }
-+    }
-+
+         }
+     }
+ 
+-    // MARK: – Handle Acknowledgement Messages FROM Phone
 +    /// Aligns attribution watermarks from a complication snapshot unless that would regress a newer in-memory reading (e.g. store lagging BLE).
 +    /// Also call when hydrating the main watch UI from `latestSnapshot()` (`onAppear`) so `tryAttributeDisplayedReadingSource` gates match the screen.
 +    func alignDisplayedReadingAttributionWithComplicationSnapshot(_ snapshot: TrioComplicationSnapshot) {
@@ -6298,9 +6327,9 @@ index efe8c8a2f..d8a1cd756 100644
 +                // advance the watermark so subsequent monotonic checks remain consistent.
 +                displayedReadingAttributedForDate = date
 +                return true
-             }
++            }
 +            return false
-         }
++        }
 +        if let attributed = displayedReadingAttributedForDate, date <= attributed {
 +            return false
 +        }
@@ -6308,9 +6337,8 @@ index efe8c8a2f..d8a1cd756 100644
 +        displayedReadingAttributedForDate = date
 +        displayedReadingAttributedSequence = sequence
 +        return true
-     }
- 
--    // MARK: – Handle Acknowledgement Messages FROM Phone
++    }
++
 +    private func intForWatchMessageKey(_ key: String, in message: [String: Any]) -> Int? {
 +        if let n = message[key] as? NSNumber { return n.intValue }
 +        return message[key] as? Int
@@ -6394,7 +6422,7 @@ index efe8c8a2f..d8a1cd756 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -180,165 +1255,651 @@ import WidgetKit
+@@ -180,165 +1255,659 @@ import WidgetKit
  
              if activationState == .activated {
                  Task {
@@ -6437,8 +6465,12 @@ index efe8c8a2f..d8a1cd756 100644
          Task {
 -            await WatchLogger.shared.log("⌚️ Watch received data: \(message)")
 +            await WatchLogger.shared.log(Self.watchConnectivityInboundSummary(message))
-+        }
-+
+         }
+ 
+-        // Ack at top level — no `watchState` wrapper, no staleness check.
+-        if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
+-           let ackMessage = message[WatchMessageKeys.message] as? String,
+-           let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
 +        // R5b — message is the sendMessage envelope [WatchMessageKeys.watchState: fullMessage]; watchStateDict is the inner payload (same shape as iPhone fullMessage) so readingEpoch is correct for end-to-end timing.
 +        // G7 sensor identity must sync whenever watchState is present, even when this method later skips UI (stale `date`, monotonic guard in scheduleUIUpdate, missing/invalid `date` — downstream branches must still run).
 +        let watchStateDict = message[WatchMessageKeys.watchState] as? [String: Any]
@@ -6446,12 +6478,8 @@ index efe8c8a2f..d8a1cd756 100644
 +            DispatchQueue.main.async { @MainActor in
 +                self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(ws)
 +            }
-         }
- 
--        // Ack at top level — no `watchState` wrapper, no staleness check.
--        if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
--           let ackMessage = message[WatchMessageKeys.message] as? String,
--           let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String
++        }
++
 +        if let watchStateDict,
 +           let date = dateValue(from: watchStateDict[WatchMessageKeys.date])
 +        {
@@ -6588,7 +6616,7 @@ index efe8c8a2f..d8a1cd756 100644
 +                    requiresNoPendingContent: true
 +                )
 +            }
-             return
++            return
 +        case .missing:
 +            Task {
 +                await WatchLogger.shared.log(
@@ -6602,9 +6630,13 @@ index efe8c8a2f..d8a1cd756 100644
 +                    requiresNoPendingContent: true
 +                )
 +            }
-+            return
-+        }
-+
+             return
+         }
+ 
+-        // Monotonicity dedup.
+-        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
+-        guard date > lastProcessed else {
+-            Task { await WatchLogger.shared.log("⌚️ Skipping duplicate watch state (\(date))") }
 +        // Log using already-decoded readingDate (no extra decode); epoch only when we have it.
 +        let readingDateEpoch = Int(readingDate.timeIntervalSince1970)
 +        // C-208-6 (1.7): capture the wall clock here (WC delegate queue) but assign the
@@ -6613,12 +6645,8 @@ index efe8c8a2f..d8a1cd756 100644
 +        let userInfoReceiveWallClock = Date()
 +        Task {
 +            await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
-         }
- 
--        // Monotonicity dedup.
--        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
--        guard date > lastProcessed else {
--            Task { await WatchLogger.shared.log("⌚️ Skipping duplicate watch state (\(date))") }
++        }
++
 +        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
 +        // state is not populated here (defaults to nil) because no call site currently sets it.
 +        // If state is ever set during snapshot construction, add it here too — otherwise this
@@ -6700,10 +6728,15 @@ index efe8c8a2f..d8a1cd756 100644
      }
  
      func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
++        // TRIO-025
          if let error = error {
++            let attempt = transferRetryCount < maxTransferRetries
++                ? "\(transferRetryCount + 1)/\(maxTransferRetries)"
++                : "giving_up"
              Task {
 -                await WatchLogger.shared.log("⌚️ transferUserInfo failed with error: \(error)")
 -                await WatchLogger.shared.log("⌚️ Saving logs to disk as fallback!")
++                await WatchLogger.shared.log("userinfo_transfer_finished outcome=error retry=\(attempt)")
 +                await WatchLogger.shared.log("transferUserInfo failed with error: \(error)")
 +                await WatchLogger.shared.log("Saving logs to disk as fallback.")
                  await WatchLogger.shared.flushPersistedLogs()
@@ -6729,6 +6762,9 @@ index efe8c8a2f..d8a1cd756 100644
 +            }
 +        } else {
 +            transferRetryCount = 0
++            Task {
++                await WatchLogger.shared.log("userinfo_transfer_finished outcome=success")
++            }
 +        }
 +    }
 +
@@ -7132,7 +7168,7 @@ index efe8c8a2f..d8a1cd756 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -349,7 +1910,7 @@ import WidgetKit
+@@ -349,7 +1918,7 @@ import WidgetKit
                  }
  
                  Task {
@@ -7141,7 +7177,7 @@ index efe8c8a2f..d8a1cd756 100644
                  }
  
                  switch ackCode {
-@@ -372,26 +1933,66 @@ import WidgetKit
+@@ -372,26 +1941,66 @@ import WidgetKit
                  }
              }
  
@@ -7217,7 +7253,7 @@ index efe8c8a2f..d8a1cd756 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -400,84 +2001,176 @@ import WidgetKit
+@@ -400,84 +2009,176 @@ import WidgetKit
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -7427,7 +7463,7 @@ index efe8c8a2f..d8a1cd756 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -492,50 +2185,27 @@ import WidgetKit
+@@ -492,50 +2193,27 @@ import WidgetKit
              self.lastLoopTime = lastLoopTime
          }
  
@@ -7494,7 +7530,7 @@ index efe8c8a2f..d8a1cd756 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -556,43 +2226,53 @@ import WidgetKit
+@@ -556,43 +2234,53 @@ import WidgetKit
              }
          }
  
@@ -7573,7 +7609,7 @@ index efe8c8a2f..d8a1cd756 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -610,37 +2290,469 @@ import WidgetKit
+@@ -610,37 +2298,469 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
@@ -12093,5 +12129,5 @@ index 1a50a60d5..1699e0fe5 100644
      }
  }
 -- 
-2.55.0
+2.56.0
 
