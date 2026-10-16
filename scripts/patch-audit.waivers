@@ -4,3 +4,4 @@
 #
 # Example:
 # patch=12 file=Trio/Sources/APS/DeviceDataManager.swift allow_deleted=5 reason="Temporary removal of unused code"
+patch=15 file=Trio/Sources/APS/Storage/GlucoseStorage.swift allow_deleted=10 reason="TRIO-077: thread isUploadedToNS through store helpers; deleted lines are rewritten signatures and calls, no logic removed"

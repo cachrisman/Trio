@@ -1,24 +1,26 @@
-From 13d8d16a4ab366041271e109ef1d29e73462e8a8 Mon Sep 17 00:00:00 2001
+From 8919100a02c47479b5d2cb1a021d0b0582fd2919 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Wed, 16 Sep 2026 13:04:58 +0200
+Date: Fri, 16 Oct 2026 19:10:52 +0200
 Subject: [PATCH] feat: cloud-logging
 
 Trio-Patch-Source-Branch: feature/cloud-logging
 Trio-Patch-Base: 2516b23c414128c9a3dc5055be896936b1a7d52c
-Trio-Patch-Feature-Tip: 47b993221c3ae0075030eeb62bbb1ccee1672db6
-Trio-Patch-Generated: 2026-09-16T11:04:47Z
+Trio-Patch-Feature-Tip: 2ff4c78e54729f5a5e35d1c9f4bb8e3304c9c4d1
+Trio-Patch-Generated: 2026-10-16T17:10:41Z
 Trio-Patch-Source-Commits:
  fc417ef5189f50f479dea4579a726fa7dc6677e6 feat: ns-richer-settings
  c7c8d208badaa588d5eb2050dd74ef4487ce4efe feat: g7-reading-time-with-seconds
  d915e6309ac10843ec2e66f6e4e9b16e2726b8ef feat: watch-error-reporting
  cd08bec1244e4e360ef26679f706608f98f41942 feat: cloud-logging
  47b993221c3ae0075030eeb62bbb1ccee1672db6 Merge dev (1.0.0.3) into feature/cloud-logging
+ 2ff4c78e54729f5a5e35d1c9f4bb8e3304c9c4d1 cloud logging: cap each upload pass at entry boundaries so multi-line entries are never split (TRIO-040)
+Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  f19d9363a9ac847de8e6c12a5acd685d05be56fa
  bca2c9a93345d165f68dc257dd7cee8ca4cee7fc
  d64aec69341345cffa16e72b239ed51922d813e4
  155ae686f2d7b0cac8d1446cb5acca53e406843d
- 8fe7265ccb8c7a92799a829b48c791e3a4d0c346
+ 0d10d2820f2c0b25f8973380913b37431d5c2fe6
 ---
  .../WatchConnectivityPayloadIds.swift         |   59 +
  Trio Watch App Extension/WatchLogger.swift    | 1208 ++++++++++++++---
@@ -27,18 +29,18 @@ Trio-Patch-Source-PatchIds:
  .../Helpers/AppTerminationTracker.swift       |  306 +++++
  .../BetterStackLogtailProvider.swift          |   71 +
  .../CloudLogging/BetterStackSettings.swift    |   35 +
- .../CloudLogEntryAggregator.swift             |   41 +
+ .../CloudLogEntryAggregator.swift             |  111 ++
  .../CloudLogging/CloudLogLineParsing.swift    |  298 ++++
  .../CloudLogging/CloudLogProvider.swift       |  127 ++
  .../CloudLogging/CloudLogUploadService.swift  |  194 +++
- .../CloudLogging/CloudLogUploader.swift       |  507 +++++++
+ .../CloudLogging/CloudLogUploader.swift       |  515 +++++++
  .../IssueReporter/SimpleLogReporter.swift     |   13 +-
  .../Modules/Settings/SettingItems.swift       |   11 +
  .../View/CloudLoggingSettingsView.swift       |  150 ++
  .../Settings/View/Subviews/ServicesView.swift |    1 +
  Trio/Sources/Router/Screen.swift              |    3 +
- TrioTests/CloudLogEntryAggregatorTests.swift  |   42 +
- 18 files changed, 2908 insertions(+), 198 deletions(-)
+ TrioTests/CloudLogEntryAggregatorTests.swift  |  143 ++
+ 18 files changed, 3087 insertions(+), 198 deletions(-)
  create mode 100644 Trio Watch App Extension/WatchConnectivityPayloadIds.swift
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
@@ -2011,10 +2013,10 @@ index 000000000..38a4d43bd
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
 new file mode 100644
-index 000000000..b9d2818fd
+index 000000000..d58b2437d
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,111 @@
 +import Foundation
 +
 +enum CloudLogEntryAggregator {
@@ -2054,6 +2056,76 @@ index 000000000..b9d2818fd
 +        }
 +
 +        return entries
++    }
++
++    /// Splits newline-terminated data into physical lines at the byte level.
++    ///
++    /// Splitting on raw `0x0A` bytes (instead of decoding first) keeps exact byte accounting:
++    /// an invalid UTF-8 byte decodes to U+FFFD (3 bytes), so re-encoding a decoded line would no
++    /// longer match what is on disk. `byteCounts[i]` is the raw size of `lines[i]` excluding its newline.
++    ///
++    /// - Important: `data` must end with `0x0A`. Invariant: `byteCounts.reduce(0, +) + byteCounts.count == data.count`.
++    static func splitLines(_ data: Data) -> (lines: [String], byteCounts: [Int]) {
++        var lines: [String] = []
++        var byteCounts: [Int] = []
++
++        var sliceStart = data.startIndex
++        for idx in data.indices where data[idx] == 0x0A {
++            let slice = data[sliceStart ..< idx]
++            lines.append(String(decoding: slice, as: UTF8.self))
++            byteCounts.append(slice.count)
++            sliceStart = data.index(after: idx)
++        }
++        // Anything after the last newline would be a partial line; callers guarantee there is none.
++
++        return (lines, byteCounts)
++    }
++
++    /// Like `aggregate`, but stops after `maxEntries` complete logical entries so a multi-line
++    /// entry is never split by the cap.
++    ///
++    /// `consumedBytes` is the raw byte length (line bytes plus one newline each) of the physical
++    /// lines belonging to the returned entries, so the next pass can resume exactly at the start
++    /// line of the first un-returned entry. When the cap is not hit, all lines are consumed.
++    ///
++    /// - Precondition: `maxEntries >= 1` and `lines.count == byteCounts.count`. For non-empty
++    ///   `lines` at least one entry is always returned, so progress is unconditional.
++    static func aggregateCapped(
++        lines: [String],
++        byteCounts: [Int],
++        startPattern: NSRegularExpression,
++        maxEntries: Int
++    ) -> (entries: [String], consumedBytes: Int) {
++        precondition(maxEntries >= 1)
++        precondition(lines.count == byteCounts.count)
++        guard !lines.isEmpty else { return ([], 0) }
++
++        var entries: [String] = []
++        var current: [String] = []
++        var consumedBytes = 0
++
++        func isStart(_ line: String) -> Bool {
++            let ns = line as NSString
++            let range = NSRange(location: 0, length: ns.length)
++            return startPattern.firstMatch(in: line, range: range) != nil
++        }
++
++        for (index, line) in lines.enumerated() {
++            if isStart(line), !current.isEmpty {
++                entries.append(current.joined(separator: "\n"))
++                current = []
++                if entries.count == maxEntries {
++                    // `consumedBytes` covers every line before this start line.
++                    return (entries, consumedBytes)
++                }
++            }
++            // A mid-entry start (continuation lines first) simply forms the leading entry.
++            current.append(line)
++            consumedBytes += byteCounts[index] + 1
++        }
++
++        entries.append(current.joined(separator: "\n"))
++        return (entries, consumedBytes)
 +    }
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
@@ -2695,10 +2767,10 @@ index 000000000..abce87784
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
 new file mode 100644
-index 000000000..d8c586d8f
+index 000000000..c76a018e9
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,507 @@
+@@ -0,0 +1,515 @@
 +import Foundation
 +
 +/// iPhone-only log tailer/uploader.
@@ -2841,15 +2913,22 @@ index 000000000..d8c586d8f
 +        guard FileManager.default.fileExists(atPath: fileURL.path) else { return true }
 +        guard let size = fileSize(fileURL), size > startOffset else { return true }
 +
-+        guard let (lines, nextOffset) = readCompleteLines(fileURL: fileURL, startOffset: startOffset) else {
++        guard let (lines, byteCounts, windowOffset) = readCompleteLines(fileURL: fileURL, startOffset: startOffset) else {
 +            return true
 +        }
 +        guard !lines.isEmpty else {
-+            saveState(TailState(offset: nextOffset), for: filePathKey)
++            saveState(TailState(offset: windowOffset), for: filePathKey)
 +            return true
 +        }
 +
-+        let entries = aggregateEntries(physicalLines: lines, platform: platform)
++        // Cap at entry boundaries (after aggregation) so a multi-line entry is never split across
++        // two events. Each pass yields at most `maxEventsPerRequest` entries, i.e. one upload batch.
++        let (entries, consumedBytes) = aggregateEntries(
++            physicalLines: lines,
++            byteCounts: byteCounts,
++            platform: platform
++        )
++        let nextOffset = startOffset + UInt64(consumedBytes)
 +        guard !entries.isEmpty else {
 +            saveState(TailState(offset: nextOffset), for: filePathKey)
 +            return true
@@ -2907,16 +2986,21 @@ index 000000000..d8c586d8f
 +    private let maxReadBytesPerPass = 512 * 1024
 +
 +    /// Reads up to `maxReadBytesPerPass` bytes from startOffset and returns only complete
-+    /// lines (ending with '\n'). The returned `nextOffset` is the byte offset right after
-+    /// the last complete newline within the consumed slice.
-+    private func readCompleteLines(fileURL: URL, startOffset: UInt64) -> ([String], UInt64)? {
++    /// lines (ending with '\n') along with each line's raw byte count (excluding the newline).
++    /// No entry or line cap is applied here; the caller caps at entry boundaries after aggregation.
++    /// When `lines` is empty, `nextOffset` is where the next pass should resume (unchanged for a
++    /// partial line, past the window for an over-long line).
++    private func readCompleteLines(
++        fileURL: URL,
++        startOffset: UInt64
++    ) -> (lines: [String], byteCounts: [Int], nextOffset: UInt64)? {
 +        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
 +        defer { try? handle.close() }
 +
 +        do {
 +            try handle.seek(toOffset: startOffset)
 +            let data = try handle.read(upToCount: maxReadBytesPerPass) ?? Data()
-+            guard !data.isEmpty else { return ([], startOffset) }
++            guard !data.isEmpty else { return ([], [], startOffset) }
 +
 +            // Only advance to the last newline to avoid uploading a partial final line.
 +            guard let lastNewlineIdx = data.lastIndex(of: 0x0A) else {
@@ -2928,46 +3012,35 @@ index 000000000..d8c586d8f
 +                //    Skip the window instead. The skipped bytes are dropped for good; when a
 +                //    newline is finally reached only the trailing fragment of the entry surfaces
 +                //    (without its beginning), accepted as the price of guaranteed forward progress.
-+                guard data.count == maxReadBytesPerPass else { return ([], startOffset) }
++                guard data.count == maxReadBytesPerPass else { return ([], [], startOffset) }
 +                debug(
 +                    .service,
 +                    "CloudLogUploader: no newline in \(data.count)B window at offset \(startOffset), skipping over-long line"
 +                )
-+                return ([], startOffset + UInt64(data.count))
++                return ([], [], startOffset + UInt64(data.count))
 +            }
 +
 +            let completeData = data.prefix(upTo: data.index(after: lastNewlineIdx))
-+            let text = String(decoding: completeData, as: UTF8.self)
-+
-+            var lines = text
-+                .split(separator: "\n", omittingEmptySubsequences: false)
-+                .map(String.init)
-+            // Because `text` ends with '\n', split(...) includes a final empty element; drop it.
-+            if lines.last == "" {
-+                lines.removeLast()
-+            }
-+
-+            // Cap the number of physical lines so the pass produces at most one upload batch.
-+            // Aggregation only merges physical lines into fewer logical entries, never more, so
-+            // capping physical lines guarantees at most one batch.
-+            if lines.count > maxEventsPerRequest {
-+                let kept = Array(lines.prefix(maxEventsPerRequest))
-+                // Each physical line contributes its UTF-8 byte count plus one byte for the
-+                // terminating newline (0x0A). The sum gives the exact consumed prefix length
-+                // for the kept lines only.
-+                let keptByteCount = kept.reduce(0) { $0 + $1.utf8.count + 1 }
-+                let nextOffset = startOffset + UInt64(keptByteCount)
-+                return (kept, nextOffset)
-+            }
++            let (lines, byteCounts) = CloudLogEntryAggregator.splitLines(Data(completeData))
++            assert(
++                byteCounts.reduce(0, +) + byteCounts.count == completeData.count,
++                "CloudLogUploader: line byte counts must account for every byte read"
++            )
 +
 +            let nextOffset = startOffset + UInt64(completeData.count)
-+            return (lines, nextOffset)
++            return (lines, byteCounts, nextOffset)
 +        } catch {
 +            return nil
 +        }
 +    }
 +
-+    private func aggregateEntries(physicalLines: [String], platform: CloudLogPlatform) -> [String] {
++    /// Aggregates physical lines into at most `maxEventsPerRequest` logical entries and reports how
++    /// many raw bytes those entries span, so the next pass resumes at an entry boundary.
++    private func aggregateEntries(
++        physicalLines: [String],
++        byteCounts: [Int],
++        platform: CloudLogPlatform
++    ) -> (entries: [String], consumedBytes: Int) {
 +        let pattern: String
 +        switch platform {
 +        case .ios:
@@ -2977,11 +3050,18 @@ index 000000000..d8c586d8f
 +        }
 +
 +        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-+            // Fallback to line-by-line if regex compilation fails (shouldn't happen).
-+            return physicalLines
++            // Fallback to line-by-line (capped) if regex compilation fails (shouldn't happen).
++            let kept = Array(physicalLines.prefix(maxEventsPerRequest))
++            let consumed = byteCounts.prefix(kept.count).reduce(0) { $0 + $1 + 1 }
++            return (kept, consumed)
 +        }
 +
-+        return CloudLogEntryAggregator.aggregate(lines: physicalLines, startPattern: regex)
++        return CloudLogEntryAggregator.aggregateCapped(
++            lines: physicalLines,
++            byteCounts: byteCounts,
++            startPattern: regex,
++            maxEntries: maxEventsPerRequest
++        )
 +    }
 +
 +    // MARK: - Attributes
@@ -3239,10 +3319,10 @@ index 254d723ec..4a5460494 100644
          try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
      }
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
-index 8c0d27a29..a561354a8 100644
+index 47097a834..ab464331b 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
 +++ b/Trio/Sources/Modules/Settings/SettingItems.swift
-@@ -421,6 +421,17 @@ enum SettingItems {
+@@ -422,6 +422,17 @@ enum SettingItems {
              ],
              path: ["Services", "Nightscout", "Fetch and Remote Control"]
          ),
@@ -3451,10 +3531,10 @@ index b7d111602..76e4ab666 100644
          case .smbSettings:
 diff --git a/TrioTests/CloudLogEntryAggregatorTests.swift b/TrioTests/CloudLogEntryAggregatorTests.swift
 new file mode 100644
-index 000000000..7c166f17c
+index 000000000..7925abdd6
 --- /dev/null
 +++ b/TrioTests/CloudLogEntryAggregatorTests.swift
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,143 @@
 +import Foundation
 +import Testing
 +
@@ -3496,7 +3576,108 @@ index 000000000..7c166f17c
 +        #expect(entries[0].hasPrefix("[2026-01-01T08:35:51+0100]"))
 +        #expect(entries[1].hasPrefix("[2026-01-01T08:35:52+0100]"))
 +    }
++
++    private func iosLine(_ n: Int) -> String {
++        let s = String(format: "%02d", n)
++        return "2026-01-01T08:32:\(s)+0100 [DeviceManager] Foo.swift - bar() - \(n) - INFO: line \(n)"
++    }
++
++    @Test("entry cap never splits a multi-line stack trace") func testCapKeepsStackTraceWhole() throws {
++        let start = try NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}T"#)
++
++        // 3 single-line entries, then a 5-line trace (entry #4), then more entries. With a
++        // physical-line cap of 5 the cut would land inside the trace; the entry cap must not.
++        var lines: [String] = [iosLine(1), iosLine(2), iosLine(3)]
++        let traceLines = [iosLine(4), "    at Frame.one()", "    at Frame.two()", "    at Frame.three()", "    at Frame.four()"]
++        lines += traceLines
++        lines += [iosLine(5), iosLine(6), iosLine(7)]
++
++        let data = Data((lines.joined(separator: "\n") + "\n").utf8)
++        let split = CloudLogEntryAggregator.splitLines(data)
++        #expect(split.lines == lines)
++
++        let result = CloudLogEntryAggregator.aggregateCapped(
++            lines: split.lines,
++            byteCounts: split.byteCounts,
++            startPattern: start,
++            maxEntries: 5
++        )
++
++        #expect(result.entries.count == 5)
++        #expect(result.entries[3] == traceLines.joined(separator: "\n"))
++        #expect(result.entries[4] == iosLine(5))
++
++        let returnedLines = lines.prefix(3 + 5 + 1)
++        let expectedConsumed = returnedLines.reduce(0) { $0 + $1.utf8.count + 1 }
++        #expect(result.consumedBytes == expectedConsumed)
++        let rest = String(decoding: data.dropFirst(result.consumedBytes), as: UTF8.self)
++        #expect(rest.hasPrefix(iosLine(6)))
++    }
++
++    @Test("byte accounting is exact with multi-byte and invalid UTF-8") func testExactByteAccounting() throws {
++        let start = try NSRegularExpression(pattern: #"^\[\d{4}-\d{2}-\d{2}T"#)
++
++        var data = Data()
++        data.append(Data("[2026-01-01T08:35:51+0100] [WatchLogger.swift:169] flushToPhone() → ⌚️ ok\n".utf8))
++        data.append(Data("[2026-01-01T08:35:52+0100] bad byte ".utf8))
++        data.append(0xFF)
++        data.append(Data(" here\n".utf8))
++        let thirdStart = data.count
++        data.append(Data("[2026-01-01T08:35:53+0100] third\n".utf8))
++
++        let split = CloudLogEntryAggregator.splitLines(data)
++        #expect(split.lines.count == 3)
++        #expect(split.byteCounts.reduce(0, +) + split.byteCounts.count == data.count)
++        // The invalid byte decodes to U+FFFD (3 bytes) but is counted as 1 raw byte.
++        #expect(split.lines[1].utf8.count == split.byteCounts[1] + 2)
++
++        let result = CloudLogEntryAggregator.aggregateCapped(
++            lines: split.lines,
++            byteCounts: split.byteCounts,
++            startPattern: start,
++            maxEntries: 2
++        )
++        #expect(result.entries.count == 2)
++        #expect(result.consumedBytes == thirdStart)
++        #expect(data[thirdStart] == UInt8(ascii: "["))
++        #expect(String(decoding: data.dropFirst(result.consumedBytes), as: UTF8.self)
++            .hasPrefix("[2026-01-01T08:35:53+0100]"))
++    }
++
++    @Test("no cap hit consumes the whole input") func testNoCapHitConsumesAll() throws {
++        let start = try NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}T"#)
++        let lines = [iosLine(1), "{", "}", iosLine(2)]
++        let data = Data((lines.joined(separator: "\n") + "\n").utf8)
++        let split = CloudLogEntryAggregator.splitLines(data)
++
++        let result = CloudLogEntryAggregator.aggregateCapped(
++            lines: split.lines,
++            byteCounts: split.byteCounts,
++            startPattern: start,
++            maxEntries: 250
++        )
++        #expect(result.entries.count == 2)
++        #expect(result.consumedBytes == data.count)
++    }
++
++    @Test("mid-entry start forms one leading entry that is counted") func testMidEntryStart() throws {
++        let start = try NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}T"#)
++        let lines = ["    at Frame.tail1()", "    at Frame.tail2()", iosLine(1), iosLine(2)]
++        let data = Data((lines.joined(separator: "\n") + "\n").utf8)
++        let split = CloudLogEntryAggregator.splitLines(data)
++
++        let result = CloudLogEntryAggregator.aggregateCapped(
++            lines: split.lines,
++            byteCounts: split.byteCounts,
++            startPattern: start,
++            maxEntries: 1
++        )
++        #expect(result.entries == ["    at Frame.tail1()\n    at Frame.tail2()"])
++        let expected = lines.prefix(2).reduce(0) { $0 + $1.utf8.count + 1 }
++        #expect(result.consumedBytes == expected)
++        #expect(String(decoding: data.dropFirst(result.consumedBytes), as: UTF8.self).hasPrefix(iosLine(1)))
++    }
 +}
 -- 
-2.55.0
+2.56.0
 

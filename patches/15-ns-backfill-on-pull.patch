@@ -1,0 +1,594 @@
+From bb6f2f0613dc737313a18e495d860e45c8cc5b52 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 16:32:36 +0200
+Subject: [PATCH] feat: ns-backfill-on-pull
+
+Trio-Patch-Source-Branch: feature/ns-backfill-on-pull
+Trio-Patch-Base: 32ded642831a1f5c788f043be392137cc245dd2a
+Trio-Patch-Feature-Tip: 5a65d702ce0e4d7aab09a0e72ded276300ae7202
+Trio-Patch-Generated: 2026-10-16T14:32:35Z
+Trio-Patch-Source-Commits:
+ c59e5b077ab35784390cf02e632ec94613c2b17c feat: backfill Nightscout glucose before pull-to-force-loop (TRIO-074)
+ 5a65d702ce0e4d7aab09a0e72ded276300ae7202 fix: store Nightscout-fetched glucose as already uploaded to Nightscout (TRIO-077)
+Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
+Trio-Patch-Source-PatchIds:
+ 0ef556d7dca62a1469e496d297dd48480ed731dd
+ 0bbaf8b9cb58b805658d58fc55ab11d977f2b614
+---
+ Trio/Sources/APS/Storage/GlucoseStorage.swift |  38 +++--
+ .../Modules/Home/HomeNightscoutBackfill.swift | 103 +++++++++++++
+ .../Sources/Modules/Home/HomeStateModel.swift |  22 +++
+ .../Home/View/HomeRootView+Refresh.swift      |  19 ++-
+ .../Modules/Home/View/HomeRootView.swift      |   1 +
+ .../NightscoutConfigStateModel.swift          |   2 +-
+ .../CoreDataTests/GlucoseStorageTests.swift   |  88 +++++++++++
+ TrioTests/LoopIndicatorTests.swift            | 140 ++++++++++++++++++
+ 8 files changed, 397 insertions(+), 16 deletions(-)
+ create mode 100644 Trio/Sources/Modules/Home/HomeNightscoutBackfill.swift
+
+diff --git a/Trio/Sources/APS/Storage/GlucoseStorage.swift b/Trio/Sources/APS/Storage/GlucoseStorage.swift
+index 27b2753bf..37051d718 100644
+--- a/Trio/Sources/APS/Storage/GlucoseStorage.swift
++++ b/Trio/Sources/APS/Storage/GlucoseStorage.swift
+@@ -11,6 +11,7 @@ protocol GlucoseStorage {
+     var updatePublisher: AnyPublisher<Void, Never> { get }
+     func storeGlucose(_ glucose: [BloodGlucose]) async throws
+     func backfillGlucose(_ glucose: [BloodGlucose]) async throws
++    func backfillGlucose(_ glucose: [BloodGlucose], alreadyUploadedToNightscout: Bool) async throws
+     func addManualGlucose(glucose: Int)
+     func isGlucoseDataFresh(_ glucoseDate: Date?) -> Bool
+     func syncDate() -> Date
+@@ -77,7 +78,12 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+     ///  to deal with source switching perfectly, so instead we will backfill glucose if and only if
+     ///  it isn't within 3.5 minutes of an existing glucose reading, which is simple but not perfect.
+     ///  But since this is a corner case that really shouldn't happen often, it's good enough.
++    ///  Pass `alreadyUploadedToNightscout: true` for readings fetched from Nightscout so they are not uploaded back.
+     func backfillGlucose(_ glucose: [BloodGlucose]) async throws {
++        try await backfillGlucose(glucose, alreadyUploadedToNightscout: false)
++    }
++
++    func backfillGlucose(_ glucose: [BloodGlucose], alreadyUploadedToNightscout: Bool) async throws {
+         let context = makeContext()
+         context.name = "backfillGlucose"
+         let clamped = clampToMinimum(glucose)
+@@ -103,7 +109,7 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+ 
+             do {
+                 // Store glucose values in Core Data
+-                try self.storeGlucoseInCoreData(filteredGlucose, context: context)
++                try self.storeGlucoseInCoreData(filteredGlucose, context: context, isUploadedToNS: alreadyUploadedToNightscout)
+             } catch {
+                 throw CoreDataError.creationError(
+                     function: #function,
+@@ -213,18 +219,26 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+         }
+     }
+ 
+-    private func storeGlucoseInCoreData(_ glucose: [BloodGlucose], context: NSManagedObjectContext) throws {
++    private func storeGlucoseInCoreData(
++        _ glucose: [BloodGlucose],
++        context: NSManagedObjectContext,
++        isUploadedToNS: Bool = false
++    ) throws {
+         if glucose.count > 1 {
+-            try storeGlucoseBatch(glucose, context: context)
++            try storeGlucoseBatch(glucose, context: context, isUploadedToNS: isUploadedToNS)
+         } else {
+-            try storeGlucoseRegular(glucose, context: context)
++            try storeGlucoseRegular(glucose, context: context, isUploadedToNS: isUploadedToNS)
+         }
+     }
+ 
+-    private func storeGlucoseRegular(_ glucose: [BloodGlucose], context: NSManagedObjectContext) throws {
++    private func storeGlucoseRegular(
++        _ glucose: [BloodGlucose],
++        context: NSManagedObjectContext,
++        isUploadedToNS: Bool = false
++    ) throws {
+         for entry in glucose {
+             let glucoseEntry = GlucoseStored(context: context)
+-            configureGlucoseEntry(glucoseEntry, with: entry)
++            configureGlucoseEntry(glucoseEntry, with: entry, isUploadedToNS: isUploadedToNS)
+         }
+ 
+         guard context.hasChanges else { return }
+@@ -232,7 +246,11 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+         updateSubject.send()
+     }
+ 
+-    private func storeGlucoseBatch(_ glucose: [BloodGlucose], context: NSManagedObjectContext) throws {
++    private func storeGlucoseBatch(
++        _ glucose: [BloodGlucose],
++        context: NSManagedObjectContext,
++        isUploadedToNS: Bool = false
++    ) throws {
+         var remainingGlucose = glucose
+         let batchInsert = NSBatchInsertRequest(
+             entity: GlucoseStored.entity(),
+@@ -243,7 +261,7 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+                     return true
+                 }
+                 let entry = remainingGlucose.removeFirst()
+-                self.configureGlucoseEntry(glucoseEntry, with: entry)
++                self.configureGlucoseEntry(glucoseEntry, with: entry, isUploadedToNS: isUploadedToNS)
+                 return false
+             }
+         )
+@@ -251,13 +269,13 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+         updateSubject.send()
+     }
+ 
+-    private func configureGlucoseEntry(_ entry: GlucoseStored, with glucose: BloodGlucose) {
++    private func configureGlucoseEntry(_ entry: GlucoseStored, with glucose: BloodGlucose, isUploadedToNS: Bool = false) {
+         entry.id = UUID()
+         entry.glucose = Int16(glucose.glucose ?? 0)
+         entry.date = glucose.dateString
+         entry.direction = glucose.direction?.rawValue
+         entry.isManual = glucose.mbg != nil
+-        entry.isUploadedToNS = false
++        entry.isUploadedToNS = isUploadedToNS
+         entry.isUploadedToHealth = false
+         entry.isUploadedToTidepool = false
+     }
+diff --git a/Trio/Sources/Modules/Home/HomeNightscoutBackfill.swift b/Trio/Sources/Modules/Home/HomeNightscoutBackfill.swift
+new file mode 100644
+index 000000000..b1234c7ef
+--- /dev/null
++++ b/Trio/Sources/Modules/Home/HomeNightscoutBackfill.swift
+@@ -0,0 +1,103 @@
++import Foundation
++
++/// Bounds the pre-loop Nightscout glucose fetch so force-loop is not held open indefinitely.
++enum HomeNightscoutBackfill {
++    enum Outcome: Equatable {
++        case stored(Int)
++        case empty
++        case timedOut
++        case failed
++    }
++
++    /// Gap used to cluster near-duplicate fetched readings; mirrors
++    /// `GlucoseStorage.backfillGlucose`'s 3.5-minute window against stored readings.
++    static let duplicateWindow: TimeInterval = 210
++
++    /// Splits fetched readings into store call batches. Near-duplicate clusters are stored
++    /// one reading per call so each accepted reading counts as existing for the next —
++    /// matching `backfillGlucose`'s across-call semantics. Isolated readings (more than
++    /// `duplicateWindow` from every other fetched reading) share one first batch.
++    static func storeBatches(_ readings: [BloodGlucose]) -> [[BloodGlucose]] {
++        let sorted = readings.sorted { $0.dateString < $1.dateString }
++        guard !sorted.isEmpty else { return [] }
++
++        var clusters: [[BloodGlucose]] = []
++        var current: [BloodGlucose] = [sorted[0]]
++        for reading in sorted.dropFirst() {
++            if reading.dateString.timeIntervalSince(current[current.count - 1].dateString) <= duplicateWindow {
++                current.append(reading)
++            } else {
++                clusters.append(current)
++                current = [reading]
++            }
++        }
++        clusters.append(current)
++
++        var batches: [[BloodGlucose]] = []
++        let singletons = clusters.compactMap { $0.count == 1 ? $0[0] : nil }
++        if !singletons.isEmpty {
++            batches.append(singletons)
++        }
++        for cluster in clusters where cluster.count > 1 {
++            for reading in cluster {
++                batches.append([reading])
++            }
++        }
++        return batches
++    }
++
++    static func run(
++        timeout: Duration,
++        fetch: @escaping () async -> [BloodGlucose],
++        store: @escaping ([BloodGlucose]) async throws -> Void
++    ) async -> Outcome {
++        await withCheckedContinuation { continuation in
++            let gate = Gate()
++
++            let fetchTask = Task {
++                let fetched = await fetch()
++                guard await gate.claimFetch() else { return }
++
++                guard !fetched.isEmpty else {
++                    continuation.resume(returning: .empty)
++                    return
++                }
++
++                do {
++                    for batch in storeBatches(fetched) {
++                        try await store(batch)
++                    }
++                    continuation.resume(returning: .stored(fetched.count))
++                } catch {
++                    continuation.resume(returning: .failed)
++                }
++            }
++
++            Task {
++                try? await Task.sleep(for: timeout)
++                // Only a timeout that wins cancels; once the fetch has won, its store must run to completion.
++                if await gate.claimTimeout() {
++                    fetchTask.cancel()
++                    continuation.resume(returning: .timedOut)
++                }
++            }
++        }
++    }
++
++    private actor Gate {
++        private enum Phase { case open, fetchWon, closed }
++        private var phase: Phase = .open
++
++        func claimTimeout() -> Bool {
++            guard phase == .open else { return false }
++            phase = .closed
++            return true
++        }
++
++        func claimFetch() -> Bool {
++            guard phase == .open else { return false }
++            phase = .fetchWon
++            return true
++        }
++    }
++}
+diff --git a/Trio/Sources/Modules/Home/HomeStateModel.swift b/Trio/Sources/Modules/Home/HomeStateModel.swift
+index f595ffe9c..c50fc98e4 100644
+--- a/Trio/Sources/Modules/Home/HomeStateModel.swift
++++ b/Trio/Sources/Modules/Home/HomeStateModel.swift
+@@ -817,6 +817,28 @@ extension Home {
+             }
+         }
+ 
++        func backfillGlucoseFromNightscout() async {
++            let outcome = await HomeNightscoutBackfill.run(
++                timeout: .seconds(10),
++                fetch: {
++                    await self.nightscoutManager.fetchGlucose(since: Date().addingTimeInterval(-24 * 60 * 60))
++                },
++                store: {
++                    try await self.glucoseStorage.backfillGlucose($0, alreadyUploadedToNightscout: true)
++                }
++            )
++            switch outcome {
++            case let .stored(count):
++                debug(.nightscout, "Home pull-to-refresh Nightscout backfill passed \(count) Nightscout reading(s) to backfill (deduplicated against stored glucose)")
++            case .empty:
++                debug(.nightscout, "Home pull-to-refresh Nightscout backfill returned no glucose")
++            case .timedOut:
++                debug(.nightscout, "Home pull-to-refresh Nightscout backfill timed out")
++            case .failed:
++                debug(.nightscout, "Home pull-to-refresh Nightscout backfill failed")
++            }
++        }
++
+         func runLoop() {
+             provider.heartbeatNow()
+         }
+diff --git a/Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift b/Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift
+index d042fd464..7bbfba720 100644
+--- a/Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift
++++ b/Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift
+@@ -32,14 +32,18 @@ extension Home.RootView {
+     /// Forcing a cycle only means something where Trio enacts one.
+     var canForceLoop: Bool { state.dosingMode.automation != .off }
+ 
+-    /// Pull hint while dragging; spinner while the loop runs.
++    /// Pull hint while dragging; spinner while Nightscout backfill or the loop runs.
+     @ViewBuilder var pullToRefreshIndicator: some View {
+         if !canForceLoop {
+             EmptyView()
+         } else if isForcingLoop {
+             HStack(spacing: 8) {
+                 ProgressView()
+-                Text("Forcing loop…")
++                if isBackfillingGlucose {
++                    Text("Fetching Nightscout glucose…")
++                } else {
++                    Text("Forcing loop…")
++                }
+             }
+             .font(.caption)
+             .foregroundStyle(.secondary)
+@@ -74,11 +78,16 @@ extension Home.RootView {
+         }
+     }
+ 
+-    /// Triggers the loop heartbeat and holds the indicator while it runs.
++    /// Backfills Nightscout glucose, then triggers the loop heartbeat and holds the indicator while it runs.
+     private func forceLoop() {
+-        withAnimation(.easeInOut(duration: 0.2)) { isForcingLoop = true }
+-        state.runLoop()
++        withAnimation(.easeInOut(duration: 0.2)) {
++            isForcingLoop = true
++            isBackfillingGlucose = true
++        }
+         Task {
++            await state.backfillGlucoseFromNightscout()
++            withAnimation(.easeInOut(duration: 0.2)) { isBackfillingGlucose = false }
++            state.runLoop()
+             let start = Date()
+             while !state.isLooping, Date().timeIntervalSince(start) < 3 {
+                 try? await Task.sleep(for: .milliseconds(100))
+diff --git a/Trio/Sources/Modules/Home/View/HomeRootView.swift b/Trio/Sources/Modules/Home/View/HomeRootView.swift
+index e84cac530..5eafe6310 100644
+--- a/Trio/Sources/Modules/Home/View/HomeRootView.swift
++++ b/Trio/Sources/Modules/Home/View/HomeRootView.swift
+@@ -41,6 +41,7 @@ extension Home {
+         @State var pullOffset: CGFloat = 0
+         @State var isRefreshArmed = false
+         @State var isForcingLoop = false
++        @State var isBackfillingGlucose = false
+         @State var notificationsDisabled = false
+         /// Date under the finger while the chart is scrubbed, else nil. Owned here because the
+         /// readout lives in the meal slot, outside the chart.
+diff --git a/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift b/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift
+index 8bc9d1009..aa7c0616b 100644
+--- a/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift
++++ b/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift
+@@ -146,7 +146,7 @@ extension NightscoutConfig {
+ 
+             if glucose.isNotEmpty {
+                 do {
+-                    try await glucoseStorage.storeGlucose(glucose)
++                    try await glucoseStorage.backfillGlucose(glucose, alreadyUploadedToNightscout: true)
+ 
+                     Task.detached {
+                         await self.healthKitManager.uploadGlucose()
+diff --git a/TrioTests/CoreDataTests/GlucoseStorageTests.swift b/TrioTests/CoreDataTests/GlucoseStorageTests.swift
+index 032013a35..7065fa1a9 100644
+--- a/TrioTests/CoreDataTests/GlucoseStorageTests.swift
++++ b/TrioTests/CoreDataTests/GlucoseStorageTests.swift
+@@ -202,6 +202,94 @@ import Testing
+         #expect(clampedEntries?.count == 1, "Sub-39 backfilled glucose should be clamped and stored as 39")
+     }
+ 
++    @Test("Nightscout-fetched backfill is stored as already uploaded to Nightscout") func testNightscoutBackfillMarkedUploaded() async throws {
++        // Given Nightscout-fetched readings (batch and single-row paths) and one BLE backfill reading
++        let now = Date()
++        let batchDate1 = now.addingTimeInterval(-60 * 60)
++        let batchDate2 = now.addingTimeInterval(-50 * 60)
++        let singleDate = now.addingTimeInterval(-40 * 60)
++        let bleDate = now.addingTimeInterval(-30 * 60)
++
++        let batchGlucose = [
++            BloodGlucose(
++                direction: BloodGlucose.Direction.flat,
++                date: Decimal(batchDate1.timeIntervalSince1970 * 1000),
++                dateString: batchDate1,
++                glucose: 171
++            ),
++            BloodGlucose(
++                direction: BloodGlucose.Direction.flat,
++                date: Decimal(batchDate2.timeIntervalSince1970 * 1000),
++                dateString: batchDate2,
++                glucose: 172
++            )
++        ]
++        let singleGlucose = [
++            BloodGlucose(
++                direction: BloodGlucose.Direction.flat,
++                date: Decimal(singleDate.timeIntervalSince1970 * 1000),
++                dateString: singleDate,
++                glucose: 173
++            )
++        ]
++        let bleGlucose = [
++            BloodGlucose(
++                direction: BloodGlucose.Direction.flat,
++                date: Decimal(bleDate.timeIntervalSince1970 * 1000),
++                dateString: bleDate,
++                glucose: 174
++            )
++        ]
++
++        // When
++        try await storage.backfillGlucose(batchGlucose, alreadyUploadedToNightscout: true)
++        try await storage.backfillGlucose(singleGlucose, alreadyUploadedToNightscout: true)
++        try await storage.backfillGlucose(bleGlucose)
++
++        // Then the Nightscout-fetched rows are flagged uploaded to NS only
++        let nightscoutEntries = try await coreDataStack.fetchEntitiesAsync(
++            ofType: GlucoseStored.self,
++            onContext: testContext,
++            predicate: NSPredicate(format: "glucose IN %@", [171, 172, 173]),
++            key: "date",
++            ascending: true
++        ) as? [GlucoseStored]
++
++        #expect(nightscoutEntries?.count == 3, "All Nightscout-fetched readings should be stored")
++        #expect(
++            nightscoutEntries?.allSatisfy { $0.isUploadedToNS } == true,
++            "Nightscout-fetched readings should be marked as uploaded to Nightscout"
++        )
++        #expect(
++            nightscoutEntries?.allSatisfy { !$0.isUploadedToHealth } == true,
++            "Nightscout-fetched readings should not be marked as uploaded to Apple Health"
++        )
++        #expect(
++            nightscoutEntries?.allSatisfy { !$0.isUploadedToTidepool } == true,
++            "Nightscout-fetched readings should not be marked as uploaded to Tidepool"
++        )
++
++        // And the plain backfill reading is not flagged uploaded
++        let bleEntries = try await coreDataStack.fetchEntitiesAsync(
++            ofType: GlucoseStored.self,
++            onContext: testContext,
++            predicate: NSPredicate(format: "glucose == 174"),
++            key: "date",
++            ascending: false
++        ) as? [GlucoseStored]
++
++        #expect(bleEntries?.count == 1, "BLE backfill reading should be stored")
++        #expect(bleEntries?.first?.isUploadedToNS == false, "Plain backfill should not be marked as uploaded to Nightscout")
++
++        // And only the plain backfill reading is pending upload to Nightscout
++        let pending = try await storage.getGlucoseNotYetUploadedToNightscout()
++        #expect(
++            !pending.contains { [171, 172, 173].contains($0.sgv ?? 0) },
++            "Nightscout-fetched readings must not be queued for upload"
++        )
++        #expect(pending.contains { $0.sgv == 174 }, "Plain backfill reading should be queued for upload")
++    }
++
+     @Test(
+         "Test glucose alarms",
+         .enabled(if: false, "Flaky test, disabled while investigating")
+diff --git a/TrioTests/LoopIndicatorTests.swift b/TrioTests/LoopIndicatorTests.swift
+index d6564eeeb..0615d649d 100644
+--- a/TrioTests/LoopIndicatorTests.swift
++++ b/TrioTests/LoopIndicatorTests.swift
+@@ -81,3 +81,143 @@ import Testing
+ private extension AutomationLevel {
+     static var allTestCases: [AutomationLevel] { [.off, .hypoSuspendOnly, .reductionsOnly, .full] }
+ }
++
++@Suite("Home Nightscout backfill") struct HomeNightscoutBackfillTests {
++    private actor StoreRecorder {
++        private(set) var calls: [[BloodGlucose]] = []
++        private var error: Error?
++
++        func throwing(_ error: Error) {
++            self.error = error
++        }
++
++        func store(_ readings: [BloodGlucose]) async throws {
++            calls.append(readings)
++            if let error { throw error }
++        }
++    }
++
++    private func reading(id: String = UUID().uuidString, offset: TimeInterval = 0) -> BloodGlucose {
++        BloodGlucose(
++            id: id,
++            sgv: 120,
++            direction: .flat,
++            date: 1_700_000_000_000 + Decimal(offset * 1000),
++            dateString: Date(timeIntervalSince1970: 1_700_000_000 + offset),
++            type: "sgv"
++        )
++    }
++
++    @Test("Non-empty fetch stores readings") func nonEmptyFetchStores() async {
++        let a = reading(offset: 0)
++        let b = reading(offset: 300)
++        let recorder = StoreRecorder()
++        let outcome = await HomeNightscoutBackfill.run(
++            timeout: .seconds(5),
++            fetch: { [a, b] },
++            store: { try await recorder.store($0) }
++        )
++        #expect(outcome == .stored(2))
++        let calls = await recorder.calls
++        #expect(calls.count == 1)
++        #expect(calls[0].map(\.id) == [a.id, b.id])
++    }
++
++    @Test("storeBatches groups singletons then peels multi-member clusters") func storeBatchesGroupsSingletonsThenPeelsClusters() {
++        let at0 = reading(id: "0", offset: 0)
++        let at20 = reading(id: "20", offset: 20)
++        let at300 = reading(id: "300", offset: 300)
++        let at305 = reading(id: "305", offset: 305)
++        let at900 = reading(id: "900", offset: 900)
++        let at1500 = reading(id: "1500", offset: 1500)
++        let at1700 = reading(id: "1700", offset: 1700)
++        let at1850 = reading(id: "1850", offset: 1850)
++        let expectedIds = [["900"], ["0"], ["20"], ["300"], ["305"], ["1500"], ["1700"], ["1850"]]
++
++        let shuffled = [at305, at1700, at900, at20, at1850, at0, at1500, at300]
++        let batches = HomeNightscoutBackfill.storeBatches(shuffled)
++        #expect(batches.map { $0.map(\.id) } == expectedIds)
++    }
++
++    @Test("run stores storeBatches in order") func runStoresBatchesInOrder() async {
++        let at0 = reading(id: "0", offset: 0)
++        let at20 = reading(id: "20", offset: 20)
++        let at300 = reading(id: "300", offset: 300)
++        let at305 = reading(id: "305", offset: 305)
++        let at900 = reading(id: "900", offset: 900)
++        let at1500 = reading(id: "1500", offset: 1500)
++        let at1700 = reading(id: "1700", offset: 1700)
++        let at1850 = reading(id: "1850", offset: 1850)
++        let recorder = StoreRecorder()
++        let outcome = await HomeNightscoutBackfill.run(
++            timeout: .seconds(5),
++            fetch: { [at305, at1700, at900, at20, at1850, at0, at1500, at300] },
++            store: { try await recorder.store($0) }
++        )
++        #expect(outcome == .stored(8))
++        let calls = await recorder.calls
++        #expect(calls.map { $0.map(\.id) } == [["900"], ["0"], ["20"], ["300"], ["305"], ["1500"], ["1700"], ["1850"]])
++    }
++
++    @Test("Store outliving the timeout still records .stored") func storeOutlivingTimeoutStillStores() async {
++        let recorder = StoreRecorder()
++        let outcome = await HomeNightscoutBackfill.run(
++            timeout: .milliseconds(200),
++            fetch: { [reading()] },
++            store: { readings in
++                try await Task.sleep(for: .milliseconds(400))
++                try await recorder.store(readings)
++            }
++        )
++        #expect(outcome == .stored(1))
++        let calls = await recorder.calls
++        #expect(calls.count == 1)
++    }
++
++    @Test("Empty fetch does not store") func emptyFetchSkipsStore() async {
++        let recorder = StoreRecorder()
++        let outcome = await HomeNightscoutBackfill.run(
++            timeout: .seconds(5),
++            fetch: { [] },
++            store: { try await recorder.store($0) }
++        )
++        #expect(outcome == .empty)
++        let calls = await recorder.calls
++        #expect(calls.isEmpty)
++    }
++
++    @Test("Timeout wins over a slow fetch") func timeoutCancelsStore() async {
++        let recorder = StoreRecorder()
++        let start = Date()
++        let outcome = await HomeNightscoutBackfill.run(
++            timeout: .milliseconds(200),
++            fetch: {
++                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
++                    DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
++                        cont.resume()
++                    }
++                }
++                return [reading()]
++            },
++            store: { try await recorder.store($0) }
++        )
++        let elapsed = Date().timeIntervalSince(start)
++        #expect(outcome == .timedOut)
++        #expect(elapsed < 1.0)
++        try? await Task.sleep(for: .milliseconds(1800))
++        let calls = await recorder.calls
++        #expect(calls.isEmpty)
++    }
++
++    @Test("Store throwing yields failed") func storeThrowingFails() async {
++        struct Boom: Error {}
++        let recorder = StoreRecorder()
++        await recorder.throwing(Boom())
++        let outcome = await HomeNightscoutBackfill.run(
++            timeout: .seconds(5),
++            fetch: { [reading()] },
++            store: { try await recorder.store($0) }
++        )
++        #expect(outcome == .failed)
++    }
++}
+-- 
+2.56.0
+

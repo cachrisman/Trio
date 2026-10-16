@@ -68,6 +68,8 @@ Build epic (AGENTS.md 'Build tasks'). Ships the pull-to-refresh Nightscout gluco
 - TRIO-074 — Pull-to-force-loop backfills Nightscout glucose (last 24h, 10s cap) before forcing the loop (patch 15)
 - TRIO-004 — Watch Diagnostics shows "Last data: Xs ago" for the last phone delivery (a679782ba, patch 09)
 - TRIO-025 — Watch logs `userinfo_transfer_finished` with outcome and retry position for every userInfo transfer (73372979f, patch 09)
+- TRIO-077 — Glucose fetched from Nightscout is stored as already uploaded, so Share gap-fills are no longer echoed back and stripped of `device` (5a65d702c, patch 15)
+- TRIO-040 — Cloud logging caps each upload pass at entry boundaries, so stack traces and other multi-line entries are no longer split across two Better Stack events (2ff4c78e5, patch 06)
 
 ## Known issues carried
 - TRIO-067: phone logs settings/temptargets.json DecodingError.typeMismatch since build 226.
