@@ -2,12 +2,17 @@
 uid = "01a143ae-a587-73c0-b039-b0ac5ce1fc89"
 key = "TRIO-074"
 title = "Pull-to-force-loop: backfill glucose from Nightscout before forcing the loop (patch 16)"
-status = "review"
+status = "done"
 kind = "code"
 source = "human"
 created = 2026-10-16
 updated = 2026-10-16
 touched = 2026-10-16
+closed = 2026-10-16
+first_closed = 2026-10-16
+accepted_by = "charlie"
+accepted_at = 2026-10-16
+accepted_ts = "2026-10-16T22:39:27+02:00"
 priority = 2
 parent = "01a14459-1abb-73ba-9248-679079504c8e"
 
@@ -19,11 +24,11 @@ phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
 evidence_kind = "commit"
-evidence = "c59e5b077 — HomeStateModel.backfillGlucoseFromNightscout fetches since now-24h and stores via glucoseStorage.backfillGlucose; HomeRootView+Refresh.forceLoop awaits it before state.runLoop()"
+evidence = "8707a351b - HomeStateModel.backfillGlucoseFromNightscout (line 820) fetches since now-24h and stores via glucoseStorage.backfillGlucose (now with alreadyUploadedToNightscout: !useLocalGlucoseSource, TRIO-077); HomeRootView+Refresh.forceLoop awaits it before state.runLoop() (lines 88-90)"
 met_at = 2026-10-16
-met_ts = "2026-10-16T12:29:05+02:00"
+met_ts = "2026-10-16T21:43:41+02:00"
 met_by = "unknown"
-met_commit = "d459fd2c5dfe54b477920a23a248d0c739c43177"
+met_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
 
 [[acceptance]]
 id = "AC-2"
@@ -33,11 +38,11 @@ phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
 evidence_kind = "commit"
-evidence = "c59e5b077 — HomeNightscoutBackfill.run races the fetch against .seconds(10) through a resume-once gate; every outcome (stored, empty, timedOut, failed) returns, and forceLoop calls runLoop() unconditionally"
+evidence = "8707a351b - HomeNightscoutBackfill.run still races the fetch against .seconds(10) (HomeStateModel line 824); every outcome returns and forceLoop calls runLoop() unconditionally; 8707a351b only changed the store call's upload flag"
 met_at = 2026-10-16
-met_ts = "2026-10-16T12:29:06+02:00"
+met_ts = "2026-10-16T21:43:41+02:00"
 met_by = "unknown"
-met_commit = "d459fd2c5dfe54b477920a23a248d0c739c43177"
+met_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
 
 [[acceptance]]
 id = "AC-3"
@@ -47,11 +52,11 @@ phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
 evidence_kind = "commit"
-evidence = "c59e5b077 — indicator shows 'Fetching Nightscout glucose…' while isBackfillingGlucose, then 'Forcing loop…'; let start = Date() is taken after runLoop()"
+evidence = "8707a351b - HomeRootView+Refresh shows 'Fetching Nightscout glucose…' while isBackfillingGlucose, clears it, then runLoop() and the existing isLooping wait; unchanged by 8707a351b"
 met_at = 2026-10-16
-met_ts = "2026-10-16T12:29:06+02:00"
+met_ts = "2026-10-16T21:43:41+02:00"
 met_by = "unknown"
-met_commit = "d459fd2c5dfe54b477920a23a248d0c739c43177"
+met_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
 
 [[acceptance]]
 id = "AC-4"
@@ -61,11 +66,11 @@ phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
 evidence_kind = "commit"
-evidence = "c59e5b077 — HomeNightscoutBackfillTests appended to TrioTests/LoopIndicatorTests.swift: stored, storeBatches split and order, store outlives timeout, empty, timeout without store, store throws. Written, not run; running them is AC-7 (operator)"
+evidence = "8707a351b - HomeNightscoutBackfillTests suite in TrioTests/LoopIndicatorTests.swift (line 85) unchanged by the fix: stored, storeBatches split and order, store outlives timeout, empty, timeout without store, store throws. Running them is AC-7 (operator)"
 met_at = 2026-10-16
-met_ts = "2026-10-16T12:29:06+02:00"
+met_ts = "2026-10-16T21:43:41+02:00"
 met_by = "unknown"
-met_commit = "d459fd2c5dfe54b477920a23a248d0c739c43177"
+met_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
 
 [[acceptance]]
 id = "AC-5"
@@ -86,16 +91,28 @@ id = "AC-6"
 text = "On device: pull-to-refresh after a Share-filled gap shows the reading in Trio and the loop runs"
 owner = "operator"
 phase = "post-deploy"
-state = "open"
+state = "met"
 added_at = 2026-10-16
+evidence_kind = "operator"
+evidence = "Verified by charlie on the board"
+met_at = 2026-10-16
+met_ts = "2026-10-16T22:39:16+02:00"
+met_by = "charlie"
+met_commit = "d9384f18e88f9a4c087c9422a90549f5b8ad3899"
 
 [[acceptance]]
 id = "AC-7"
 text = "ci/local-build.sh --build-only succeeds and the new tests pass (AGENTS.md rule 10: agents do not run xcodebuild)"
 owner = "operator"
 phase = "pre-review"
-state = "open"
+state = "met"
 added_at = 2026-10-16
+evidence_kind = "operator"
+evidence = "Verified by charlie on the board"
+met_at = 2026-10-16
+met_ts = "2026-10-16T22:39:05+02:00"
+met_by = "charlie"
+met_commit = "d9384f18e88f9a4c087c9422a90549f5b8ad3899"
 
 [[sessions]]
 host = "claude-code"
@@ -168,6 +185,30 @@ verdict = "pass"
 reviewed_commit = "c59e5b077"
 reviewed_paths = ["Trio/Sources/Modules/Home/HomeNightscoutBackfill.swift", "Trio/Sources/Modules/Home/HomeStateModel.swift", "Trio/Sources/Modules/Home/View/HomeRootView.swift", "Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift", "TrioTests/LoopIndicatorTests.swift"]
 recorded_at = "2026-10-16T00:00:00+00:00"
+
+[[reviews]]
+run_id = "76d6600f-c06c-4d89-86c0-4ed26f647f01"
+model_family = "codex"
+verdict = "fail"
+reviewed_commit = "826bf8a237728603cd1e70ecb44f541ee36ab7d1"
+reviewed_paths = ["patches/15-ns-backfill-on-pull.patch"]
+recorded_at = "2026-10-16T00:00:00+00:00"
+
+[[reviews]]
+run_id = "b881115a-87ef-4d95-867b-19e09fb001ce"
+model_family = "codex"
+verdict = "fail"
+reviewed_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
+reviewed_paths = ["patches/15-ns-backfill-on-pull.patch"]
+recorded_at = "2026-10-16T00:00:00+00:00"
+
+[[reviews]]
+run_id = "waived-operator-20261016-p15-race"
+model_family = "none"
+verdict = "waived"
+reviewed_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
+reviewed_paths = ["patches/15-ns-backfill-on-pull.patch"]
+recorded_at = "2026-10-16T00:00:00+00:00"
 +++
 
 ## Intent
@@ -187,3 +228,25 @@ Ships as branch `feature/ns-backfill-on-pull` and patch `16-ns-backfill-on-pull.
 ## Release note
 
 Pulling down on the Home screen to force a loop now first fetches the last 24 hours of glucose from Nightscout, so a reading Trio missed over Bluetooth but Nightscout has (for example a Dexcom Share fill) is stored before the loop runs. The indicator shows "Fetching Nightscout glucose…" and then "Forcing loop…"; the fetch gives up after 10 seconds, and the loop runs either way.
+
+
+Shipped in build 232 (TRIO-076), TestFlight 2026-10-16.
+
+
+## Review 2026-10-16 (codex, patch 15 at dev 826bf8a23): fail
+
+Fresh diverse review of the whole `patches/15-ns-backfill-on-pull.patch` (note `.task-relay/notes/20261016-211821-37667-codex-review.md`, run 76d6600f, gpt-5.6-terra high), replacing the stale feature-branch passes. Verdict NEEDS-FIX, recorded as a fail on TRIO-074 and TRIO-077. Triage:
+
+- HIGH, confirmed: both backfill call sites (HomeStateModel pull-to-refresh and NightscoutConfigStateModel manual backfill) pass `alreadyUploadedToNightscout: true` unconditionally, but `NightscoutManager.fetchGlucose` reads from `http://127.0.0.1:<localGlucosePort>` when `useLocalGlucoseSource` is on (default off). In that configuration the readings come from a local source, not the remote Nightscout, and are now never uploaded to it, a regression for the upstream manual backfill. Likely fix: pass `alreadyUploadedToNightscout: !settings.useLocalGlucoseSource`.
+- HIGH, out of scope as written: with Nightscout as the CGM source, `FetchGlucoseManager` still stores fetched readings with `isUploadedToNS = false`, so they can be re-uploaded. That is unchanged upstream behaviour which TRIO-077 AC-5 deliberately left alone (the operator's CGM is G7 over BLE). Possible follow-up, not a defect of this patch.
+- MEDIUM, TRIO-074: the ~10s cap bounds only the Nightscout fetch; once the fetch wins, storing the batches has no deadline and `forceLoop()` waits for it before the heartbeat. Low risk for a 24h window (288 readings), but it is unbounded.
+
+
+## Review waiver 2026-10-16 (patch 15 at 7a824204a)
+
+Codex review b881115a (gpt-5.6-terra, high; note .task-relay/notes/20261016-214243-90090-codex-review.md) confirmed the earlier HIGH is fixed by 8707a351b (both call sites pass alreadyUploadedToNightscout = !useLocalGlucoseSource), returned NEEDS-FIX with 0 high, 1 medium, 1 low, and was recorded as a fail.
+
+- MEDIUM: the call sites read useLocalGlucoseSource before the fetch starts, and NightscoutManager.fetchGlucose reads it again on its own. If the setting is toggled in between, the upload flag can disagree with the source actually fetched. Closing it fully means passing the source choice into fetchGlucose, which changes the shared NightscoutManager protocol and its other callers.
+- LOW: no test covers the useLocalGlucoseSource == true case at either call site.
+
+Operator decision in chat 2026-10-16, after the trade-off was explained: "Accept". Accepted as a known residual race: it needs the local glucose source setting to be switched during a pull-to-refresh fetch (10s cap at most), the worst case is some readings not uploading to Nightscout or being uploaded twice, and no dosing path is involved. The LOW test gap is accepted with it. Review recorded as waived.
