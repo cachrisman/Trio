@@ -4,12 +4,13 @@ import System
 
 final class SimpleLogReporter: IssueReporter {
     private let fileManager = FileManager.default
+    private let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
 
-    private var dateFormatter: DateFormatter {
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
-        return dateFormatter
-    }
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+        return formatter
+    }()
 
     func setup() {}
 
@@ -43,7 +44,7 @@ final class SimpleLogReporter: IssueReporter {
             }
         }
 
-        let logEntry = "\(dateFormatter.string(from: now)) [\(category)] \(file.file) - \(function) - \(line) - \(message)\n"
+        let logEntry = "\(SimpleLogReporter.dateFormatter.string(from: now)) [b:\(build)] [\(category)] \(file.file) - \(function) - \(line) - \(message)\n"
         let data = logEntry.data(using: .utf8)!
         try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
     }
