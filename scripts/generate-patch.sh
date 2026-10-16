@@ -764,8 +764,9 @@ fi
 if [ "$include_worktree" = "true" ] && [ "$WORK_BRANCH" = "$SOURCE_BRANCH" ]; then
     diff_desc="${TARGET_BRANCH} -> working tree (includes staged+unstaged on ${SOURCE_BRANCH})"
     # Compare TARGET_BRANCH to working tree (HEAD + staged + unstaged)
-    diff_name_cmd=(git diff --name-status -z -M --find-renames "$TARGET_BRANCH")
-    diff_patch_cmd=(git diff --binary --full-index -M --find-renames "$TARGET_BRANCH")
+    # -C is needed because the patch diff runs from inside the temporary worktree
+    diff_name_cmd=(git -C "$REPO_ROOT" diff --name-status -z -M --find-renames "$TARGET_BRANCH")
+    diff_patch_cmd=(git -C "$REPO_ROOT" diff --binary --full-index -M --find-renames "$TARGET_BRANCH")
 else
     diff_desc="${SOURCE_BRANCH} -> ${TARGET_BRANCH} (committed only)"
     # Compare TARGET_BRANCH to SOURCE_BRANCH
