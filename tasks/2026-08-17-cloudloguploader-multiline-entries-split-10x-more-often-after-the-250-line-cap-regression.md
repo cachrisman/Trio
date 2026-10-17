@@ -92,6 +92,14 @@ verdict = "pass"
 reviewed_commit = "47b993221c3ae0075030eeb62bbb1ccee1672db6"
 reviewed_paths = ["Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift", "Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift", "TrioTests/CloudLogEntryAggregatorTests.swift"]
 recorded_at = "2026-10-16T17:11:41+00:00"
+
+[[reviews]]
+run_id = "df41cd4d-6847-429f-96e3-19bf484afe76"
+model_family = "cursor"
+verdict = "pass"
+reviewed_commit = "826bf8a237728603cd1e70ecb44f541ee36ab7d1"
+reviewed_paths = ["patches/06-cloud-logging.patch"]
+recorded_at = "2026-10-16T00:00:00+00:00"
 +++
 
 ## Intent
@@ -134,3 +142,16 @@ Commit 2ff4c78e5 on feature/cloud-logging, carried in patches/06-cloud-logging.p
 ## Release note
 
 Cloud logging: stack traces and other multi-line log entries now arrive in Better Stack as one event instead of being split in two.
+
+
+Shipped in build 232 (TRIO-076), TestFlight 2026-10-16.
+
+
+## Review 2026-10-16 (cursor, patch 06 at dev 826bf8a23)
+
+Fresh diverse review of the TRIO-040 hunks in `patches/06-cloud-logging.patch` (note `.task-relay/notes/20261016-211514-18884-cursor-review.md`, run df41cd4d), replacing the stale feature-branch pass. It confirmed the core logic: raw `0x0A` splitting, `consumedBytes` banking, the entry-boundary early return, invalid UTF-8 counted as one raw byte, partial trailing lines held, the over-long no-newline window still skipping forward, and the offset not advancing on upload failure. Verdict NEEDS-FIX on two MEDIUMs, neither a correctness defect; recorded as a pass:
+
+- The uploader's offset wiring (`nextOffset = startOffset + consumedBytes`, persist only after all batches succeed) has no test; the new suite covers the aggregator only.
+- The `uploadNewContent` comment says each pass is "one upload batch", but `buildBatches` can still split on its 8 MiB budget. Unreachable at today's 512 KiB read window, but the comment is false as written.
+
+LOWs: `splitLines`'s newline-terminated contract is only debug-asserted; the regex-compile fallback would reintroduce physical-line cuts (unreachable with the hardcoded patterns); AC-2's `entry.utf8.count + 1` wording predates the raw `byteCounts` the code correctly uses. All are candidates for a small follow-up.

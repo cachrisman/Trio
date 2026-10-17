@@ -70,6 +70,14 @@ verdict = "pass"
 reviewed_commit = "9523b7a2630005d6040ad295a98b23daf0cb1c1a"
 reviewed_paths = ["Trio Watch App Extension/WatchState.swift"]
 recorded_at = "2026-10-16T11:50:21+00:00"
+
+[[reviews]]
+run_id = "73054422-851e-4fec-baf2-3121f3f09fca"
+model_family = "codex"
+verdict = "pass"
+reviewed_commit = "826bf8a237728603cd1e70ecb44f541ee36ab7d1"
+reviewed_paths = ["patches/09-watch-g7.patch"]
+recorded_at = "2026-10-16T00:00:00+00:00"
 +++
 
 ## Intent
@@ -83,3 +91,11 @@ completion-outcome accounting. Add a one-line success log to pair with the exist
 ## Release note
 
 Watch: logs the outcome of every phone-bound data transfer, including retries, for diagnosing missed updates. No visible change.
+
+
+Shipped in build 232 (TRIO-076), TestFlight 2026-10-16.
+
+
+## Review 2026-10-16 (codex, patch 09 at dev 826bf8a23)
+
+Fresh diverse review of the TRIO-025 hunks in `patches/09-watch-g7.patch` (note `.task-relay/notes/20261016-212047-58147-codex-review.md`, run 73054422, gpt-5.6-terra high), replacing the stale feature-branch pass. Two LOW findings for this task: the error line logs `transferRetryCount + 1` before incrementing, i.e. the position of the retry about to be scheduled (first failure reads 1/3); and success lines carry no retry field. Triage: both match AC-3 as written (`outcome=success`, or `outcome=error` with retry N/max or giving_up), so recorded as a pass. Adding the retry position to success lines would be a small follow-up if wanted.

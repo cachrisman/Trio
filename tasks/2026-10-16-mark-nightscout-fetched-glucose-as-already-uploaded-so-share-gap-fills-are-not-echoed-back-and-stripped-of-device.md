@@ -60,17 +60,17 @@ met_commit = "2ecbf86b007ee6649504fcfa2c48e1a35ffb9282"
 
 [[acceptance]]
 id = "AC-5"
-text = "Both Nightscout fetch call sites (HomeStateModel pull-to-refresh backfill and NightscoutConfigStateModel manual backfill) store via the Nightscout-marked path; the BLE backfill path in FetchGlucoseManager is unchanged"
+text = "Both Nightscout fetch call sites (HomeStateModel pull-to-refresh backfill and NightscoutConfigStateModel manual backfill) store as already uploaded only when the fetch came from the remote Nightscout (alreadyUploadedToNightscout = !useLocalGlucoseSource); local-glucose-source readings stay eligible for upload; the BLE backfill path in FetchGlucoseManager is unchanged"
 owner = "agent"
 phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
 evidence_kind = "commit"
-evidence = "5a65d702c — HomeStateModel.backfillGlucoseFromNightscout and NightscoutConfigStateModel manual backfill call backfillGlucose(_:alreadyUploadedToNightscout: true); FetchGlucoseManager still calls the unlabeled backfillGlucose(_:) (forwards false); storeGlucose unchanged"
+evidence = "8707a351b - HomeStateModel.backfillGlucoseFromNightscout and NightscoutConfigStateModel.backfillGlucose compute alreadyUploaded = !settingsManager.settings.useLocalGlucoseSource and pass it to backfillGlucose(_:alreadyUploadedToNightscout:); FetchGlucoseManager still calls the unlabeled backfillGlucose(_:) (forwards false); storeGlucose unchanged"
 met_at = 2026-10-16
-met_ts = "2026-10-16T14:24:46+02:00"
+met_ts = "2026-10-16T21:43:16+02:00"
 met_by = "unknown"
-met_commit = "3db1ef7a0830763bbe9b1f8428f3eabb4b4a627a"
+met_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
 
 [[acceptance]]
 id = "AC-6"
@@ -80,11 +80,11 @@ phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
 evidence_kind = "run"
-evidence = "2026-10-16: operator ran scripts/generate-patch.sh -n -s feature/ns-backfill-on-pull -t dev -o patches/15-ns-backfill-on-pull.patch (8 files); header carries generate-patch-written provenance (Feature-Tip 5a65d702c, Source-Commits c59e5b077 + 5a65d702c, two Source-PatchIds). Applied to a dev index, all 8 blobs match feature/ns-backfill-on-pull:5a65d702c. scripts/patch-test.sh (audit on) exit 0: all patches 01-15 applied, patch-audit PASSED (40 warnings), GlucoseStorage.swift safety deletion WAIVED by the operator-added patch=15 waiver. Patch stays untracked on dev."
+evidence = "2026-10-16: scripts/generate-patch.sh -n -s feature/ns-backfill-on-pull -t dev -d ns-backfill-on-pull --include-files <the 8 patch files> regenerated patches/15 (Feature-Tip 8707a351b; diff vs the previous copy is only the two call-site changes, a swiftformat reflow and provenance). scripts/patch-test.sh (audit on): patches 01-15 applied, patch-audit PASSED (40 warnings). Committed on dev as 7a824204a."
 met_at = 2026-10-16
-met_ts = "2026-10-16T16:34:48+02:00"
+met_ts = "2026-10-16T21:43:16+02:00"
 met_by = "unknown"
-met_commit = "2ecbf86b007ee6649504fcfa2c48e1a35ffb9282"
+met_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
 
 [[sessions]]
 host = "claude-code"
@@ -94,6 +94,14 @@ started = 2026-10-16
 role = "author"
 started_at = "2026-10-16T12:14:09+00:00"
 
+[[sessions]]
+host = "claude-code"
+ref = "bfef79d9-1742-4894-8fe8-7ce2e624f98a"
+model_family = "claude"
+started = 2026-10-16
+role = "author"
+started_at = "2026-10-16T00:00:00+00:00"
+
 [[reviews]]
 run_id = "2b450dda-1a27-4866-8cc7-7891f9da8608"
 model_family = "cursor"
@@ -101,6 +109,30 @@ verdict = "pass"
 reviewed_commit = "c59e5b077ab35784390cf02e632ec94613c2b17c"
 reviewed_paths = ["Trio/Sources/APS/Storage/GlucoseStorage.swift", "Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift", "TrioTests/CoreDataTests/GlucoseStorageTests.swift", "Trio/Sources/Modules/Home/HomeStateModel.swift"]
 recorded_at = "2026-10-16T12:19:07+00:00"
+
+[[reviews]]
+run_id = "76d6600f-c06c-4d89-86c0-4ed26f647f01"
+model_family = "codex"
+verdict = "fail"
+reviewed_commit = "826bf8a237728603cd1e70ecb44f541ee36ab7d1"
+reviewed_paths = ["patches/15-ns-backfill-on-pull.patch"]
+recorded_at = "2026-10-16T00:00:00+00:00"
+
+[[reviews]]
+run_id = "b881115a-87ef-4d95-867b-19e09fb001ce"
+model_family = "codex"
+verdict = "fail"
+reviewed_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
+reviewed_paths = ["patches/15-ns-backfill-on-pull.patch"]
+recorded_at = "2026-10-16T00:00:00+00:00"
+
+[[reviews]]
+run_id = "waived-operator-20261016-p15-race"
+model_family = "none"
+verdict = "waived"
+reviewed_commit = "7a824204a6b2ba7c11591699bcb2a9f2c519fd87"
+reviewed_paths = ["patches/15-ns-backfill-on-pull.patch"]
+recorded_at = "2026-10-16T00:00:00+00:00"
 +++
 
 ## Intent
@@ -129,3 +161,25 @@ Glucose that Trio fetches from Nightscout is stored as if Trio had read it local
 ## Release note
 
 Nightscout: glucose Trio fetches from Nightscout (pull-to-refresh and the manual backfill) is no longer uploaded back, so Dexcom Share gap-fill readings keep their source.
+
+
+Shipped in build 232 (TRIO-076), TestFlight 2026-10-16.
+
+
+## Review 2026-10-16 (codex, patch 15 at dev 826bf8a23): fail
+
+Fresh diverse review of the whole `patches/15-ns-backfill-on-pull.patch` (note `.task-relay/notes/20261016-211821-37667-codex-review.md`, run 76d6600f, gpt-5.6-terra high), replacing the stale feature-branch passes. Verdict NEEDS-FIX, recorded as a fail on TRIO-074 and TRIO-077. Triage:
+
+- HIGH, confirmed: both backfill call sites (HomeStateModel pull-to-refresh and NightscoutConfigStateModel manual backfill) pass `alreadyUploadedToNightscout: true` unconditionally, but `NightscoutManager.fetchGlucose` reads from `http://127.0.0.1:<localGlucosePort>` when `useLocalGlucoseSource` is on (default off). In that configuration the readings come from a local source, not the remote Nightscout, and are now never uploaded to it, a regression for the upstream manual backfill. Likely fix: pass `alreadyUploadedToNightscout: !settings.useLocalGlucoseSource`.
+- HIGH, out of scope as written: with Nightscout as the CGM source, `FetchGlucoseManager` still stores fetched readings with `isUploadedToNS = false`, so they can be re-uploaded. That is unchanged upstream behaviour which TRIO-077 AC-5 deliberately left alone (the operator's CGM is G7 over BLE). Possible follow-up, not a defect of this patch.
+- MEDIUM, TRIO-074: the ~10s cap bounds only the Nightscout fetch; once the fetch wins, storing the batches has no deadline and `forceLoop()` waits for it before the heartbeat. Low risk for a 24h window (288 readings), but it is unbounded.
+
+
+## Review waiver 2026-10-16 (patch 15 at 7a824204a)
+
+Codex review b881115a (gpt-5.6-terra, high; note .task-relay/notes/20261016-214243-90090-codex-review.md) confirmed the earlier HIGH is fixed by 8707a351b (both call sites pass alreadyUploadedToNightscout = !useLocalGlucoseSource), returned NEEDS-FIX with 0 high, 1 medium, 1 low, and was recorded as a fail.
+
+- MEDIUM: the call sites read useLocalGlucoseSource before the fetch starts, and NightscoutManager.fetchGlucose reads it again on its own. If the setting is toggled in between, the upload flag can disagree with the source actually fetched. Closing it fully means passing the source choice into fetchGlucose, which changes the shared NightscoutManager protocol and its other callers.
+- LOW: no test covers the useLocalGlucoseSource == true case at either call site.
+
+Operator decision in chat 2026-10-16, after the trade-off was explained: "Accept". Accepted as a known residual race: it needs the local glucose source setting to be switched during a pull-to-refresh fetch (10s cap at most), the worst case is some readings not uploading to Nightscout or being uploaded twice, and no dosing path is involved. The LOW test gap is accepted with it. Review recorded as waived.
