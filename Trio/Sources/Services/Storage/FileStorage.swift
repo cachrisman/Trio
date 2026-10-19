@@ -63,6 +63,12 @@ final class BaseFileStorage: FileStorage {
         }
     }
 
+    private func retrieveSilently<Value: JSON>(_ name: String, as type: Value.Type) -> Value? {
+        processQueue.safeSync {
+            try? Disk.retrieve(name, from: .documents, as: type, decoder: JSONCoding.decoder)
+        }
+    }
+
     func retrieveAsync<Value: JSON>(_ name: String, as type: Value.Type) async -> Value? {
         await withCheckedContinuation { continuation in
             processQueue.safeSync {
@@ -133,7 +139,7 @@ final class BaseFileStorage: FileStorage {
     }
 
     func append<Value: JSON, T: Equatable>(_ newValue: Value, to name: String, uniqBy keyPath: KeyPath<Value, T>) {
-        if let value = retrieve(name, as: Value.self) {
+        if let value = retrieveSilently(name, as: Value.self) {
             if value[keyPath: keyPath] != newValue[keyPath: keyPath] {
                 append(newValue, to: name)
             }
@@ -148,7 +154,7 @@ final class BaseFileStorage: FileStorage {
     }
 
     func append<Value: JSON, T: Equatable>(_ newValues: [Value], to name: String, uniqBy keyPath: KeyPath<Value, T>) {
-        if let value = retrieve(name, as: Value.self) {
+        if let value = retrieveSilently(name, as: Value.self) {
             if newValues.firstIndex(where: { $0[keyPath: keyPath] == value[keyPath: keyPath] }) != nil {
                 save(newValues, as: name)
                 return
