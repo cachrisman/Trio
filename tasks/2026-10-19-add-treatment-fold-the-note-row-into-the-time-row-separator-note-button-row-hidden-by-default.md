@@ -32,8 +32,14 @@ id = "AC-2"
 text = "On device the time row, separator and note button look right and the note row opens/closes as expected"
 owner = "operator"
 phase = "pre-review"
-state = "open"
+state = "met"
 added_at = 2026-10-19
+evidence_kind = "operator"
+evidence = "Operator on build 233, 2026-10-19 (chat): 'Generally looks pretty good'; the vertical separator between the time and the note button 'is much fainter than the horizontal lines ... but not really a big deal'; 'The note row opens and closes properly. Tapping on the note button makes it show up and makes it go away.'"
+met_at = 2026-10-19
+met_ts = "2026-10-19T23:13:11+02:00"
+met_by = "charlie"
+met_commit = "e57a4a8f1961329c6f96633a364d45d6b05762b2"
 
 [[sessions]]
 host = "claude-code"

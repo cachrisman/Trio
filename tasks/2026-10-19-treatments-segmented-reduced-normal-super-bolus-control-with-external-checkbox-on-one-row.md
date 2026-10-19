@@ -60,8 +60,14 @@ id = "AC-4"
 text = "Builds and looks right on the operator's phone: row fits without truncation, segment selection changes the recommendation as before"
 owner = "operator"
 phase = "pre-review"
-state = "open"
+state = "met"
 added_at = 2026-10-19
+evidence_kind = "operator"
+evidence = "Operator on build 233, 2026-10-19 (chat): 'The ad treatment screen looks good ... compressing of the vertical space, I think is good' (screenshot shows Reduced | Normal | Super + External on one row, no truncation); 'Switching segments works properly. Reduced and super all show that the associated percentage conversion is applied to the loop calculation. That's all still working properly.'"
+met_at = 2026-10-19
+met_ts = "2026-10-19T23:13:11+02:00"
+met_by = "charlie"
+met_commit = "e57a4a8f1961329c6f96633a364d45d6b05762b2"
 
 [[sessions]]
 host = "claude-code"
