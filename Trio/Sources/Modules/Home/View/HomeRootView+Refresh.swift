@@ -68,13 +68,12 @@ extension Home.RootView {
     /// Arms once per pull at the threshold; re-arms after the pull settles.
     func handlePullChange(_ offset: CGFloat) {
         pullOffset = offset
+        if offset <= 1, isRefreshArmed { isRefreshArmed = false }
         guard canForceLoop, !isForcingLoop else { return }
         if offset >= HomeLayout.refreshTriggerDistance, !isRefreshArmed {
             isRefreshArmed = true
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             forceLoop()
-        } else if offset <= 1, isRefreshArmed {
-            isRefreshArmed = false
         }
     }
 
