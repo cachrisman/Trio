@@ -184,6 +184,8 @@ struct LiveActivityView: View {
                 }
             }
             .addLiveActivityModifiers(isWatchOS: false)
+        } else if let bigGlucoseViewStyle = context.state.bigGlucoseViewStyle {
+            LiveActivityBigGlucoseView(context: context, style: bigGlucoseViewStyle)
         } else {
             let simpleViewStyle = context.state.simpleViewStyle
 
@@ -211,6 +213,90 @@ struct LiveActivityView: View {
             }
             .addLiveActivityModifiers(isWatchOS: false, verticalPadding: simpleViewStyle.fontSize.verticalPadding)
         }
+    }
+}
+
+struct LiveActivityBigGlucoseView: View {
+    var context: ActivityViewContext<LiveActivityAttributes>
+    var style: LiveActivityAttributes.BigGlucoseViewStyle
+
+    private var valueColor: Color {
+        context.isStale ? .secondary : (style.colorByRange ? context.state.glucoseColor : Color.primary)
+    }
+
+    private var delta: String {
+        let trimmed = context.state.change.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "--" : trimmed
+    }
+
+    private var statsLine: String {
+        let iobFormatter = NumberFormatter()
+        iobFormatter.numberStyle = .decimal
+        iobFormatter.maximumFractionDigits = 1
+
+        let iob = iobFormatter.string(from: context.state.detailedViewState.iob as NSNumber) ?? "--"
+        let cob = "\(context.state.detailedViewState.cob)"
+        let insulinUnit = String(localized: "U", comment: "Insulin unit")
+        let carbUnit = String(localized: "g", comment: "gram of carbs")
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.timeStyle = .short
+        timeFormatter.dateStyle = .none
+        let time = context.state.date.map { timeFormatter.string(from: $0) } ?? "--"
+
+        return "\(iob) \(insulinUnit) · \(cob) \(carbUnit) · \(time)"
+    }
+
+    var body: some View {
+        Group {
+            if context.state.isInitialState {
+                Text("Live Activity Expired. Open Trio to Refresh").minimumScaleFactor(0.01)
+            } else {
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(context.state.bg)
+                            .font(style.glucoseFont)
+                            .foregroundStyle(valueColor)
+                            .strikethrough(context.isStale, pattern: .solid, color: .red.opacity(0.6))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.4)
+
+                        HStack(spacing: 6) {
+                            if !context.isStale, let direction = context.state.direction {
+                                Text(direction)
+                                    .foregroundStyle(valueColor)
+                            }
+                            Text(delta)
+                                .foregroundStyle(valueColor)
+                                .strikethrough(context.isStale, pattern: .solid, color: .red.opacity(0.6))
+                        }
+                        .font(style.trendFont)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    VStack(spacing: 4) {
+                        LiveActivityChartView(
+                            context: context,
+                            additionalState: context.state.detailedViewState,
+                            isCompactWindow: true
+                        )
+                        .frame(maxHeight: .infinity)
+
+                        Text(statsLine)
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(context.isStale ? .secondary : .primary)
+                            .strikethrough(context.isStale, pattern: .solid, color: .red.opacity(0.6))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    .frame(width: 180)
+                }
+            }
+        }
+        .addLiveActivityModifiers(isWatchOS: false)
     }
 }
 

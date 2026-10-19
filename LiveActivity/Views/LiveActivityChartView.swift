@@ -20,6 +20,24 @@ struct LiveActivityChartView: View {
 
     var context: ActivityViewContext<LiveActivityAttributes>
     var additionalState: LiveActivityAttributes.ContentAdditionalState
+    var isCompactWindow: Bool = false
+
+    private let compactForecastLimit = 19
+
+    private var minForecast: [Int] {
+        isCompactWindow ? Array(additionalState.minForecast.prefix(compactForecastLimit)) : additionalState.minForecast
+    }
+
+    private var maxForecast: [Int] {
+        isCompactWindow ? Array(additionalState.maxForecast.prefix(compactForecastLimit)) : additionalState.maxForecast
+    }
+
+    private var forecastLines: [LiveActivityAttributes.ForecastLine] {
+        guard isCompactWindow else { return additionalState.forecastLines }
+        return additionalState.forecastLines.map {
+            LiveActivityAttributes.ForecastLine(type: $0.type, values: Array($0.values.prefix(compactForecastLimit)))
+        }
+    }
 
     var body: some View {
         let state = context.state
@@ -28,10 +46,12 @@ struct LiveActivityChartView: View {
         let maxThreshhold: Decimal = isWatchOS ? 220 : 300
 
         // Determine scale, accounting for both glucose history and prediction values
-        let chartMin = additionalState.chart.min(by: { $0.value < $1.value })?.value ?? 39
-        let chartMax = additionalState.chart.max(by: { $0.value < $1.value })?.value ?? maxThreshhold
-        let forecastMin = additionalState.minForecast.min().map { Decimal($0) } ?? chartMin
-        let forecastMax = min(additionalState.maxForecast.max().map { Decimal($0) } ?? chartMax, maxThreshhold)
+        let scaleChart = isCompactWindow ? additionalState.chart
+            .filter { abs($0.date.timeIntervalSinceNow) < TimeInterval(10800) } : additionalState.chart
+        let chartMin = scaleChart.min(by: { $0.value < $1.value })?.value ?? 39
+        let chartMax = scaleChart.max(by: { $0.value < $1.value })?.value ?? maxThreshhold
+        let forecastMin = minForecast.min().map { Decimal($0) } ?? chartMin
+        let forecastMax = min(maxForecast.max().map { Decimal($0) } ?? chartMax, maxThreshhold)
         let minValue = min(min(chartMin, forecastMin), 39)
         let maxValue = max(max(chartMax, forecastMax), maxThreshhold)
 
@@ -43,18 +63,18 @@ struct LiveActivityChartView: View {
 
         let isOverrideActive = additionalState.isOverrideActive == true
         let isTempTargetActive = additionalState.isTempTargetActive == true
-        let hasForecast = !additionalState.minForecast.isEmpty || !additionalState.forecastLines.isEmpty
+        let hasForecast = !minForecast.isEmpty || !forecastLines.isEmpty
 
         let calendar = Calendar.current
         let now = Date()
 
-        let startDate = calendar.date(byAdding: .hour, value: isWatchOS ? -3 : -6, to: now) ?? now
+        let startDate = calendar.date(byAdding: .hour, value: isWatchOS || isCompactWindow ? -3 : -6, to: now) ?? now
         let endDate: Date = {
             let baseEnd = calendar.date(byAdding: .minute, value: isWatchOS ? 5 : 0, to: now) ?? now
             guard hasForecast, let anchorDate = state.date else { return baseEnd }
             let forecastCount = max(
-                additionalState.minForecast.count,
-                additionalState.forecastLines.max(by: { $0.values.count < $1.values.count })?.values.count ?? 0
+                minForecast.count,
+                forecastLines.max(by: { $0.values.count < $1.values.count })?.values.count ?? 0
             )
             let predictionEnd = anchorDate.addingTimeInterval(TimeInterval(forecastCount * 300))
             return max(baseEnd, predictionEnd)
@@ -181,8 +201,6 @@ struct LiveActivityChartView: View {
     }
 
     private func drawForecastCone(anchorDate: Date, isMgdL: Bool, maxValue: Decimal) -> some ChartContent {
-        let minForecast = additionalState.minForecast
-        let maxForecast = additionalState.maxForecast
         let cappedMax = isMgdL ? maxValue : maxValue.asMmolL
         let count = min(minForecast.count, maxForecast.count)
 
@@ -222,7 +240,7 @@ struct LiveActivityChartView: View {
             "zt": Color(red: 0.443, green: 0.380, blue: 0.937)
         ]
 
-        let points: [(series: String, date: Date, value: Decimal)] = additionalState.forecastLines.flatMap { line in
+        let points: [(series: String, date: Date, value: Decimal)] = forecastLines.flatMap { line in
             line.values.enumerated().map { index, value in
                 let displayValue = isMgdL ? Decimal(value) : Decimal(value).asMmolL
                 return (series: line.type, date: timeForIndex(index, anchorDate: anchorDate), value: displayValue)
@@ -250,7 +268,7 @@ struct LiveActivityChartView: View {
         let isMgdL = context.state.unit == "mg/dL"
 
         let threeHours = TimeInterval(10800)
-        let chartData = isWatchOS ? additionalState.chart
+        let chartData = isWatchOS || isCompactWindow ? additionalState.chart
             .filter { abs($0.date.timeIntervalSinceNow) < threeHours } : additionalState
             .chart
 
