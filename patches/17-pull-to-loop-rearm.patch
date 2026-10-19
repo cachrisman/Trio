@@ -1,0 +1,182 @@
+From c5206d60baaae71ef6938d89799faf69ad8ee995 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 21:03:28 +0200
+Subject: [PATCH] feat: pull-to-loop-rearm
+
+Trio-Patch-Source-Branch: fix/pull-to-loop-rearm
+Trio-Patch-Base: 1bacd86fb19dc325dff044b8cfe52fb7da6c8b98
+Trio-Patch-Feature-Tip: 27f6071a05826aea4c733a760ed1b811f885b7d9
+Trio-Patch-Generated: 2026-10-19T19:03:25Z
+Trio-Patch-Source-Commits:
+ a6ef3186eb365e523c6f0cb8639f352b81e70bce Connect to Dexcom G7, ONE+ and Stelo directly
+ e82293364401b38ad4d6f590fa6c75153f6ed6b9 Name Stelo in the Dexcom G7 picker entry
+ 73d90ab3628daaa90d8d71969e4e4efe9630bfd8 Add Widget Configuration screen for the Simple Live Activity style
+ a386413f324ea6c1c7310792e1e58cb65d9e6338 Merge branch 'dev' into feat/g7-direct
+ 66f17e8baf5c50ef2ab81206668625f5882a0aa1 Default Simple reading color to off, add a double-width glucose item
+ 67e0cceb242aa60208992816255392b2bc97d139 Drop the Live Activity glucose color option
+ b35c99b22e5c6c95abfc4851b3c7b76af12fedde Rebuild the Detailed Widget Configuration around drag and drop
+ 754d441c5a63796e79e367261ddbed78ec63770d Live Activity: real-reading preview, working Rounded face, filled font help, larger sizes
+ 6f465b5aa37bd6be180bbfe5fefa7bda76f6af92 Merge branch 'dev' into claude/affectionate-clarke-ziw7il
+ fa962f3b4c4d62568e44b4eea747f1dc3687771d Live Activity: colored/uncolored glucose widget variants and a clearer palette
+ fda1a769efa1e08b60874700a5e4b0c44586081a Share one fpuID between a meal and its carb equivalents
+ 441074ee4d8ff0df0ee4ac418c4d5ec68f249be2 Extract CarbEntryMutationService for meal deletion and replacement
+ 3720b19000f975e7260706efea38770c987f54e6 Resolve meal roots by handle and publish fpuID and remote command list
+ 14752a1bf40d3abb06ae30b23d853b299e58fdd8 Add delete_meal and edit_meal remote commands
+ 9d07bc4c5730854f335606f902e05d672d0ddb33 Keep fpuID assignment for carb equivalents at the caller
+ 438ddc434e0dd50703043ce07523d52c3c5080ea Reject unlinked meals and service errors in remote meal commands
+ 5fa1db94ddadd81e6e13a26eae1c87d8518f609a Merge branch 'dev' into feat/g7-direct
+ 96f0302d4fd018c5926c337d78bcaf544861bc51 Merge branch 'dev' into claude/affectionate-clarke-ziw7il
+ c79a20d4e13a930036f5c4cfed4b56a12fb5343e Bump G7SensorKit: pairing robustness and Share
+ 7e7f60c980166f2992cbe96cae8a8d3df5924186 Address review: drop font face, match wide delta size, clarify palette
+ c4762c71ea81d107de3252791be5a0fd5f6905d4 Remove unused, stale LiveActivityAttributes.swift
+ 678ef19ef371046f3a74f7411d8108cca943d0d4 Rename LiveActitiyAttributes.swift to LiveActivityAttributes.swift
+ db9a54e29203babb4bc64f70e31022ca8d9f4736 Remove explanatory comments added by this branch
+ 0dcae9a889e3527caf8f259aad00d7ce637a10c4 Address remaining review: mock the Simple preview, drop leftover comments
+ 8bf6c6ce19bdc4584034a86a03b976106b2fd813 Size the double-width glucose widget's delta like its trend arrow
+ 522b4c28ca01bcc303e01d7c18893c3076b5d5f1 Merge branch 'dev' into feat/g7-direct
+ 36bb1519b3e1f73ff1b209c3c2359a88176d9ea1 Left-align widget labels in the Available Widgets palette
+ b136bfc3405b5dc60fc99cfc5e0eaf7bf6a7cdc8 Keep widget palette items centered, only fix multi-line wrap alignment
+ 187f2e1d56d9a79be795e00e0cbbb31f773b0435 Sync the String Catalog with this branch's new Live Activity strings
+ 3e114b16c34230c4227366ca7ca0f1d95b5121a2 Add a Statistics Range setting for the home stats panel
+ 0f5a07bdba0900836fbcf8a26c470123bab24aa4 Persist the restored pump manager's state on processQueue
+ 800b41b82280deafc33c78e3765d462c86b36cb2 Merge branch 'dev' into ccr-0ecc0cce-04uy00
+ 72860f91099b21f226c7f3be175e6747dc02076e Update DeviceDataManager.swift
+ 5eaf8b37c2bef1a0ec41150df5506236a1af9683 Merge branch 'dev' into feat/g7-direct
+ 048a0efdaaff733f142148413b15949774839f76 Merge branch 'dev' into feat/g7-direct
+ e87b6527232d817fcd8ee2e2e397a1d0d7ef0f4e Merge branch 'dev' into feat/g7-direct
+ b18002fdf19e2f85998c469a8cc0b17cf82de2ba Merge branch 'dev' into ccr-0ecc0cce-04uy00
+ a54bdf9442d4dc694bd9e887bd051c63d3818e9f Merge remote-tracking branch 'nightscout/dev' into feat/g7-direct
+ aed367b8cb2bac482e3891773a697120da5ce52a Bump G7SensorKit: failed-sensor parsing and alert fix
+ 7c6283559cad9a3414ea600b8c7a15f1468ff5ab Own glucose alerts when the G7 is paired directly
+ 4c704b60a9b6061a71acad482bc6cfe1c50b120d Bump OmnipodKit to current dev
+ 6b9bd7e474aebd23a9ce5eb6a056983c3dcf7836 Update fastlane to 2.240.1
+ dd6b47e6788f08813c1fd3b8ce5946a4164b5394 Pin Ubuntu runners to 26.04
+ b1c30c3df108ad6af1218492b5dd181a978b1d5d Bump LibreLoop to current upstream
+ 6af2c978c8aa63c7e2f62a2e655d9fd763a76286 Bump LibreLoop for the in-app Abbott notice
+ 70892ba3d14163ae2acbcabfae8496e8517593c2 Bump LibreLoop for the legacy-LoopKit fix
+ 9f78b7f4dc75726dbaa3a76866c8cc170cbb539f Bump LibreLoop for the legacy CGM-event fix
+ 7a2d1c6957ef3fbe3708a76a40291c0d2dada517 Merge branch 'dev' into claude/affectionate-clarke-ziw7il
+ 3735cd1ddea034bad1f89b9b40a341992941f8c4 PR Review fixes
+ b476c92d17b78d507fd2e4a74a9c8e3a749b8641 Merge branch 'dev' into feature/remote-meal-mutation
+ 923796b8f3ef4677798fda759562b6d0900d3bbf Match uploadNoteTreatment return type in test stub
+ db1958d843d4479ffe01c8a8d7a33d6ebc561abf Add Glycemia Risk Index feature with calculations and UI components
+ 1b50fb6a8219a9fbf6b63cf07f83a1413134817c Merge pull request #1579 from bjorkert/feature/remote-meal-mutation
+ 4a0db1c166f2ef226b7b683f71c75220301bccec CI: Bump APP_DEV_VERSION to 1.0.2.5 [skip ci]
+ 0a27fd7d2c2714d5c6be21b5a63b8b8d07f329e9 Merge pull request #1566 from jwoglom/claude/affectionate-clarke-ziw7il
+ 0df0385d19ae3c2795e27cca1e8a98dca671bd26 CI: Bump APP_DEV_VERSION to 1.0.2.6 [skip ci]
+ 46cb42845d4ac253f96b90b96fe281e6e937838e Merge pull request #1639 from nightscout/chore/update-submodules-1015
+ e57e86822a3da3025d0b3471c7920b37316509bf CI: Bump APP_DEV_VERSION to 1.0.2.7 [skip ci]
+ aec6bd6776cc825bb86671383872bc3ba863af85 Merge branch 'dev' into claude/focused-planck-tsklw8
+ 1f96074bb8337ab1a5d924a2d7bf0814d81de6d5 Statistics Range -> Home Statistics Range
+ c52c66e5f188a493e8804fbf5d9030957bad0430 Fix glucose color for mmol/L in comma-decimal locales
+ 868135e602c7a5a1555b6b58b502b94fb3b3391f Merge remote-tracking branch 'upstream/dev' into fix/glucose-color-units-locale
+ e21bcecd05f77535b49996069fc9b444b2e29da2 Merge pull request #1644 from bjorkert/fix/glucose-color-units-locale
+ bbb1c0e0ed1f75b0c97e61928e9c6afefac0089d CI: Bump APP_DEV_VERSION to 1.0.2.8 [skip ci]
+ 7b080ec9bd269cecfe62512c83ca194e4924de2c Add themed alarm sound sets and loop short tones to a 5s floor
+ 5332b6368049a55e3a4800fd4e82b78230669dad Default every alarm to its Acoustic Medium themed sound
+ c6475e6c8a6fbf32fb096b494e20a2506e36e7c7 Lead the tone picker with themed sets, collapse the rest under Other Sounds
+ d5b8c68f2138e68f92b25f61bb3db0075cb56b98 Cover the themed sound catalog and new defaults
+ 4ac46ad8a27e2973a7b26fe68ee11cea7a6961dd Credit the bundled voices and tidy the urgency controls
+ b9c3b3949db9ea9ec3d5d289f229e48e624dd83a Linting fixes
+ ef5adde0a5214a0a7da55a68ffee6cdfd0396098 Merge pull request #1642 from codebymini/feature/gri
+ 37fe72fbe0a7ca773cbf8db8e4577d53631eb3fe CI: Bump APP_DEV_VERSION to 1.0.2.9 [skip ci]
+ b6486cac6a71bee847907bf4e96d2081cfea4f62 Merge branch 'dev' into ccr-0ecc0cce-04uy00
+ 722aeb2003123601831056a1ccbfe2776b497fe6 Merge pull request #1606 from jwoglom/ccr-0ecc0cce-04uy00
+ fc9fcd3b9c5e9ac2e28e48e16b0fa66ce54f7ba0 CI: Bump APP_DEV_VERSION to 1.0.2.10 [skip ci]
+ 1b847927a79e9f87cb7dbe3d48c2407470625db1 Add Home Statistics Range to settings export
+ eac90d5224126f66af6b263ac276494c1a450aff Add Home Statistics Panel to settings export
+ d289bfda3e39171829ee0936b45fa6a179b8c5c8 Merge pull request #1590 from jwoglom/claude/focused-planck-tsklw8
+ 0bdd266c2e789d2ef4ee8507beecf453f5c171e5 CI: Bump APP_DEV_VERSION to 1.0.2.11 [skip ci]
+ 1f19080345c4adc992c6d970c7392f6292775dd4 Merge pull request #1548 from nightscout/feat/g7-direct
+ e797b4adf1cf1e6d3a0d700ba235d712b9d840f7 CI: Bump APP_DEV_VERSION to 1.0.2.12 [skip ci]
+ b3daae1a30f25bb6e8fcac79339690607c01d745 Merge branch 'dev' into feat/alarm-sound-themes
+ cd6ad0706db1e7a546360d4631f75b24a402ba58 Merge pull request #1645 from dnzxy/feat/alarm-sound-themes
+ bcebda2f5881b5835cecdade8593f951493ac899 CI: Bump APP_DEV_VERSION to 1.0.2.13 [skip ci]
+ 27f6071a05826aea4c733a760ed1b811f885b7d9 Fix pull-to-loop ignoring the next pull after a forced loop
+Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
+Trio-Patch-Source-PatchIds:
+ b2a84c5fb6c0308688dc07cae692121cb5707dc8
+ a6d2925d3df964cd76bd910d889a75d2bc457183
+ aa7daac07a872dbec88e235dc8a4f57efa3c284a
+ 37046bb7f022986e6c1f174ad819cd79a2d6b16e
+ 10fe3b94e9b97841eb1815736bfe58bc48a110e5
+ ef9702bc4a9592824eacf2a28a54b16f58a66444
+ 320438809b76a63d9c40dd2a500e0fafec696f7f
+ d912ab6eac434d1ab75a11818b955b00589bae02
+ 7411f0e04d57f6ddd4481add7618c2c9b65ea6cb
+ 9e67661c68a36c9105975ee2e6ea6abbb0e80cce
+ 2a886ea8fe25e35d6c42e11f17e89a793939e5aa
+ 020bd7ea66e949e24f9b483e048c09d394b8c3f0
+ 047ebdbbca485353f04a05f2a7cb024008314530
+ 0538984b6835b189e8d091dfed99979f45e61789
+ 73bd89ef649c9bbb0ef09012913ca55ccd00b66d
+ fdf0f9ce5c1a2a7654d56f89d3ab76eed22353d2
+ bc1129706a1070811b651730f6cffe0edd60079a
+ 943d93443252e01eb6acad439c99db5b8840d485
+ 027a45cf315a5e1eada8840fcbcd43c6b021c992
+ e5e1d3447f02529228c9e3c711e4a7a7fe5c2ad2
+ 49a26314ab4670cc32e0681b0472a9748956c019
+ ba5c7c33ad3fad6f23ad9700b927bbd070fa8954
+ 4040af5f2aba4a329fbd492b57c2bee9bf6d9204
+ f68cf6732a797c6feedbd506acacc0a09f400111
+ db84eca18fbb814cd66c92bc215278a6978e513f
+ d854149f998f1bec8043653b01135a30dc210a7f
+ 76e752fb589ef964e8ad7cca550a92eebe75fcd0
+ 29d3643cfdebac277555a4cfdeb8f5a554522d81
+ c61a0c7559b7bb2bb6fbfbe0890ae7101888b5f5
+ bc089a8f56d532dc3e7a5f8448c23044bad804c3
+ 050e9eb8d06f248a130476594fd7f8a75256a11a
+ 92c00a434d7cb48c18b701ab42a82ad917ac76a9
+ 01dc7a937dca61147a9c80444aeabdd1ad66b21a
+ 4c979d3ed7f5ac14d3ef5b0feb784c10d771555a
+ d25f05b82c731f3376524d802cc83af03565cd43
+ 4a9a3b736f44851384ca59598507f5375afc7fd4
+ 0dc1065baddda319843c3cb1a6f26c531aad00f0
+ 216feb7dc1a4183a8b9e6bcb534ecc967c91e2e7
+ 0154fa97c79678c2c36d93e73dc34084fdc48824
+ 4a4b82664b3ebb4348e388ac225afa61eb5c4b96
+ 3859a6abb95046af7f18298803a7037efa92f41a
+ 0b4ba8802e856d89a897a7e7ce8f5e3a9427ddf8
+ a36d57be0c79cde7a939bd2e443ebb82c7f2882e
+ deb3abd3962529979a88836e5e828603fbcae5b6
+ 5137997c2a88192443c86f0acf304b1ea47b85b9
+ fb5695f304873672312b44255bc8e7435f929d01
+ d37612a9ddd1412ebc497450b29d49226ecc66bb
+ 58b31d4581a40cae708d0289af28ea501323983f
+ 9fe0b156d592ab8c6fe8c575bbe55bc6b9a38083
+ 4c8d7814c6bfa4b975ee8fac5cd5ea471e91ec24
+ 82170482f66ba39a70daed86207154bd5527b699
+ cffa000180d5e1af5bb88bd3e49e85585998867c
+ 377f8f25d518b1838f62ed1839231169b20f6504
+ b29b692eb8904362d24a88fec2a1afd53b7430b2
+ 08caca143d1040fa045e23509bb756aaa598ddaf
+ 4ba23e57fb084831e721178e2ecde42d1b386ef9
+ 4be80a810b1b3ca0c38add94ccd45859e8df50e7
+ b80e8d5def3d6cfa81e8efa26c610ec562b384fd
+ 1dc2f08cb57d6c52486df9aae39b8cf6bf69c41d
+---
+ Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift b/Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift
+index d042fd464..cd88179d0 100644
+--- a/Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift
++++ b/Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift
+@@ -64,13 +64,12 @@ extension Home.RootView {
+     /// Arms once per pull at the threshold; re-arms after the pull settles.
+     func handlePullChange(_ offset: CGFloat) {
+         pullOffset = offset
++        if offset <= 1, isRefreshArmed { isRefreshArmed = false }
+         guard canForceLoop, !isForcingLoop else { return }
+         if offset >= HomeLayout.refreshTriggerDistance, !isRefreshArmed {
+             isRefreshArmed = true
+             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+             forceLoop()
+-        } else if offset <= 1, isRefreshArmed {
+-            isRefreshArmed = false
+         }
+     }
+ 
+-- 
+2.56.0
+

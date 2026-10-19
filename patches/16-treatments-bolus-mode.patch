@@ -1,0 +1,166 @@
+From 3624468eac6312f9babf54395e4f4ee868cfcdc0 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 21:34:45 +0200
+Subject: [PATCH] feat: treatments-bolus-mode
+
+Trio-Patch-Source-Branch: feature/treatments-bolus-mode
+Trio-Patch-Base: 31f8b6ff96843994b960a004a1d90bf88e3b535f
+Trio-Patch-Feature-Tip: 9009626686c30a7f227e50c97fea35a76c3ca47e
+Trio-Patch-Generated: 2026-10-19T19:34:44Z
+Trio-Patch-Source-Commits:
+ 90309970014babedf55394626144e4fb882dd338 feat(treatments): segmented Reduced/Normal/Super bolus control with External checkbox on one row (TRIO-082)
+ 9009626686c30a7f227e50c97fea35a76c3ca47e feat(treatments): note row hidden behind a note button after the time control (TRIO-085)
+Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
+Trio-Patch-Source-PatchIds:
+ fff1cda19bb5a76a42de0d5ff5397afb76fef34b
+ 93b43ec65e337b4f49c4414845d0e2d0fad4d915
+---
+ .../Treatments/View/TreatmentsRootView.swift  | 103 ++++++++++--------
+ 1 file changed, 60 insertions(+), 43 deletions(-)
+
+diff --git a/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift b/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift
+index 1c9730174..99ee9991a 100644
+--- a/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift
++++ b/Trio/Sources/Modules/Treatments/View/TreatmentsRootView.swift
+@@ -23,6 +23,7 @@ extension Treatments {
+         @State private var autofocus: Bool = true
+         @State private var calculatorDetent = PresentationDetent.large
+         @State private var pushed: Bool = false
++        @State private var showNote = false
+         @State private var debounce: DispatchWorkItem?
+         @State private var showFatProteinOrderBanner = false
+ 
+@@ -236,41 +237,51 @@ extension Treatments {
+             }
+         }
+ 
+-        /// Own view for Reduced Bolus / Super Bolus toggles, the recommendation readout and the Bolus field
++        private enum BolusAdjustment: Hashable {
++            case reduced
++            case normal
++            case superBolus
++        }
++
++        private var bolusAdjustmentBinding: Binding<BolusAdjustment> {
++            Binding(
++                get: {
++                    if state.useFattyMealCorrectionFactor { return .reduced }
++                    if state.useSuperBolus { return .superBolus }
++                    return .normal
++                },
++                set: { newValue in
++                    state.useFattyMealCorrectionFactor = (newValue == .reduced)
++                    state.useSuperBolus = (newValue == .superBolus)
++                    Task {
++                        state.insulinCalculated = await state.calculateInsulin()
++                    }
++                }
++            )
++        }
++
++        /// Own view for the bolus adjustment picker + External checkbox, the recommendation readout and the Bolus field
+         @ViewBuilder private var bolusSection: some View {
+-            if state.fattyMeals || state.sweetMeals {
+-                HStack(spacing: 10) {
+-                    if state.fattyMeals {
+-                        Toggle(isOn: $state.useFattyMealCorrectionFactor) {
+-                            Text("Reduced Bolus")
++            HStack(spacing: 10) {
++                if state.fattyMeals || state.sweetMeals {
++                    Picker("Bolus adjustment", selection: bolusAdjustmentBinding) {
++                        if state.fattyMeals {
++                            Text("Reduced").tag(BolusAdjustment.reduced)
+                         }
+-                        .toggleStyle(RadioButtonToggleStyle())
+-                        .font(.footnote)
+-                        .onChange(of: state.useFattyMealCorrectionFactor) {
+-                            Task {
+-                                state.insulinCalculated = await state.calculateInsulin()
+-                                if state.useFattyMealCorrectionFactor {
+-                                    state.useSuperBolus = false
+-                                }
+-                            }
+-                        }
+-                    }
+-                    if state.sweetMeals {
+-                        Toggle(isOn: $state.useSuperBolus) {
+-                            Text("Super Bolus")
+-                        }
+-                        .toggleStyle(RadioButtonToggleStyle())
+-                        .font(.footnote)
+-                        .onChange(of: state.useSuperBolus) {
+-                            Task {
+-                                state.insulinCalculated = await state.calculateInsulin()
+-                                if state.useSuperBolus {
+-                                    state.useFattyMealCorrectionFactor = false
+-                                }
+-                            }
++                        Text("Normal").tag(BolusAdjustment.normal)
++                        if state.sweetMeals {
++                            Text("Super").tag(BolusAdjustment.superBolus)
+                         }
+                     }
++                    .pickerStyle(.segmented)
++                    .labelsHidden()
++                }
++                Spacer(minLength: 0)
++                Toggle(isOn: $state.externalInsulin) {
++                    Text("External")
+                 }
++                .toggleStyle(CheckboxToggleStyle())
++                .font(.footnote)
+             }
+ 
+             HStack {
+@@ -335,12 +346,6 @@ extension Treatments {
+                     }
+             }
+             .id(FocusedField.bolus)
+-
+-            HStack {
+-                Text("External Insulin")
+-                Spacer()
+-                Toggle("", isOn: $state.externalInsulin).toggleStyle(CheckboxToggleStyle())
+-            }
+         }
+ 
+         var body: some View {
+@@ -419,16 +424,28 @@ extension Treatments {
+                                         label: { Image(systemName: "plus.circle") }.tint(.blue).buttonStyle(.borderless)
+                                             .accessibilityLabel(Text("15 minutes later"))
+                                     }
++
++                                    Divider().frame(height: 20)
++
++                                    Button { showNote.toggle() } label: {
++                                        Image(systemName: showNote || !state.note.isEmpty ? "note.text" : "note.text.badge.plus")
++                                    }
++                                    .tint(.blue)
++                                    .buttonStyle(.borderless)
++                                    .accessibilityLabel(Text("Note"))
+                                 }
+ 
+                                 // Notes
+-                                HStack {
+-                                    Image(systemName: "square.and.pencil")
+-                                    TextFieldWithToolBarString(
+-                                        text: $state.note,
+-                                        placeholder: String(localized: "Note..."),
+-                                        maxLength: 25
+-                                    )
++                                if showNote || !state.note.isEmpty {
++                                    HStack {
++                                        Image(systemName: "square.and.pencil")
++                                        TextFieldWithToolBarString(
++                                            text: $state.note,
++                                            placeholder: String(localized: "Note..."),
++                                            shouldBecomeFirstResponder: state.note.isEmpty,
++                                            maxLength: 25
++                                        )
++                                    }
+                                 }
+                             }.listRowBackground(Color.chart)
+ 
+-- 
+2.56.0
+

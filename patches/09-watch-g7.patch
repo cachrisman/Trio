@@ -1,6 +1,6 @@
-From 0d0b8ba56db1e33f88682ba0e3b90d9345407b78 Mon Sep 17 00:00:00 2001
+From ea43bb253322c01b3f8c3f092cb45a2b3ade2357 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 16 Oct 2026 13:52:46 +0200
+Date: Mon, 19 Oct 2026 21:36:37 +0200
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 73372979f6cd99a226d3ad221ac2db2b6129dcb1
-Trio-Patch-Generated: 2026-10-16T11:52:27Z
+Trio-Patch-Feature-Tip: 7d45514f576f82d45e5bfacee6ef0b8b436df552
+Trio-Patch-Generated: 2026-10-19T19:36:23Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -92,6 +92,7 @@ Trio-Patch-Source-Commits:
  9523b7a2630005d6040ad295a98b23daf0cb1c1a watch: keep recording only a generation that exists; clearer reload log line (TRIO-063)
  a679782ba372b413198057edce941b5f7667a63b watch: diagnostics shows how long ago the last phone data arrived (TRIO-004)
  73372979f6cd99a226d3ad221ac2db2b6129dcb1 watch: log each userInfo transfer's outcome and retry position (TRIO-025)
+ 7d45514f576f82d45e5bfacee6ef0b8b436df552 watch: log how long each userInfo transfer waited in the queue before arriving (TRIO-012)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -164,6 +165,7 @@ Trio-Patch-Source-PatchIds:
  4f9359a37610aae21b3ff49392cf06ae6f815187
  bbdd03faa5f5734b473183a1b7497f0fcf44020e
  7550fe8e545d1a8b3294b7cdea4bbeeaf3d9a81e
+ d967534f02e65718462a54b95236a00738b775d5
 ---
  .../ExtensionDelegate.swift                   |   92 +
  .../G7WatchSensorAdapter.swift                | 1902 ++++++++++++
@@ -178,7 +180,7 @@ Trio-Patch-Source-PatchIds:
  .../WatchGlucoseHistoryStore.swift            |  229 ++
  Trio Watch App Extension/WatchLogger.swift    |  411 ++-
  .../WatchState+Requests.swift                 |   24 +
- Trio Watch App Extension/WatchState.swift     | 2640 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2642 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  138 +
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
@@ -195,7 +197,7 @@ Trio-Patch-Source-PatchIds:
  Trio/Sources/Models/WatchMessageKeys.swift    |   20 +-
  Trio/Sources/Models/WatchState.swift          |   24 +-
  .../WatchManager/AppleWatchManager.swift      |  603 +++-
- 30 files changed, 10013 insertions(+), 594 deletions(-)
+ 30 files changed, 10015 insertions(+), 594 deletions(-)
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
  create mode 100644 Trio Watch App Extension/Helper/WatchResidentTelemetry.swift
@@ -5134,7 +5136,7 @@ index ea6c9f146..f3ed61337 100644
      }
  }
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index efe8c8a2f..ec77d2a34 100644
+index efe8c8a2f..a450653f1 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,104 @@
@@ -6422,7 +6424,7 @@ index efe8c8a2f..ec77d2a34 100644
                      await WatchLogger.shared.flushPersistedLogs()
                  }
                  return
-@@ -180,165 +1255,659 @@ import WidgetKit
+@@ -180,165 +1255,661 @@ import WidgetKit
  
              if activationState == .activated {
                  Task {
@@ -6643,8 +6645,10 @@ index efe8c8a2f..ec77d2a34 100644
 +        // main-confined property inside the main hop below — the previous direct write raced
 +        // main-thread reads/clears of the same field.
 +        let userInfoReceiveWallClock = Date()
++        let queueFlushLag = dateValue(from: payload[WatchMessageKeys.transferEnqueuedAt])
++            .map { Int(userInfoReceiveWallClock.timeIntervalSince($0)) } ?? -1
 +        Task {
-+            await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch)")
++            await WatchLogger.shared.log("event=complication_did_receive_user_info window_id=\(BackgroundTaskWindowCounter.currentOrNil() ?? -1) reading_date_epoch=\(readingDateEpoch) queue_flush_lag_seconds=\(queueFlushLag)")
 +        }
 +
 +        // Phase 3.0 — pre-dispatch dedup. saveOnMain is authoritative.
@@ -7168,7 +7172,7 @@ index efe8c8a2f..ec77d2a34 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -349,7 +1918,7 @@ import WidgetKit
+@@ -349,7 +1920,7 @@ import WidgetKit
                  }
  
                  Task {
@@ -7177,7 +7181,7 @@ index efe8c8a2f..ec77d2a34 100644
                  }
  
                  switch ackCode {
-@@ -372,26 +1941,66 @@ import WidgetKit
+@@ -372,26 +1943,66 @@ import WidgetKit
                  }
              }
  
@@ -7253,7 +7257,7 @@ index efe8c8a2f..ec77d2a34 100644
          DispatchQueue.main.async {
              self.showSyncingAnimation = true
          }
-@@ -400,84 +2009,176 @@ import WidgetKit
+@@ -400,84 +2011,176 @@ import WidgetKit
              await WatchLogger.shared.log("Merging new WatchState data with keys: \(newData.keys.joined(separator: ", "))")
          }
  
@@ -7463,7 +7467,7 @@ index efe8c8a2f..ec77d2a34 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -492,50 +2193,27 @@ import WidgetKit
+@@ -492,50 +2195,27 @@ import WidgetKit
              self.lastLoopTime = lastLoopTime
          }
  
@@ -7530,7 +7534,7 @@ index efe8c8a2f..ec77d2a34 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -556,43 +2234,53 @@ import WidgetKit
+@@ -556,43 +2236,53 @@ import WidgetKit
              }
          }
  
@@ -7609,7 +7613,7 @@ index efe8c8a2f..ec77d2a34 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -610,37 +2298,469 @@ import WidgetKit
+@@ -610,37 +2300,469 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
