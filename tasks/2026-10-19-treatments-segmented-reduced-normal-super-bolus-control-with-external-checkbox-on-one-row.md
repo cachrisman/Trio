@@ -94,3 +94,11 @@ Cursor review `.worktrees/treatments-bolus-mode/.task-relay/notes/20261019-19210
 - MEDIUM, shorter labels and new localization keys ("Reduced", "Super", "External"): the operator chose these in chat; it's a personal patch, not for upstream.
 - LOW, both flags true would show `.reduced` while the calculator applies both: the new setter is the only writer of either flag (`grep` 2026-10-19), so this can't happen today.
 - LOW, row width may truncate: tracked as operator AC-4 (on-device check).
+
+
+## Release note
+
+The Treatments screen picks Reduced, Normal or Super bolus with one segmented control, and the External checkbox sits on the same row. That frees up vertical space without changing how each option adjusts the recommendation.
+
+
+Shipped in build 233 (TRIO-083), uploaded to TestFlight 2026-10-19 22:55.

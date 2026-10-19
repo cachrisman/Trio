@@ -38,3 +38,61 @@ Build epic (AGENTS.md "Build tasks"; TRIO-059 is the template). Planned 2026-10-
 
 ## Known issues carried
 - TRIO-068: the replyHandler envelope path records and ACKs even when nothing was handled.
+
+
+## Attempt 2026-10-19 22:42 local
+
+- Command: `./ci/local-build.sh --base-branch dev --no-sync-upstream --no-reapply-stash --task TRIO-083`
+- Log: `build/artifacts/ci-local-build-20261019-224250.log`
+- Base ref: `dev`
+- dev: `3d2c78f7f`
+- upstream/dev: `bcebda2f5`
+- Xcode: Xcode 27.1
+
+
+- Outcome: FAILED (exit 1) (ended 2026-10-19 22:43)
+- Failed stage: Ruby Dependencies
+- Last errors:
+
+```
+bundler: failed to load command: fastlane (/opt/homebrew/lib/ruby/gems/4.0.0/bin/fastlane)
+First, try this link to see if there are any existing issue reports for this error:
+[stage] ✗ Failed: Ruby Dependencies (3s)
+```
+
+
+Cause (attempt 2026-10-19 22:42): failed at Ruby Dependencies before any compile. The upstream sync bumped fastlane 2.236.1 -> 2.240.1 (6b9bd7e47), which adds rdoc 8.1.0. Installing it makes RubyGems rewrite /opt/homebrew/lib/ruby/gems/4.0.0/plugins/rdoc_plugin.rb, a symlink to a read-only (0444) file in the Homebrew Cellar (ruby 4.0.7), so the write fails with Errno::EACCES. This is a machine environment problem, not a patch-stack one; no task carries a code fix.
+
+
+## Attempt 2026-10-19 22:47 local
+
+- Command: `./ci/local-build.sh --base-branch dev --no-sync-upstream --no-reapply-stash --task TRIO-083`
+- Log: `build/artifacts/ci-local-build-20261019-224701.log`
+- Base ref: `dev`
+- dev: `3d2c78f7f`
+- upstream/dev: `bcebda2f5`
+- Xcode: Xcode 27.1
+
+
+- Outcome: success (ended 2026-10-19 23:02)
+- Build number: 233
+- TestFlight: uploaded at 22:55:20
+- Public release: https://github.com/cachrisman/Trio/releases/tag/trio-v1.0.2-233-localCI
+- Private backup release (draft): https://github.com/cachrisman/trio-builds-private/releases/tag/trio-v1.0.2-233-localCI
+
+| Stage | Duration |
+|---|---|
+| Environment & Tool Validation | 0s |
+| Worktree Setup | 18s |
+| Certificates & Config | 11s |
+| Patch Application | 2s |
+| Ruby Dependencies | 0s |
+| Build IPA | 5m 46s |
+| TestFlight Upload | 8m 42s |
+| Record Release | 30s |
+| TOTAL (Success) | 15m 29s |
+
+
+## Release notes gap (2026-10-19)
+
+The GitHub release body lists every child task with its release note, but its "Patches:" list is empty. During Record Release the tag step printed `(error parsing patches: Expecting value: line 1 column 1 (char 0))`. The release manifest asset and the build log still record the 16 patches with their sha256 prefixes. Record Release also pushed temp branch `ci-build/trio-v1.0.2-233-localCI-20261019T210210Z` to cachrisman/Trio so the tag can point at the patched fork commit 0f51c8c9d, which is what the script normally does.

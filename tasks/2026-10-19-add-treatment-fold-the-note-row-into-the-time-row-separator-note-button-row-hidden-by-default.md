@@ -63,3 +63,11 @@ The note row on the add-treatment screen is hidden by default. The time row beco
 - Auto-focus the note field on reveal: yes.
 - Tapping the button again with an empty note hides the row; a non-empty note keeps it shown.
 - Same file as patch 16 (`TreatmentsRootView.swift`): build on `feature/treatments-bolus-mode` and fold into patch 16 rather than a separate overlapping patch.
+
+
+## Release note
+
+When adding a treatment, the note field is now hidden behind a note button at the end of the time row. Tap it to open the note field. A treatment that already has a note shows the field straight away.
+
+
+Shipped in build 233 (TRIO-083), uploaded to TestFlight 2026-10-19 22:55.

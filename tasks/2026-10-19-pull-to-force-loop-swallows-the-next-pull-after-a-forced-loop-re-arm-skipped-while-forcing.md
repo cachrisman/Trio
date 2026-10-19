@@ -87,3 +87,11 @@ Disarm whenever the pull settles, regardless of `isForcingLoop`: move the `offse
 ## Upstream
 
 Separate branch `fix/pull-to-loop-rearm` off `upstream/dev` so the operator can open a PR to nightscout/Trio `dev`. Possibly related: nightscout/Trio#1410 (open, stale; maintainer attributed it to the 3-minute loop gate). No existing PR addresses it (searched 2026-10-19). For build 233 it ships as its own patch, dropped once upstream merges.
+
+
+## Release note
+
+Pulling down to force a loop now works on the very next pull after a forced loop finishes. Before, that pull was sometimes ignored and you had to pull twice.
+
+
+Shipped in build 233 (TRIO-083), uploaded to TestFlight 2026-10-19 22:55.

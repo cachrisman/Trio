@@ -114,3 +114,6 @@ Something reads the temp-targets settings file expecting a dictionary (an object
 - Fix: probe silently (`retrieveSilently`, no logging) only for that first single-object attempt; the array read still logs real failures. Branch `fix/filestorage-append-probe-log` off upstream dev (commit 2f9d809a5), carried as patch 18 and suitable as an upstream PR.
 
 ## Notes carried over from acceptance criteria
+
+
+Shipped in build 233 (TRIO-083), uploaded to TestFlight 2026-10-19 22:55.

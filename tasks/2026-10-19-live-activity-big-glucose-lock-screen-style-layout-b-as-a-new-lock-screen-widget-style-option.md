@@ -180,3 +180,11 @@ New lock-screen Live Activity layout: glucose value (~76pt) on the left taking t
 - mmol/L: shrink to fit (`minimumScaleFactor`) rather than a smaller fixed size.
 - Chart window: show less history so the compressed chart reads like the Home chart: ~3h history + ~1.5h forecast (B2 in live-activity-b-history-windows.svg; operator confirmed B2 2026-10-19).
 - Font size: the new style gets its own font-size option, like Simple.
+
+
+## Release note
+
+New Big Glucose Lock Screen style for the Live Activity. It shows a large glucose value with the trend arrow and delta, a compact chart (about 3 hours of history and 1.5 hours of forecast), and IOB, COB and time. You can set the font size and colour the value by range in its Widget Configuration screen. A stale reading is struck through.
+
+
+Shipped in build 233 (TRIO-083), uploaded to TestFlight 2026-10-19 22:55.

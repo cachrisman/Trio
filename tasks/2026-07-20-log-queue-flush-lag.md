@@ -54,3 +54,6 @@ direct per-delivery WC queue dwell-time measurement, one-liner.
 On the watch, `WatchState` now records the wall clock as soon as a userInfo transfer arrives. It subtracts the phone's `transferEnqueuedAt` stamp, which is already sent in the payload. The result goes on the `complication_did_receive_user_info` line as `queue_flush_lag_seconds`, or `-1` when the stamp is missing. That is how long WatchConnectivity held the transfer before delivering it. Lines from different builds can now be compared on queue dwell time without reconstructing it from phone-side and watch-side logs. Commit 7d45514f5 on `feature/watch-g7`, carried in patch 09.
 
 ## Notes carried over from acceptance criteria
+
+
+Shipped in build 233 (TRIO-083), uploaded to TestFlight 2026-10-19 22:55.
