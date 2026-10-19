@@ -25,6 +25,13 @@ struct LiveActivityAttributes: ActivityAttributes {
         static let `default` = SimpleViewStyle(fontSize: .large)
     }
 
+    struct BigGlucoseViewStyle: Codable, Hashable {
+        let fontSize: LiveActivityFontSize
+        let colorByRange: Bool
+
+        static let `default` = BigGlucoseViewStyle(fontSize: .large, colorByRange: false)
+    }
+
     struct ContentState: Codable, Hashable {
         let unit: String
         let bg: String
@@ -40,6 +47,7 @@ struct LiveActivityAttributes: ActivityAttributes {
         let useDetailedViewIOS: Bool
         let useDetailedViewWatchOS: Bool
         let simpleViewStyle: SimpleViewStyle
+        var bigGlucoseViewStyle: BigGlucoseViewStyle? = nil
         let detailedViewState: ContentAdditionalState
 
         /// true for the first state that is set on the activity
