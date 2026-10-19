@@ -23,6 +23,7 @@ extension Treatments {
         @State private var autofocus: Bool = true
         @State private var calculatorDetent = PresentationDetent.large
         @State private var pushed: Bool = false
+        @State private var showNote = false
         @State private var debounce: DispatchWorkItem?
         @State private var showFatProteinOrderBanner = false
 
@@ -236,41 +237,51 @@ extension Treatments {
             }
         }
 
-        /// Own view for Reduced Bolus / Super Bolus toggles, the recommendation readout and the Bolus field
-        @ViewBuilder private var bolusSection: some View {
-            if state.fattyMeals || state.sweetMeals {
-                HStack(spacing: 10) {
-                    if state.fattyMeals {
-                        Toggle(isOn: $state.useFattyMealCorrectionFactor) {
-                            Text("Reduced Bolus")
-                        }
-                        .toggleStyle(RadioButtonToggleStyle())
-                        .font(.footnote)
-                        .onChange(of: state.useFattyMealCorrectionFactor) {
-                            Task {
-                                state.insulinCalculated = await state.calculateInsulin()
-                                if state.useFattyMealCorrectionFactor {
-                                    state.useSuperBolus = false
-                                }
-                            }
-                        }
-                    }
-                    if state.sweetMeals {
-                        Toggle(isOn: $state.useSuperBolus) {
-                            Text("Super Bolus")
-                        }
-                        .toggleStyle(RadioButtonToggleStyle())
-                        .font(.footnote)
-                        .onChange(of: state.useSuperBolus) {
-                            Task {
-                                state.insulinCalculated = await state.calculateInsulin()
-                                if state.useSuperBolus {
-                                    state.useFattyMealCorrectionFactor = false
-                                }
-                            }
-                        }
+        private enum BolusAdjustment: Hashable {
+            case reduced
+            case normal
+            case superBolus
+        }
+
+        private var bolusAdjustmentBinding: Binding<BolusAdjustment> {
+            Binding(
+                get: {
+                    if state.useFattyMealCorrectionFactor { return .reduced }
+                    if state.useSuperBolus { return .superBolus }
+                    return .normal
+                },
+                set: { newValue in
+                    state.useFattyMealCorrectionFactor = (newValue == .reduced)
+                    state.useSuperBolus = (newValue == .superBolus)
+                    Task {
+                        state.insulinCalculated = await state.calculateInsulin()
                     }
                 }
+            )
+        }
+
+        /// Own view for the bolus adjustment picker + External checkbox, the recommendation readout and the Bolus field
+        @ViewBuilder private var bolusSection: some View {
+            HStack(spacing: 10) {
+                if state.fattyMeals || state.sweetMeals {
+                    Picker("Bolus adjustment", selection: bolusAdjustmentBinding) {
+                        if state.fattyMeals {
+                            Text("Reduced").tag(BolusAdjustment.reduced)
+                        }
+                        Text("Normal").tag(BolusAdjustment.normal)
+                        if state.sweetMeals {
+                            Text("Super").tag(BolusAdjustment.superBolus)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                Spacer(minLength: 0)
+                Toggle(isOn: $state.externalInsulin) {
+                    Text("External")
+                }
+                .toggleStyle(CheckboxToggleStyle())
+                .font(.footnote)
             }
 
             HStack {
@@ -335,12 +346,6 @@ extension Treatments {
                     }
             }
             .id(FocusedField.bolus)
-
-            HStack {
-                Text("External Insulin")
-                Spacer()
-                Toggle("", isOn: $state.externalInsulin).toggleStyle(CheckboxToggleStyle())
-            }
         }
 
         var body: some View {
@@ -419,16 +424,28 @@ extension Treatments {
                                         label: { Image(systemName: "plus.circle") }.tint(.blue).buttonStyle(.borderless)
                                             .accessibilityLabel(Text("15 minutes later"))
                                     }
+
+                                    Divider().frame(height: 20)
+
+                                    Button { showNote.toggle() } label: {
+                                        Image(systemName: showNote || !state.note.isEmpty ? "note.text" : "note.text.badge.plus")
+                                    }
+                                    .tint(.blue)
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel(Text("Note"))
                                 }
 
                                 // Notes
-                                HStack {
-                                    Image(systemName: "square.and.pencil")
-                                    TextFieldWithToolBarString(
-                                        text: $state.note,
-                                        placeholder: String(localized: "Note..."),
-                                        maxLength: 25
-                                    )
+                                if showNote || !state.note.isEmpty {
+                                    HStack {
+                                        Image(systemName: "square.and.pencil")
+                                        TextFieldWithToolBarString(
+                                            text: $state.note,
+                                            placeholder: String(localized: "Note..."),
+                                            shouldBecomeFirstResponder: state.note.isEmpty,
+                                            maxLength: 25
+                                        )
+                                    }
                                 }
                             }.listRowBackground(Color.chart)
 
