@@ -11,6 +11,7 @@ updated = 2026-10-19
 touched = 2026-10-19
 owner = "me"
 tags = ["complication-freshness", "observability"]
+parent = "01a15580-dcde-70fd-902f-5bcb7d48cb9f"
 
 [[acceptance]]
 id = "AC-1"
