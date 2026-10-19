@@ -2,13 +2,14 @@
 uid = "01a14428-6c3f-7720-95fd-ce91f8a8865d"
 key = "TRIO-075"
 title = "Make generate-patch.sh, patch-test.sh and patch-audit.sh work inside the Claude Code Bash sandbox"
-status = "review"
+status = "in-progress"
 kind = "code"
 source = "agent-discovered"
 source_ref = "TRIO-074#patch16-mktemp-sandbox"
 created = 2026-10-16
 updated = 2026-10-16
 touched = 2026-10-16
+first_closed = 2026-10-16
 priority = 2
 
 [[acceptance]]
@@ -65,6 +66,28 @@ met_ts = "2026-10-16T12:11:01+02:00"
 met_by = "unknown"
 met_commit = "c8851ce78964bad2b3ccceb1c03ed9494baf1ef3"
 
+[[acceptance]]
+id = "AC-5"
+text = "Every mktemp call in scripts/mid-stack-update.sh and scripts/record-release.sh uses an explicit template under \"${TMPDIR:-/tmp}\", and a full diff review shows no other behaviour change"
+owner = "agent"
+phase = "pre-review"
+state = "met"
+added_at = 2026-10-16
+evidence_kind = "commit"
+evidence = "3db1ef7a0 — diff is exactly the 10 mktemp calls (6 in mid-stack-update.sh, 4 in record-release.sh) templated under ${TMPDIR:-/tmp}; grep shows no bare mktemp left; bash -n passes on both; cursor review 24df8643 (working tree) and the review of commit 3db1ef7a0 found no issues introduced"
+met_at = 2026-10-16
+met_ts = "2026-10-16T14:03:31+02:00"
+met_by = "unknown"
+met_commit = "3db1ef7a0830763bbe9b1f8428f3eabb4b4a627a"
+
+[[acceptance]]
+id = "AC-6"
+text = "Inside the Claude Code Bash sandbox, a real (non-dry-run) scripts/mid-stack-update.sh run gets past every mktemp it reaches without an \"Operation not permitted\" error. A --dry-run does not count: it exits at line 814, before the first mktemp at line 978"
+owner = "agent"
+phase = "pre-review"
+state = "open"
+added_at = 2026-10-16
+
 [[sessions]]
 host = "claude-code"
 ref = "d6849c06-4c4c-4fff-9df2-a8dfc2f00bb2"
@@ -72,6 +95,14 @@ model_family = "cursor"
 started = 2026-10-16
 role = "author"
 started_at = "2026-10-16T10:02:40+00:00"
+
+[[sessions]]
+host = "claude-code"
+ref = "fb06b91a-a42b-48f4-a9b8-9488a1b8fe7e"
+model_family = "claude"
+started = 2026-10-16
+role = "author"
+started_at = "2026-10-16T11:58:21+00:00"
 
 [[reviews]]
 run_id = "870fed6b-bf1b-4b34-9d9d-1c78ebbf3a98"
@@ -87,6 +118,22 @@ model_family = "codex"
 verdict = "pass"
 reviewed_commit = "c8851ce78964bad2b3ccceb1c03ed9494baf1ef3"
 reviewed_paths = ["scripts/generate-patch.sh", "scripts/patch-test.sh", "scripts/patch-audit.sh"]
+recorded_at = "2026-10-16T00:00:00+00:00"
+
+[[reviews]]
+run_id = "960e3ee8-018b-4ace-b395-efba8f3ebc66"
+model_family = "cursor"
+verdict = "pass"
+reviewed_commit = "3db1ef7a0830763bbe9b1f8428f3eabb4b4a627a"
+reviewed_paths = ["scripts/mid-stack-update.sh", "scripts/record-release.sh"]
+recorded_at = "2026-10-16T00:00:00+00:00"
+
+[[reviews]]
+run_id = "240d78e6-97f8-4df6-9f0e-162448eb39bf"
+model_family = "codex"
+verdict = "pass"
+reviewed_commit = "3db1ef7a0830763bbe9b1f8428f3eabb4b4a627a"
+reviewed_paths = ["scripts/mid-stack-update.sh", "scripts/record-release.sh"]
 recorded_at = "2026-10-16T00:00:00+00:00"
 +++
 

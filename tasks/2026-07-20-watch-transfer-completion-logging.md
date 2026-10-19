@@ -2,13 +2,18 @@
 uid = "019f8141-e117-77db-9216-aad81b0fc5f5"
 key = "TRIO-025"
 title = "Log watch-side transfer completion success (not just errors)"
-status = "review"
+status = "done"
 kind = "code"
 source = "human"
 source_ref = "docs/in-progress/complication-freshness/problem-and-strategy.md#L165"
 created = 2026-07-20
-updated = 2026-10-16
-touched = 2026-10-16
+updated = 2026-10-19
+touched = 2026-10-19
+closed = 2026-10-19
+first_closed = 2026-10-19
+accepted_by = "charlie"
+accepted_at = 2026-10-19
+accepted_ts = "2026-10-19T21:18:22+02:00"
 owner = "me"
 tags = ["complication-freshness", "observability"]
 parent = "01a14459-1abb-73ba-9248-679079504c8e"
@@ -21,11 +26,11 @@ phase = "pre-review"
 state = "met"
 added_at = 2026-09-26
 evidence_kind = "commit"
-evidence = "73372979f — session(_:didFinish:error:) logs userinfo_transfer_finished outcome=success on the success path"
-met_at = 2026-10-16
-met_ts = "2026-10-16T13:54:00+02:00"
-met_by = "unknown"
-met_commit = "8f192f13f3e66a4662cd8894db3e33c0e49be9d8"
+evidence = "73372979f (feature/watch-g7) — userinfo_transfer_finished outcome=success|error with retry N/max or giving_up, logged before retry state changes; re-verified 2026-10-19: all 8 added lines present in current patches/09-watch-g7.patch, full-stack patch-test passed"
+met_at = 2026-10-19
+met_ts = "2026-10-19T21:16:08+02:00"
+met_by = "claude-code"
+met_commit = "31f8b6ff96843994b960a004a1d90bf88e3b535f"
 
 [[acceptance]]
 id = "AC-2"
@@ -35,11 +40,11 @@ phase = "pre-review"
 state = "met"
 added_at = 2026-09-26
 evidence_kind = "commit"
-evidence = "73372979f — every completed transfer emits one userinfo_transfer_finished line with outcome=success|error, so success/error/giving_up counts aggregate from BetterStack by outcome and retry fields"
-met_at = 2026-10-16
-met_ts = "2026-10-16T13:54:00+02:00"
-met_by = "unknown"
-met_commit = "8f192f13f3e66a4662cd8894db3e33c0e49be9d8"
+evidence = "73372979f (feature/watch-g7) — userinfo_transfer_finished outcome=success|error with retry N/max or giving_up, logged before retry state changes; re-verified 2026-10-19: all 8 added lines present in current patches/09-watch-g7.patch, full-stack patch-test passed"
+met_at = 2026-10-19
+met_ts = "2026-10-19T21:16:08+02:00"
+met_by = "claude-code"
+met_commit = "31f8b6ff96843994b960a004a1d90bf88e3b535f"
 
 [[acceptance]]
 id = "AC-3"
@@ -49,11 +54,11 @@ phase = "pre-review"
 state = "met"
 added_at = 2026-10-16
 evidence_kind = "commit"
-evidence = "73372979f — error branch computes retry=N/max or giving_up from transferRetryCount before the existing retry logic increments it; codex review f7814326 checked the label against the counter transitions"
-met_at = 2026-10-16
-met_ts = "2026-10-16T13:54:01+02:00"
-met_by = "unknown"
-met_commit = "8f192f13f3e66a4662cd8894db3e33c0e49be9d8"
+evidence = "73372979f (feature/watch-g7) — userinfo_transfer_finished outcome=success|error with retry N/max or giving_up, logged before retry state changes; re-verified 2026-10-19: all 8 added lines present in current patches/09-watch-g7.patch, full-stack patch-test passed"
+met_at = 2026-10-19
+met_ts = "2026-10-19T21:16:09+02:00"
+met_by = "claude-code"
+met_commit = "31f8b6ff96843994b960a004a1d90bf88e3b535f"
 
 [[sessions]]
 host = "claude-code"

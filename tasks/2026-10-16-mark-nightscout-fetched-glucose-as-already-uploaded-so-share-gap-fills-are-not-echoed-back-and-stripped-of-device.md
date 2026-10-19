@@ -2,13 +2,18 @@
 uid = "01a14492-db80-724d-8362-57ca264a6800"
 key = "TRIO-077"
 title = "Mark Nightscout-fetched glucose as already uploaded so Share gap-fills are not echoed back and stripped of device"
-status = "review"
+status = "done"
 kind = "code"
 source = "agent-discovered"
 source_ref = "side-2332fe6b/share-echo-isUploadedToNS"
 created = 2026-10-16
-updated = 2026-10-16
-touched = 2026-10-16
+updated = 2026-10-17
+touched = 2026-10-17
+closed = 2026-10-17
+first_closed = 2026-10-17
+accepted_by = "charlie"
+accepted_at = 2026-10-17
+accepted_ts = "2026-10-17T14:40:07+02:00"
 tags = ["nightscout", "glucose", "share", "patch-16"]
 files = ["Trio/Sources/APS/Storage/GlucoseStorage.swift", "Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift"]
 priority = 2
@@ -19,16 +24,28 @@ id = "AC-1"
 text = "After a pull-to-refresh that stores a Share fill, that reading's Nightscout doc still has device: dexcom-share and an unchanged _id"
 owner = "agent"
 phase = "post-deploy"
-state = "open"
+state = "met"
 added_at = 2026-10-16
+evidence_kind = "run"
+evidence = "2026-10-17, build 232 (dev 826bf8a23, patch 15 carrying 5a65d702c): pull-to-refresh backfills at 05:54:46 UTC and 08:11:07-08:11:33 UTC (phone logs 'passed 287 Nightscout reading(s)'; Nightscout logs Trio GET /api/v1/entries/sgv.json 05:55:12 and 4x 08:11). Baseline = the 12 dexcom-share docs inserted after the deploy (18:04 UTC 10-16), e.g. 6ad2a584f71fc149723a2a9d (22:28:48 UTC, 106) through 6ad2f9e2f71fc149723a4ad2 (04:28:48 UTC, 118), all inside the 05:55 pull's 24h lookback. Raw read-only GET of /api/v1/entries.json at 08:12 UTC (2h17m after the 05:55 pull): 12/12 still device=dexcom-share, same _id and sgv, only Share fields (no filtered/unfiltered/glucose/id), one doc per timestamp. Before the deploy, 11 of 12 cron-phase Share docs in the prior 24h had been stripped. Not directly observable: how many of the 287 readings Trio actually stored after its 3.5-minute dedupe."
+met_at = 2026-10-17
+met_ts = "2026-10-17T10:13:10+02:00"
+met_by = "claude-code"
+met_commit = "31f8b6ff96843994b960a004a1d90bf88e3b535f"
 
 [[acceptance]]
 id = "AC-2"
 text = "No Trio POST /api/v1/entries carries a reading that came from a Nightscout fetch (BetterStack source 2518064)"
 owner = "agent"
 phase = "post-deploy"
-state = "open"
+state = "met"
 added_at = 2026-10-16
+evidence_kind = "run"
+evidence = "2026-10-17: across all build-232 pulls (10-16 18:06, 22:25; 10-17 05:55, 08:11 UTC), no Share doc was overwritten. Raw entries 10-16 08:00 to 10-17 08:08 UTC: of the 169 docs inserted since the deploy, 0 cron-phase (Share-insert signature) docs are untagged, against 11 stripped in the 24h before the deploy. BetterStack source 2518064 shows Trio entries POSTs at the usual roughly 5-minute cadence, 7-37 ms, with no burst after any pull. Request logs carry no payloads, so this is inferred from the docs' state, not from POST bodies."
+met_at = 2026-10-17
+met_ts = "2026-10-17T10:13:11+02:00"
+met_by = "claude-code"
+met_commit = "31f8b6ff96843994b960a004a1d90bf88e3b535f"
 
 [[acceptance]]
 id = "AC-3"
