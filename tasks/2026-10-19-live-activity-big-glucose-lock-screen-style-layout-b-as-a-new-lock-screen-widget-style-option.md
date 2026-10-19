@@ -43,17 +43,17 @@ met_commit = "9f7f9560b675c1e725b7a642de0a0f1972dde09e"
 
 [[acceptance]]
 id = "AC-3"
-text = "Big Glucose lock-screen layout: glucose value on the left (76pt at the default size, lineLimit 1 + minimumScaleFactor so mmol/L shrinks to fit) with trend arrow and delta beneath it; ~180pt-wide chart on the right; one line under the chart reading IOB U · COB g · updated time; stale readings struck through as in the other styles; the initial/expired state shows the existing expired message."
+text = "Big Glucose lock-screen layout: a fixed proportional split, about 40% of the width for the glucose column and 60% for the chart + stats-line column, independent of the reading (the chart doesn't change width between 99 and 100). The glucose value (76pt at the default size, lineLimit 1 + minimumScaleFactor 0.4 so mmol/L and Extra Large shrink to fit) and the trend arrow + delta beneath it are centred horizontally in their column and against each other, and vertically. One line under the chart reads IOB U · COB g · updated time. Stale readings are struck through as in the other styles. The initial/expired state shows the existing expired message."
 owner = "agent"
 phase = "pre-review"
 state = "met"
 added_at = 2026-10-19
 evidence_kind = "commit"
-evidence = "feature/live-activity-big-glucose 8b0257151 + b36f51e2e: LiveActivityBigGlucoseView in LiveActivityView.swift — value at bigGlucosePointSize (large=76) lineLimit 1 + minimumScaleFactor 0.4, arrow+delta beneath, 180pt chart column, 'IOB U · COB g · time' line, strikethrough when stale, expired text for initial state; previews incl. mmol/L and expired. Not compiled (no xcodebuild per brief). codex-work review pass fbff7387 after fail a2f9c389. Re-pinned 2026-10-19 after merging origin/dev into dev (9f7f9560b): LiveActivity/LiveActivity.swift on dev is identical to the branch base bcebda2f5, and patch 19 applies cleanly on top (patch-test PASSED)."
+evidence = "feature/live-activity-big-glucose ba53308b3 + d9ab15294: LiveActivityBigGlucoseView uses a private ProportionalColumnsLayout (ratio 0.4, spacing 10; height = max of columns, so no GeometryReader collapse); the glucose VStack is .center inside .frame(maxWidth: .infinity, alignment: .center); value keeps lineLimit 1 + minimumScaleFactor 0.4; stats line, strikethrough and expired text unchanged. Not compiled (no xcodebuild per brief). codex-work review pass d2934250 after fail 32984136"
 met_at = 2026-10-19
-met_ts = "2026-10-19T22:28:31+02:00"
+met_ts = "2026-10-19T23:42:06+02:00"
 met_by = "claude-code"
-met_commit = "9f7f9560b675c1e725b7a642de0a0f1972dde09e"
+met_commit = "89daca1ff632965cf1728c06d557c71cabfbd3ba"
 
 [[acceptance]]
 id = "AC-4"
@@ -71,17 +71,17 @@ met_commit = "9f7f9560b675c1e725b7a642de0a0f1972dde09e"
 
 [[acceptance]]
 id = "AC-5"
-text = "The Big Glucose chart shows ~3h of history and at most ~1.5h of forecast (B2); the Detailed lock-screen, Dynamic Island and Watch chart windows are unchanged."
+text = "The Big Glucose chart shows ~4h of history (drawing and y-scale) and at most ~1.5h of forecast; the Watch chart's 3h and the Detailed lock-screen / Dynamic Island 6h windows are unchanged."
 owner = "agent"
 phase = "pre-review"
 state = "met"
 added_at = 2026-10-19
 evidence_kind = "commit"
-evidence = "feature/live-activity-big-glucose 8b0257151 + b36f51e2e: LiveActivityChartView.isCompactWindow (default false) — 3h history for drawing and y-scale, forecasts prefixed to 19 points (~1.5h); all non-compact paths unchanged. codex-work review pass fbff7387 after fail a2f9c389. Re-pinned 2026-10-19 after merging origin/dev into dev (9f7f9560b): LiveActivity/LiveActivity.swift on dev is identical to the branch base bcebda2f5, and patch 19 applies cleanly on top (patch-test PASSED)."
+evidence = "feature/live-activity-big-glucose ba53308b3 + d9ab15294: LiveActivityChartView.historyHours (watch 3, compact 4, otherwise 6) drives startDate, the compact-only y-scale filter and the watch/compact drawChart filter; compactForecastLimit 19 (~1.5h) unchanged. codex-work review pass d2934250 after fail 32984136"
 met_at = 2026-10-19
-met_ts = "2026-10-19T22:28:21+02:00"
+met_ts = "2026-10-19T23:42:06+02:00"
 met_by = "claude-code"
-met_commit = "9f7f9560b675c1e725b7a642de0a0f1972dde09e"
+met_commit = "89daca1ff632965cf1728c06d557c71cabfbd3ba"
 
 [[acceptance]]
 id = "AC-6"
@@ -105,11 +105,11 @@ phase = "pre-review"
 state = "met"
 added_at = 2026-10-19
 evidence_kind = "run"
-evidence = "2026-10-19: scripts/patch-test.sh on dev 9f7f9560b (local dev merged with origin/dev 744a74d04, 1.0.2.11, the build-233 base): all 16 patches 01-19 applied with git am --3way incl. patches/19-live-activity-big-glucose.patch; patch-audit PASSED (47 warnings), sentinel symbols present"
+evidence = "patches/19-live-activity-big-glucose.patch regenerated with scripts/generate-patch.sh -n -s feature/live-activity-big-glucose -t dev (12 files, 517+/21-), validation applied on dev; scripts/patch-test.sh on dev exit 0, 01-19 applied, patch-audit PASSED (47 warnings, safety globs Trio/Sources/APS/*)."
 met_at = 2026-10-19
-met_ts = "2026-10-19T22:27:52+02:00"
+met_ts = "2026-10-19T23:42:07+02:00"
 met_by = "claude-code"
-met_commit = "9f7f9560b675c1e725b7a642de0a0f1972dde09e"
+met_commit = "89daca1ff632965cf1728c06d557c71cabfbd3ba"
 
 [[acceptance]]
 id = "AC-8"
@@ -143,6 +143,22 @@ started = 2026-10-19
 role = "author"
 started_at = "2026-10-19T20:01:57+00:00"
 
+[[sessions]]
+host = "claude-code"
+ref = "31c10f34-ea14-4dde-b588-b4541f976982"
+model_family = "claude"
+started = 2026-10-19
+role = "author"
+started_at = "2026-10-19T21:36:30+00:00"
+
+[[sessions]]
+host = "claude-code"
+ref = "0af457eb-82de-4c47-aa62-3e75c5660c36"
+model_family = "claude"
+started = 2026-10-19
+role = "author"
+started_at = "2026-10-19T21:39:20+00:00"
+
 [[reviews]]
 run_id = "a2f9c389-9fd2-4978-a6a1-d4e268be7b31"
 model_family = "codex"
@@ -158,6 +174,22 @@ verdict = "pass"
 reviewed_commit = "b36f51e2e4f8c888b48f5066e3902b7562c29f44"
 reviewed_paths = ["LiveActivity/Views/LiveActivityChartView.swift", "Trio/Sources/Models/TrioSettings.swift"]
 recorded_at = "2026-10-19T20:03:32+00:00"
+
+[[reviews]]
+run_id = "32984136-bf4f-4f67-96ac-2066a5ac3ec4"
+model_family = "codex"
+verdict = "fail"
+reviewed_commit = "ba53308b3a34c67cbb136e581fd83c648250be85"
+reviewed_paths = ["LiveActivity/Views/LiveActivityChartView.swift", "LiveActivity/Views/LiveActivityView.swift"]
+recorded_at = "2026-10-19T21:38:30+00:00"
+
+[[reviews]]
+run_id = "d2934250-2d80-4481-8992-dd301eaef5a2"
+model_family = "codex"
+verdict = "pass"
+reviewed_commit = "d9ab15294b222e2f2663b50a7dea36c8ef56ba23"
+reviewed_paths = ["LiveActivity/Views/LiveActivityChartView.swift", "LiveActivity/Views/LiveActivityView.swift"]
+recorded_at = "2026-10-19T21:40:30+00:00"
 +++
 
 ## Intent
