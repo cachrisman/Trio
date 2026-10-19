@@ -144,14 +144,20 @@ echo "--- sentinel: $SENTINEL_FILE ---"
 if [ "$errors" -eq 0 ] || true; then
   if git show "HEAD:$SENTINEL_FILE" >"$AUDIT_TMP/pa-ddm.swift" 2>/dev/null; then
     missing=0
-    IFS='|'
-    for sym in $SENTINEL_SYMBOLS; do
-      if ! grep -Fq "$sym" "$AUDIT_TMP/pa-ddm.swift"; then
+    IFS='|' read -r -a SENTINEL_LIST <<<"$SENTINEL_SYMBOLS"
+    declared=$(( $(printf '%s' "$SENTINEL_SYMBOLS" | tr -cd '|' | wc -c) + 1 ))
+    checked=0
+    for sym in ${SENTINEL_LIST[@]+"${SENTINEL_LIST[@]}"}; do
+      checked=$((checked + 1))
+      if ! grep -Fq -- "$sym" "$AUDIT_TMP/pa-ddm.swift"; then
         echo "  ✗ MISSING required symbol: $sym"
         missing=1
       fi
     done
-    unset IFS
+    if [ "$checked" -ne "$declared" ]; then
+      echo "  ✗ sentinel checked $checked of $declared symbols"
+      missing=1
+    fi
     if [ "$missing" -eq 0 ]; then
       echo "  ✓ all pump-migration symbols present"
     else
