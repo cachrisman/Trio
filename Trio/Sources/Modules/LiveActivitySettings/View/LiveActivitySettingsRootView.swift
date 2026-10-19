@@ -121,7 +121,7 @@ extension LiveActivitySettings {
 
                                 HStack(alignment: .center) {
                                     Text(
-                                        "Select simple or detailed style. See hint for more details."
+                                        "Select simple, detailed or big glucose style. See hint for more details."
                                     )
                                     .font(.footnote)
                                     .foregroundColor(.secondary)
@@ -157,6 +157,15 @@ extension LiveActivitySettings {
                                                             Text("• COB: Carbohydrates On Board")
                                                             Text("• Last Updated: Time of Last Loop Cycle")
                                                         }.font(.footnote)
+                                                        VStack(alignment: .leading, spacing: 10) {
+                                                            Text("Big Glucose:").bold()
+                                                            Text(
+                                                                "The Big Glucose Lock Screen Widget shows the current glucose reading in large type with its trend arrow and delta, next to a compact glucose chart of the last 3 hours and the next 1.5 hours of forecast, with IOB, COB and the time of the last loop beneath the chart."
+                                                            )
+                                                            Text(
+                                                                "Its Widget Configuration lets you set the size of the glucose reading and whether it is colored by glucose range."
+                                                            )
+                                                        }
                                                     }
                                                 )
                                             shouldDisplayHintLockScreen.toggle()
@@ -172,7 +181,8 @@ extension LiveActivitySettings {
                             }.padding(.bottom)
 
                             HStack {
-                                if state.lockScreenView == .detailed {
+                                switch state.lockScreenView {
+                                case .detailed:
                                     NavigationLink(
                                         "Widget Configuration",
                                         destination: LiveActivityWidgetConfiguration(
@@ -180,7 +190,15 @@ extension LiveActivitySettings {
                                             state: state
                                         )
                                     ).foregroundStyle(Color.accentColor)
-                                } else {
+                                case .bigGlucose:
+                                    NavigationLink(
+                                        "Widget Configuration",
+                                        destination: LiveActivityBigGlucoseWidgetConfiguration(
+                                            resolver: resolver,
+                                            state: state
+                                        )
+                                    ).foregroundStyle(Color.accentColor)
+                                default:
                                     NavigationLink(
                                         "Widget Configuration",
                                         destination: LiveActivitySimpleWidgetConfiguration(
@@ -198,7 +216,7 @@ extension LiveActivitySettings {
                                     selection: $state.smartStackView,
                                     label: Text("Watch/Carplay Widget Style")
                                 ) {
-                                    ForEach(LockScreenView.allCases) { selection in
+                                    ForEach(LockScreenView.allCases.filter { $0 != .bigGlucose }) { selection in
                                         Text(selection.displayName).tag(selection)
                                     }
                                 }.padding(.top)
