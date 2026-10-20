@@ -2,12 +2,17 @@
 uid = "01a15586-fff9-75c4-abeb-b659b6d0ce09"
 key = "TRIO-084"
 title = "Pull-to-force-loop swallows the next pull after a forced loop (re-arm skipped while forcing)"
-status = "review"
+status = "done"
 kind = "code"
 source = "human"
 created = 2026-10-19
-updated = 2026-10-19
-touched = 2026-10-19
+updated = 2026-10-20
+touched = 2026-10-20
+closed = 2026-10-20
+first_closed = 2026-10-20
+accepted_by = "charlie"
+accepted_at = 2026-10-20
+accepted_ts = "2026-10-20T22:19:33+02:00"
 tags = ["upstream-pr", "home", "bug"]
 files = ["Trio/Sources/Modules/Home/View/HomeRootView+Refresh.swift"]
 parent = "01a15580-dcde-70fd-902f-5bcb7d48cb9f"
@@ -46,8 +51,14 @@ id = "AC-3"
 text = "On device: pull to force loop, release while 'Forcing loop…' shows; after it clears, the very next pull forces a loop (haptic + spinner) every time"
 owner = "operator"
 phase = "pre-review"
-state = "open"
+state = "met"
 added_at = 2026-10-19
+evidence_kind = "operator"
+evidence = "Verified by charlie on the board"
+met_at = 2026-10-20
+met_ts = "2026-10-20T22:19:14+02:00"
+met_by = "charlie"
+met_commit = "fdf3fa954535e983bb1c9d51f6f9e3a71ffa441f"
 
 [[sessions]]
 host = "claude-code"
