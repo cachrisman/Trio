@@ -89,7 +89,16 @@ UserData/
 .cursor/plans/
 .claude
 .fusion
-.task-relay
+
+# task-relay: commit config and the audit log; everything else is local.
+# `.task-relay/*` (not `.task-relay`) so the exceptions below can re-include
+# (task-relay TR-1273).
+.task-relay/*
+!.task-relay/tasks.toml
+!.task-relay/id
+!.task-relay/tasks/
+.task-relay/tasks/*
+!.task-relay/tasks/audit/
 
 # Derived per-task token composition (TR-508); rebuilt, never authored.
 .task-relay/analytics/
