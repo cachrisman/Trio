@@ -2,13 +2,18 @@
 uid = "01a1462a-7e20-7475-9858-6c38da382840"
 key = "TRIO-081"
 title = "patch-audit.sh never checks the 'as? OmniPumpManager' sentinel (nullglob drops it)"
-status = "review"
+status = "done"
 kind = "code"
 source = "agent-discovered"
 source_ref = ".task-relay/notes/20261016-211816-36896-cursor-review.md#HIGH-nullglob-sentinel"
 created = 2026-10-16
-updated = 2026-10-19
-touched = 2026-10-19
+updated = 2026-10-20
+touched = 2026-10-20
+closed = 2026-10-20
+first_closed = 2026-10-20
+accepted_by = "charlie"
+accepted_at = 2026-10-20
+accepted_ts = "2026-10-20T19:31:16+02:00"
 priority = 2
 parent = "01a15580-dcde-70fd-902f-5bcb7d48cb9f"
 
