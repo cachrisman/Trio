@@ -55,8 +55,14 @@ id = "AC-6"
 text = "Operator decides the log-carbs action's safety options (authenticationRequired/foreground, duplicate guard) before implementation"
 owner = "operator"
 phase = "pre-review"
-state = "open"
+state = "met"
 added_at = 2026-10-22
+evidence_kind = "operator"
+evidence = "Operator in chat 2026-10-28: 'All Approved' to the proposed defaults: (1) iPhone 'Log N g' action is .authenticationRequired, runs in background (no .foreground); (2) watch tap forwards to the phone, which logs via the existing Add Carbs storage path, and the watch reports failure if the phone is unreachable; (3) per-alert duplicate guard: alert id + grams in userInfo, a second log for the same alert from either device is ignored and reported as already logged; (4) Snooze 6 hrs removed only from Carbs Required; (5) glucose value + trend arrow at alert time, in user units, in the notification text."
+met_at = 2026-10-28
+met_ts = "2026-10-28T22:39:50+01:00"
+met_by = "charlie"
+met_commit = "a4d59e0e4414dee795e7f6045ad2f97c6565df9e"
 
 [[acceptance]]
 id = "AC-7"
@@ -90,3 +96,14 @@ Reported from a watch screenshot at 10:35 on 2026-10-22 (title "Carbs Required",
 - **Logging carbs feeds dosing.** A carb entry changes COB and the next determination (SMB/UAM behaviour), so a one-tap action from a lock screen or wrist is a dosing-adjacent input. Decide whether the action needs `.authenticationRequired` and/or `.foreground`, whether a duplicate-tap guard is needed (the alert can re-fire and the watch and phone can both deliver it), and that the entry goes through the same carb-storage path as the Add Carbs screen (no new write path). This does not touch insulin-dosing code itself, but the operator should sign off on the action's safety options.
 - The watch tap should write the carbs through the phone (WatchConnectivity, the same way snooze does) and should report failure to the user if the phone is unreachable rather than silently dropping it.
 - Button title is localized, includes the grams ("Log 26 g"), and the action is the first in the list.
+
+## Decisions (2026-10-28)
+
+**AC-6:** the operator approved all five proposed defaults ("All Approved"):
+- the iPhone action is `.authenticationRequired` and runs in the background;
+- the watch forwards to the phone and reports failure;
+- a per-alert duplicate guard;
+- Snooze 6 hrs is removed only from Carbs Required;
+- the glucose value and trend are shown as of the alert.
+
+**Open: the button title.** `UNNotificationAction` titles are fixed per registered category, and the watch must register the same category ids. A per-alert "Log 26 g" therefore needs either a static title ("Log Carbs", with the grams in the body), or per-amount categories pre-registered on both devices (1–150 g, generic fallback above). The operator is choosing between them.
