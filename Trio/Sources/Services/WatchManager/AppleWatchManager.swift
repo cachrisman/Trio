@@ -1242,6 +1242,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
 
     /// Implements the replyHandler version of didReceiveMessage for ACK support.
     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        if handleLogCarbsRequest(message, replyHandler: replyHandler) { return }
+
         // Validate envelope structure — check type first so queryAcks (no payloadId) isn't rejected
         guard let type = message["type"] as? String else {
             self.session(session, didReceiveMessage: message)
@@ -2018,5 +2020,27 @@ extension BaseWatchManager {
         case tempTargetStopped = "temp_target_stopped"
         case genericSuccess = "success"
         case genericFailure = "failure"
+    }
+}
+
+// Carbs Required "Log Carbs" from the watch. Reached from the reply-handler
+// `session(_:didReceiveMessage:replyHandler:)` above, only for messages carrying the log-carbs key.
+extension BaseWatchManager {
+    /// Returns true if `message` was a log-carbs request (and the reply is now owned here).
+    func handleLogCarbsRequest(_ message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) -> Bool {
+        guard message[WatchMessageKeys.logCarbsGrams] != nil else { return false }
+
+        let grams = (message[WatchMessageKeys.logCarbsGrams] as? NSNumber)?.decimalValue
+        let alertID = message[WatchMessageKeys.logCarbsAlertID] as? String
+        debug(.watchManager, "📱 Received Log Carbs request from watch")
+        Task { [weak self] in
+            let outcome = await self?.notificationsManager.logCarbsRequired(grams: grams, alertID: alertID) ?? .failed
+            var reply: [String: Any] = [WatchMessageKeys.logCarbsResult: outcome.rawValue]
+            if outcome == .exceedsMaxCarbs, let maxCarbs = self?.settingsManager.settings.maxCarbs {
+                reply[WatchMessageKeys.maxCarbs] = NSDecimalNumber(decimal: maxCarbs).intValue
+            }
+            replyHandler(reply)
+        }
+        return true
     }
 }

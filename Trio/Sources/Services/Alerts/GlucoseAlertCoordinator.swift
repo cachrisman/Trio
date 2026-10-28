@@ -28,6 +28,17 @@ final class GlucoseAlertCoordinator: Injectable {
     @Injected() private var fetchGlucoseManager: FetchGlucoseManager!
 
     private let evaluationQueue = DispatchQueue(label: "GlucoseAlertCoordinator.queue")
+    private struct LatestReading {
+        let mgdl: Decimal
+        let trendSymbol: String?
+        let date: Date
+    }
+
+    /// Most recent reading seen by the reading path. Only touched on `evaluationQueue`, so the
+    /// carbs-required evaluation can use it without an async fetch (which would let evaluations
+    /// of consecutive determinations run out of order).
+    private var cachedReading: LatestReading?
+
     private var firingAlertIDs: Set<UUID> = []
     private var subscriptions = Set<AnyCancellable>()
     @SyncAccess private var alertsSnapshot: [GlucoseAlert] = []
@@ -135,13 +146,19 @@ final class GlucoseAlertCoordinator: Injectable {
         guard !isInLaunchQuietWindow else { return }
         guard effectiveTrioAlertsEnabled else {
             retractReadingDrivenFiringAlarms()
+            // Carbs Required stays active when the CGM app owns glucose alerts; its body reads this cache.
+            if let latestReading = await fetchLatestReading() {
+                evaluationQueue.async { [weak self] in self?.cachedReading = latestReading }
+            }
             return
         }
-        guard let latestValue = await fetchLatestReadingMgDL() else { return }
+        guard let latestReading = await fetchLatestReading() else { return }
+        let latestValue = latestReading.mgdl
         let snapshot = alertsSnapshot
         let configuration = configurationSnapshot
         let now = Date()
         evaluationQueue.async { [weak self] in
+            self?.cachedReading = latestReading
             self?.applyReadingBasedEvaluation(
                 latestValue: latestValue,
                 snapshot: snapshot,
@@ -264,7 +281,7 @@ final class GlucoseAlertCoordinator: Injectable {
     /// tab badge's threshold — surfaces are configured separately so the
     /// user can have a low-threshold badge for awareness and a higher-
     /// threshold alarm for active interruption.
-    private func evaluateCarbsRequired(_ determination: Determination) {
+    private func evaluateCarbsRequired(_ determination: Determination, reading: LatestReading?) {
         guard !isInLaunchQuietWindow else { return }
         let snapshot = alertsSnapshot
         let configuration = configurationSnapshot
@@ -282,7 +299,7 @@ final class GlucoseAlertCoordinator: Injectable {
                 retractIfFiring(alarm)
                 continue
             }
-            fireIfNeeded(alarm, valueMgDL: carbs)
+            fireIfNeeded(alarm, valueMgDL: carbs, reading: reading)
         }
     }
 
@@ -291,13 +308,20 @@ final class GlucoseAlertCoordinator: Injectable {
     /// Called only from the evaluation queue (forecast + reading paths both
     /// dispatch through `evaluationQueue` before invoking the evaluators),
     /// so `firingAlertIDs` is serialized without an extra `.sync` hop.
-    private func fireIfNeeded(_ alarm: GlucoseAlert, valueMgDL: Decimal) {
+    private func fireIfNeeded(_ alarm: GlucoseAlert, valueMgDL: Decimal, reading: LatestReading? = nil) {
         dispatchPrecondition(condition: .onQueue(evaluationQueue))
         guard !firingAlertIDs.contains(alarm.id) else { return }
         firingAlertIDs.insert(alarm.id)
 
         let title = alarm.name.isEmpty ? alarm.type.displayName : alarm.name
-        let body = bodyText(for: alarm, valueMgDL: valueMgDL)
+        let body = bodyText(for: alarm, valueMgDL: valueMgDL, reading: reading)
+        if alarm.type == .carbsRequired {
+            CarbsRequiredPayloads.shared.set(
+                grams: NSDecimalNumber(decimal: valueMgDL).intValue,
+                alertID: UUID().uuidString,
+                for: alertID(for: alarm).alertIdentifier
+            )
+        }
         let content = Alert.Content(
             title: title,
             body: body,
@@ -359,7 +383,7 @@ final class GlucoseAlertCoordinator: Injectable {
         )
     }
 
-    private func bodyText(for alarm: GlucoseAlert, valueMgDL: Decimal) -> String {
+    private func bodyText(for alarm: GlucoseAlert, valueMgDL: Decimal, reading: LatestReading?) -> String {
         let units = settingsManager.settings.units
         let valueString = valueMgDL.formatted(withUnits: units)
         let limitString = alarm.thresholdMgDL.formatted(withUnits: units)
@@ -381,11 +405,24 @@ final class GlucoseAlertCoordinator: Injectable {
                 valueString, limitString
             )
         case .carbsRequired:
-            return String(
-                format: String(localized: "To prevent LOW required %d g of carbs"),
-                Int(NSDecimalNumber(decimal: valueMgDL).intValue)
+            return Self.carbsRequiredBody(
+                grams: Int(NSDecimalNumber(decimal: valueMgDL).intValue),
+                glucoseMgDL: reading?.mgdl,
+                trendSymbol: reading?.trendSymbol,
+                units: units
             )
         }
+    }
+
+    /// The grams here are the ones the "Log Carbs" action records, so the user sees
+    /// exactly what a tap will log.
+    static func carbsRequiredBody(grams: Int, glucoseMgDL: Decimal?, trendSymbol: String?, units: GlucoseUnits) -> String {
+        let required = String(format: String(localized: "To prevent LOW required %d g of carbs"), grams)
+        guard let glucoseMgDL else { return required }
+        let value = [glucoseMgDL.formatted(for: units), trendSymbol, units.rawValue]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        return required + ". " + String(format: String(localized: "Glucose %1$@."), value)
     }
 
     // MARK: - Helpers
@@ -407,7 +444,7 @@ final class GlucoseAlertCoordinator: Injectable {
     /// the caller's thread, never lets a `GlucoseStored` managed object cross
     /// queue boundaries (would otherwise trip
     /// `_PFAssertSafeMultiThreadedAccess_impl`).
-    private func fetchLatestReadingMgDL() async -> Decimal? {
+    private func fetchLatestReading() async -> LatestReading? {
         let cutoff = Date().addingTimeInterval(-Self.readingFreshnessWindow)
         let predicate = NSPredicate(format: "date >= %@", cutoff as NSDate)
         let context = CoreDataStack.shared.newTaskContext()
@@ -423,7 +460,11 @@ final class GlucoseAlertCoordinator: Injectable {
             )
             return await context.perform {
                 guard let latest = (results as? [GlucoseStored])?.first else { return nil }
-                return Decimal(latest.glucose)
+                return LatestReading(
+                    mgdl: Decimal(latest.glucose),
+                    trendSymbol: latest.directionEnum?.symbol,
+                    date: latest.date ?? .distantPast
+                )
             }
         } catch {
             debug(.service, "GlucoseAlertCoordinator: glucose fetch failed: \(error)")
@@ -436,8 +477,20 @@ extension GlucoseAlertCoordinator: DeterminationObserver {
     func determinationDidUpdate(_ determination: Determination) {
         evaluationQueue.async { [weak self] in
             self?.evaluateForecast(determination)
-            self?.evaluateCarbsRequired(determination)
+            self?.evaluateCarbsRequired(determination, reading: self?.freshCachedReading())
         }
+    }
+}
+
+extension GlucoseAlertCoordinator {
+    /// The cached reading, or nil once it is older than the freshness window; the alert body
+    /// then omits the glucose.
+    private func freshCachedReading() -> LatestReading? {
+        dispatchPrecondition(condition: .onQueue(evaluationQueue))
+        guard let reading = cachedReading,
+              reading.date >= Date().addingTimeInterval(-Self.readingFreshnessWindow)
+        else { return nil }
+        return reading
     }
 }
 
