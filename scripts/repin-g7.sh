@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 
 #===============================================================================
-# repin-g7.sh — Push the G7SensorKit fork and re-pin patch 02 to the new SHA (v1.1)
+# repin-g7.sh — Re-pin patch 02 to the G7SensorKit clone's HEAD SHA (v1.2)
 #
 # CHANGELOG
+#   v1.2  TRIO-064: never runs git push. Checks the clone HEAD is already on an origin
+#         branch (best-effort fetch first) and stops before touching patch 02, printing
+#         the push command, when it is not. Pushing is the operator's step.
+#         Also: a successful run no longer exits 1 (EXIT trap's trailing test leaked its status).
 #   v1.1  Early-exit guard now also compares the patch's base '-Subproject commit'
 #         SHA against dev's G7SensorKit gitlink; when only the base is stale
 #         (fork pin unchanged) the script continues to rewrite the base side.
@@ -29,9 +33,10 @@
 # WHAT IT DOES
 #   1. Validates the standalone G7SensorKit clone (branch resolvable, origin is
 #      the cachrisman fork).
-#   2. Pushes the clone's committed HEAD to origin (skipped on --dry-run).
-#   3. Asserts the new SHA is actually on origin (guards against pinning to an
-#      unpushed local commit — the build would fail to fetch the submodule).
+#   2. Checks, without pushing, that the clone's committed HEAD is on origin; stops
+#      with the push command if it is not.
+#   3. (Same check) guards against pinning to an unpushed local commit — the build
+#      would fail to fetch the submodule. Pushing is the operator's step.
 #   4. Rewrites both SHA sites in patch 02 to the new SHA (no-op if unchanged).
 #   5. Runs patch-test.sh and prints the patch diff. Does NOT commit.
 #
@@ -39,7 +44,9 @@
 #   ./scripts/repin-g7.sh [--dry-run] [--allow-dirty-patch] [--skip-test]
 #
 # OPTIONS
-#   --dry-run            Show what would be pushed and rewritten; make no changes.
+#   --dry-run            Show the origin check and what would be rewritten; changes nothing
+#                        except a best-effort `git fetch origin` in the clone (refreshes
+#                        remote-tracking refs).
 #   --allow-dirty-patch  Proceed even if patch 02 already has uncommitted edits
 #                        (the "several G7 rounds without committing patch 02
 #                        between each" case). Without it: warn and stop.
@@ -119,14 +126,14 @@ fi
 
 CLONE_BRANCH=$(git -C "$G7_CLONE" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
 [ "$CLONE_BRANCH" != "HEAD" ] || die "Clone is in detached HEAD; checkout the working branch before repinning."
-[ "$CLONE_BRANCH" = "main" ] || print_warning "Clone is on '$CLONE_BRANCH', not 'main' (AGENTS.md: commit G7SensorKit changes on main). Pushing/pinning this branch anyway."
+[ "$CLONE_BRANCH" = "main" ] || print_warning "Clone is on '$CLONE_BRANCH', not 'main' (AGENTS.md: commit G7SensorKit changes on main). Pinning this branch anyway."
 NEW_SHA=$(git -C "$G7_CLONE" rev-parse HEAD)
 print_info "Clone branch: $CLONE_BRANCH @ $(git -C "$G7_CLONE" rev-parse --short HEAD)"
 
 # Warn (do not silently include) if the clone has uncommitted work — only the
-# committed HEAD is pushed/pinned.
+# committed HEAD is pinned.
 if ! git -C "$G7_CLONE" diff --quiet || ! git -C "$G7_CLONE" diff --cached --quiet; then
-    print_warning "Clone has uncommitted changes; only the committed HEAD ($(git -C "$G7_CLONE" rev-parse --short HEAD)) will be pushed/pinned."
+    print_warning "Clone has uncommitted changes; only the committed HEAD ($(git -C "$G7_CLONE" rev-parse --short HEAD)) will be pinned."
 fi
 
 #-------------------------------------------------------------------------------
@@ -142,6 +149,27 @@ PATCH_BASE_SHA=$(grep -E '^-Subproject commit [0-9a-f]{40}' "$PATCH_FILE" | head
 [ -n "$PATCH_BASE_SHA" ] || die "Could not read the base '-Subproject commit <sha>' from $PATCH_FILE"
 BASE_SHA=$(git -C "$REPO_ROOT" rev-parse "dev:G7SensorKit") \
      || die "Could not resolve dev's G7SensorKit gitlink (dev:G7SensorKit)"
+
+#-------------------------------------------------------------------------------
+# Check the new SHA is already on origin. This script never pushes.
+# Runs before any early exit or patch mutation, so an unpushed pin is never
+# reported as success. The best-effort fetch only refreshes remote-tracking refs,
+# so it also runs in --dry-run (the check is otherwise read-only).
+#-------------------------------------------------------------------------------
+print_step "Check fork SHA is on origin"
+git -C "$G7_CLONE" fetch origin >/dev/null 2>&1 || true
+ORIGIN_REF=$(git -C "$G7_CLONE" for-each-ref --format='%(refname)' --contains "$NEW_SHA" refs/remotes/origin/ 2>/dev/null | grep -v '^refs/remotes/origin/HEAD$' | head -1 | sed 's|^refs/remotes/||' || true)
+if [ -z "$ORIGIN_REF" ]; then
+    die "$(git -C "$G7_CLONE" rev-parse --short "$NEW_SHA") ($NEW_SHA) is not on any origin branch.
+  The build clones G7SensorKit from GitHub, so patch 02 cannot pin it until it is pushed.
+  Push it, then re-run this script:
+    git -C $(printf %q "$G7_CLONE") push origin $(printf %q "$CLONE_BRANCH")
+    ./scripts/repin-g7.sh
+  Nothing was changed.
+  If you already pushed, the local origin refs may just be stale (the fetch can fail
+  offline or in a sandbox): run  git -C $(printf %q "$G7_CLONE") fetch origin  and retry."
+fi
+print_success "$NEW_SHA is on origin ($ORIGIN_REF); no push needed."
 
 if [ "$OLD_SHA" = "$NEW_SHA" ] && [ "$PATCH_BASE_SHA" = "$BASE_SHA" ]; then
     print_success "Patch 02 already pins the clone HEAD and the base matches dev; nothing to do."
@@ -160,22 +188,6 @@ if ! git -C "$REPO_ROOT" diff --quiet HEAD -- "$PATCH_FILE"; then
         die "Patch 02 has uncommitted edits. If these are earlier G7 repin rounds you intend
   to build on, re-run with --allow-dirty-patch. Otherwise commit or revert them first."
     fi
-fi
-
-#-------------------------------------------------------------------------------
-# Push the clone, then assert the new SHA is on origin.
-#-------------------------------------------------------------------------------
-print_step "Push fork"
-if [ "$DRY_RUN" = true ]; then
-    print_info "[dry-run] would: git -C $G7_CLONE push origin $CLONE_BRANCH"
-else
-    git -C "$G7_CLONE" push origin "$CLONE_BRANCH"
-    git -C "$G7_CLONE" fetch origin >/dev/null 2>&1 || true
-    if ! git -C "$G7_CLONE" branch -r --contains "$NEW_SHA" 2>/dev/null | grep -q 'origin/'; then
-        die "After push, $NEW_SHA is not on any origin branch. Aborting before repin
-  (a build would fail to fetch this submodule commit)."
-    fi
-    print_success "$NEW_SHA confirmed on origin."
 fi
 
 #-------------------------------------------------------------------------------
@@ -209,18 +221,23 @@ fi
 
 # Back up the pre-rewrite patch so a later failure (bad rewrite OR a failing
 # patch-test.sh) rolls patch 02 back to its committed state instead of leaving a
-# half-applied repin on disk. Restored by the EXIT trap on any non-zero exit; the
-# fork push is NOT reverted (it's already public, and re-pinning is idempotent).
+# half-applied repin on disk. Restored by the EXIT trap on any non-zero exit.
+# This script never pushes, so there is nothing remote to revert.
 _orig_backup="${PATCH_FILE}.repin.orig"
 cp "$PATCH_FILE" "$_orig_backup"
 _restore_on_fail() {
     local rc=$?
     if [ "$rc" -ne 0 ] && [ -f "$_orig_backup" ]; then
         mv "$_orig_backup" "$PATCH_FILE"
-        print_warning "Re-pin rolled back: patch 02 restored to its pre-repin state. The fork push (if it happened) is NOT reverted — re-run ./scripts/repin-g7.sh to retry (it is idempotent)."
+        print_warning "Re-pin rolled back: patch 02 restored to its pre-repin state. Nothing was pushed — re-run ./scripts/repin-g7.sh to retry (it is idempotent)."
     fi
-    [ -f "$_orig_backup" ] && rm -f "$_orig_backup"
-    [ -n "${tmp:-}" ] && [ -f "${tmp:-}" ] && rm -f "$tmp"
+    if [ -f "$_orig_backup" ]; then
+        rm -f "$_orig_backup"
+    fi
+    if [ -n "${tmp:-}" ] && [ -f "${tmp:-}" ]; then
+        rm -f "$tmp"
+    fi
+    return "$rc"
 }
 trap _restore_on_fail EXIT
 

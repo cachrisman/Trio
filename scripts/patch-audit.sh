@@ -20,6 +20,9 @@ PATCH_DIR="$REPO/patches"
 SAFETY_FILE="$REPO/scripts/patch-audit.safety-paths"
 WAIVERS_FILE="$REPO/scripts/patch-audit.waivers"
 
+# Identity + no-signing for the throwaway commits `git am` creates; the operator's 1Password signing fails when locked. Passed per command, never written to git config.
+GIT_BOT=(-c user.name="Trio Patch Bot" -c user.email="patch-bot@users.noreply.github.com" -c commit.gpgsign=false)
+
 SENTINEL_FILE="Trio/Sources/APS/DeviceDataManager.swift"
 # Symbols the 2026-06 incident silently deleted (pump-manager migration).
 # 2026-08-30: upstream's device-picker/DeviceCatalog refactor (9121d70f1, 2f2994bf8) relocated the
@@ -100,7 +103,7 @@ for PATCH_FILE in ${PATCHES[@]+"${PATCHES[@]}"}; do
   echo ""
   echo "--- $PATCH_NAME ---"
 
-  if ! git -c submodule.recurse=false am --3way --quiet "$PATCH_FILE" >"$AUDIT_TMP/pa-am.log" 2>&1; then
+  if ! git "${GIT_BOT[@]}" -c submodule.recurse=false am --3way --quiet "$PATCH_FILE" >"$AUDIT_TMP/pa-am.log" 2>&1; then
     echo "  ERROR: failed to apply (git am): see below"
     sed 's/^/    /' "$AUDIT_TMP/pa-am.log" | tail -8
     git am --abort >/dev/null 2>&1 || true
