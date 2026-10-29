@@ -15,7 +15,7 @@ import Swinject
 ///        - urgentLow / low: latest ≤ threshold (+ optional persistence)
 ///        - high: latest ≥ threshold (+ optional persistence)
 ///   2. Determination update → blend forecast at the alarm's predictive horizon
-///      (forecastedLow: fixed 20 min) and compare to threshold.
+///      (forecastedLow: every 5-min point up to +20 min) and compare to threshold.
 ///
 /// Throttling + snooze are inherited from `TrioAlertManager.issueAlert`. The
 /// coordinator additionally tracks per-alarm firing state so it can retract
@@ -28,6 +28,19 @@ final class GlucoseAlertCoordinator: Injectable {
     @Injected() private var fetchGlucoseManager: FetchGlucoseManager!
 
     private let evaluationQueue = DispatchQueue(label: "GlucoseAlertCoordinator.queue")
+    struct LatestReading {
+        let mgdl: Decimal
+        let direction: BloodGlucose.Direction?
+        /// mg/dL per minute versus the previous reading, nil when there is no usable previous one.
+        let deltaPerMinute: Decimal?
+        let date: Date
+    }
+
+    /// Most recent reading seen by the reading path. Only touched on `evaluationQueue`, so the
+    /// carbs-required evaluation can use it without an async fetch (which would let evaluations
+    /// of consecutive determinations run out of order).
+    private var cachedReading: LatestReading?
+
     private var firingAlertIDs: Set<UUID> = []
     private var subscriptions = Set<AnyCancellable>()
     @SyncAccess private var alertsSnapshot: [GlucoseAlert] = []
@@ -86,6 +99,9 @@ final class GlucoseAlertCoordinator: Injectable {
     /// CGM blackout could fire an alarm based on a 19-min-old reading.
     private static let readingFreshnessWindow: TimeInterval = 12 * 60
 
+    /// Largest gap between the latest and previous reading for which a per-minute delta is shown.
+    private static let maxDeltaGap: TimeInterval = 15 * 60
+
     /// Suppresses evaluations for a short window after launch. `firingAlertIDs`
     /// isn't persisted across relaunches, so without this quiet window the
     /// first reading after launch would re-fire any in-flight alarm whose
@@ -135,15 +151,20 @@ final class GlucoseAlertCoordinator: Injectable {
         guard !isInLaunchQuietWindow else { return }
         guard effectiveTrioAlertsEnabled else {
             retractReadingDrivenFiringAlarms()
+            // Carbs Required stays active when the CGM app owns glucose alerts; its body reads this cache.
+            if let latestReading = await fetchLatestReading() {
+                evaluationQueue.async { [weak self] in self?.cachedReading = latestReading }
+            }
             return
         }
-        guard let latestValue = await fetchLatestReadingMgDL() else { return }
+        guard let latestReading = await fetchLatestReading() else { return }
         let snapshot = alertsSnapshot
         let configuration = configurationSnapshot
         let now = Date()
         evaluationQueue.async { [weak self] in
+            self?.cachedReading = latestReading
             self?.applyReadingBasedEvaluation(
-                latestValue: latestValue,
+                reading: latestReading,
                 snapshot: snapshot,
                 configuration: configuration,
                 now: now
@@ -152,7 +173,7 @@ final class GlucoseAlertCoordinator: Injectable {
     }
 
     private func applyReadingBasedEvaluation(
-        latestValue: Decimal,
+        reading: LatestReading,
         snapshot: [GlucoseAlert],
         configuration: GlucoseAlertConfiguration,
         now: Date
@@ -169,7 +190,7 @@ final class GlucoseAlertCoordinator: Injectable {
                 retractIfFiring(alarm)
                 continue
             }
-            evaluateReadingBased(alarm, latestMgDL: latestValue, now: now, configuration: configuration)
+            evaluateReadingBased(alarm, reading: reading, now: now, configuration: configuration)
             if alarm.type == .urgentLow, firingAlertIDs.contains(alarm.id) {
                 urgentLowFiring = true
             }
@@ -178,7 +199,7 @@ final class GlucoseAlertCoordinator: Injectable {
 
     private func evaluateReadingBased(
         _ alarm: GlucoseAlert,
-        latestMgDL: Decimal,
+        reading: LatestReading,
         now: Date,
         configuration: GlucoseAlertConfiguration
     ) {
@@ -192,6 +213,7 @@ final class GlucoseAlertCoordinator: Injectable {
         if alarm.type == .forecastedLow {
             return // handled via determinationDidUpdate
         }
+        let latestMgDL = reading.mgdl
         let breached = Self.breached(
             type: alarm.type,
             latestMgDL: latestMgDL,
@@ -199,7 +221,7 @@ final class GlucoseAlertCoordinator: Injectable {
         )
 
         if breached {
-            fireIfNeeded(alarm, valueMgDL: latestMgDL)
+            fireIfNeeded(alarm, valueMgDL: latestMgDL, configuration: configuration, reading: reading)
         } else if shouldRetract(alarm, latestMgDL: latestMgDL) {
             retractIfFiring(alarm)
         }
@@ -207,7 +229,7 @@ final class GlucoseAlertCoordinator: Injectable {
 
     // MARK: - Forecast-based evaluation
 
-    private func evaluateForecast(_ determination: Determination) {
+    private func evaluateForecast(_ determination: Determination, reading: LatestReading?) {
         guard !isInLaunchQuietWindow else { return }
         // No CGM-ownership guard here, unlike the reading path: a CGM app can
         // alarm on the current reading, but it cannot compute Trio's oref
@@ -232,27 +254,37 @@ final class GlucoseAlertCoordinator: Injectable {
                 retractIfFiring(alarm)
                 continue
             }
-            evaluateForecastBased(alarm, determination: determination, now: now, configuration: configuration)
+            evaluateForecastBased(alarm, determination: determination, reading: reading, now: now, configuration: configuration)
         }
     }
 
     private func evaluateForecastBased(
         _ alarm: GlucoseAlert,
         determination: Determination,
+        reading: LatestReading?,
         now: Date,
         configuration: GlucoseAlertConfiguration
     ) {
         guard alarm.shouldEvaluate, !isAlarmSnoozed(alarm, at: now),
               isActive(alarm, at: now, configuration: configuration),
-              let result = ForecastedGlucoseEvaluator.evaluate(determination: determination)
+              let result = ForecastedGlucoseEvaluator.evaluateWindow(
+                  determination: determination,
+                  thresholdMgDL: alarm.thresholdMgDL
+              )
         else {
             retractIfFiring(alarm)
             return
         }
 
-        if result.predictedGlucose <= alarm.thresholdMgDL {
-            fireIfNeeded(alarm, valueMgDL: result.predictedGlucose)
-        } else if shouldRetract(alarm, latestMgDL: result.predictedGlucose) {
+        if result.lowestPredicted <= alarm.thresholdMgDL {
+            fireIfNeeded(
+                alarm,
+                valueMgDL: result.lowestPredicted,
+                configuration: configuration,
+                reading: reading,
+                minutesToLow: result.firstCrossingMinutes
+            )
+        } else if shouldRetract(alarm, latestMgDL: result.lowestPredicted) {
             retractIfFiring(alarm)
         }
     }
@@ -264,7 +296,7 @@ final class GlucoseAlertCoordinator: Injectable {
     /// tab badge's threshold — surfaces are configured separately so the
     /// user can have a low-threshold badge for awareness and a higher-
     /// threshold alarm for active interruption.
-    private func evaluateCarbsRequired(_ determination: Determination) {
+    private func evaluateCarbsRequired(_ determination: Determination, reading: LatestReading?) {
         guard !isInLaunchQuietWindow else { return }
         let snapshot = alertsSnapshot
         let configuration = configurationSnapshot
@@ -282,7 +314,7 @@ final class GlucoseAlertCoordinator: Injectable {
                 retractIfFiring(alarm)
                 continue
             }
-            fireIfNeeded(alarm, valueMgDL: carbs)
+            fireIfNeeded(alarm, valueMgDL: carbs, configuration: configuration, reading: reading)
         }
     }
 
@@ -291,13 +323,32 @@ final class GlucoseAlertCoordinator: Injectable {
     /// Called only from the evaluation queue (forecast + reading paths both
     /// dispatch through `evaluationQueue` before invoking the evaluators),
     /// so `firingAlertIDs` is serialized without an extra `.sync` hop.
-    private func fireIfNeeded(_ alarm: GlucoseAlert, valueMgDL: Decimal) {
+    private func fireIfNeeded(
+        _ alarm: GlucoseAlert,
+        valueMgDL: Decimal,
+        configuration: GlucoseAlertConfiguration,
+        reading: LatestReading? = nil,
+        minutesToLow: Int? = nil
+    ) {
         dispatchPrecondition(condition: .onQueue(evaluationQueue))
         guard !firingAlertIDs.contains(alarm.id) else { return }
         firingAlertIDs.insert(alarm.id)
 
         let title = alarm.name.isEmpty ? alarm.type.displayName : alarm.name
-        let body = bodyText(for: alarm, valueMgDL: valueMgDL)
+        let body = bodyText(
+            for: alarm,
+            valueMgDL: valueMgDL,
+            configuration: configuration,
+            reading: reading,
+            minutesToLow: minutesToLow
+        )
+        if alarm.type == .carbsRequired {
+            CarbsRequiredPayloads.shared.set(
+                grams: NSDecimalNumber(decimal: valueMgDL).intValue,
+                alertID: UUID().uuidString,
+                for: alertID(for: alarm).alertIdentifier
+            )
+        }
         let content = Alert.Content(
             title: title,
             body: body,
@@ -359,33 +410,147 @@ final class GlucoseAlertCoordinator: Injectable {
         )
     }
 
-    private func bodyText(for alarm: GlucoseAlert, valueMgDL: Decimal) -> String {
+    private func bodyText(
+        for alarm: GlucoseAlert,
+        valueMgDL: Decimal,
+        configuration: GlucoseAlertConfiguration,
+        reading: LatestReading?,
+        minutesToLow: Int?
+    ) -> String {
         let units = settingsManager.settings.units
-        let valueString = valueMgDL.formatted(withUnits: units)
-        let limitString = alarm.thresholdMgDL.formatted(withUnits: units)
         switch alarm.type {
-        case .low,
+        case .high,
+             .low,
              .urgentLow:
-            return String(
-                format: String(localized: "Glucose %1$@."),
-                valueString, limitString
+            // The alarm's own glucose is always shown; the toggles only add delta and trend.
+            let clause = Self.readingClause(
+                mgdl: valueMgDL,
+                deltaPerMinute: reading?.deltaPerMinute,
+                direction: reading?.direction,
+                units: units,
+                showDelta: configuration.showGlucoseDelta,
+                showTrend: configuration.showTrendDescription
             )
+            return String(format: String(localized: "Glucose %1$@."), clause)
         case .forecastedLow:
-            return String(
-                format: String(localized: "Your glucose may go below %2$@ in %1$d min."),
-                ForecastedGlucoseEvaluator.defaultHorizonMinutes, limitString
-            )
-        case .high:
-            return String(
-                format: String(localized: "Glucose %1$@."),
-                valueString, limitString
+            return Self.forecastedLowBody(
+                minutes: minutesToLow ?? ForecastedGlucoseEvaluator.defaultHorizonMinutes,
+                thresholdMgDL: alarm.thresholdMgDL,
+                reading: reading,
+                configuration: configuration,
+                units: units
             )
         case .carbsRequired:
-            return String(
-                format: String(localized: "To prevent LOW required %d g of carbs"),
-                Int(NSDecimalNumber(decimal: valueMgDL).intValue)
+            return Self.carbsRequiredBody(
+                grams: Int(NSDecimalNumber(decimal: valueMgDL).intValue),
+                reading: reading,
+                configuration: configuration,
+                units: units
             )
         }
+    }
+
+    /// "102 mg/dL (-4.6/min), falling slowly"; delta and trend are optional.
+    static func readingClause(
+        mgdl: Decimal,
+        deltaPerMinute: Decimal?,
+        direction: BloodGlucose.Direction?,
+        units: GlucoseUnits,
+        showDelta: Bool,
+        showTrend: Bool
+    ) -> String {
+        var clause = mgdl.formatted(withUnits: units)
+        if showDelta, let deltaPerMinute {
+            let formatter = NumberFormatter()
+            formatter.numberStyle = .decimal
+            formatter.positivePrefix = "+"
+            let digits = units == .mmolL ? 2 : 1
+            formatter.minimumFractionDigits = digits
+            formatter.maximumFractionDigits = digits
+            // Not `asMmolL`: it rounds to 1 digit, which would flatten a per-minute delta.
+            let value = units == .mmolL ? deltaPerMinute * GlucoseUnits.exchangeRate : deltaPerMinute
+            if let signed = formatter.string(from: value as NSDecimalNumber) {
+                clause += " (" + String(format: String(localized: "%@/min"), signed) + ")"
+            }
+        }
+        if showTrend, let word = trendWord(direction) {
+            clause += ", " + word
+        }
+        return clause
+    }
+
+    private static func trendWord(_ direction: BloodGlucose.Direction?) -> String? {
+        switch direction {
+        case .doubleUp,
+             .tripleUp:
+            return String(localized: "rising quickly", comment: "Accessibility: glucose trend")
+        case .singleUp:
+            return String(localized: "rising", comment: "Accessibility: glucose trend")
+        case .fortyFiveUp:
+            return String(localized: "rising slowly", comment: "Accessibility: glucose trend")
+        case .flat:
+            return String(localized: "steady", comment: "Accessibility: glucose trend")
+        case .fortyFiveDown:
+            return String(localized: "falling slowly", comment: "Accessibility: glucose trend")
+        case .singleDown:
+            return String(localized: "falling", comment: "Accessibility: glucose trend")
+        case .doubleDown,
+             .tripleDown:
+            return String(localized: "falling quickly", comment: "Accessibility: glucose trend")
+        default:
+            return nil
+        }
+    }
+
+    /// With "Show Current Glucose" on and a fresh reading, the prediction is prefixed by the
+    /// glucose, and replaced by "already below" when the reading is under the threshold.
+    static func forecastedLowBody(
+        minutes: Int,
+        thresholdMgDL: Decimal,
+        reading: LatestReading?,
+        configuration: GlucoseAlertConfiguration,
+        units: GlucoseUnits
+    ) -> String {
+        let limitString = thresholdMgDL.formatted(withUnits: units)
+        let prediction = String(
+            format: String(localized: "Your glucose may go below %2$@ in %1$d min."),
+            minutes, limitString
+        )
+        guard configuration.showCurrentGlucose, let reading else { return prediction }
+        let clause = readingClause(
+            mgdl: reading.mgdl,
+            deltaPerMinute: reading.deltaPerMinute,
+            direction: reading.direction,
+            units: units,
+            showDelta: configuration.showGlucoseDelta,
+            showTrend: configuration.showTrendDescription
+        )
+        let current = String(format: String(localized: "Glucose %1$@."), clause)
+        let outlook = reading.mgdl < thresholdMgDL
+            ? String(format: String(localized: "Your glucose is already below %@."), limitString)
+            : prediction
+        return current + " " + outlook
+    }
+
+    /// The grams here are the ones the "Log Carbs" action records, so the user sees
+    /// exactly what a tap will log. The glucose is appended only with "Show Current Glucose" on.
+    static func carbsRequiredBody(
+        grams: Int,
+        reading: LatestReading?,
+        configuration: GlucoseAlertConfiguration,
+        units: GlucoseUnits
+    ) -> String {
+        let required = String(format: String(localized: "To prevent LOW required %d g of carbs"), grams)
+        guard configuration.showCurrentGlucose, let reading else { return required }
+        let clause = readingClause(
+            mgdl: reading.mgdl,
+            deltaPerMinute: reading.deltaPerMinute,
+            direction: reading.direction,
+            units: units,
+            showDelta: configuration.showGlucoseDelta,
+            showTrend: configuration.showTrendDescription
+        )
+        return required + ". " + String(format: String(localized: "Glucose %1$@."), clause)
     }
 
     // MARK: - Helpers
@@ -407,8 +572,11 @@ final class GlucoseAlertCoordinator: Injectable {
     /// the caller's thread, never lets a `GlucoseStored` managed object cross
     /// queue boundaries (would otherwise trip
     /// `_PFAssertSafeMultiThreadedAccess_impl`).
-    private func fetchLatestReadingMgDL() async -> Decimal? {
-        let cutoff = Date().addingTimeInterval(-Self.readingFreshnessWindow)
+    private func fetchLatestReading() async -> LatestReading? {
+        // The previous reading may be up to `maxDeltaGap` older than the latest, which itself
+        // must be inside the freshness window; only the latest is gated on freshness below.
+        let freshnessCutoff = Date().addingTimeInterval(-Self.readingFreshnessWindow)
+        let cutoff = freshnessCutoff.addingTimeInterval(-Self.maxDeltaGap)
         let predicate = NSPredicate(format: "date >= %@", cutoff as NSDate)
         let context = CoreDataStack.shared.newTaskContext()
         context.name = "GlucoseAlertCoordinator.fetchLatestReading"
@@ -419,11 +587,25 @@ final class GlucoseAlertCoordinator: Injectable {
                 predicate: predicate,
                 key: "date",
                 ascending: false,
-                fetchLimit: 1
+                fetchLimit: 2
             )
             return await context.perform {
-                guard let latest = (results as? [GlucoseStored])?.first else { return nil }
-                return Decimal(latest.glucose)
+                guard let readings = results as? [GlucoseStored], let latest = readings.first,
+                      let latestDate = latest.date, latestDate >= freshnessCutoff
+                else { return nil }
+                var deltaPerMinute: Decimal?
+                if readings.count > 1, let previousDate = readings[1].date {
+                    let minutes = Decimal(latestDate.timeIntervalSince(previousDate) / 60)
+                    if minutes >= 1, minutes <= Decimal(Self.maxDeltaGap / 60) {
+                        deltaPerMinute = (Decimal(latest.glucose) - Decimal(readings[1].glucose)) / minutes
+                    }
+                }
+                return LatestReading(
+                    mgdl: Decimal(latest.glucose),
+                    direction: latest.directionEnum,
+                    deltaPerMinute: deltaPerMinute,
+                    date: latestDate
+                )
             }
         } catch {
             debug(.service, "GlucoseAlertCoordinator: glucose fetch failed: \(error)")
@@ -435,9 +617,22 @@ final class GlucoseAlertCoordinator: Injectable {
 extension GlucoseAlertCoordinator: DeterminationObserver {
     func determinationDidUpdate(_ determination: Determination) {
         evaluationQueue.async { [weak self] in
-            self?.evaluateForecast(determination)
-            self?.evaluateCarbsRequired(determination)
+            let reading = self?.freshCachedReading()
+            self?.evaluateForecast(determination, reading: reading)
+            self?.evaluateCarbsRequired(determination, reading: reading)
         }
+    }
+}
+
+extension GlucoseAlertCoordinator {
+    /// The cached reading, or nil once it is older than the freshness window; the alert body
+    /// then omits the glucose.
+    private func freshCachedReading() -> LatestReading? {
+        dispatchPrecondition(condition: .onQueue(evaluationQueue))
+        guard let reading = cachedReading,
+              reading.date >= Date().addingTimeInterval(-Self.readingFreshnessWindow)
+        else { return nil }
+        return reading
     }
 }
 
