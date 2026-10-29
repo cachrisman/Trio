@@ -520,14 +520,16 @@ Patches:"
 
   # Parse patches JSON and add to body
   if [[ "$patches_json" != "[]" && -n "$patches_json" ]]; then
-    # Use Python to parse JSON and format patches (pass JSON via stdin to avoid quoting issues)
+    # Use Python to parse JSON and format patches. The JSON travels via an env var
+    # because the heredoc supplies the program on stdin (a pipe would be discarded).
     body+="
-$(echo "$patches_json" | python3 <<'PYTHON_EOF'
+$(PATCHES_JSON="$patches_json" python3 - <<'PYTHON_EOF'
 import json
+import os
 import sys
 
 try:
-    patches = json.load(sys.stdin)
+    patches = json.loads(os.environ["PATCHES_JSON"])
     for patch in patches:
         name = patch.get('name', 'Unknown')
         subject = patch.get('subject', '')
@@ -548,6 +550,7 @@ try:
         print(''.join(parts))
 except Exception as e:
     print(f"(error parsing patches: {e})", file=sys.stderr)
+    print(f"(could not list patches: {e})")
 PYTHON_EOF
 )"
   else

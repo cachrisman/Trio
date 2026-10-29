@@ -1,0 +1,1476 @@
+From f2a0f421c89cc4d79e4c21b378e29e0ae3359d60 Mon Sep 17 00:00:00 2001
+From: Trio Patch Bot <patch-bot@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 09:49:03 +0100
+Subject: [PATCH] feat: feature-carbs-required-actions
+
+Trio-Patch-Source-Branch: feature/carbs-required-actions
+Trio-Patch-Base: 6737274a9e432e76599fc24e2fe2c52775391092
+Trio-Patch-Feature-Tip: 0bc1cdf6b4fed2c5ea4169d249ec1c59d7c23a6a
+Trio-Patch-Generated: 2026-10-29T08:49:01Z
+Trio-Patch-Source-Commits:
+ 3fc966f6c0d2547d16ead3ebd489bb3fc22dd338 feat: ns-richer-settings
+ efda10438c4250e19e8c8b0a04cedfa1aa22c1d3 feat: g7-reading-time-with-seconds
+ 1275059f4629b29cba2b4e9427344b627b54f18b feat: glucose-bobble-shared
+ 927c79ef144c71d9bcb5a7c8706672b195548819 feat: glucose-circular-complication
+ 396acd513ce0017412d4cb786ebf745146a159d1 feat: watch-error-reporting
+ 4aaf697cc2484b61c58f072ccd6f5e8a74f53737 feat: cloud-logging
+ f99e77ddea31a4ab5b0ef37a86cc391008b86fd3 feat: patch-metadata
+ 7ce8ae1fc8c5953b0084169e665dcc55b3a3b0c7 feat: watch-g7
+ 1d02bcdb16d4dc286d455e5ae45e09db339e160c feat: watch-session-crash-guard
+ c9536c3ee9eb697109c7e8cfba5bfb9c53b61864 feat: phone-ble-observer-telemetry
+ c33e126ca3ffae31d9dadfdc74f6eab2ff352d10 feat: temp-target-default-tab
+ 081295dc83255161a579f65d91cf0d51837bf8fd feat: ns-backfill-on-pull
+ 8edceb971c8e93de8f369e8c894a93eb4a85b06c feat: treatments-bolus-mode
+ 5897c43d7f9635ec62aac28063fd8bb2cbe2b985 feat: pull-to-loop-rearm
+ fd970bf02a81062c536ab97d74373b94f6a82f1f feat: filestorage-append-probe-log
+ 08686d4ddcaae37bdbfcadc07c336f0e23c16e7e feat: live-activity-big-glucose
+ e446c7d6b49cd2ae5bae1b729e043e21dc0e6f5c Carbs Required: show current glucose, drop Snooze 6 hrs, one-tap Log Carbs on iPhone and Watch (TRIO-092)
+ 69ead802b9d1e8cb67b3220edff9a6b855f58fc3 Carbs Required: make freshCachedReading private so it may return the private LatestReading type (TRIO-092, build 234 compile error)
+ 0bc1cdf6b4fed2c5ea4169d249ec1c59d7c23a6a Glucose alarms: optional current glucose, change per minute and trend in notifications; Low Glucose Soon checks the whole 20-min forecast (TRIO-100)
+Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
+Trio-Patch-Source-PatchIds:
+ 2a87a1ff2d0539800ffae9121fa36f55062a6437
+ 048a4e31dfc49c4a3fc0d790a9c3dfcd34281f6e
+ 89f81ae06fd40096a1c417cecc185ca61c5a13f5
+ 6eed212e6060ceee70aaab8193f15a1d285c7806
+ d64aec69341345cffa16e72b239ed51922d813e4
+ e285beedcb4f504b2f8c656b97290f1450af6f5b
+ e1ee5b50a3acd77eb9b5d4218dcf038b1b753f1e
+ 29980df3481db07766ab3d4fc664b743486fd452
+ 6e19605fa4a0e9019246ec27ea40f7ed87784dc6
+ 176de71b845171328278a45839d380ebd989d859
+ 492b650f7cb97b4fe97aa75b97efe926e26cac36
+ 7904d94477f3baece5a02b3feb1b0e723332bc2d
+ 5a3b791994e7bfa4d60a98d45b88a6c90f448570
+ 1dc2f08cb57d6c52486df9aae39b8cf6bf69c41d
+ b0bb32b048c318bd05fac5a9ff072e9cc7a7aa21
+ 68e22bac371b1438f314151e0a93b3a432c3ad4d
+ 9ae77b8c9b0e6152ebe11498975a729e68dd4524
+ d502f6d0d6706d3db0a432a63bb7fee717d19ab1
+ 7080d03c528776a73c90536abf76db38f7739c7c
+---
+ .../Helper/WatchNotificationHandler.swift     |  64 ++++
+ .../GlucoseAlertConfiguration.swift           |  20 +-
+ .../Models/NotificationIdentifiers.swift      |  48 +++
+ Trio/Sources/Models/WatchMessageKeys.swift    |   7 +
+ .../View/GlucoseAlertsRootView.swift          |  11 +
+ .../Alerts/ForecastedGlucoseEvaluator.swift   |  29 ++
+ .../Alerts/GlucoseAlertCoordinator.swift      | 279 +++++++++++++++---
+ .../TrioUserNotificationAlertScheduler.swift  |  29 +-
+ .../UserNotificationsManager.swift            | 182 ++++++++++++
+ .../WatchManager/AppleWatchManager.swift      |  24 ++
+ .../ForecastedGlucoseEvaluatorTests.swift     |  57 ++++
+ TrioTests/GlucoseAlertCoordinatorTests.swift  | 259 ++++++++++++++++
+ 12 files changed, 965 insertions(+), 44 deletions(-)
+
+diff --git a/Trio Watch App Extension/Helper/WatchNotificationHandler.swift b/Trio Watch App Extension/Helper/WatchNotificationHandler.swift
+index be0431498..ee5ee386e 100644
+--- a/Trio Watch App Extension/Helper/WatchNotificationHandler.swift	
++++ b/Trio Watch App Extension/Helper/WatchNotificationHandler.swift	
+@@ -51,6 +51,7 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
+ 
+             var categories = existingCategories
+             categories.update(with: glucoseCategory)
++            categories.update(with: NotificationCategoryFactory.createCarbsRequiredCategory())
+             // UNUserNotificationCenter methods should be called on main thread
+             Task { @MainActor in
+                 center.setNotificationCategories(categories)
+@@ -65,6 +66,12 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
+         didReceive response: UNNotificationResponse,
+         withCompletionHandler completionHandler: @escaping () -> Void
+     ) {
++        // Held open until the phone answers so the reply (or failure) isn't lost to suspension.
++        if response.actionIdentifier == CarbsRequiredNotification.logCarbsActionIdentifier {
++            sendLogCarbsRequest(userInfo: response.notification.request.content.userInfo, completion: completionHandler)
++            return
++        }
++
+         defer { completionHandler() }
+ 
+         guard let action = NotificationResponseAction(rawValue: response.actionIdentifier) else { return }
+@@ -93,4 +100,61 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
+             session.transferUserInfo(payload)
+         }
+     }
++
++    /// Asks the phone to log the carbs in `userInfo`. Deliberately has no
++    /// `transferUserInfo` fallback: a queued request could log carbs long after the user
++    /// was told it failed. Every outcome is surfaced as a local notification.
++    private func sendLogCarbsRequest(userInfo: [AnyHashable: Any], completion: @escaping () -> Void) {
++        let payload = CarbsRequiredNotification.payload(from: userInfo)
++        guard let grams = payload.grams, grams > 0, let alertID = payload.alertID else {
++            notifyLogCarbs(String(localized: "Couldn't log carbs: invalid alert", comment: "Watch Log Carbs failure"))
++            completion()
++            return
++        }
++
++        let session = WCSession.default
++        guard WCSession.isSupported(), session.activationState == .activated, session.isReachable else {
++            notifyLogCarbs(String(localized: "Couldn't log carbs: iPhone not reachable", comment: "Watch Log Carbs failure"))
++            completion()
++            return
++        }
++
++        let message: [String: Any] = [
++            WatchMessageKeys.logCarbsGrams: NSDecimalNumber(decimal: grams).intValue,
++            WatchMessageKeys.logCarbsAlertID: alertID
++        ]
++        session.sendMessage(message, replyHandler: { [weak self] reply in
++            switch reply[WatchMessageKeys.logCarbsResult] as? String {
++            case "logged":
++                self?.notifyLogCarbs(String(localized: "Carbs logged", comment: "Watch Log Carbs success"))
++            case "alreadyLogged":
++                self?.notifyLogCarbs(String(localized: "Carbs already logged", comment: "Watch Log Carbs duplicate"))
++            case "exceedsMaxCarbs":
++                let maxCarbs = (reply[WatchMessageKeys.maxCarbs] as? NSNumber)?.intValue
++                let requested = NSDecimalNumber(decimal: grams).intValue
++                self?.notifyLogCarbs(maxCarbs.map {
++                    String(
++                        format: String(
++                            localized: "Not logged: %d g is above your Max Carbs (%d g). Open Trio to log carbs.",
++                            comment: "Watch Log Carbs rejected: amount above Max Carbs"
++                        ),
++                        requested,
++                        $0
++                    )
++                } ?? String(localized: "Not logged: above your Max Carbs. Open Trio to log carbs.", comment: "Watch Log Carbs rejected: amount above Max Carbs"))
++            default:
++                self?.notifyLogCarbs(String(localized: "Couldn't log carbs", comment: "Watch Log Carbs failure"))
++            }
++            completion()
++        }, errorHandler: { [weak self] _ in
++            self?.notifyLogCarbs(String(localized: "Couldn't log carbs: iPhone not reachable", comment: "Watch Log Carbs failure"))
++            completion()
++        })
++    }
++
++    private func notifyLogCarbs(_ text: String) {
++        let content = UNMutableNotificationContent()
++        content.title = text
++        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
++    }
+ }
+diff --git a/Trio/Sources/Models/GlucoseAlerts/GlucoseAlertConfiguration.swift b/Trio/Sources/Models/GlucoseAlerts/GlucoseAlertConfiguration.swift
+index 49b13fad3..6227a77d2 100644
+--- a/Trio/Sources/Models/GlucoseAlerts/GlucoseAlertConfiguration.swift
++++ b/Trio/Sources/Models/GlucoseAlerts/GlucoseAlertConfiguration.swift
+@@ -5,21 +5,36 @@ struct GlucoseAlertConfiguration: Codable, Equatable {
+     var nightStart: TimeOfDay
+     /// Force Trio alarms on even when the CGM advertises its own.
+     var forceTrioAlertsWhenCGMProvidesOwn: Bool
++    /// Add the current glucose to Low Glucose Soon and Carbs Required notifications.
++    var showCurrentGlucose: Bool
++    /// Add the change per minute to the glucose in the notification.
++    var showGlucoseDelta: Bool
++    /// Add the trend description to the glucose in the notification.
++    var showTrendDescription: Bool
+ 
+     init(
+         dayStart: TimeOfDay = TimeOfDay(hour: 6, minute: 0),
+         nightStart: TimeOfDay = TimeOfDay(hour: 22, minute: 0),
+-        forceTrioAlertsWhenCGMProvidesOwn: Bool = false
++        forceTrioAlertsWhenCGMProvidesOwn: Bool = false,
++        showCurrentGlucose: Bool = false,
++        showGlucoseDelta: Bool = false,
++        showTrendDescription: Bool = false
+     ) {
+         self.dayStart = dayStart
+         self.nightStart = nightStart
+         self.forceTrioAlertsWhenCGMProvidesOwn = forceTrioAlertsWhenCGMProvidesOwn
++        self.showCurrentGlucose = showCurrentGlucose
++        self.showGlucoseDelta = showGlucoseDelta
++        self.showTrendDescription = showTrendDescription
+     }
+ 
+     private enum CodingKeys: String, CodingKey {
+         case dayStart
+         case nightStart
+         case forceTrioAlertsWhenCGMProvidesOwn
++        case showCurrentGlucose
++        case showGlucoseDelta
++        case showTrendDescription
+     }
+ 
+     init(from decoder: Decoder) throws {
+@@ -30,6 +45,9 @@ struct GlucoseAlertConfiguration: Codable, Equatable {
+             Bool.self,
+             forKey: .forceTrioAlertsWhenCGMProvidesOwn
+         ) ?? false
++        showCurrentGlucose = try container.decodeIfPresent(Bool.self, forKey: .showCurrentGlucose) ?? false
++        showGlucoseDelta = try container.decodeIfPresent(Bool.self, forKey: .showGlucoseDelta) ?? false
++        showTrendDescription = try container.decodeIfPresent(Bool.self, forKey: .showTrendDescription) ?? false
+     }
+ 
+     /// Resolve whether `date` falls into the user's "night" window. Mirrors
+diff --git a/Trio/Sources/Models/NotificationIdentifiers.swift b/Trio/Sources/Models/NotificationIdentifiers.swift
+index 657897b74..9eb73ca5d 100644
+--- a/Trio/Sources/Models/NotificationIdentifiers.swift
++++ b/Trio/Sources/Models/NotificationIdentifiers.swift
+@@ -3,6 +3,7 @@ import UserNotifications
+ 
+ enum NotificationCategoryIdentifier: String {
+     case trioAlert = "Trio.alert"
++    case carbsRequired = "Trio.alert.carbsRequired"
+ }
+ 
+ enum NotificationResponseAction: String, CaseIterable {
+@@ -42,6 +43,33 @@ enum NotificationResponseAction: String, CaseIterable {
+     }
+ }
+ 
++// MARK: - CarbsRequiredNotification
++
++/// Action id and userInfo payload of the Carbs Required notification. Shared by the
++/// iPhone and watch delegates. Kept apart from `NotificationResponseAction` because
++/// that enum's `allCases` also drives the snooze sheet and the in-app banner.
++enum CarbsRequiredNotification {
++    static let logCarbsActionIdentifier = "Trio.logCarbs"
++    static let gramsKey = "trio.carbsRequired.grams"
++    static let alertIDKey = "trio.carbsRequired.alertID"
++
++    /// No 6 hr snooze here; the shared `Trio.alert` category keeps all four.
++    static let snoozeActions: [NotificationResponseAction] = [.snooze15, .snooze1hr, .snooze3hr]
++
++    static var logCarbsTitle: String {
++        String(localized: "Log Carbs", comment: "Notification action that logs the carbs a Carbs Required alert asked for")
++    }
++
++    static func userInfo(grams: Int, alertID: String) -> [AnyHashable: Any] {
++        [gramsKey: grams, alertIDKey: alertID]
++    }
++
++    static func payload(from userInfo: [AnyHashable: Any]) -> (grams: Decimal?, alertID: String?) {
++        let grams = (userInfo[gramsKey] as? NSNumber)?.decimalValue
++        return (grams, userInfo[alertIDKey] as? String)
++    }
++}
++
+ // MARK: - NotificationCategoryFactory
+ 
+ enum NotificationCategoryFactory {
+@@ -63,4 +91,24 @@ enum NotificationCategoryFactory {
+             options: [.customDismissAction]
+         )
+     }
++
++    static func createCarbsRequiredCategory() -> UNNotificationCategory {
++        // `.authenticationRequired`: the action feeds COB and dosing, so a locked
++        // phone must not allow it from the lock screen. No `.foreground`; it runs
++        // in the background.
++        let logCarbs = UNNotificationAction(
++            identifier: CarbsRequiredNotification.logCarbsActionIdentifier,
++            title: CarbsRequiredNotification.logCarbsTitle,
++            options: [.authenticationRequired]
++        )
++        let snoozes = CarbsRequiredNotification.snoozeActions.map { action in
++            UNNotificationAction(identifier: action.rawValue, title: action.localizedTitle, options: [])
++        }
++        return UNNotificationCategory(
++            identifier: NotificationCategoryIdentifier.carbsRequired.rawValue,
++            actions: [logCarbs] + snoozes,
++            intentIdentifiers: [],
++            options: [.customDismissAction]
++        )
++    }
+ }
+diff --git a/Trio/Sources/Models/WatchMessageKeys.swift b/Trio/Sources/Models/WatchMessageKeys.swift
+index 8ace09205..0b98ef2e8 100644
+--- a/Trio/Sources/Models/WatchMessageKeys.swift
++++ b/Trio/Sources/Models/WatchMessageKeys.swift
+@@ -86,3 +86,10 @@ enum WatchMessageKeys {
+     // Glucose Bobble complication
+     static let glucoseBobbleComplicationSettings = "glucoseBobbleComplicationSettings"
+ }
++
++extension WatchMessageKeys {
++    // Carbs Required "Log Carbs" action (watch -> phone, with reply)
++    static let logCarbsGrams = "logCarbsGrams"
++    static let logCarbsAlertID = "logCarbsAlertID"
++    static let logCarbsResult = "logCarbsResult"
++}
+diff --git a/Trio/Sources/Modules/GlucoseAlerts/View/GlucoseAlertsRootView.swift b/Trio/Sources/Modules/GlucoseAlerts/View/GlucoseAlertsRootView.swift
+index 0aeb52eba..422054740 100644
+--- a/Trio/Sources/Modules/GlucoseAlerts/View/GlucoseAlertsRootView.swift
++++ b/Trio/Sources/Modules/GlucoseAlerts/View/GlucoseAlertsRootView.swift
+@@ -85,6 +85,17 @@ extension GlucoseAlerts {
+                     .disabled(!state.cgmProvidesOwnAlerts)
+                 }.listRowBackground(Color.chart)
+ 
++                Section(
++                    header: Text("Notification Content"),
++                    footer: Text(
++                        "Adds detail to glucose alarm notifications. Low, Urgent Low and High alarms always include the current glucose; Show Current Glucose adds it to Low Glucose Soon and Carbs Required."
++                    )
++                ) {
++                    Toggle("Show Current Glucose", isOn: $store.configuration.showCurrentGlucose)
++                    Toggle("Show Change per Minute", isOn: $store.configuration.showGlucoseDelta)
++                    Toggle("Show Trend", isOn: $store.configuration.showTrendDescription)
++                }.listRowBackground(Color.chart)
++
+                 SettingInputSection(
+                     decimalValue: $decimalPlaceholder,
+                     booleanValue: $state.glucoseBadge,
+diff --git a/Trio/Sources/Services/Alerts/ForecastedGlucoseEvaluator.swift b/Trio/Sources/Services/Alerts/ForecastedGlucoseEvaluator.swift
+index 903875928..24079a781 100644
+--- a/Trio/Sources/Services/Alerts/ForecastedGlucoseEvaluator.swift
++++ b/Trio/Sources/Services/Alerts/ForecastedGlucoseEvaluator.swift
+@@ -46,6 +46,35 @@ enum ForecastedGlucoseEvaluator {
+         )
+     }
+ 
++    struct WindowResult: Equatable {
++        let lowestPredicted: Decimal
++        let firstCrossingMinutes: Int?
++    }
++
++    /// Looks at every 5-min point from +5 up to the horizon (index 0 is "now" and is skipped),
++    /// taking the min across curves at each point. `evaluate` only sees the last point, so a dip
++    /// below the threshold at +10 that recovers by +20 was never alerted, although the settings
++    /// text promises an alert "within the next 20 minutes".
++    static func evaluateWindow(
++        determination: Determination,
++        thresholdMgDL: Decimal,
++        horizonMinutes: Int = defaultHorizonMinutes
++    ) -> WindowResult? {
++        guard let predictions = determination.predictions else { return nil }
++
++        var lowest: Decimal?
++        var firstCrossing: Int?
++        for index in 1 ... max(horizonMinutes / 5, 1) {
++            let samples = [predictions.iob, predictions.cob, predictions.uam, predictions.zt]
++                .compactMap { sample($0, at: index) }
++            guard let pointMin = samples.min() else { continue }
++            lowest = min(lowest ?? pointMin, pointMin)
++            if firstCrossing == nil, pointMin <= thresholdMgDL { firstCrossing = index * 5 }
++        }
++        guard let lowest else { return nil }
++        return WindowResult(lowestPredicted: lowest, firstCrossingMinutes: firstCrossing)
++    }
++
+     private static func sample(_ array: [Int]?, at index: Int) -> Decimal? {
+         guard let array, array.indices.contains(index) else { return nil }
+         return Decimal(array[index])
+diff --git a/Trio/Sources/Services/Alerts/GlucoseAlertCoordinator.swift b/Trio/Sources/Services/Alerts/GlucoseAlertCoordinator.swift
+index 389d8f3e3..0586332af 100644
+--- a/Trio/Sources/Services/Alerts/GlucoseAlertCoordinator.swift
++++ b/Trio/Sources/Services/Alerts/GlucoseAlertCoordinator.swift
+@@ -15,7 +15,7 @@ import Swinject
+ ///        - urgentLow / low: latest ≤ threshold (+ optional persistence)
+ ///        - high: latest ≥ threshold (+ optional persistence)
+ ///   2. Determination update → blend forecast at the alarm's predictive horizon
+-///      (forecastedLow: fixed 20 min) and compare to threshold.
++///      (forecastedLow: every 5-min point up to +20 min) and compare to threshold.
+ ///
+ /// Throttling + snooze are inherited from `TrioAlertManager.issueAlert`. The
+ /// coordinator additionally tracks per-alarm firing state so it can retract
+@@ -28,6 +28,19 @@ final class GlucoseAlertCoordinator: Injectable {
+     @Injected() private var fetchGlucoseManager: FetchGlucoseManager!
+ 
+     private let evaluationQueue = DispatchQueue(label: "GlucoseAlertCoordinator.queue")
++    struct LatestReading {
++        let mgdl: Decimal
++        let direction: BloodGlucose.Direction?
++        /// mg/dL per minute versus the previous reading, nil when there is no usable previous one.
++        let deltaPerMinute: Decimal?
++        let date: Date
++    }
++
++    /// Most recent reading seen by the reading path. Only touched on `evaluationQueue`, so the
++    /// carbs-required evaluation can use it without an async fetch (which would let evaluations
++    /// of consecutive determinations run out of order).
++    private var cachedReading: LatestReading?
++
+     private var firingAlertIDs: Set<UUID> = []
+     private var subscriptions = Set<AnyCancellable>()
+     @SyncAccess private var alertsSnapshot: [GlucoseAlert] = []
+@@ -86,6 +99,9 @@ final class GlucoseAlertCoordinator: Injectable {
+     /// CGM blackout could fire an alarm based on a 19-min-old reading.
+     private static let readingFreshnessWindow: TimeInterval = 12 * 60
+ 
++    /// Largest gap between the latest and previous reading for which a per-minute delta is shown.
++    private static let maxDeltaGap: TimeInterval = 15 * 60
++
+     /// Suppresses evaluations for a short window after launch. `firingAlertIDs`
+     /// isn't persisted across relaunches, so without this quiet window the
+     /// first reading after launch would re-fire any in-flight alarm whose
+@@ -135,15 +151,20 @@ final class GlucoseAlertCoordinator: Injectable {
+         guard !isInLaunchQuietWindow else { return }
+         guard effectiveTrioAlertsEnabled else {
+             retractReadingDrivenFiringAlarms()
++            // Carbs Required stays active when the CGM app owns glucose alerts; its body reads this cache.
++            if let latestReading = await fetchLatestReading() {
++                evaluationQueue.async { [weak self] in self?.cachedReading = latestReading }
++            }
+             return
+         }
+-        guard let latestValue = await fetchLatestReadingMgDL() else { return }
++        guard let latestReading = await fetchLatestReading() else { return }
+         let snapshot = alertsSnapshot
+         let configuration = configurationSnapshot
+         let now = Date()
+         evaluationQueue.async { [weak self] in
++            self?.cachedReading = latestReading
+             self?.applyReadingBasedEvaluation(
+-                latestValue: latestValue,
++                reading: latestReading,
+                 snapshot: snapshot,
+                 configuration: configuration,
+                 now: now
+@@ -152,7 +173,7 @@ final class GlucoseAlertCoordinator: Injectable {
+     }
+ 
+     private func applyReadingBasedEvaluation(
+-        latestValue: Decimal,
++        reading: LatestReading,
+         snapshot: [GlucoseAlert],
+         configuration: GlucoseAlertConfiguration,
+         now: Date
+@@ -169,7 +190,7 @@ final class GlucoseAlertCoordinator: Injectable {
+                 retractIfFiring(alarm)
+                 continue
+             }
+-            evaluateReadingBased(alarm, latestMgDL: latestValue, now: now, configuration: configuration)
++            evaluateReadingBased(alarm, reading: reading, now: now, configuration: configuration)
+             if alarm.type == .urgentLow, firingAlertIDs.contains(alarm.id) {
+                 urgentLowFiring = true
+             }
+@@ -178,7 +199,7 @@ final class GlucoseAlertCoordinator: Injectable {
+ 
+     private func evaluateReadingBased(
+         _ alarm: GlucoseAlert,
+-        latestMgDL: Decimal,
++        reading: LatestReading,
+         now: Date,
+         configuration: GlucoseAlertConfiguration
+     ) {
+@@ -192,6 +213,7 @@ final class GlucoseAlertCoordinator: Injectable {
+         if alarm.type == .forecastedLow {
+             return // handled via determinationDidUpdate
+         }
++        let latestMgDL = reading.mgdl
+         let breached = Self.breached(
+             type: alarm.type,
+             latestMgDL: latestMgDL,
+@@ -199,7 +221,7 @@ final class GlucoseAlertCoordinator: Injectable {
+         )
+ 
+         if breached {
+-            fireIfNeeded(alarm, valueMgDL: latestMgDL)
++            fireIfNeeded(alarm, valueMgDL: latestMgDL, configuration: configuration, reading: reading)
+         } else if shouldRetract(alarm, latestMgDL: latestMgDL) {
+             retractIfFiring(alarm)
+         }
+@@ -207,7 +229,7 @@ final class GlucoseAlertCoordinator: Injectable {
+ 
+     // MARK: - Forecast-based evaluation
+ 
+-    private func evaluateForecast(_ determination: Determination) {
++    private func evaluateForecast(_ determination: Determination, reading: LatestReading?) {
+         guard !isInLaunchQuietWindow else { return }
+         // No CGM-ownership guard here, unlike the reading path: a CGM app can
+         // alarm on the current reading, but it cannot compute Trio's oref
+@@ -232,27 +254,37 @@ final class GlucoseAlertCoordinator: Injectable {
+                 retractIfFiring(alarm)
+                 continue
+             }
+-            evaluateForecastBased(alarm, determination: determination, now: now, configuration: configuration)
++            evaluateForecastBased(alarm, determination: determination, reading: reading, now: now, configuration: configuration)
+         }
+     }
+ 
+     private func evaluateForecastBased(
+         _ alarm: GlucoseAlert,
+         determination: Determination,
++        reading: LatestReading?,
+         now: Date,
+         configuration: GlucoseAlertConfiguration
+     ) {
+         guard alarm.shouldEvaluate, !isAlarmSnoozed(alarm, at: now),
+               isActive(alarm, at: now, configuration: configuration),
+-              let result = ForecastedGlucoseEvaluator.evaluate(determination: determination)
++              let result = ForecastedGlucoseEvaluator.evaluateWindow(
++                  determination: determination,
++                  thresholdMgDL: alarm.thresholdMgDL
++              )
+         else {
+             retractIfFiring(alarm)
+             return
+         }
+ 
+-        if result.predictedGlucose <= alarm.thresholdMgDL {
+-            fireIfNeeded(alarm, valueMgDL: result.predictedGlucose)
+-        } else if shouldRetract(alarm, latestMgDL: result.predictedGlucose) {
++        if result.lowestPredicted <= alarm.thresholdMgDL {
++            fireIfNeeded(
++                alarm,
++                valueMgDL: result.lowestPredicted,
++                configuration: configuration,
++                reading: reading,
++                minutesToLow: result.firstCrossingMinutes
++            )
++        } else if shouldRetract(alarm, latestMgDL: result.lowestPredicted) {
+             retractIfFiring(alarm)
+         }
+     }
+@@ -264,7 +296,7 @@ final class GlucoseAlertCoordinator: Injectable {
+     /// tab badge's threshold — surfaces are configured separately so the
+     /// user can have a low-threshold badge for awareness and a higher-
+     /// threshold alarm for active interruption.
+-    private func evaluateCarbsRequired(_ determination: Determination) {
++    private func evaluateCarbsRequired(_ determination: Determination, reading: LatestReading?) {
+         guard !isInLaunchQuietWindow else { return }
+         let snapshot = alertsSnapshot
+         let configuration = configurationSnapshot
+@@ -282,7 +314,7 @@ final class GlucoseAlertCoordinator: Injectable {
+                 retractIfFiring(alarm)
+                 continue
+             }
+-            fireIfNeeded(alarm, valueMgDL: carbs)
++            fireIfNeeded(alarm, valueMgDL: carbs, configuration: configuration, reading: reading)
+         }
+     }
+ 
+@@ -291,13 +323,32 @@ final class GlucoseAlertCoordinator: Injectable {
+     /// Called only from the evaluation queue (forecast + reading paths both
+     /// dispatch through `evaluationQueue` before invoking the evaluators),
+     /// so `firingAlertIDs` is serialized without an extra `.sync` hop.
+-    private func fireIfNeeded(_ alarm: GlucoseAlert, valueMgDL: Decimal) {
++    private func fireIfNeeded(
++        _ alarm: GlucoseAlert,
++        valueMgDL: Decimal,
++        configuration: GlucoseAlertConfiguration,
++        reading: LatestReading? = nil,
++        minutesToLow: Int? = nil
++    ) {
+         dispatchPrecondition(condition: .onQueue(evaluationQueue))
+         guard !firingAlertIDs.contains(alarm.id) else { return }
+         firingAlertIDs.insert(alarm.id)
+ 
+         let title = alarm.name.isEmpty ? alarm.type.displayName : alarm.name
+-        let body = bodyText(for: alarm, valueMgDL: valueMgDL)
++        let body = bodyText(
++            for: alarm,
++            valueMgDL: valueMgDL,
++            configuration: configuration,
++            reading: reading,
++            minutesToLow: minutesToLow
++        )
++        if alarm.type == .carbsRequired {
++            CarbsRequiredPayloads.shared.set(
++                grams: NSDecimalNumber(decimal: valueMgDL).intValue,
++                alertID: UUID().uuidString,
++                for: alertID(for: alarm).alertIdentifier
++            )
++        }
+         let content = Alert.Content(
+             title: title,
+             body: body,
+@@ -359,35 +410,149 @@ final class GlucoseAlertCoordinator: Injectable {
+         )
+     }
+ 
+-    private func bodyText(for alarm: GlucoseAlert, valueMgDL: Decimal) -> String {
++    private func bodyText(
++        for alarm: GlucoseAlert,
++        valueMgDL: Decimal,
++        configuration: GlucoseAlertConfiguration,
++        reading: LatestReading?,
++        minutesToLow: Int?
++    ) -> String {
+         let units = settingsManager.settings.units
+-        let valueString = valueMgDL.formatted(withUnits: units)
+-        let limitString = alarm.thresholdMgDL.formatted(withUnits: units)
+         switch alarm.type {
+-        case .low,
++        case .high,
++             .low,
+              .urgentLow:
+-            return String(
+-                format: String(localized: "Glucose %1$@."),
+-                valueString, limitString
++            // The alarm's own glucose is always shown; the toggles only add delta and trend.
++            let clause = Self.readingClause(
++                mgdl: valueMgDL,
++                deltaPerMinute: reading?.deltaPerMinute,
++                direction: reading?.direction,
++                units: units,
++                showDelta: configuration.showGlucoseDelta,
++                showTrend: configuration.showTrendDescription
+             )
++            return String(format: String(localized: "Glucose %1$@."), clause)
+         case .forecastedLow:
+-            return String(
+-                format: String(localized: "Your glucose may go below %2$@ in %1$d min."),
+-                ForecastedGlucoseEvaluator.defaultHorizonMinutes, limitString
+-            )
+-        case .high:
+-            return String(
+-                format: String(localized: "Glucose %1$@."),
+-                valueString, limitString
++            return Self.forecastedLowBody(
++                minutes: minutesToLow ?? ForecastedGlucoseEvaluator.defaultHorizonMinutes,
++                thresholdMgDL: alarm.thresholdMgDL,
++                reading: reading,
++                configuration: configuration,
++                units: units
+             )
+         case .carbsRequired:
+-            return String(
+-                format: String(localized: "To prevent LOW required %d g of carbs"),
+-                Int(NSDecimalNumber(decimal: valueMgDL).intValue)
++            return Self.carbsRequiredBody(
++                grams: Int(NSDecimalNumber(decimal: valueMgDL).intValue),
++                reading: reading,
++                configuration: configuration,
++                units: units
+             )
+         }
+     }
+ 
++    /// "102 mg/dL (-4.6/min), falling slowly"; delta and trend are optional.
++    static func readingClause(
++        mgdl: Decimal,
++        deltaPerMinute: Decimal?,
++        direction: BloodGlucose.Direction?,
++        units: GlucoseUnits,
++        showDelta: Bool,
++        showTrend: Bool
++    ) -> String {
++        var clause = mgdl.formatted(withUnits: units)
++        if showDelta, let deltaPerMinute {
++            let formatter = NumberFormatter()
++            formatter.numberStyle = .decimal
++            formatter.positivePrefix = "+"
++            let digits = units == .mmolL ? 2 : 1
++            formatter.minimumFractionDigits = digits
++            formatter.maximumFractionDigits = digits
++            // Not `asMmolL`: it rounds to 1 digit, which would flatten a per-minute delta.
++            let value = units == .mmolL ? deltaPerMinute * GlucoseUnits.exchangeRate : deltaPerMinute
++            if let signed = formatter.string(from: value as NSDecimalNumber) {
++                clause += " (" + String(format: String(localized: "%@/min"), signed) + ")"
++            }
++        }
++        if showTrend, let word = trendWord(direction) {
++            clause += ", " + word
++        }
++        return clause
++    }
++
++    private static func trendWord(_ direction: BloodGlucose.Direction?) -> String? {
++        switch direction {
++        case .doubleUp,
++             .tripleUp:
++            return String(localized: "rising quickly", comment: "Accessibility: glucose trend")
++        case .singleUp:
++            return String(localized: "rising", comment: "Accessibility: glucose trend")
++        case .fortyFiveUp:
++            return String(localized: "rising slowly", comment: "Accessibility: glucose trend")
++        case .flat:
++            return String(localized: "steady", comment: "Accessibility: glucose trend")
++        case .fortyFiveDown:
++            return String(localized: "falling slowly", comment: "Accessibility: glucose trend")
++        case .singleDown:
++            return String(localized: "falling", comment: "Accessibility: glucose trend")
++        case .doubleDown,
++             .tripleDown:
++            return String(localized: "falling quickly", comment: "Accessibility: glucose trend")
++        default:
++            return nil
++        }
++    }
++
++    /// With "Show Current Glucose" on and a fresh reading, the prediction is prefixed by the
++    /// glucose, and replaced by "already below" when the reading is under the threshold.
++    static func forecastedLowBody(
++        minutes: Int,
++        thresholdMgDL: Decimal,
++        reading: LatestReading?,
++        configuration: GlucoseAlertConfiguration,
++        units: GlucoseUnits
++    ) -> String {
++        let limitString = thresholdMgDL.formatted(withUnits: units)
++        let prediction = String(
++            format: String(localized: "Your glucose may go below %2$@ in %1$d min."),
++            minutes, limitString
++        )
++        guard configuration.showCurrentGlucose, let reading else { return prediction }
++        let clause = readingClause(
++            mgdl: reading.mgdl,
++            deltaPerMinute: reading.deltaPerMinute,
++            direction: reading.direction,
++            units: units,
++            showDelta: configuration.showGlucoseDelta,
++            showTrend: configuration.showTrendDescription
++        )
++        let current = String(format: String(localized: "Glucose %1$@."), clause)
++        let outlook = reading.mgdl < thresholdMgDL
++            ? String(format: String(localized: "Your glucose is already below %@."), limitString)
++            : prediction
++        return current + " " + outlook
++    }
++
++    /// The grams here are the ones the "Log Carbs" action records, so the user sees
++    /// exactly what a tap will log. The glucose is appended only with "Show Current Glucose" on.
++    static func carbsRequiredBody(
++        grams: Int,
++        reading: LatestReading?,
++        configuration: GlucoseAlertConfiguration,
++        units: GlucoseUnits
++    ) -> String {
++        let required = String(format: String(localized: "To prevent LOW required %d g of carbs"), grams)
++        guard configuration.showCurrentGlucose, let reading else { return required }
++        let clause = readingClause(
++            mgdl: reading.mgdl,
++            deltaPerMinute: reading.deltaPerMinute,
++            direction: reading.direction,
++            units: units,
++            showDelta: configuration.showGlucoseDelta,
++            showTrend: configuration.showTrendDescription
++        )
++        return required + ". " + String(format: String(localized: "Glucose %1$@."), clause)
++    }
++
+     // MARK: - Helpers
+ 
+     private func isAlarmSnoozed(_ alarm: GlucoseAlert, at date: Date) -> Bool {
+@@ -407,8 +572,11 @@ final class GlucoseAlertCoordinator: Injectable {
+     /// the caller's thread, never lets a `GlucoseStored` managed object cross
+     /// queue boundaries (would otherwise trip
+     /// `_PFAssertSafeMultiThreadedAccess_impl`).
+-    private func fetchLatestReadingMgDL() async -> Decimal? {
+-        let cutoff = Date().addingTimeInterval(-Self.readingFreshnessWindow)
++    private func fetchLatestReading() async -> LatestReading? {
++        // The previous reading may be up to `maxDeltaGap` older than the latest, which itself
++        // must be inside the freshness window; only the latest is gated on freshness below.
++        let freshnessCutoff = Date().addingTimeInterval(-Self.readingFreshnessWindow)
++        let cutoff = freshnessCutoff.addingTimeInterval(-Self.maxDeltaGap)
+         let predicate = NSPredicate(format: "date >= %@", cutoff as NSDate)
+         let context = CoreDataStack.shared.newTaskContext()
+         context.name = "GlucoseAlertCoordinator.fetchLatestReading"
+@@ -419,11 +587,25 @@ final class GlucoseAlertCoordinator: Injectable {
+                 predicate: predicate,
+                 key: "date",
+                 ascending: false,
+-                fetchLimit: 1
++                fetchLimit: 2
+             )
+             return await context.perform {
+-                guard let latest = (results as? [GlucoseStored])?.first else { return nil }
+-                return Decimal(latest.glucose)
++                guard let readings = results as? [GlucoseStored], let latest = readings.first,
++                      let latestDate = latest.date, latestDate >= freshnessCutoff
++                else { return nil }
++                var deltaPerMinute: Decimal?
++                if readings.count > 1, let previousDate = readings[1].date {
++                    let minutes = Decimal(latestDate.timeIntervalSince(previousDate) / 60)
++                    if minutes >= 1, minutes <= Decimal(Self.maxDeltaGap / 60) {
++                        deltaPerMinute = (Decimal(latest.glucose) - Decimal(readings[1].glucose)) / minutes
++                    }
++                }
++                return LatestReading(
++                    mgdl: Decimal(latest.glucose),
++                    direction: latest.directionEnum,
++                    deltaPerMinute: deltaPerMinute,
++                    date: latestDate
++                )
+             }
+         } catch {
+             debug(.service, "GlucoseAlertCoordinator: glucose fetch failed: \(error)")
+@@ -435,12 +617,25 @@ final class GlucoseAlertCoordinator: Injectable {
+ extension GlucoseAlertCoordinator: DeterminationObserver {
+     func determinationDidUpdate(_ determination: Determination) {
+         evaluationQueue.async { [weak self] in
+-            self?.evaluateForecast(determination)
+-            self?.evaluateCarbsRequired(determination)
++            let reading = self?.freshCachedReading()
++            self?.evaluateForecast(determination, reading: reading)
++            self?.evaluateCarbsRequired(determination, reading: reading)
+         }
+     }
+ }
+ 
++extension GlucoseAlertCoordinator {
++    /// The cached reading, or nil once it is older than the freshness window; the alert body
++    /// then omits the glucose.
++    private func freshCachedReading() -> LatestReading? {
++        dispatchPrecondition(condition: .onQueue(evaluationQueue))
++        guard let reading = cachedReading,
++              reading.date >= Date().addingTimeInterval(-Self.readingFreshnessWindow)
++        else { return nil }
++        return reading
++    }
++}
++
+ extension GlucoseAlertCoordinator: SnoozeObserver {
+     /// Global snooze (Snooze module / lock-screen action). Clear all firing
+     /// IDs so the post-snooze evaluation can re-fire fresh if any condition
+diff --git a/Trio/Sources/Services/Alerts/TrioUserNotificationAlertScheduler.swift b/Trio/Sources/Services/Alerts/TrioUserNotificationAlertScheduler.swift
+index 93d375890..1b7f6f108 100644
+--- a/Trio/Sources/Services/Alerts/TrioUserNotificationAlertScheduler.swift
++++ b/Trio/Sources/Services/Alerts/TrioUserNotificationAlertScheduler.swift
+@@ -37,7 +37,7 @@ final class TrioUserNotificationAlertScheduler {
+         content.title = alert.backgroundContent.title
+         content.body = alert.backgroundContent.body
+         content.threadIdentifier = alert.identifier.managerIdentifier
+-        content.userInfo = [
++        var userInfo: [AnyHashable: Any] = [
+             AlertUserInfoKey.managerIdentifier.rawValue: alert.identifier.managerIdentifier,
+             AlertUserInfoKey.alertIdentifier.rawValue: alert.identifier.alertIdentifier
+         ]
+@@ -49,6 +49,11 @@ final class TrioUserNotificationAlertScheduler {
+         // both the phone (`BaseUserNotificationsManager`) and watch
+         // (`WatchNotificationHandler`) UN delegates.
+         content.categoryIdentifier = NotificationCategoryIdentifier.trioAlert.rawValue
++        if let carbs = CarbsRequiredPayloads.shared.payload(for: alert.identifier.alertIdentifier) {
++            content.categoryIdentifier = NotificationCategoryIdentifier.carbsRequired.rawValue
++            userInfo.merge(CarbsRequiredNotification.userInfo(grams: carbs.grams, alertID: carbs.alertID)) { _, new in new }
++        }
++        content.userInfo = userInfo
+ 
+         return UNNotificationRequest(
+             identifier: alert.identifier.value,
+@@ -99,3 +104,25 @@ private extension Alert.Trigger {
+         }
+     }
+ }
++
++/// `Alert` has no slot for notification userInfo or a category, so the coordinator
++/// parks the Carbs Required payload here, keyed by alert identifier, just before
++/// `issueAlert`; `makeRequest` picks it up.
++final class CarbsRequiredPayloads {
++    static let shared = CarbsRequiredPayloads()
++
++    private let lock = NSLock()
++    private var payloads: [String: (grams: Int, alertID: String)] = [:]
++
++    func set(grams: Int, alertID: String, for alertIdentifier: String) {
++        lock.lock()
++        defer { lock.unlock() }
++        payloads[alertIdentifier] = (grams, alertID)
++    }
++
++    func payload(for alertIdentifier: String) -> (grams: Int, alertID: String)? {
++        lock.lock()
++        defer { lock.unlock() }
++        return payloads[alertIdentifier]
++    }
++}
+diff --git a/Trio/Sources/Services/UserNotifications/UserNotificationsManager.swift b/Trio/Sources/Services/UserNotifications/UserNotificationsManager.swift
+index 1ffc989dc..542da5ec7 100644
+--- a/Trio/Sources/Services/UserNotifications/UserNotificationsManager.swift
++++ b/Trio/Sources/Services/UserNotifications/UserNotificationsManager.swift
+@@ -10,6 +10,8 @@ protocol UserNotificationsManager {
+     func getNotificationSettings(completionHandler: @escaping (UNNotificationSettings) -> Void)
+     func requestNotificationPermissions(completion: @escaping (Bool) -> Void)
+     @MainActor func applySnooze(for duration: TimeInterval) async
++    /// Shared by the iPhone notification action and the watch-forwarded request.
++    func logCarbsRequired(grams: Decimal?, alertID: String?) async -> CarbsRequiredLogOutcome
+ }
+ 
+ // MARK: - SnoozeObserver Protocol
+@@ -28,12 +30,19 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
+     @Injected() private var broadcaster: Broadcaster!
+     @Injected() private var glucoseStorage: GlucoseStorage!
+     @Injected() private var apsManager: APSManager!
++    @Injected() private var carbsStorage: CarbsStorage!
+     @Injected() private var trioAlertManager: TrioAlertManager!
+ 
+     @Persisted(key: "UserNotificationsManager.snoozeUntilDate") private var snoozeUntilDate: Date = .distantPast
+ 
+     private let notificationCenter = UNUserNotificationCenter.current()
+ 
++    // The amount comes from the notification's userInfo, never the latest determination: carbsReq
++    // can change between delivery and tap, and the user logs the number they were shown.
++    // Created eagerly in `init` (not lazily) so it can't race; the duplicate guard it uses is
++    // process-wide (see `UserDefaultsLoggedCarbsAlertStore`).
++    private var carbsRequiredLogHandler: CarbsRequiredLogHandler!
++
+     private let viewContext = CoreDataStack.shared.persistentContainer.viewContext
+ 
+     // Queue for handling Core Data change notifications
+@@ -45,6 +54,22 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
+         super.init()
+         notificationCenter.delegate = self
+         injectServices(resolver)
++        carbsRequiredLogHandler = CarbsRequiredLogHandler(
++            store: UserDefaultsLoggedCarbsAlertStore(),
++            maxCarbs: { [weak self] in self?.settingsManager.settings.maxCarbs ?? 0 },
++            storeCarbs: { [weak self] grams in
++                guard let self else { throw CancellationError() }
++                // Same path as Treatments `saveMeal()` / Quick-Pick carbs: `CarbsStorage.storeCarbs`,
++                // then a determine-basal sync. No bolus.
++                let entry = self.carbsStorage.makeCarbEntry(carbs: grams, date: Date())
++                try await self.carbsStorage.storeCarbs([entry], areFetchedFromRemote: false)
++                do {
++                    try await self.apsManager.determineBasalSync()
++                } catch {
++                    debug(.default, "\(DebuggingIdentifiers.failed) Log Carbs determine basal sync failed: \(error)")
++                }
++            }
++        )
+         broadcaster.register(SettingsObserver.self, observer: self)
+ 
+         coreDataPublisher =
+@@ -68,6 +93,7 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
+ 
+             var categories = existingCategories
+             categories.update(with: glucoseCategory)
++            categories.update(with: NotificationCategoryFactory.createCarbsRequiredCategory())
+             // UNUserNotificationCenter methods should be called on main thread
+             Task { @MainActor [weak self] in
+                 guard let self else { return }
+@@ -207,6 +233,58 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
+     @MainActor func applySnooze(for duration: TimeInterval) async {
+         await trioAlertManager.applySnooze(for: duration)
+     }
++
++    func logCarbsRequired(grams: Decimal?, alertID: String?) async -> CarbsRequiredLogOutcome {
++        await carbsRequiredLogHandler.log(grams: grams, alertID: alertID)
++    }
++
++    private func handleLogCarbsResponse(_ response: UNNotificationResponse, completion: @escaping () -> Void) {
++        let userInfo = response.notification.request.content.userInfo
++        Task { [weak self] in
++            defer { completion() }
++            guard let self else { return }
++            let payload = CarbsRequiredNotification.payload(from: userInfo)
++            let outcome = await self.logCarbsRequired(grams: payload.grams, alertID: payload.alertID)
++            switch outcome {
++            case .alreadyLogged,
++                 .logged:
++                if userInfo[AlertUserInfoKey.managerIdentifier.rawValue] is String {
++                    self.trioAlertManager.handleNotificationResponse(response)
++                }
++            case .exceedsMaxCarbs:
++                self.postLogCarbsExceedsMax(grams: payload.grams)
++            case .failed,
++                 .invalidRequest:
++                // Leave the alert up so the user can retry, and say why nothing was logged.
++                self.postLogCarbsFailure()
++            }
++        }
++    }
++
++    private func postLogCarbsExceedsMax(grams: Decimal?) {
++        let maxCarbs = settingsManager.settings.maxCarbs
++        let content = UNMutableNotificationContent()
++        content.title = String(localized: "Couldn't log carbs", comment: "Title when the Log Carbs notification action fails")
++        content.body = String(
++            format: String(
++                localized: "Not logged: %d g is above your Max Carbs (%d g). Open Trio to log carbs.",
++                comment: "Log Carbs rejected: amount above Max Carbs"
++            ),
++            NSDecimalNumber(decimal: grams ?? 0).intValue,
++            NSDecimalNumber(decimal: maxCarbs).intValue
++        )
++        notificationCenter.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
++    }
++
++    private func postLogCarbsFailure() {
++        let content = UNMutableNotificationContent()
++        content.title = String(localized: "Couldn't log carbs", comment: "Title when the Log Carbs notification action fails")
++        content.body = String(
++            localized: "The carbs were not saved. Open Trio to add them.",
++            comment: "Body when the Log Carbs notification action fails"
++        )
++        notificationCenter.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
++    }
+ }
+ 
+ extension BaseUserNotificationsManager: UNUserNotificationCenterDelegate {
+@@ -230,6 +308,12 @@ extension BaseUserNotificationsManager: UNUserNotificationCenterDelegate {
+         didReceive response: UNNotificationResponse,
+         withCompletionHandler completionHandler: @escaping () -> Void
+     ) {
++        // Completes after the carbs are written so iOS doesn't suspend the app mid-write.
++        if response.actionIdentifier == CarbsRequiredNotification.logCarbsActionIdentifier {
++            handleLogCarbsResponse(response, completion: completionHandler)
++            return
++        }
++
+         defer { completionHandler() }
+ 
+         let userInfo = response.notification.request.content.userInfo
+@@ -253,3 +337,101 @@ extension BaseUserNotificationsManager: SettingsObserver {
+         Task { await updateGlucoseBadge() }
+     }
+ }
++
++// MARK: - Carbs Required "Log Carbs"
++
++enum CarbsRequiredLogOutcome: String, Equatable {
++    case logged
++    case alreadyLogged
++    case invalidRequest
++    /// The amount in the alert is above the current Max Carbs; nothing is logged or marked.
++    case exceedsMaxCarbs
++    case failed
++}
++
++/// Remembers which Carbs Required alerts were already logged, so a repeated tap or
++/// the watch and phone both delivering the action can't store the carbs twice.
++protocol LoggedCarbsAlertStore {
++    /// Atomically records `alertID`. Returns false if it was already recorded.
++    func markLogged(_ alertID: String, now: Date) -> Bool
++    func unmark(_ alertID: String)
++}
++
++final class UserDefaultsLoggedCarbsAlertStore: LoggedCarbsAlertStore {
++    private let defaults: UserDefaults
++    private let key: String
++    private let retention: TimeInterval
++    /// Shared by every instance: the iPhone action and the watch message each build their own
++    /// store, and the check-and-mark must be atomic across both.
++    private static let lock = NSLock()
++    private var lock: NSLock { Self.lock }
++
++    init(
++        defaults: UserDefaults = .standard,
++        key: String = "CarbsRequiredLog.loggedAlerts",
++        retention: TimeInterval = 24 * 60 * 60
++    ) {
++        self.defaults = defaults
++        self.key = key
++        self.retention = retention
++    }
++
++    func markLogged(_ alertID: String, now: Date) -> Bool {
++        lock.lock()
++        defer { lock.unlock() }
++        var logged = (defaults.dictionary(forKey: key) as? [String: TimeInterval]) ?? [:]
++        let cutoff = now.timeIntervalSince1970 - retention
++        logged = logged.filter { $0.value >= cutoff }
++        guard logged[alertID] == nil else {
++            defaults.set(logged, forKey: key)
++            return false
++        }
++        logged[alertID] = now.timeIntervalSince1970
++        defaults.set(logged, forKey: key)
++        return true
++    }
++
++    func unmark(_ alertID: String) {
++        lock.lock()
++        defer { lock.unlock() }
++        var logged = (defaults.dictionary(forKey: key) as? [String: TimeInterval]) ?? [:]
++        logged[alertID] = nil
++        defaults.set(logged, forKey: key)
++    }
++}
++
++final class CarbsRequiredLogHandler {
++    private let store: LoggedCarbsAlertStore
++    private let maxCarbs: () -> Decimal
++    private let storeCarbs: (Decimal) async throws -> Void
++    private let now: () -> Date
++
++    init(
++        store: LoggedCarbsAlertStore,
++        maxCarbs: @escaping () -> Decimal,
++        storeCarbs: @escaping (Decimal) async throws -> Void,
++        now: @escaping () -> Date = Date.init
++    ) {
++        self.store = store
++        self.maxCarbs = maxCarbs
++        self.storeCarbs = storeCarbs
++        self.now = now
++    }
++
++    func log(grams: Decimal?, alertID: String?) async -> CarbsRequiredLogOutcome {
++        guard let grams, grams > 0, Decimal(NSDecimalNumber(decimal: grams).intValue) == grams, let alertID, !alertID.isEmpty
++        else { return .invalidRequest }
++        // Never log a different number than the one the user was shown.
++        guard grams <= maxCarbs() else { return .exceedsMaxCarbs }
++        guard store.markLogged(alertID, now: now()) else { return .alreadyLogged }
++        do {
++            try await storeCarbs(grams)
++            return .logged
++        } catch {
++            // A failed write must not block a retry of the same alert.
++            store.unmark(alertID)
++            debug(.default, "\(DebuggingIdentifiers.failed) Log Carbs failed to save carbs: \(error)")
++            return .failed
++        }
++    }
++}
+diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+index 06108bb44..c4be8934b 100644
+--- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
++++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
+@@ -1242,6 +1242,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+ 
+     /// Implements the replyHandler version of didReceiveMessage for ACK support.
+     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
++        if handleLogCarbsRequest(message, replyHandler: replyHandler) { return }
++
+         // Validate envelope structure — check type first so queryAcks (no payloadId) isn't rejected
+         guard let type = message["type"] as? String else {
+             self.session(session, didReceiveMessage: message)
+@@ -2020,3 +2022,25 @@ extension BaseWatchManager {
+         case genericFailure = "failure"
+     }
+ }
++
++// Carbs Required "Log Carbs" from the watch. Reached from the reply-handler
++// `session(_:didReceiveMessage:replyHandler:)` above, only for messages carrying the log-carbs key.
++extension BaseWatchManager {
++    /// Returns true if `message` was a log-carbs request (and the reply is now owned here).
++    func handleLogCarbsRequest(_ message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) -> Bool {
++        guard message[WatchMessageKeys.logCarbsGrams] != nil else { return false }
++
++        let grams = (message[WatchMessageKeys.logCarbsGrams] as? NSNumber)?.decimalValue
++        let alertID = message[WatchMessageKeys.logCarbsAlertID] as? String
++        debug(.watchManager, "📱 Received Log Carbs request from watch")
++        Task { [weak self] in
++            let outcome = await self?.notificationsManager.logCarbsRequired(grams: grams, alertID: alertID) ?? .failed
++            var reply: [String: Any] = [WatchMessageKeys.logCarbsResult: outcome.rawValue]
++            if outcome == .exceedsMaxCarbs, let maxCarbs = self?.settingsManager.settings.maxCarbs {
++                reply[WatchMessageKeys.maxCarbs] = NSDecimalNumber(decimal: maxCarbs).intValue
++            }
++            replyHandler(reply)
++        }
++        return true
++    }
++}
+diff --git a/TrioTests/ForecastedGlucoseEvaluatorTests.swift b/TrioTests/ForecastedGlucoseEvaluatorTests.swift
+index bdb2829a4..6b4e4f9bc 100644
+--- a/TrioTests/ForecastedGlucoseEvaluatorTests.swift
++++ b/TrioTests/ForecastedGlucoseEvaluatorTests.swift
+@@ -124,4 +124,61 @@ import Testing
+         let determination = makeDetermination(predictions: predictions)
+         #expect(ForecastedGlucoseEvaluator.evaluate(determination: determination) == nil)
+     }
++
++    @Test("Window: a dip at +10 that recovers by +20 is caught") func windowCatchesRecoveredDip() {
++        let predictions = Predictions(iob: [100, 90, 70, 85, 100], zt: nil, cob: nil, uam: nil)
++        let result = ForecastedGlucoseEvaluator.evaluateWindow(
++            determination: makeDetermination(predictions: predictions), thresholdMgDL: 72
++        )
++        #expect(result?.lowestPredicted == Decimal(70))
++        #expect(result?.firstCrossingMinutes == 10)
++    }
++
++    @Test("Window: no point at or below the threshold has no crossing") func windowNoCrossing() {
++        let predictions = Predictions(iob: [100, 95, 90, 85, 80], zt: nil, cob: nil, uam: nil)
++        let result = ForecastedGlucoseEvaluator.evaluateWindow(
++            determination: makeDetermination(predictions: predictions), thresholdMgDL: 72
++        )
++        #expect(result?.lowestPredicted == Decimal(80))
++        #expect(result?.firstCrossingMinutes == nil)
++    }
++
++    @Test("Window: the lowest value is the minimum across curves and points") func windowMinimum() {
++        let predictions = Predictions(
++            iob: [100, 90, 80, 85, 95], zt: [100, 95, 92, 60, 99], cob: [100, 85, 88, 90, 91], uam: nil
++        )
++        let result = ForecastedGlucoseEvaluator.evaluateWindow(
++            determination: makeDetermination(predictions: predictions), thresholdMgDL: 62
++        )
++        #expect(result?.lowestPredicted == Decimal(60))
++        #expect(result?.firstCrossingMinutes == 15)
++    }
++
++    @Test("Window: index 0 (now) is ignored") func windowIgnoresNow() {
++        let predictions = Predictions(iob: [40, 90, 95, 100, 105], zt: nil, cob: nil, uam: nil)
++        let result = ForecastedGlucoseEvaluator.evaluateWindow(
++            determination: makeDetermination(predictions: predictions), thresholdMgDL: 72
++        )
++        #expect(result?.lowestPredicted == Decimal(90))
++        #expect(result?.firstCrossingMinutes == nil)
++    }
++
++    @Test("Window: curves of differing lengths use what each has") func windowDifferingLengths() {
++        let predictions = Predictions(iob: [100, 95], zt: [100, 99, 98, 65], cob: nil, uam: [])
++        let result = ForecastedGlucoseEvaluator.evaluateWindow(
++            determination: makeDetermination(predictions: predictions), thresholdMgDL: 72
++        )
++        #expect(result?.lowestPredicted == Decimal(65))
++        #expect(result?.firstCrossingMinutes == 15)
++    }
++
++    @Test("Window: nil or empty predictions return nil") func windowNilPredictions() {
++        #expect(ForecastedGlucoseEvaluator.evaluateWindow(
++            determination: makeDetermination(predictions: nil), thresholdMgDL: 72
++        ) == nil)
++        let empty = Predictions(iob: [], zt: [], cob: [], uam: [])
++        #expect(ForecastedGlucoseEvaluator.evaluateWindow(
++            determination: makeDetermination(predictions: empty), thresholdMgDL: 72
++        ) == nil)
++    }
+ }
+diff --git a/TrioTests/GlucoseAlertCoordinatorTests.swift b/TrioTests/GlucoseAlertCoordinatorTests.swift
+index e44314e83..a20b610a8 100644
+--- a/TrioTests/GlucoseAlertCoordinatorTests.swift
++++ b/TrioTests/GlucoseAlertCoordinatorTests.swift
+@@ -1,5 +1,6 @@
+ import Foundation
+ import Testing
++import UserNotifications
+ 
+ @testable import Trio
+ 
+@@ -121,3 +122,261 @@ import Testing
+         #expect(result.isEmpty)
+     }
+ }
++
++@Suite("Trio Alerts: Carbs Required notification") struct CarbsRequiredNotificationTests {
++    private final class Spy {
++        var stored: [Decimal] = []
++        var shouldThrow = false
++    }
++
++    private func makeHandler(spy: Spy, maxCarbs: Decimal = 100) -> CarbsRequiredLogHandler {
++        let suite = "CarbsRequiredNotificationTests.\(UUID().uuidString)"
++        return CarbsRequiredLogHandler(
++            store: UserDefaultsLoggedCarbsAlertStore(defaults: UserDefaults(suiteName: suite)!),
++            maxCarbs: { maxCarbs },
++            storeCarbs: { grams in
++                if spy.shouldThrow { throw CancellationError() }
++                spy.stored.append(grams)
++            }
++        )
++    }
++
++    @Test("category lists Log Carbs first, then 15 min / 1 hr / 3 hrs, no 6 hr") func categoryActions() {
++        let category = NotificationCategoryFactory.createCarbsRequiredCategory()
++        #expect(category.identifier == NotificationCategoryIdentifier.carbsRequired.rawValue)
++        #expect(category.actions.map(\.identifier) == [
++            CarbsRequiredNotification.logCarbsActionIdentifier,
++            NotificationResponseAction.snooze15.rawValue,
++            NotificationResponseAction.snooze1hr.rawValue,
++            NotificationResponseAction.snooze3hr.rawValue
++        ])
++        #expect(category.actions.first?.options.contains(.authenticationRequired) == true)
++        #expect(category.actions.first?.options.contains(.foreground) == false)
++    }
++
++    @Test("shared category keeps all four snoozes and no Log Carbs") func sharedCategoryUnchanged() {
++        let category = NotificationCategoryFactory.createGlucoseCategory()
++        #expect(category.identifier == NotificationCategoryIdentifier.trioAlert.rawValue)
++        #expect(category.actions.map(\.identifier) == [
++            NotificationResponseAction.snooze15.rawValue,
++            NotificationResponseAction.snooze1hr.rawValue,
++            NotificationResponseAction.snooze3hr.rawValue,
++            NotificationResponseAction.snooze6hr.rawValue
++        ])
++    }
++
++    private func reading(
++        _ mgdl: Decimal = 75,
++        delta: Decimal? = nil,
++        direction: BloodGlucose.Direction? = nil
++    ) -> GlucoseAlertCoordinator.LatestReading {
++        .init(mgdl: mgdl, direction: direction, deltaPerMinute: delta, date: Date())
++    }
++
++    private func clause(
++        _ mgdl: Decimal = 102,
++        delta: Decimal? = nil,
++        direction: BloodGlucose.Direction? = nil,
++        units: GlucoseUnits = .mgdL,
++        showDelta: Bool = true,
++        showTrend: Bool = true
++    ) -> String {
++        GlucoseAlertCoordinator.readingClause(
++            mgdl: mgdl,
++            deltaPerMinute: delta,
++            direction: direction,
++            units: units,
++            showDelta: showDelta,
++            showTrend: showTrend
++        )
++    }
++
++    @Test("reading clause shows delta and trend in mg/dL") func clauseMgdL() {
++        #expect(clause(delta: Decimal(string: "-4.6")!, direction: .fortyFiveDown) == "102 mg/dL (-4.6/min), falling slowly")
++    }
++
++    @Test("reading clause omits delta and trend when toggled off") func clauseToggles() {
++        let delta = Decimal(string: "-4.6")!
++        #expect(clause(delta: delta, direction: .fortyFiveDown, showDelta: false) == "102 mg/dL, falling slowly")
++        #expect(clause(delta: delta, direction: .fortyFiveDown, showTrend: false) == "102 mg/dL (-4.6/min)")
++        #expect(clause(delta: delta, direction: .fortyFiveDown, showDelta: false, showTrend: false) == "102 mg/dL")
++    }
++
++    @Test("reading clause signs a positive delta") func clausePositiveDelta() {
++        #expect(clause(delta: Decimal(string: "1.2")!, direction: .singleUp) == "102 mg/dL (+1.2/min), rising")
++        #expect(clause(delta: 0, direction: .flat) == "102 mg/dL (+0.0/min), steady")
++    }
++
++    @Test("reading clause converts delta to mmol/L with two digits") func clauseMmolL() {
++        let text = clause(180, delta: Decimal(string: "-2.0")!, direction: .doubleDown, units: .mmolL)
++        #expect(text.contains("mmol/L (-0.11/min), falling quickly"))
++    }
++
++    @Test("reading clause skips a nil delta and an unmapped direction") func clauseMissingParts() {
++        #expect(clause(delta: nil, direction: .flat) == "102 mg/dL, steady")
++        #expect(clause(delta: 1, direction: nil) == "102 mg/dL (+1.0/min)")
++        #expect(clause(delta: 1, direction: .notComputable) == "102 mg/dL (+1.0/min)")
++        #expect(clause(delta: 1, direction: .none) == "102 mg/dL (+1.0/min)")
++    }
++
++    @Test("carbs body equals the plain text with Show Current Glucose off, even with a reading") func carbsBodyOff() {
++        let configuration = GlucoseAlertConfiguration(showGlucoseDelta: true, showTrendDescription: true)
++        let withReading = GlucoseAlertCoordinator.carbsRequiredBody(
++            grams: 26, reading: reading(delta: -1, direction: .singleDown), configuration: configuration, units: .mgdL
++        )
++        let plain = String(format: String(localized: "To prevent LOW required %d g of carbs"), 26)
++        #expect(withReading == plain)
++    }
++
++    @Test("carbs body appends glucose with Show Current Glucose on") func carbsBodyOn() {
++        let configuration = GlucoseAlertConfiguration(
++            showCurrentGlucose: true, showGlucoseDelta: true, showTrendDescription: true
++        )
++        let text = GlucoseAlertCoordinator.carbsRequiredBody(
++            grams: 26, reading: reading(75, delta: Decimal(string: "-1.5")!, direction: .singleDown),
++            configuration: configuration, units: .mgdL
++        )
++        #expect(text.contains("26"))
++        #expect(text.hasSuffix(". Glucose 75 mg/dL (-1.5/min), falling."))
++    }
++
++    @Test("carbs body without a reading has no glucose even when on") func carbsBodyNoReading() {
++        let configuration = GlucoseAlertConfiguration(showCurrentGlucose: true)
++        let text = GlucoseAlertCoordinator.carbsRequiredBody(
++            grams: 26, reading: nil, configuration: configuration, units: .mgdL
++        )
++        #expect(text.contains("26"))
++        #expect(!text.contains("mg/dL"))
++    }
++
++    @Test("forecast body is the plain prediction with the toggle off") func forecastBodyOff() {
++        let text = GlucoseAlertCoordinator.forecastedLowBody(
++            minutes: 10, thresholdMgDL: 72, reading: reading(60), configuration: GlucoseAlertConfiguration(), units: .mgdL
++        )
++        #expect(text == "Your glucose may go below 72 mg/dL in 10 min.")
++    }
++
++    @Test("forecast body prefixes the glucose with the toggle on") func forecastBodyOn() {
++        let configuration = GlucoseAlertConfiguration(
++            showCurrentGlucose: true, showGlucoseDelta: true, showTrendDescription: true
++        )
++        let text = GlucoseAlertCoordinator.forecastedLowBody(
++            minutes: 15, thresholdMgDL: 72,
++            reading: reading(102, delta: Decimal(string: "-4.6")!, direction: .fortyFiveDown),
++            configuration: configuration, units: .mgdL
++        )
++        #expect(text == "Glucose 102 mg/dL (-4.6/min), falling slowly. Your glucose may go below 72 mg/dL in 15 min.")
++    }
++
++    @Test("forecast body says already below when the reading is under the threshold") func forecastBodyAlreadyBelow() {
++        let configuration = GlucoseAlertConfiguration(showCurrentGlucose: true)
++        let text = GlucoseAlertCoordinator.forecastedLowBody(
++            minutes: 5, thresholdMgDL: 72, reading: reading(70), configuration: configuration, units: .mgdL
++        )
++        #expect(text == "Glucose 70 mg/dL. Your glucose is already below 72 mg/dL.")
++        let atThreshold = GlucoseAlertCoordinator.forecastedLowBody(
++            minutes: 5, thresholdMgDL: 72, reading: reading(72), configuration: configuration, units: .mgdL
++        )
++        #expect(atThreshold.hasSuffix("Your glucose may go below 72 mg/dL in 5 min."))
++    }
++
++    @Test("amount and alert id round-trip through userInfo") func payloadRoundTrip() {
++        let info = CarbsRequiredNotification.userInfo(grams: 26, alertID: "abc")
++        let payload = CarbsRequiredNotification.payload(from: info)
++        #expect(payload.grams == 26)
++        #expect(payload.alertID == "abc")
++    }
++
++    @Test("logs the amount from the notification") func logsAmount() async {
++        let spy = Spy()
++        let outcome = await makeHandler(spy: spy).log(grams: 26, alertID: "a1")
++        #expect(outcome == .logged)
++        #expect(spy.stored == [26])
++    }
++
++    @Test("a repeated log with the same alert id is stored once") func duplicateIgnored() async {
++        let spy = Spy()
++        let handler = makeHandler(spy: spy)
++        _ = await handler.log(grams: 26, alertID: "a1")
++        #expect(await handler.log(grams: 26, alertID: "a1") == .alreadyLogged)
++        #expect(await handler.log(grams: 15, alertID: "a2") == .logged)
++        #expect(spy.stored == [26, 15])
++    }
++
++    @Test("missing or zero grams, or no alert id, is rejected") func invalidRejected() async {
++        let spy = Spy()
++        let handler = makeHandler(spy: spy)
++        #expect(await handler.log(grams: nil, alertID: "a1") == .invalidRequest)
++        #expect(await handler.log(grams: 0, alertID: "a1") == .invalidRequest)
++        #expect(await handler.log(grams: 26, alertID: nil) == .invalidRequest)
++        #expect(spy.stored.isEmpty)
++    }
++
++    @Test("a failed write does not block a retry of the same alert") func failedWriteAllowsRetry() async {
++        let spy = Spy()
++        let handler = makeHandler(spy: spy)
++        spy.shouldThrow = true
++        #expect(await handler.log(grams: 26, alertID: "a1") == .failed)
++        spy.shouldThrow = false
++        #expect(await handler.log(grams: 26, alertID: "a1") == .logged)
++        #expect(spy.stored == [26])
++    }
++
++    @Test("amount above Max Carbs is rejected: not stored, alert not marked") func exceedsMaxCarbsRejected() async {
++        let spy = Spy()
++        let suite = UserDefaults(suiteName: "CarbsRequiredNotificationTests.\(UUID().uuidString)")!
++        var max: Decimal = 20
++        let handler = CarbsRequiredLogHandler(
++            store: UserDefaultsLoggedCarbsAlertStore(defaults: suite),
++            maxCarbs: { max },
++            storeCarbs: { spy.stored.append($0) }
++        )
++        #expect(await handler.log(grams: 26, alertID: "a1") == .exceedsMaxCarbs)
++        #expect(spy.stored.isEmpty)
++        // Not marked: once the limit allows it, the same alert can still be logged, at the exact amount.
++        max = 30
++        #expect(await handler.log(grams: 26, alertID: "a1") == .logged)
++        #expect(spy.stored == [26])
++    }
++
++    @Test("amount equal to Max Carbs is logged unchanged") func atMaxCarbsLogged() async {
++        let spy = Spy()
++        #expect(await makeHandler(spy: spy, maxCarbs: 20).log(grams: 20, alertID: "a1") == .logged)
++        #expect(spy.stored == [20])
++    }
++
++    @Test("fractional grams are rejected") func fractionalRejected() async {
++        let spy = Spy()
++        #expect(await makeHandler(spy: spy).log(grams: 12.5, alertID: "a1") == .invalidRequest)
++        #expect(spy.stored.isEmpty)
++    }
++
++    @Test("two handler entry points sharing a defaults suite dedupe the same alert") func guardSharedAcrossHandlers() async {
++        let spy = Spy()
++        let defaults = UserDefaults(suiteName: "CarbsRequiredNotificationTests.\(UUID().uuidString)")!
++        func make() -> CarbsRequiredLogHandler {
++            CarbsRequiredLogHandler(
++                store: UserDefaultsLoggedCarbsAlertStore(defaults: defaults),
++                maxCarbs: { 100 },
++                storeCarbs: { spy.stored.append($0) }
++            )
++        }
++        let phone = make()
++        let watch = make()
++        async let first = phone.log(grams: 26, alertID: "a1")
++        async let second = watch.log(grams: 26, alertID: "a1")
++        let outcomes = await [first, second]
++        #expect(outcomes.filter { $0 == .logged }.count == 1)
++        #expect(outcomes.filter { $0 == .alreadyLogged }.count == 1)
++        #expect(spy.stored == [26])
++    }
++
++    @Test("logged alert ids persist and expire after 24 h") func storePersistsAndPrunes() {
++        let defaults = UserDefaults(suiteName: "CarbsRequiredNotificationTests.\(UUID().uuidString)")!
++        let t0 = Date(timeIntervalSince1970: 1_000_000)
++        #expect(UserDefaultsLoggedCarbsAlertStore(defaults: defaults).markLogged("a1", now: t0))
++        let reopened = UserDefaultsLoggedCarbsAlertStore(defaults: defaults)
++        #expect(!reopened.markLogged("a1", now: t0.addingTimeInterval(60)))
++        #expect(reopened.markLogged("a1", now: t0.addingTimeInterval(25 * 60 * 60)))
++    }
++}
+-- 
+2.56.0
+
