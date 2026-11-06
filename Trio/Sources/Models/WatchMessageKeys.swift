@@ -89,3 +89,10 @@ enum WatchMessageKeys {
     // Glucose Bobble complication
     static let glucoseBobbleComplicationSettings = "glucoseBobbleComplicationSettings"
 }
+
+extension WatchMessageKeys {
+    // Carbs Required "Log Carbs" action (watch -> phone, with reply)
+    static let logCarbsGrams = "logCarbsGrams"
+    static let logCarbsAlertID = "logCarbsAlertID"
+    static let logCarbsResult = "logCarbsResult"
+}

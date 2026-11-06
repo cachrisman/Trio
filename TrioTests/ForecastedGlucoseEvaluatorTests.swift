@@ -124,4 +124,61 @@ import Testing
         let determination = makeDetermination(predictions: predictions)
         #expect(ForecastedGlucoseEvaluator.evaluate(determination: determination) == nil)
     }
+
+    @Test("Window: a dip at +10 that recovers by +20 is caught") func windowCatchesRecoveredDip() {
+        let predictions = Predictions(iob: [100, 90, 70, 85, 100], zt: nil, cob: nil, uam: nil)
+        let result = ForecastedGlucoseEvaluator.evaluateWindow(
+            determination: makeDetermination(predictions: predictions), thresholdMgDL: 72
+        )
+        #expect(result?.lowestPredicted == Decimal(70))
+        #expect(result?.firstCrossingMinutes == 10)
+    }
+
+    @Test("Window: no point at or below the threshold has no crossing") func windowNoCrossing() {
+        let predictions = Predictions(iob: [100, 95, 90, 85, 80], zt: nil, cob: nil, uam: nil)
+        let result = ForecastedGlucoseEvaluator.evaluateWindow(
+            determination: makeDetermination(predictions: predictions), thresholdMgDL: 72
+        )
+        #expect(result?.lowestPredicted == Decimal(80))
+        #expect(result?.firstCrossingMinutes == nil)
+    }
+
+    @Test("Window: the lowest value is the minimum across curves and points") func windowMinimum() {
+        let predictions = Predictions(
+            iob: [100, 90, 80, 85, 95], zt: [100, 95, 92, 60, 99], cob: [100, 85, 88, 90, 91], uam: nil
+        )
+        let result = ForecastedGlucoseEvaluator.evaluateWindow(
+            determination: makeDetermination(predictions: predictions), thresholdMgDL: 62
+        )
+        #expect(result?.lowestPredicted == Decimal(60))
+        #expect(result?.firstCrossingMinutes == 15)
+    }
+
+    @Test("Window: index 0 (now) is ignored") func windowIgnoresNow() {
+        let predictions = Predictions(iob: [40, 90, 95, 100, 105], zt: nil, cob: nil, uam: nil)
+        let result = ForecastedGlucoseEvaluator.evaluateWindow(
+            determination: makeDetermination(predictions: predictions), thresholdMgDL: 72
+        )
+        #expect(result?.lowestPredicted == Decimal(90))
+        #expect(result?.firstCrossingMinutes == nil)
+    }
+
+    @Test("Window: curves of differing lengths use what each has") func windowDifferingLengths() {
+        let predictions = Predictions(iob: [100, 95], zt: [100, 99, 98, 65], cob: nil, uam: [])
+        let result = ForecastedGlucoseEvaluator.evaluateWindow(
+            determination: makeDetermination(predictions: predictions), thresholdMgDL: 72
+        )
+        #expect(result?.lowestPredicted == Decimal(65))
+        #expect(result?.firstCrossingMinutes == 15)
+    }
+
+    @Test("Window: nil or empty predictions return nil") func windowNilPredictions() {
+        #expect(ForecastedGlucoseEvaluator.evaluateWindow(
+            determination: makeDetermination(predictions: nil), thresholdMgDL: 72
+        ) == nil)
+        let empty = Predictions(iob: [], zt: [], cob: [], uam: [])
+        #expect(ForecastedGlucoseEvaluator.evaluateWindow(
+            determination: makeDetermination(predictions: empty), thresholdMgDL: 72
+        ) == nil)
+    }
 }
