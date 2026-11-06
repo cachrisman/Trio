@@ -8,6 +8,6 @@ import Foundation
 
 struct WatchGlucoseObject: Hashable, Equatable, Codable {
     let date: Date
+    /// Canonical mg/dL. The watch converts to display units and computes color locally.
     let glucose: Double
-    let color: String
 }
