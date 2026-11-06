@@ -1,6 +1,7 @@
 import BackgroundTasks
 import CoreData
 import Foundation
+import G7SensorKit
 import SwiftUI
 import Swinject
 
@@ -84,7 +85,8 @@ extension Notification.Name {
         }
         _ = resolver.resolve(DeviceDataManager.self)!
         _ = resolver.resolve(APSManager.self)!
-        _ = resolver.resolve(FetchGlucoseManager.self)!
+        let fetchGlucoseManager = resolver.resolve(FetchGlucoseManager.self)!
+        configureG7ForkTelemetry(fetchGlucoseManager: fetchGlucoseManager)
         _ = resolver.resolve(FetchTreatmentsManager.self)!
         resolveOrLog(CalendarManager.self)
         resolveOrLog(UserNotificationsManager.self)
@@ -108,6 +110,22 @@ extension Notification.Name {
         resolver.resolve(TrioAlertManager.self)!.replayUnacknowledgedAlerts()
 
         startTelemetry()
+    }
+
+    /// Routes G7SensorKit fork telemetry (`G7TelemetryPayload`) into the phone log pipeline.
+    /// Uses `FetchGlucoseManager.cgmManager` (the plugin CGM manager) to name the sensor. Logged at info
+    /// rather than debug so a retention policy that drops debug entries cannot drop G7 telemetry.
+    private func configureG7ForkTelemetry(fetchGlucoseManager: FetchGlucoseManager?) {
+        G7Telemetry.emit = { [fetchGlucoseManager] payload in
+            let g7 = fetchGlucoseManager?.cgmManager as? G7CGMManager
+            let sensorName = g7?.sensorName ?? "nil"
+            let line = G7StructuredTelemetryLogLine.formatCoreTelemetry(
+                sensorName: sensorName,
+                payload: payload,
+                g7Session: "na"
+            )
+            info(.cgm, line)
+        }
     }
 
     /// Telemetry starts here, not in `AppDelegate.didFinishLaunching`: resolving
