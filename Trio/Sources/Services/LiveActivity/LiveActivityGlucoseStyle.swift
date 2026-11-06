@@ -23,6 +23,19 @@ enum LiveActivityFontSize: String, Codable, Hashable, CaseIterable, Identifiable
         }
     }
 
+    var bigGlucosePointSize: CGFloat {
+        switch self {
+        case .small:
+            return 56
+        case .medium:
+            return 66
+        case .large:
+            return 76
+        case .extraLarge:
+            return 86
+        }
+    }
+
     var verticalPadding: CGFloat? {
         self == .extraLarge ? 0 : nil
     }
@@ -57,5 +70,19 @@ extension LiveActivityAttributes.SimpleViewStyle {
     var glucoseFont: Font {
         let scaled = UIFontMetrics(forTextStyle: fontSize.uiTextStyle).scaledValue(for: fontSize.basePointSize)
         return .system(size: scaled, weight: .bold)
+    }
+}
+
+extension LiveActivityAttributes.BigGlucoseViewStyle {
+    private var scaledGlucoseSize: CGFloat {
+        UIFontMetrics(forTextStyle: fontSize.uiTextStyle).scaledValue(for: fontSize.bigGlucosePointSize)
+    }
+
+    var glucoseFont: Font {
+        .system(size: scaledGlucoseSize, weight: .bold)
+    }
+
+    var trendFont: Font {
+        .system(size: scaledGlucoseSize * 0.4, weight: .semibold)
     }
 }
