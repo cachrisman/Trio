@@ -34,12 +34,12 @@ index 79da6ecc3..0c1158c6b 100644
  [submodule "MinimedKit"]
  	path = MinimedKit
 diff --git a/G7SensorKit b/G7SensorKit
-index 08d488633..50ab41156 160000
+index 08d488633..fd1104bbd 160000
 --- a/G7SensorKit
 +++ b/G7SensorKit
 @@ -1 +1 @@
 -Subproject commit 08d488633cc9e248a4b4095626c958ed3a75d0d7
-+Subproject commit 50ab41156cc1e58fde4a94f15dd2466f6974e61b
++Subproject commit fd1104bbd27a56128129fdbfcecfebf45576a8e6
 -- 
 2.56.0
 
