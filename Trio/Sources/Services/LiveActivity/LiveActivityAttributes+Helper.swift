@@ -25,6 +25,15 @@ extension LiveActivityAttributes.SimpleViewStyle {
     }
 }
 
+extension LiveActivityAttributes.BigGlucoseViewStyle {
+    init(settings: TrioSettings) {
+        self.init(
+            fontSize: settings.liveActivityBigGlucoseFontSize,
+            colorByRange: settings.liveActivityBigGlucoseColorByRange
+        )
+    }
+}
+
 extension LiveActivityAttributes.ContentState {
     static func calculateChange(chart: [GlucoseData], units: GlucoseUnits) -> String {
         guard chart.count >= 2 else { return "" }
@@ -118,6 +127,9 @@ extension LiveActivityAttributes.ContentState {
             useDetailedViewIOS: settings.lockScreenView == .detailed,
             useDetailedViewWatchOS: settings.smartStackView == .detailed,
             simpleViewStyle: LiveActivityAttributes.SimpleViewStyle(settings: settings),
+            bigGlucoseViewStyle: settings.lockScreenView == .bigGlucose
+                ? LiveActivityAttributes.BigGlucoseViewStyle(settings: settings)
+                : nil,
             detailedViewState: detailedState,
             isInitialState: false
         )
