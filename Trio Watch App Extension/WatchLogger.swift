@@ -51,6 +51,22 @@ final class WatchLogger: Sendable {
         log(.error, category, Self.message(message, error: error))
     }
 
+    /// A crash or unrecoverable condition
+    func fault(_ category: WatchLogEntry.Category, _ message: String, error: Error? = nil) {
+        log(.fault, category, Self.message(message, error: error))
+    }
+
+    /// Used after an error or fault so the report reaches the phone without waiting for the 5-minute interval.
+    /// Ships only entries not yet sent, and waits behind a transfer already in flight (the
+    /// unacknowledged-resend path stays reserved for the phone's explicit request).
+    /// Delivery still depends on watchOS file-transfer scheduling.
+    func shipNow() {
+        Task { [shipper, pending] in
+            await shipper.drain(pending)
+            await shipper.ship(onRequest: false)
+        }
+    }
+
     // At most one line per key and interval while the state stays the same
     func shouldLog(_ key: String, state: String = "", every interval: TimeInterval = 30) -> Bool {
         let now = Date()
