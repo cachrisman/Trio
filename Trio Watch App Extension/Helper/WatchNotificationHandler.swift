@@ -57,6 +57,7 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
 
             var categories = existingCategories
             categories.update(with: glucoseCategory)
+            categories.update(with: NotificationCategoryFactory.createCarbsRequiredCategory())
             // UNUserNotificationCenter methods should be called on main thread
             Task { @MainActor in
                 center.setNotificationCategories(categories)
@@ -71,6 +72,12 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        // Held open until the phone answers so the reply (or failure) isn't lost to suspension.
+        if response.actionIdentifier == CarbsRequiredNotification.logCarbsActionIdentifier {
+            sendLogCarbsRequest(userInfo: response.notification.request.content.userInfo, completion: completionHandler)
+            return
+        }
+
         defer { completionHandler() }
 
         guard let action = NotificationResponseAction(rawValue: response.actionIdentifier) else { return }
@@ -99,5 +106,62 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
             // Session not reachable or not activated - use transferUserInfo (queued delivery)
             session.transferUserInfo(payload)
         }
+    }
+
+    /// Asks the phone to log the carbs in `userInfo`. Deliberately has no
+    /// `transferUserInfo` fallback: a queued request could log carbs long after the user
+    /// was told it failed. Every outcome is surfaced as a local notification.
+    private func sendLogCarbsRequest(userInfo: [AnyHashable: Any], completion: @escaping () -> Void) {
+        let payload = CarbsRequiredNotification.payload(from: userInfo)
+        guard let grams = payload.grams, grams > 0, let alertID = payload.alertID else {
+            notifyLogCarbs(String(localized: "Couldn't log carbs: invalid alert", comment: "Watch Log Carbs failure"))
+            completion()
+            return
+        }
+
+        let session = WCSession.default
+        guard WCSession.isSupported(), session.activationState == .activated, session.isReachable else {
+            notifyLogCarbs(String(localized: "Couldn't log carbs: iPhone not reachable", comment: "Watch Log Carbs failure"))
+            completion()
+            return
+        }
+
+        let message: [String: Any] = [
+            WatchMessageKeys.logCarbsGrams: NSDecimalNumber(decimal: grams).intValue,
+            WatchMessageKeys.logCarbsAlertID: alertID
+        ]
+        session.sendMessage(message, replyHandler: { [weak self] reply in
+            switch reply[WatchMessageKeys.logCarbsResult] as? String {
+            case "logged":
+                self?.notifyLogCarbs(String(localized: "Carbs logged", comment: "Watch Log Carbs success"))
+            case "alreadyLogged":
+                self?.notifyLogCarbs(String(localized: "Carbs already logged", comment: "Watch Log Carbs duplicate"))
+            case "exceedsMaxCarbs":
+                let maxCarbs = (reply[WatchMessageKeys.maxCarbs] as? NSNumber)?.intValue
+                let requested = NSDecimalNumber(decimal: grams).intValue
+                self?.notifyLogCarbs(maxCarbs.map {
+                    String(
+                        format: String(
+                            localized: "Not logged: %d g is above your Max Carbs (%d g). Open Trio to log carbs.",
+                            comment: "Watch Log Carbs rejected: amount above Max Carbs"
+                        ),
+                        requested,
+                        $0
+                    )
+                } ?? String(localized: "Not logged: above your Max Carbs. Open Trio to log carbs.", comment: "Watch Log Carbs rejected: amount above Max Carbs"))
+            default:
+                self?.notifyLogCarbs(String(localized: "Couldn't log carbs", comment: "Watch Log Carbs failure"))
+            }
+            completion()
+        }, errorHandler: { [weak self] _ in
+            self?.notifyLogCarbs(String(localized: "Couldn't log carbs: iPhone not reachable", comment: "Watch Log Carbs failure"))
+            completion()
+        })
+    }
+
+    private func notifyLogCarbs(_ text: String) {
+        let content = UNMutableNotificationContent()
+        content.title = text
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 }

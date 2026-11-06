@@ -46,6 +46,35 @@ enum ForecastedGlucoseEvaluator {
         )
     }
 
+    struct WindowResult: Equatable {
+        let lowestPredicted: Decimal
+        let firstCrossingMinutes: Int?
+    }
+
+    /// Looks at every 5-min point from +5 up to the horizon (index 0 is "now" and is skipped),
+    /// taking the min across curves at each point. `evaluate` only sees the last point, so a dip
+    /// below the threshold at +10 that recovers by +20 was never alerted, although the settings
+    /// text promises an alert "within the next 20 minutes".
+    static func evaluateWindow(
+        determination: Determination,
+        thresholdMgDL: Decimal,
+        horizonMinutes: Int = defaultHorizonMinutes
+    ) -> WindowResult? {
+        guard let predictions = determination.predictions else { return nil }
+
+        var lowest: Decimal?
+        var firstCrossing: Int?
+        for index in 1 ... max(horizonMinutes / 5, 1) {
+            let samples = [predictions.iob, predictions.cob, predictions.uam, predictions.zt]
+                .compactMap { sample($0, at: index) }
+            guard let pointMin = samples.min() else { continue }
+            lowest = min(lowest ?? pointMin, pointMin)
+            if firstCrossing == nil, pointMin <= thresholdMgDL { firstCrossing = index * 5 }
+        }
+        guard let lowest else { return nil }
+        return WindowResult(lowestPredicted: lowest, firstCrossingMinutes: firstCrossing)
+    }
+
     private static func sample(_ array: [Int]?, at index: Int) -> Decimal? {
         guard let array, array.indices.contains(index) else { return nil }
         return Decimal(array[index])

@@ -3,6 +3,7 @@ import UserNotifications
 
 enum NotificationCategoryIdentifier: String {
     case trioAlert = "Trio.alert"
+    case carbsRequired = "Trio.alert.carbsRequired"
 }
 
 enum NotificationResponseAction: String, CaseIterable {
@@ -42,6 +43,33 @@ enum NotificationResponseAction: String, CaseIterable {
     }
 }
 
+// MARK: - CarbsRequiredNotification
+
+/// Action id and userInfo payload of the Carbs Required notification. Shared by the
+/// iPhone and watch delegates. Kept apart from `NotificationResponseAction` because
+/// that enum's `allCases` also drives the snooze sheet and the in-app banner.
+enum CarbsRequiredNotification {
+    static let logCarbsActionIdentifier = "Trio.logCarbs"
+    static let gramsKey = "trio.carbsRequired.grams"
+    static let alertIDKey = "trio.carbsRequired.alertID"
+
+    /// No 6 hr snooze here; the shared `Trio.alert` category keeps all four.
+    static let snoozeActions: [NotificationResponseAction] = [.snooze15, .snooze1hr, .snooze3hr]
+
+    static var logCarbsTitle: String {
+        String(localized: "Log Carbs", comment: "Notification action that logs the carbs a Carbs Required alert asked for")
+    }
+
+    static func userInfo(grams: Int, alertID: String) -> [AnyHashable: Any] {
+        [gramsKey: grams, alertIDKey: alertID]
+    }
+
+    static func payload(from userInfo: [AnyHashable: Any]) -> (grams: Decimal?, alertID: String?) {
+        let grams = (userInfo[gramsKey] as? NSNumber)?.decimalValue
+        return (grams, userInfo[alertIDKey] as? String)
+    }
+}
+
 // MARK: - NotificationCategoryFactory
 
 enum NotificationCategoryFactory {
@@ -59,6 +87,26 @@ enum NotificationCategoryFactory {
         return UNNotificationCategory(
             identifier: NotificationCategoryIdentifier.trioAlert.rawValue,
             actions: snoozeActions,
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+    }
+
+    static func createCarbsRequiredCategory() -> UNNotificationCategory {
+        // `.authenticationRequired`: the action feeds COB and dosing, so a locked
+        // phone must not allow it from the lock screen. No `.foreground`; it runs
+        // in the background.
+        let logCarbs = UNNotificationAction(
+            identifier: CarbsRequiredNotification.logCarbsActionIdentifier,
+            title: CarbsRequiredNotification.logCarbsTitle,
+            options: [.authenticationRequired]
+        )
+        let snoozes = CarbsRequiredNotification.snoozeActions.map { action in
+            UNNotificationAction(identifier: action.rawValue, title: action.localizedTitle, options: [])
+        }
+        return UNNotificationCategory(
+            identifier: NotificationCategoryIdentifier.carbsRequired.rawValue,
+            actions: [logCarbs] + snoozes,
             intentIdentifiers: [],
             options: [.customDismissAction]
         )

@@ -85,6 +85,17 @@ extension GlucoseAlerts {
                     .disabled(!state.cgmProvidesOwnAlerts)
                 }.listRowBackground(Color.chart)
 
+                Section(
+                    header: Text("Notification Content"),
+                    footer: Text(
+                        "Adds detail to glucose alarm notifications. Low, Urgent Low and High alarms always include the current glucose; Show Current Glucose adds it to Low Glucose Soon and Carbs Required."
+                    )
+                ) {
+                    Toggle("Show Current Glucose", isOn: $store.configuration.showCurrentGlucose)
+                    Toggle("Show Change per Minute", isOn: $store.configuration.showGlucoseDelta)
+                    Toggle("Show Trend", isOn: $store.configuration.showTrendDescription)
+                }.listRowBackground(Color.chart)
+
                 SettingInputSection(
                     decimalValue: $decimalPlaceholder,
                     booleanValue: $state.glucoseBadge,
