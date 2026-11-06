@@ -65,24 +65,39 @@ extension Notification.Name {
         LockedResolver(resolver: assembler.resolver, lock: resolverLock)
     }
 
+    /// Resolves a service, logging instead of crashing when it is missing.
+    @discardableResult private func resolveOrLog<T>(_ type: T.Type) -> T? {
+        let service = resolver.resolve(type)
+        if service == nil {
+            error(.lifecycle, "Could not resolve \(String(describing: type)) at launch; skipped it")
+        }
+        return service
+    }
+
+    /// DeviceDataManager, APSManager, FetchGlucoseManager, FetchTreatmentsManager (remote carbs and
+    /// temp targets feed the loop), IOBService, GlucoseAlertCoordinator, NotLoopingMonitor and
+    /// TrioAlertManager stay force-unwrapped on purpose: if a closed-loop or alarm service is missing,
+    /// the app must stop at launch rather than run without the loop, IOB or alarms.
     private func loadServices() {
-        resolver.resolve(AppearanceManager.self)!.setupGlobalAppearance()
+        if let appearanceManager = resolveOrLog(AppearanceManager.self) {
+            appearanceManager.setupGlobalAppearance()
+        }
         _ = resolver.resolve(DeviceDataManager.self)!
         _ = resolver.resolve(APSManager.self)!
         _ = resolver.resolve(FetchGlucoseManager.self)!
         _ = resolver.resolve(FetchTreatmentsManager.self)!
-        _ = resolver.resolve(CalendarManager.self)!
-        _ = resolver.resolve(UserNotificationsManager.self)!
-        _ = resolver.resolve(WatchManager.self)!
-        _ = resolver.resolve(ContactImageManager.self)!
-        _ = resolver.resolve(HealthKitManager.self)!
-        _ = resolver.resolve(GarminManager.self)!
-        _ = resolver.resolve(BluetoothStateManager.self)!
-        _ = resolver.resolve(PluginManager.self)!
-        _ = resolver.resolve(AlertPermissionsChecker.self)!
-        _ = resolver.resolve(CloudLogUploadService.self)!
+        resolveOrLog(CalendarManager.self)
+        resolveOrLog(UserNotificationsManager.self)
+        resolveOrLog(WatchManager.self)
+        resolveOrLog(ContactImageManager.self)
+        resolveOrLog(HealthKitManager.self)
+        resolveOrLog(GarminManager.self)
+        resolveOrLog(BluetoothStateManager.self)
+        resolveOrLog(PluginManager.self)
+        resolveOrLog(AlertPermissionsChecker.self)
+        resolveOrLog(CloudLogUploadService.self)
         if #available(iOS 16.2, *) {
-            _ = resolver.resolve(LiveActivityManager.self)!
+            resolveOrLog(LiveActivityManager.self)
         }
         _ = resolver.resolve(IOBService.self)!
         _ = resolver.resolve(GlucoseAlertCoordinator.self)!
@@ -114,7 +129,7 @@ extension Notification.Name {
     ///   3. scheduleRecurring: best-effort fallback for the rare case
     ///      where the app stays foregrounded for a full 24h.
     private func startTelemetry() {
-        let telemetry = resolver.resolve(TelemetryClient.self)!
+        guard let telemetry = resolveOrLog(TelemetryClient.self) else { return }
         // hands the foreground-transition hook its reference; nil until now
         appDelegate.telemetry = telemetry
         telemetry.initializeInstallID()
