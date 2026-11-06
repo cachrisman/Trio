@@ -41,21 +41,67 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
         )
     }
 
-    func getSnapshot(in _: Context, completion: @escaping (GlucoseBobbleComplicationEntry) -> Void) {
-        let snapshot = GlucoseComplicationSnapshot.load() ?? Self.sampleSnapshot
+    func getSnapshot(in context: Context, completion: @escaping (GlucoseBobbleComplicationEntry) -> Void) {
+        let realSnapshot = GlucoseComplicationSnapshot.load()
+        let snapshot = realSnapshot ?? Self.sampleSnapshot
         let settings = GlucoseBobbleComplicationSettings.load() ?? GlucoseBobbleComplicationSettings()
+        // fork — telemetry for the circular complication's getSnapshot path; ages come from the
+        // real loaded snapshot, not the sample fallback used for display.
+        TrioComplicationDataStore.shared.logGlucoseBobbleProviderCall(
+            call: "snapshot",
+            isPreview: context.isPreview,
+            hasSnapshot: realSnapshot != nil,
+            dataAgeSeconds: Self.ageSeconds(since: realSnapshot?.readingDate),
+            loopAgeSeconds: Self.ageSeconds(since: realSnapshot?.lastLoopDate),
+            observedReloadGeneration: Self.telemetryReloadGeneration(TrioComplicationDataStore.shared),
+            settingsSummary: Self.settingsSummary(settings)
+        )
         completion(GlucoseBobbleComplicationEntry(date: Date(), snapshot: snapshot, settings: settings))
     }
 
-    func getTimeline(in _: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
+    func getTimeline(in context: Context, completion: @escaping (Timeline<GlucoseBobbleComplicationEntry>) -> Void) {
+        // fork — record that this complication serviced the current reload generation, so
+        // TrioComplicationDataStore does not treat the reload as dropped when this is the only Trio complication on the face.
+        let store = TrioComplicationDataStore.shared
+        // Read the generation once so the telemetry below reports the one actually recorded.
+        let appGroupAvailable = store.isAppGroupAvailable()
+        let currentGeneration = appGroupAvailable ? store.currentReloadGeneration() : nil
+        // Record only a generation that exists. With none written there is no reload to service, and
+        // writing 0 could lower a value the corner provider already recorded in the same shared key.
+        if let currentGeneration {
+            store.recordWidgetObservedGeneration(currentGeneration)
+        }
+        let observedReloadGeneration = appGroupAvailable ? (currentGeneration ?? 0) : -1
+
         let anchor = Self.roundedDownToMinute(Date())
         let settings = GlucoseBobbleComplicationSettings.load() ?? GlucoseBobbleComplicationSettings()
 
         guard let snapshot = GlucoseComplicationSnapshot.load() else {
+            // fork — telemetry for the circular complication's getTimeline path (no-snapshot case).
+            store.logGlucoseBobbleProviderCall(
+                call: "timeline",
+                isPreview: context.isPreview,
+                hasSnapshot: false,
+                dataAgeSeconds: -1,
+                loopAgeSeconds: -1,
+                observedReloadGeneration: observedReloadGeneration,
+                settingsSummary: Self.settingsSummary(settings)
+            )
             let entry = GlucoseBobbleComplicationEntry(date: anchor, snapshot: nil, settings: settings)
             completion(Timeline(entries: [entry], policy: .never))
             return
         }
+
+        // fork — telemetry for the circular complication's getTimeline path.
+        store.logGlucoseBobbleProviderCall(
+            call: "timeline",
+            isPreview: context.isPreview,
+            hasSnapshot: true,
+            dataAgeSeconds: Self.ageSeconds(since: snapshot.readingDate),
+            loopAgeSeconds: Self.ageSeconds(since: snapshot.lastLoopDate),
+            observedReloadGeneration: observedReloadGeneration,
+            settingsSummary: Self.settingsSummary(settings)
+        )
 
         // One entry per minute so the minutes-ago text advances on screen without WidgetKit
         // reloading the timeline; the watch app requests a reload once fresh data arrives.
@@ -91,6 +137,29 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
     // ambiguous in the repeated hour when DST ends and can land an hour early.
     static func roundedDownToMinute(_ date: Date) -> Date {
         Date(timeIntervalSinceReferenceDate: (date.timeIntervalSinceReferenceDate / 60).rounded(.down) * 60)
+    }
+
+    // fork — telemetry helper: the current reload generation, read only. 0 when the App Group is
+    // available but no generation has been written yet (as the corner provider reports it); -1 only
+    // when the App Group itself is unavailable.
+    private static func telemetryReloadGeneration(_ store: TrioComplicationDataStore) -> Int {
+        guard store.isAppGroupAvailable() else { return -1 }
+        return store.currentReloadGeneration() ?? 0
+    }
+
+    // fork — telemetry helper: whole seconds from `date` to now, floored at 0; -1 when `date` is nil.
+    private static func ageSeconds(since date: Date?) -> Int {
+        guard let date else { return -1 }
+        return max(0, Int(Date().timeIntervalSince(date)))
+    }
+
+    // fork — telemetry helper: compact settings summary for logGlucoseBobbleProviderCall.
+    private static func settingsSummary(_ settings: GlucoseBobbleComplicationSettings) -> String {
+        "color_mode=\(settings.colorMode.rawValue)"
+            + " show_minutes=\(settings.showMinutesAgo)"
+            + " show_delta=\(settings.showDelta)"
+            + " background=\(settings.backgroundStyle.rawValue)"
+            + " ring=\(settings.ringStyle.rawValue)"
     }
 }
 
