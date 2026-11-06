@@ -834,6 +834,33 @@ extension Home {
             }
         }
 
+        func backfillGlucoseFromNightscout() async {
+            // A local glucose source is not the remote Nightscout, so those readings still need uploading.
+            let alreadyUploaded = !settingsManager.settings.useLocalGlucoseSource
+            let outcome = await HomeNightscoutBackfill.run(
+                timeout: .seconds(10),
+                fetch: {
+                    await self.nightscoutManager.fetchGlucose(since: Date().addingTimeInterval(-24 * 60 * 60))
+                },
+                store: {
+                    try await self.glucoseStorage.backfillGlucose($0, alreadyUploadedToNightscout: alreadyUploaded)
+                }
+            )
+            switch outcome {
+            case let .stored(count):
+                debug(
+                    .nightscout,
+                    "Home pull-to-refresh Nightscout backfill passed \(count) Nightscout reading(s) to backfill (deduplicated against stored glucose)"
+                )
+            case .empty:
+                debug(.nightscout, "Home pull-to-refresh Nightscout backfill returned no glucose")
+            case .timedOut:
+                debug(.nightscout, "Home pull-to-refresh Nightscout backfill timed out")
+            case .failed:
+                debug(.nightscout, "Home pull-to-refresh Nightscout backfill failed")
+            }
+        }
+
         func runLoop() {
             provider.heartbeatNow()
         }
