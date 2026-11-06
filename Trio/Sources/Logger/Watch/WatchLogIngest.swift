@@ -77,6 +77,8 @@ final class WatchLogIngest: @unchecked Sendable {
             .sorted { $0.seq < $1.seq }
         let sink = self.sink()
         fresh.map(Self.record).forEach(sink.accept)
+        // Watch .error/.fault entries also go to Crashlytics; fresh is seq-filtered, so each entry is forwarded once.
+        WatchCrashlyticsForwarder.forward(fresh)
         await sink.flush()
 
         // Only what was parsed and stored; a cut-off file gets the rest resent
