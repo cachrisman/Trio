@@ -11,6 +11,8 @@ extension LiveActivitySettings {
         @Published var smartStackView: LockScreenView = .simple
         @Published var displayGlucoseForecasts = false
         @Published var simpleFontSize: LiveActivityFontSize = .large
+        @Published var bigGlucoseFontSize: LiveActivityFontSize = .large
+        @Published var bigGlucoseColorByRange = false
 
         var glucoseColorScheme: GlucoseColorScheme { settingsManager.settings.glucoseColorScheme }
 
@@ -21,6 +23,8 @@ extension LiveActivitySettings {
             subscribeSetting(\.smartStackView, on: $smartStackView) { smartStackView = $0 }
             subscribeSetting(\.displayGlucoseForecasts, on: $displayGlucoseForecasts) { displayGlucoseForecasts = $0 }
             subscribeSetting(\.liveActivitySimpleFontSize, on: $simpleFontSize) { simpleFontSize = $0 }
+            subscribeSetting(\.liveActivityBigGlucoseFontSize, on: $bigGlucoseFontSize) { bigGlucoseFontSize = $0 }
+            subscribeSetting(\.liveActivityBigGlucoseColorByRange, on: $bigGlucoseColorByRange) { bigGlucoseColorByRange = $0 }
         }
     }
 }

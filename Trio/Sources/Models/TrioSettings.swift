@@ -70,6 +70,8 @@ struct TrioSettings: JSON, Equatable, Encodable {
     var lockScreenView: LockScreenView = .simple
     var smartStackView: LockScreenView = .simple
     var liveActivitySimpleFontSize: LiveActivityFontSize = .large
+    var liveActivityBigGlucoseFontSize: LiveActivityFontSize = .large
+    var liveActivityBigGlucoseColorByRange: Bool = false
     var displayGlucoseForecasts: Bool = false
     var bolusShortcut: BolusShortcutLimit = .notAllowed
     var timeInRangeType: TimeInRangeType = .timeInTightRange
@@ -352,13 +354,25 @@ extension TrioSettings: Decodable {
         }
 
         if let smartStackView = try? container.decode(LockScreenView.self, forKey: .smartStackView) {
-            settings.smartStackView = smartStackView
+            settings.smartStackView = smartStackView == .bigGlucose ? .simple : smartStackView
         }
 
         if let liveActivitySimpleFontSize = try? container
             .decode(LiveActivityFontSize.self, forKey: .liveActivitySimpleFontSize)
         {
             settings.liveActivitySimpleFontSize = liveActivitySimpleFontSize
+        }
+
+        if let liveActivityBigGlucoseFontSize = try? container
+            .decode(LiveActivityFontSize.self, forKey: .liveActivityBigGlucoseFontSize)
+        {
+            settings.liveActivityBigGlucoseFontSize = liveActivityBigGlucoseFontSize
+        }
+
+        if let liveActivityBigGlucoseColorByRange = try? container
+            .decode(Bool.self, forKey: .liveActivityBigGlucoseColorByRange)
+        {
+            settings.liveActivityBigGlucoseColorByRange = liveActivityBigGlucoseColorByRange
         }
 
         if let displayGlucoseForecasts = try? container.decode(Bool.self, forKey: .displayGlucoseForecasts) {

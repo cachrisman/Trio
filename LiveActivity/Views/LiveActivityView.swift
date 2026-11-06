@@ -184,6 +184,8 @@ struct LiveActivityView: View {
                 }
             }
             .addLiveActivityModifiers(isWatchOS: false)
+        } else if let bigGlucoseViewStyle = context.state.bigGlucoseViewStyle {
+            LiveActivityBigGlucoseView(context: context, style: bigGlucoseViewStyle)
         } else {
             let simpleViewStyle = context.state.simpleViewStyle
 
@@ -211,6 +213,125 @@ struct LiveActivityView: View {
             }
             .addLiveActivityModifiers(isWatchOS: false, verticalPadding: simpleViewStyle.fontSize.verticalPadding)
         }
+    }
+}
+
+struct LiveActivityBigGlucoseView: View {
+    var context: ActivityViewContext<LiveActivityAttributes>
+    var style: LiveActivityAttributes.BigGlucoseViewStyle
+
+    private let glucoseColumnRatio: CGFloat = 0.4
+    private let columnSpacing: CGFloat = 10
+
+    private var valueColor: Color {
+        context.isStale ? .secondary : (style.colorByRange ? context.state.glucoseColor : Color.primary)
+    }
+
+    private var delta: String {
+        let trimmed = context.state.change.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "--" : trimmed
+    }
+
+    private var statsLine: String {
+        let iobFormatter = NumberFormatter()
+        iobFormatter.numberStyle = .decimal
+        iobFormatter.maximumFractionDigits = 1
+
+        let iob = iobFormatter.string(from: context.state.detailedViewState.iob as NSNumber) ?? "--"
+        let cob = "\(context.state.detailedViewState.cob)"
+        let insulinUnit = String(localized: "U", comment: "Insulin unit")
+        let carbUnit = String(localized: "g", comment: "gram of carbs")
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.timeStyle = .short
+        timeFormatter.dateStyle = .none
+        let time = context.state.date.map { timeFormatter.string(from: $0) } ?? "--"
+
+        return "\(iob) \(insulinUnit) · \(cob) \(carbUnit) · \(time)"
+    }
+
+    var body: some View {
+        Group {
+            if context.state.isInitialState {
+                Text("Live Activity Expired. Open Trio to Refresh").minimumScaleFactor(0.01)
+            } else {
+                ProportionalColumnsLayout(ratio: glucoseColumnRatio, spacing: columnSpacing) {
+                    VStack(alignment: .center, spacing: 0) {
+                        Text(context.state.bg)
+                            .font(style.glucoseFont)
+                            .foregroundStyle(valueColor)
+                            .strikethrough(context.isStale, pattern: .solid, color: .red.opacity(0.6))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.4)
+
+                        HStack(spacing: 6) {
+                            if !context.isStale, let direction = context.state.direction {
+                                Text(direction)
+                                    .foregroundStyle(valueColor)
+                            }
+                            Text(delta)
+                                .foregroundStyle(valueColor)
+                                .strikethrough(context.isStale, pattern: .solid, color: .red.opacity(0.6))
+                        }
+                        .font(style.trendFont)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                    VStack(spacing: 4) {
+                        LiveActivityChartView(
+                            context: context,
+                            additionalState: context.state.detailedViewState,
+                            isCompactWindow: true
+                        )
+                        .frame(maxHeight: .infinity)
+
+                        Text(statsLine)
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(context.isStale ? .secondary : .primary)
+                            .strikethrough(context.isStale, pattern: .solid, color: .red.opacity(0.6))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                }
+            }
+        }
+        .addLiveActivityModifiers(isWatchOS: false)
+    }
+}
+
+private struct ProportionalColumnsLayout: Layout {
+    var ratio: CGFloat
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+        let width = proposal.width ?? (
+            subviews[0].sizeThatFits(.unspecified).width + subviews[1].sizeThatFits(.unspecified).width + spacing
+        )
+        let usable = max(width - spacing, 0)
+        let leading = subviews[0].sizeThatFits(ProposedViewSize(width: usable * ratio, height: proposal.height))
+        let trailing = subviews[1].sizeThatFits(ProposedViewSize(width: usable * (1 - ratio), height: proposal.height))
+        return CGSize(width: width, height: max(leading.height, trailing.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) {
+        guard subviews.count == 2 else { return }
+        let usable = max(bounds.width - spacing, 0)
+        let leadingWidth = usable * ratio
+        let trailingWidth = usable * (1 - ratio)
+        subviews[0].place(
+            at: CGPoint(x: bounds.minX, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(width: leadingWidth, height: bounds.height)
+        )
+        subviews[1].place(
+            at: CGPoint(x: bounds.minX + leadingWidth + spacing, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(width: trailingWidth, height: bounds.height)
+        )
     }
 }
 

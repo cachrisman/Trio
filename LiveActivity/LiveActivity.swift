@@ -369,6 +369,69 @@ private extension LiveActivityAttributes.ContentState {
             isInitialState: false
         )
     }
+
+    static var testBigGlucose: LiveActivityAttributes.ContentState {
+        LiveActivityAttributes.ContentState(
+            unit: "mg/dL",
+            bg: "123",
+            glucose: 123,
+            direction: "↗",
+            change: "+6",
+            date: Date(),
+            highGlucose: 180,
+            lowGlucose: 70,
+            target: 100,
+            glucoseColorScheme: "dynamicColor",
+            useDetailedViewIOS: false,
+            useDetailedViewWatchOS: false,
+            simpleViewStyle: .default,
+            bigGlucoseViewStyle: .default,
+            detailedViewState: detailedViewState,
+            isInitialState: false
+        )
+    }
+
+    static var testBigGlucoseMmol: LiveActivityAttributes.ContentState {
+        LiveActivityAttributes.ContentState(
+            unit: "mmol/L",
+            bg: "12.3",
+            glucose: 222,
+            direction: "↑↑",
+            change: "+0.5",
+            date: Date(),
+            highGlucose: 180,
+            lowGlucose: 70,
+            target: 100,
+            glucoseColorScheme: "dynamicColor",
+            useDetailedViewIOS: false,
+            useDetailedViewWatchOS: false,
+            simpleViewStyle: .default,
+            bigGlucoseViewStyle: LiveActivityAttributes.BigGlucoseViewStyle(fontSize: .extraLarge, colorByRange: true),
+            detailedViewState: detailedViewState,
+            isInitialState: false
+        )
+    }
+
+    static var testBigGlucoseExpired: LiveActivityAttributes.ContentState {
+        LiveActivityAttributes.ContentState(
+            unit: "mg/dL",
+            bg: "--",
+            glucose: nil,
+            direction: nil,
+            change: "--",
+            date: Date().addingTimeInterval(-60 * 60),
+            highGlucose: 180,
+            lowGlucose: 70,
+            target: 100,
+            glucoseColorScheme: "dynamicColor",
+            useDetailedViewIOS: false,
+            useDetailedViewWatchOS: false,
+            simpleViewStyle: .default,
+            bigGlucoseViewStyle: .default,
+            detailedViewState: detailedViewState,
+            isInitialState: true
+        )
+    }
 }
 
 @available(iOS 17.0, iOSApplicationExtension 17.0, *)
@@ -393,4 +456,13 @@ private extension LiveActivityAttributes.ContentState {
     LiveActivityAttributes.ContentState.testMediumDetailed
     LiveActivityAttributes.ContentState.testNarrowDetailed
     LiveActivityAttributes.ContentState.testExpiredDetailed
+}
+
+@available(iOS 17.0, iOSApplicationExtension 17.0, *)
+#Preview("Big Glucose", as: .content, using: LiveActivityAttributes.preview) {
+    LiveActivity()
+} contentStates: {
+    LiveActivityAttributes.ContentState.testBigGlucose
+    LiveActivityAttributes.ContentState.testBigGlucoseMmol
+    LiveActivityAttributes.ContentState.testBigGlucoseExpired
 }
