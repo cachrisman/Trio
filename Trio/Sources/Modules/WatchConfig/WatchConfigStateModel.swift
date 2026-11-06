@@ -11,6 +11,7 @@ extension WatchConfig {
         @Published var confirmBolusFaster = false
         @Published var showForecastWatch = false
         @Published var glucoseBobbleComplication = GlucoseBobbleComplicationSettings()
+        @Published var upstreamG7WatchAcquisition = false
 
         /// Garmin watch settings containing all watch-related configuration
         @Published var garminSettings = GarminWatchSettings()
@@ -26,6 +27,14 @@ extension WatchConfig {
             subscribeSetting(\.confirmBolusFaster, on: $confirmBolusFaster) { confirmBolusFaster = $0 }
             subscribeSetting(\.showForecastWatch, on: $showForecastWatch) { showForecastWatch = $0 }
             subscribeSetting(\.glucoseBobbleComplication, on: $glucoseBobbleComplication) { glucoseBobbleComplication = $0 }
+
+            // Not a TrioSettings value: persisted directly in UserDefaults and read by AppleWatchManager
+            upstreamG7WatchAcquisition = UserDefaults.standard.bool(forKey: WatchState.g7WatchAcquisitionArmDefaultsKey)
+            $upstreamG7WatchAcquisition
+                .dropFirst()
+                .removeDuplicates()
+                .sink { UserDefaults.standard.set($0, forKey: WatchState.g7WatchAcquisitionArmDefaultsKey) }
+                .store(in: &lifetime)
 
             devices = garmin.devices
         }
