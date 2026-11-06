@@ -1,12 +1,12 @@
-From 3bcadf7fe3601775cd486a33fc6c48e4281875af Mon Sep 17 00:00:00 2001
+From c96545db2274c9972b65e5579695cf9b42c4018f Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 15:34:44 +0200
+Date: Fri, 6 Nov 2026 13:59:01 +0100
 Subject: [PATCH] feat: glucose-circular-complication
 
 Trio-Patch-Source-Branch: feature/glucose-circular-complication
-Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: 7936b4da3ba08fc91c89ead04a3408f28a2f308a
-Trio-Patch-Generated: 2026-09-24T13:34:31Z
+Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
+Trio-Patch-Feature-Tip: 1d49937633f1cd0826e6a5ebfac28d1a4ff5fe89
+Trio-Patch-Generated: 2026-11-06T12:58:44Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
@@ -25,6 +25,7 @@ Trio-Patch-Source-Commits:
  621d2e17c3b3067285194e410d968c0677c60f7a Send the Glucose Bobble settings even when there is no glucose reading
  89fab892b8ed9ba823d32779d4e4cf5e84967d56 Glucose Bobble settings preview: keep the glucose tint in White mode, as the complication does
  7936b4da3ba08fc91c89ead04a3408f28a2f308a Glucose Bobble complication: colour the reading like the chart, not the white-in-range bubble
+ 1d49937633f1cd0826e6a5ebfac28d1a4ff5fe89 Merge dev (1.0.2.59) into feature/glucose-circular-complication
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
@@ -68,7 +69,7 @@ Trio-Patch-Source-PatchIds:
  create mode 100644 Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
 
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 805f52895..a8794c958 100644
+index 25558fb58..5c42512b1 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,6 +1,7 @@
@@ -91,8 +92,8 @@ index 805f52895..a8794c958 100644
 +    private var latestGlucoseColorString: String?
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
- 
-@@ -485,6 +492,14 @@ import WatchConnectivity
+     var snoozeUntilDate: Date = .distantPast
+@@ -426,6 +433,14 @@ import WatchConnectivity
              self.lastLoopTime = lastLoopTime
          }
  
@@ -107,7 +108,7 @@ index 805f52895..a8794c958 100644
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
              glucoseValues = glucoseData.compactMap { data in
                  guard let glucose = data["glucose"] as? Double,
-@@ -499,6 +514,16 @@ import WatchConnectivity
+@@ -440,6 +455,16 @@ import WatchConnectivity
                  )
              }
              .sorted { $0.date < $1.date }
@@ -124,7 +125,7 @@ index 805f52895..a8794c958 100644
          }
  
          if let minYAxisValue = message[WatchMessageKeys.minYAxisValue] {
-@@ -584,5 +609,38 @@ import WatchConnectivity
+@@ -529,5 +554,38 @@ import WatchConnectivity
              forecastConeMax = forecastPayload[WatchMessageKeys.forecastConeMax] as? [Double] ?? []
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
@@ -659,10 +660,10 @@ index 000000000..e4c574ab5
 +    }
 +}
 diff --git a/Trio/Sources/Models/TrioSettings.swift b/Trio/Sources/Models/TrioSettings.swift
-index 4871d1684..11d2a1540 100644
+index 797a6bf0a..ad2c31e71 100644
 --- a/Trio/Sources/Models/TrioSettings.swift
 +++ b/Trio/Sources/Models/TrioSettings.swift
-@@ -56,6 +56,7 @@ struct TrioSettings: JSON, Equatable, Encodable {
+@@ -57,6 +57,7 @@ struct TrioSettings: JSON, Equatable, Encodable {
      var maxProtein: Decimal = 250
      var confirmBolusFaster: Bool = false
      var showForecastWatch: Bool = false
@@ -670,7 +671,7 @@ index 4871d1684..11d2a1540 100644
      var overrideFactor: Decimal = 0.8
      var fattyMeals: Bool = false
      var fattyMealFactor: Decimal = 0.7
-@@ -313,6 +314,13 @@ extension TrioSettings: Decodable {
+@@ -320,6 +321,13 @@ extension TrioSettings: Decodable {
              settings.showForecastWatch = showForecastWatch
          }
  
@@ -685,7 +686,7 @@ index 4871d1684..11d2a1540 100644
              settings.displayPresets = displayPresets
          }
 diff --git a/Trio/Sources/Models/WatchMessageKeys.swift b/Trio/Sources/Models/WatchMessageKeys.swift
-index 68cac8b00..e50e0991e 100644
+index 392cb0b68..63eca691f 100644
 --- a/Trio/Sources/Models/WatchMessageKeys.swift
 +++ b/Trio/Sources/Models/WatchMessageKeys.swift
 @@ -38,6 +38,7 @@ enum WatchMessageKeys {
@@ -696,7 +697,7 @@ index 68cac8b00..e50e0991e 100644
      static let glucoseValues = "glucoseValues"
      static let minYAxisValue = "minYAxisValue"
      static let maxYAxisValue = "maxYAxisValue"
-@@ -63,4 +64,7 @@ enum WatchMessageKeys {
+@@ -64,4 +65,7 @@ enum WatchMessageKeys {
      static let forecastConeMin = "forecastConeMin"
      static let forecastConeMax = "forecastConeMax"
      static let forecastLines = "forecastLines"
@@ -705,7 +706,7 @@ index 68cac8b00..e50e0991e 100644
 +    static let glucoseBobbleComplicationSettings = "glucoseBobbleComplicationSettings"
  }
 diff --git a/Trio/Sources/Models/WatchState.swift b/Trio/Sources/Models/WatchState.swift
-index e939aba00..bb855d0ab 100644
+index 9fec9a04b..56db82bdd 100644
 --- a/Trio/Sources/Models/WatchState.swift
 +++ b/Trio/Sources/Models/WatchState.swift
 @@ -14,6 +14,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
@@ -722,9 +723,9 @@ index e939aba00..bb855d0ab 100644
      var forecastLines: [String: [Double]] = [:] // "iob" / "cob" / "uam" / "zt" -> values
 +    var glucoseBobbleComplication = GlucoseBobbleComplicationSettings()
  
-     static func == (lhs: WatchState, rhs: WatchState) -> Bool {
-         lhs.date == rhs.date &&
-@@ -50,6 +52,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+     var snoozeUntilDate: Date = .distantPast
+ 
+@@ -52,6 +54,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
              lhs.iob == rhs.iob &&
              lhs.cob == rhs.cob &&
              lhs.lastLoopTime == rhs.lastLoopTime &&
@@ -732,17 +733,17 @@ index e939aba00..bb855d0ab 100644
              lhs.overridePresets == rhs.overridePresets &&
              lhs.tempTargetPresets == rhs.tempTargetPresets &&
              lhs.maxBolus == rhs.maxBolus &&
-@@ -63,7 +66,8 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
-             lhs.forecastStartDate == rhs.forecastStartDate &&
+@@ -66,7 +69,8 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
              lhs.forecastConeMin == rhs.forecastConeMin &&
              lhs.forecastConeMax == rhs.forecastConeMax &&
--            lhs.forecastLines == rhs.forecastLines
-+            lhs.forecastLines == rhs.forecastLines &&
+             lhs.forecastLines == rhs.forecastLines &&
+-            lhs.snoozeUntilDate == rhs.snoozeUntilDate
++            lhs.snoozeUntilDate == rhs.snoozeUntilDate &&
 +            lhs.glucoseBobbleComplication == rhs.glucoseBobbleComplication
      }
  
      func hash(into hasher: inout Hasher) {
-@@ -82,6 +86,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
+@@ -85,6 +89,7 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
          hasher.combine(iob)
          hasher.combine(cob)
          hasher.combine(lastLoopTime)
@@ -750,10 +751,10 @@ index e939aba00..bb855d0ab 100644
          hasher.combine(overridePresets)
          hasher.combine(tempTargetPresets)
          hasher.combine(maxBolus)
-@@ -96,5 +101,6 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
-         hasher.combine(forecastConeMin)
+@@ -100,5 +105,6 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
          hasher.combine(forecastConeMax)
          hasher.combine(forecastLines)
+         hasher.combine(snoozeUntilDate)
 +        hasher.combine(glucoseBobbleComplication)
      }
  }
@@ -932,10 +933,10 @@ index b4cb129c5..f2253751f 100644
              devices = garmin.devices
          }
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 88d75f711..9306335f9 100644
+index 0452707fc..96f7add93 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-@@ -214,8 +214,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -217,8 +217,12 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.lastLoopTime = "--"
                  } else {
                      watchState.lastLoopTime = "\(lastLoopMinutes) min"
@@ -948,7 +949,7 @@ index 88d75f711..9306335f9 100644
                  // Set IOB and COB from latest determination
                  let iob = self.iobService.currentIOB ?? 0
                  watchState.iob = Formatter.decimalFormatterWithTwoFractionDigits.string(from: iob as NSNumber)
-@@ -560,6 +564,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -543,6 +547,15 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
  
          dictionary[WatchMessageKeys.forecastData] = forecastData
@@ -965,5 +966,5 @@ index 88d75f711..9306335f9 100644
      }
  
 -- 
-2.55.0
+2.56.0
 

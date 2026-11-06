@@ -1,12 +1,12 @@
-From f2a0f421c89cc4d79e4c21b378e29e0ae3359d60 Mon Sep 17 00:00:00 2001
+From cdc9b46e5776c038fdc6e82ab382f8a656ede9e9 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 29 Oct 2026 09:49:03 +0100
-Subject: [PATCH] feat: feature-carbs-required-actions
+Date: Fri, 6 Nov 2026 18:24:31 +0100
+Subject: [PATCH] feat: carbs-required-actions
 
 Trio-Patch-Source-Branch: feature/carbs-required-actions
-Trio-Patch-Base: 6737274a9e432e76599fc24e2fe2c52775391092
-Trio-Patch-Feature-Tip: 0bc1cdf6b4fed2c5ea4169d249ec1c59d7c23a6a
-Trio-Patch-Generated: 2026-10-29T08:49:01Z
+Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
+Trio-Patch-Feature-Tip: efcf5c4033fcd73a884fa0247f85ea912de12162
+Trio-Patch-Generated: 2026-11-06T17:24:20Z
 Trio-Patch-Source-Commits:
  3fc966f6c0d2547d16ead3ebd489bb3fc22dd338 feat: ns-richer-settings
  efda10438c4250e19e8c8b0a04cedfa1aa22c1d3 feat: g7-reading-time-with-seconds
@@ -27,6 +27,8 @@ Trio-Patch-Source-Commits:
  e446c7d6b49cd2ae5bae1b729e043e21dc0e6f5c Carbs Required: show current glucose, drop Snooze 6 hrs, one-tap Log Carbs on iPhone and Watch (TRIO-092)
  69ead802b9d1e8cb67b3220edff9a6b855f58fc3 Carbs Required: make freshCachedReading private so it may return the private LatestReading type (TRIO-092, build 234 compile error)
  0bc1cdf6b4fed2c5ea4169d249ec1c59d7c23a6a Glucose alarms: optional current glucose, change per minute and trend in notifications; Low Glucose Soon checks the whole 20-min forecast (TRIO-100)
+ ee6388ad1358258844baf5e08c08c22471413029 Merge dev (1.0.2.59) into feature/carbs-required-actions; tree = dev + patches 01-19
+ efcf5c4033fcd73a884fa0247f85ea912de12162 Port Carbs Required actions onto upstream 1.0.2.59 + patches 01-19
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  2a87a1ff2d0539800ffae9121fa36f55062a6437
@@ -48,6 +50,7 @@ Trio-Patch-Source-PatchIds:
  9ae77b8c9b0e6152ebe11498975a729e68dd4524
  d502f6d0d6706d3db0a432a63bb7fee717d19ab1
  7080d03c528776a73c90536abf76db38f7739c7c
+ 0bd742dc9b8547d9478146e0add6f1c8d8047b8f
 ---
  .../Helper/WatchNotificationHandler.swift     |  64 ++++
  .../GlucoseAlertConfiguration.swift           |  20 +-
@@ -57,17 +60,17 @@ Trio-Patch-Source-PatchIds:
  .../Alerts/ForecastedGlucoseEvaluator.swift   |  29 ++
  .../Alerts/GlucoseAlertCoordinator.swift      | 279 +++++++++++++++---
  .../TrioUserNotificationAlertScheduler.swift  |  29 +-
- .../UserNotificationsManager.swift            | 182 ++++++++++++
- .../WatchManager/AppleWatchManager.swift      |  24 ++
+ .../UserNotificationsManager.swift            | 203 +++++++++++++
+ .../WatchManager/AppleWatchManager.swift      |  32 ++
  .../ForecastedGlucoseEvaluatorTests.swift     |  57 ++++
  TrioTests/GlucoseAlertCoordinatorTests.swift  | 259 ++++++++++++++++
- 12 files changed, 965 insertions(+), 44 deletions(-)
+ 12 files changed, 994 insertions(+), 44 deletions(-)
 
 diff --git a/Trio Watch App Extension/Helper/WatchNotificationHandler.swift b/Trio Watch App Extension/Helper/WatchNotificationHandler.swift
-index be0431498..ee5ee386e 100644
+index 07b3af3af..8f3194050 100644
 --- a/Trio Watch App Extension/Helper/WatchNotificationHandler.swift	
 +++ b/Trio Watch App Extension/Helper/WatchNotificationHandler.swift	
-@@ -51,6 +51,7 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
+@@ -57,6 +57,7 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
  
              var categories = existingCategories
              categories.update(with: glucoseCategory)
@@ -75,7 +78,7 @@ index be0431498..ee5ee386e 100644
              // UNUserNotificationCenter methods should be called on main thread
              Task { @MainActor in
                  center.setNotificationCategories(categories)
-@@ -65,6 +66,12 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
+@@ -71,6 +72,12 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
          didReceive response: UNNotificationResponse,
          withCompletionHandler completionHandler: @escaping () -> Void
      ) {
@@ -88,7 +91,7 @@ index be0431498..ee5ee386e 100644
          defer { completionHandler() }
  
          guard let action = NotificationResponseAction(rawValue: response.actionIdentifier) else { return }
-@@ -93,4 +100,61 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
+@@ -100,4 +107,61 @@ final class WatchNotificationHandler: NSObject, UNUserNotificationCenterDelegate
              session.transferUserInfo(payload)
          }
      }
@@ -274,10 +277,10 @@ index 657897b74..9eb73ca5d 100644
 +    }
  }
 diff --git a/Trio/Sources/Models/WatchMessageKeys.swift b/Trio/Sources/Models/WatchMessageKeys.swift
-index 8ace09205..0b98ef2e8 100644
+index 185f67751..d3b2f29d9 100644
 --- a/Trio/Sources/Models/WatchMessageKeys.swift
 +++ b/Trio/Sources/Models/WatchMessageKeys.swift
-@@ -86,3 +86,10 @@ enum WatchMessageKeys {
+@@ -89,3 +89,10 @@ enum WatchMessageKeys {
      // Glucose Bobble complication
      static let glucoseBobbleComplicationSettings = "glucoseBobbleComplicationSettings"
  }
@@ -351,7 +354,7 @@ index 903875928..24079a781 100644
          guard let array, array.indices.contains(index) else { return nil }
          return Decimal(array[index])
 diff --git a/Trio/Sources/Services/Alerts/GlucoseAlertCoordinator.swift b/Trio/Sources/Services/Alerts/GlucoseAlertCoordinator.swift
-index 389d8f3e3..0586332af 100644
+index 513ee3f38..4dcfd372f 100644
 --- a/Trio/Sources/Services/Alerts/GlucoseAlertCoordinator.swift
 +++ b/Trio/Sources/Services/Alerts/GlucoseAlertCoordinator.swift
 @@ -15,7 +15,7 @@ import Swinject
@@ -775,7 +778,7 @@ index 389d8f3e3..0586332af 100644
 +                )
              }
          } catch {
-             debug(.service, "GlucoseAlertCoordinator: glucose fetch failed: \(error)")
+             warning(.alerts, "Fetching latest glucose for glucose alerts failed", error: error)
 @@ -435,12 +617,25 @@ final class GlucoseAlertCoordinator: Injectable {
  extension GlucoseAlertCoordinator: DeterminationObserver {
      func determinationDidUpdate(_ determination: Determination) {
@@ -805,7 +808,7 @@ index 389d8f3e3..0586332af 100644
      /// Global snooze (Snooze module / lock-screen action). Clear all firing
      /// IDs so the post-snooze evaluation can re-fire fresh if any condition
 diff --git a/Trio/Sources/Services/Alerts/TrioUserNotificationAlertScheduler.swift b/Trio/Sources/Services/Alerts/TrioUserNotificationAlertScheduler.swift
-index 93d375890..1b7f6f108 100644
+index a2352f0ba..d8997fce5 100644
 --- a/Trio/Sources/Services/Alerts/TrioUserNotificationAlertScheduler.swift
 +++ b/Trio/Sources/Services/Alerts/TrioUserNotificationAlertScheduler.swift
 @@ -37,7 +37,7 @@ final class TrioUserNotificationAlertScheduler {
@@ -856,7 +859,7 @@ index 93d375890..1b7f6f108 100644
 +    }
 +}
 diff --git a/Trio/Sources/Services/UserNotifications/UserNotificationsManager.swift b/Trio/Sources/Services/UserNotifications/UserNotificationsManager.swift
-index 1ffc989dc..542da5ec7 100644
+index 8584391ed..589f64860 100644
 --- a/Trio/Sources/Services/UserNotifications/UserNotificationsManager.swift
 +++ b/Trio/Sources/Services/UserNotifications/UserNotificationsManager.swift
 @@ -10,6 +10,8 @@ protocol UserNotificationsManager {
@@ -888,7 +891,7 @@ index 1ffc989dc..542da5ec7 100644
      private let viewContext = CoreDataStack.shared.persistentContainer.viewContext
  
      // Queue for handling Core Data change notifications
-@@ -45,6 +54,22 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
+@@ -45,6 +54,39 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
          super.init()
          notificationCenter.delegate = self
          injectServices(resolver)
@@ -901,17 +904,34 @@ index 1ffc989dc..542da5ec7 100644
 +                // then a determine-basal sync. No bolus.
 +                let entry = self.carbsStorage.makeCarbEntry(carbs: grams, date: Date())
 +                try await self.carbsStorage.storeCarbs([entry], areFetchedFromRemote: false)
++                // `storeCarbs` swallows Core Data save errors, so read the row back to confirm it exists.
++                // Only a successful fetch that finds nothing proves the save failed. If the id can't be
++                // parsed or the fetch itself throws, the save may have succeeded, and throwing would let
++                // a retry store the carbs twice (more insulin), so treat that case as saved.
++                if let handle = UUID(uuidString: entry.id ?? "") {
++                    do {
++                        if try await self.carbsStorage.fetchMealRoot(handle: handle) == nil {
++                            throw CarbsRequiredLogError.carbEntryNotSaved
++                        }
++                    } catch let error as CarbsRequiredLogError {
++                        throw error
++                    } catch {
++                        warning(.treatments, "Log Carbs could not confirm the saved carb entry", error: error)
++                    }
++                } else {
++                    warning(.treatments, "Log Carbs could not confirm the saved carb entry")
++                }
 +                do {
 +                    try await self.apsManager.determineBasalSync()
 +                } catch {
-+                    debug(.default, "\(DebuggingIdentifiers.failed) Log Carbs determine basal sync failed: \(error)")
++                    warning(.treatments, "Log Carbs determine basal sync failed", error: error)
 +                }
 +            }
 +        )
          broadcaster.register(SettingsObserver.self, observer: self)
  
          coreDataPublisher =
-@@ -68,6 +93,7 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
+@@ -68,6 +110,7 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
  
              var categories = existingCategories
              categories.update(with: glucoseCategory)
@@ -919,7 +939,7 @@ index 1ffc989dc..542da5ec7 100644
              // UNUserNotificationCenter methods should be called on main thread
              Task { @MainActor [weak self] in
                  guard let self else { return }
-@@ -207,6 +233,58 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
+@@ -207,6 +250,58 @@ final class BaseUserNotificationsManager: NSObject, UserNotificationsManager, In
      @MainActor func applySnooze(for duration: TimeInterval) async {
          await trioAlertManager.applySnooze(for: duration)
      }
@@ -978,7 +998,7 @@ index 1ffc989dc..542da5ec7 100644
  }
  
  extension BaseUserNotificationsManager: UNUserNotificationCenterDelegate {
-@@ -230,6 +308,12 @@ extension BaseUserNotificationsManager: UNUserNotificationCenterDelegate {
+@@ -230,6 +325,12 @@ extension BaseUserNotificationsManager: UNUserNotificationCenterDelegate {
          didReceive response: UNNotificationResponse,
          withCompletionHandler completionHandler: @escaping () -> Void
      ) {
@@ -991,12 +1011,16 @@ index 1ffc989dc..542da5ec7 100644
          defer { completionHandler() }
  
          let userInfo = response.notification.request.content.userInfo
-@@ -253,3 +337,101 @@ extension BaseUserNotificationsManager: SettingsObserver {
+@@ -253,3 +354,105 @@ extension BaseUserNotificationsManager: SettingsObserver {
          Task { await updateGlucoseBadge() }
      }
  }
 +
 +// MARK: - Carbs Required "Log Carbs"
++
++private enum CarbsRequiredLogError: Error {
++    case carbEntryNotSaved
++}
 +
 +enum CarbsRequiredLogOutcome: String, Equatable {
 +    case logged
@@ -1088,31 +1112,39 @@ index 1ffc989dc..542da5ec7 100644
 +        } catch {
 +            // A failed write must not block a retry of the same alert.
 +            store.unmark(alertID)
-+            debug(.default, "\(DebuggingIdentifiers.failed) Log Carbs failed to save carbs: \(error)")
++            warning(.treatments, "Log Carbs failed to save carbs", error: error)
 +            return .failed
 +        }
 +    }
 +}
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 06108bb44..c4be8934b 100644
+index c849ffb22..bfbe4fc39 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-@@ -1242,6 +1242,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1293,6 +1293,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         }
+     }
  
-     /// Implements the replyHandler version of didReceiveMessage for ACK support.
-     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
++    /// Exists only for the Carbs Required "Log Carbs" request, the one watch message sent with a reply handler.
++    /// Any other message is answered with an empty reply and is never forwarded to the dosing dispatch in
++    /// `session(_:didReceiveMessage:)`.
++    func session(_: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
 +        if handleLogCarbsRequest(message, replyHandler: replyHandler) { return }
 +
-         // Validate envelope structure — check type first so queryAcks (no payloadId) isn't rejected
-         guard let type = message["type"] as? String else {
-             self.session(session, didReceiveMessage: message)
-@@ -2020,3 +2022,25 @@ extension BaseWatchManager {
++        replyHandler([:])
++        warning(.watch, "Ignored watch message with reply handler, keys: \(message.keys.sorted().joined(separator: ", "))")
++    }
++
+     func session(_: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+         let raw = applicationContext["complicationLastValidTimestamp"]
+         let timestamp = (raw as? TimeInterval) ?? (raw as? NSNumber)?.doubleValue
+@@ -1692,3 +1702,25 @@ extension BaseWatchManager {
          case genericFailure = "failure"
      }
  }
 +
 +// Carbs Required "Log Carbs" from the watch. Reached from the reply-handler
-+// `session(_:didReceiveMessage:replyHandler:)` above, only for messages carrying the log-carbs key.
++// `session(_:didReceiveMessage:replyHandler:)`, only for messages carrying the log-carbs key.
 +extension BaseWatchManager {
 +    /// Returns true if `message` was a log-carbs request (and the reply is now owned here).
 +    func handleLogCarbsRequest(_ message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) -> Bool {
@@ -1120,7 +1152,7 @@ index 06108bb44..c4be8934b 100644
 +
 +        let grams = (message[WatchMessageKeys.logCarbsGrams] as? NSNumber)?.decimalValue
 +        let alertID = message[WatchMessageKeys.logCarbsAlertID] as? String
-+        debug(.watchManager, "📱 Received Log Carbs request from watch")
++        info(.watch, "Received Log Carbs request from watch")
 +        Task { [weak self] in
 +            let outcome = await self?.notificationsManager.logCarbsRequired(grams: grams, alertID: alertID) ?? .failed
 +            var reply: [String: Any] = [WatchMessageKeys.logCarbsResult: outcome.rawValue]

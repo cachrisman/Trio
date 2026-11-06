@@ -1,12 +1,12 @@
-From 8919100a02c47479b5d2cb1a021d0b0582fd2919 Mon Sep 17 00:00:00 2001
+From 807f0f8437263abf8080dc94aa4c9fcb59d20368 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 16 Oct 2026 19:10:52 +0200
+Date: Fri, 6 Nov 2026 16:35:06 +0100
 Subject: [PATCH] feat: cloud-logging
 
 Trio-Patch-Source-Branch: feature/cloud-logging
-Trio-Patch-Base: 2516b23c414128c9a3dc5055be896936b1a7d52c
-Trio-Patch-Feature-Tip: 2ff4c78e54729f5a5e35d1c9f4bb8e3304c9c4d1
-Trio-Patch-Generated: 2026-10-16T17:10:41Z
+Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
+Trio-Patch-Feature-Tip: 2915659d3c978f9530306125a2f1e87c5f113904
+Trio-Patch-Generated: 2026-11-06T15:34:53Z
 Trio-Patch-Source-Commits:
  fc417ef5189f50f479dea4579a726fa7dc6677e6 feat: ns-richer-settings
  c7c8d208badaa588d5eb2050dd74ef4487ce4efe feat: g7-reading-time-with-seconds
@@ -14,6 +14,8 @@ Trio-Patch-Source-Commits:
  cd08bec1244e4e360ef26679f706608f98f41942 feat: cloud-logging
  47b993221c3ae0075030eeb62bbb1ccee1672db6 Merge dev (1.0.0.3) into feature/cloud-logging
  2ff4c78e54729f5a5e35d1c9f4bb8e3304c9c4d1 cloud logging: cap each upload pass at entry boundaries so multi-line entries are never split (TRIO-040)
+ e7ca9cb159f39c54884ec3d20e7ea102fccf1bb2 Merge dev (1.0.2.59) into feature/cloud-logging; tree = dev + patches 01-05
+ 2915659d3c978f9530306125a2f1e87c5f113904 cloud logging: rebuild as a LogSink tee on upstream's log pipeline
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  f19d9363a9ac847de8e6c12a5acd685d05be56fa
@@ -21,1497 +23,39 @@ Trio-Patch-Source-PatchIds:
  d64aec69341345cffa16e72b239ed51922d813e4
  155ae686f2d7b0cac8d1446cb5acca53e406843d
  0d10d2820f2c0b25f8973380913b37431d5c2fe6
+ 7ab8129126244d626529ebd0f2d0681999b4e663
 ---
- .../WatchConnectivityPayloadIds.swift         |   59 +
- Trio Watch App Extension/WatchLogger.swift    | 1208 ++++++++++++++---
- Trio/Sources/Application/AppDelegate.swift    |   39 +-
- Trio/Sources/Assemblies/ServiceAssembly.swift |    1 +
- .../Helpers/AppTerminationTracker.swift       |  306 +++++
- .../BetterStackLogtailProvider.swift          |   71 +
- .../CloudLogging/BetterStackSettings.swift    |   35 +
- .../CloudLogEntryAggregator.swift             |  111 ++
- .../CloudLogging/CloudLogLineParsing.swift    |  298 ++++
- .../CloudLogging/CloudLogProvider.swift       |  127 ++
- .../CloudLogging/CloudLogUploadService.swift  |  194 +++
- .../CloudLogging/CloudLogUploader.swift       |  515 +++++++
- .../IssueReporter/SimpleLogReporter.swift     |   13 +-
- .../Modules/Settings/SettingItems.swift       |   11 +
- .../View/CloudLoggingSettingsView.swift       |  150 ++
- .../Settings/View/Subviews/ServicesView.swift |    1 +
- Trio/Sources/Router/Screen.swift              |    3 +
- TrioTests/CloudLogEntryAggregatorTests.swift  |  143 ++
- 18 files changed, 3087 insertions(+), 198 deletions(-)
- create mode 100644 Trio Watch App Extension/WatchConnectivityPayloadIds.swift
+ Trio/Sources/Application/AppDelegate.swift    |  25 +-
+ Trio/Sources/Application/TrioApp.swift        |   3 +-
+ Trio/Sources/Assemblies/ServiceAssembly.swift |   2 +
+ .../Helpers/AppTerminationTracker.swift       | 315 ++++++++++++
+ .../BetterStackLogtailProvider.swift          |  82 ++++
+ .../CloudLogging/BetterStackSettings.swift    |  35 ++
+ .../CloudLogging/CloudLogProvider.swift       | 260 ++++++++++
+ .../Logger/CloudLogging/CloudLogQueue.swift   | 458 ++++++++++++++++++
+ .../Logger/CloudLogging/CloudLogSink.swift    | 149 ++++++
+ .../CloudLogging/CloudLogUploadService.swift  | 288 +++++++++++
+ Trio/Sources/Logger/Core/TeeLogSink.swift     |  30 ++
+ .../Modules/Settings/SettingItems.swift       |   6 +
+ .../View/CloudLoggingSettingsView.swift       | 150 ++++++
+ .../Settings/View/Subviews/ServicesView.swift |   1 +
+ Trio/Sources/Router/Screen.swift              |   3 +
+ 15 files changed, 1805 insertions(+), 2 deletions(-)
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
- create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
- create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogQueue.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogSink.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
- create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
+ create mode 100644 Trio/Sources/Logger/Core/TeeLogSink.swift
  create mode 100644 Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
- create mode 100644 TrioTests/CloudLogEntryAggregatorTests.swift
 
-diff --git a/Trio Watch App Extension/WatchConnectivityPayloadIds.swift b/Trio Watch App Extension/WatchConnectivityPayloadIds.swift
-new file mode 100644
-index 000000000..d1ad58615
---- /dev/null
-+++ b/Trio Watch App Extension/WatchConnectivityPayloadIds.swift	
-@@ -0,0 +1,59 @@
-+import Foundation
-+
-+/// Normalizes watch ↔ phone payload identifiers from `WCSession` dictionaries.
-+/// Accepts `String`, `NSString`, `UUID`, and `NSUUID` only (rejects `NSNumber` and other types).
-+enum WatchConnectivityPayloadIds {
-+    private static func debugLogUnexpected(_ value: Any?) {
-+        #if DEBUG
-+        if let value {
-+            let typeName = String(describing: type(of: value))
-+            debugPrint("WatchConnectivityPayloadIds: unexpected payload id type \(typeName)")
-+        }
-+        #endif
-+    }
-+
-+    /// Returns a canonical UUID string, or `nil` if the value is not a supported type.
-+    static func payloadIdString(_ value: Any?) -> String? {
-+        switch value {
-+        case let s as String:
-+            return s
-+        case let s as NSString:
-+            return s as String
-+        case let u as UUID:
-+            return u.uuidString
-+        case let u as NSUUID:
-+            return u.uuidString
-+        case is NSNumber:
-+            debugLogUnexpected(value)
-+            return nil
-+        default:
-+            if value != nil {
-+                debugLogUnexpected(value)
-+            }
-+            return nil
-+        }
-+    }
-+
-+    /// Extracts payload id strings from an array or `NSArray` value (e.g. `ackIds`, `payloadIds`).
-+    static func payloadIdStrings(from value: Any?) -> [String] {
-+        guard let value else { return [] }
-+
-+        if let anyArray = value as? [Any] {
-+            return anyArray.compactMap { payloadIdString($0) }
-+        }
-+
-+        if let nsArray = value as? NSArray {
-+            var out: [String] = []
-+            out.reserveCapacity(nsArray.count)
-+            for i in 0 ..< nsArray.count {
-+                if let s = payloadIdString(nsArray[i]) {
-+                    out.append(s)
-+                }
-+            }
-+            return out
-+        }
-+
-+        debugLogUnexpected(value)
-+        return []
-+    }
-+}
-diff --git a/Trio Watch App Extension/WatchLogger.swift b/Trio Watch App Extension/WatchLogger.swift
-index 3f9a83de5..0f81f3475 100644
---- a/Trio Watch App Extension/WatchLogger.swift	
-+++ b/Trio Watch App Extension/WatchLogger.swift	
-@@ -1,9 +1,26 @@
- import Foundation
- import WatchConnectivity
- 
-+// MARK: - WCSession send completion (single resume for reply vs error)
-+
-+/// Ensures `CheckedContinuation.resume` runs at most once when either `replyHandler` or `errorHandler` fires.
-+private final class WCSessionReplyGate: @unchecked Sendable {
-+    private let lock = NSLock()
-+    private var finished = false
-+
-+    func complete(_ continuation: CheckedContinuation<Void, Never>) {
-+        lock.lock()
-+        defer { lock.unlock() }
-+        guard !finished else { return }
-+        finished = true
-+        continuation.resume()
-+    }
-+}
-+
- actor WatchLogger {
-     static let shared = WatchLogger()
- 
-+    private let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
-     private var logs: [String] = []
-     private let maxEntries = 500
-     private let flushInterval: TimeInterval = 3 * 60
-@@ -11,14 +28,27 @@ actor WatchLogger {
-     private var lastFlush = Date()
- 
-     // Size caps
--    private let logSizeCap = 16 * 1024 // 16 KB
--    private let maxPerPayloadFiles = 20
--    private let maxFileAge: TimeInterval = 7 * 24 * 60 * 60 // 7 days
-+    private let logSizeCap = 64 * 1024 // 64 KB
-+    private let maxPerPayloadFiles = 10
-+    private let maxFileAge: TimeInterval = 48 * 60 * 60 // 48 hours
- 
-     private let session = WCSession.default
-     private var timerTask: Task<Void, Never>?
- 
-     private let pendingPayloadsKey = "watchLoggerPendingPayloads"
-+    private let lastKnownBuildKey = "watchLogger.lastKnownBuild"
-+    private let lastInventoryKey = "WatchLogger.lastInventoryTimestamp"
-+
-+    // E3: Inline metrics cache (10s TTL)
-+    private var cachedWatchLogFiles: Int = 0
-+    private var cachedDrainFiles: Int = 0
-+    private var cachedCountsTimestamp: Date = .distantPast
-+
-+    /// Wall-clock cap for how long **this actor** waits on `sendMessage`’s reply/error callbacks.
-+    /// This does **not** cancel in-flight `WCSession` delivery; a late `replyHandler` may still run.
-+    /// Keep conservative on watchOS: long waits serialize the actor behind other lifecycle/flush work.
-+    /// Raise only if telemetry shows healthy ACKs routinely exceed this under real devices.
-+    private static let wcSessionSendTimeoutNs: UInt64 = 5 * 1_000_000_000
- 
-     private init() {
-         Task {
-@@ -26,12 +56,129 @@ actor WatchLogger {
-         }
-     }
- 
--    private var dateFormatter: DateFormatter {
-+    private static let dateFormatter: DateFormatter = {
-         let formatter = DateFormatter()
-         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
-         return formatter
-+    }()
-+
-+    // MARK: - File-removal helpers
-+
-+    struct RemoveResult {
-+        let outcome: String // "deleted" | "missing" | "error"
-+        let error: String? // nil → result=ok
-+        var succeeded: Bool { error == nil }
-+    }
-+
-+    static func removeFileTracked(at url: URL) -> RemoveResult {
-+        do {
-+            try FileManager.default.removeItem(at: url)
-+            return RemoveResult(outcome: "deleted", error: nil)
-+        } catch {
-+            let nsErr = error as NSError
-+            if nsErr.domain == NSCocoaErrorDomain && nsErr.code == 4 {
-+                return RemoveResult(outcome: "missing", error: nil)
-+            }
-+            return RemoveResult(
-+                outcome: "error",
-+                error: sanitizeError(error)
-+            )
-+        }
-+    }
-+
-+    static func removeFileTracked(atPath path: String) -> RemoveResult {
-+        do {
-+            try FileManager.default.removeItem(atPath: path)
-+            return RemoveResult(outcome: "deleted", error: nil)
-+        } catch {
-+            let nsErr = error as NSError
-+            if nsErr.domain == NSCocoaErrorDomain && nsErr.code == 4 {
-+                return RemoveResult(outcome: "missing", error: nil)
-+            }
-+            return RemoveResult(
-+                outcome: "error",
-+                error: sanitizeError(error)
-+            )
-+        }
-     }
- 
-+    /// Best-effort removal: true = gone (deleted or already absent),
-+    /// false = unexpected error.
-+    static func removeFileQuietly(at url: URL) -> Bool {
-+        do {
-+            try FileManager.default.removeItem(at: url)
-+            return true
-+        } catch {
-+            let nsErr = error as NSError
-+            return nsErr.domain == NSCocoaErrorDomain && nsErr.code == 4
-+        }
-+    }
-+
-+    static func sanitizeError(_ error: Error) -> String {
-+        let nsErr = error as NSError
-+        let raw = "\(nsErr.domain)_\(nsErr.code)"
-+        let sanitized = raw
-+            .replacingOccurrences(of: " ", with: "_")
-+            .filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
-+        return String(sanitized.prefix(50))
-+    }
-+
-+    /// Non-blocking: nudges `activate()` and reports whether the session is already `.activated`
-+    /// for an immediate `sendMessage`. Avoids multi-second polling on hot paths.
-+    private func prepareSessionForImmediateSend() -> Bool {
-+        if session.activationState == .activated { return true }
-+        session.activate()
-+        return session.activationState == .activated
-+    }
-+
-+    /// Awaits `sendMessage` until reply, error, or **actor-side** timeout.
-+    ///
-+    /// **Semantics:** The timeout only bounds how long `WatchLogger` suspends; it does not cancel the
-+    /// underlying session send. If the phone ACKs later, `replyHandler` may still run; `WCSessionReplyGate`
-+    /// ensures the continuation resumes at most once, while `onReply` cleanup stays idempotent
-+    /// (`removeFileTracked` / `removePendingPayload` tolerate missing files).
-+    ///
-+    /// **Pending:** Call sites that need recovery must `storePendingPayload` *before* awaiting here.
-+    /// On timeout we **do not** enqueue `transferUserInfo` automatically (avoids duplicate delivery);
-+    /// the payload row + on-disk file remain for `resendPendingPayloads` / a later ACK.
-+    private func sendMessageAwaitingReply(
-+        _ envelope: [String: Any],
-+        context: String,
-+        onReply: @escaping ([String: Any]) async -> Void,
-+        onError: @escaping (Error) async -> Void
-+    ) async {
-+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-+            let gate = WCSessionReplyGate()
-+            let timeoutTask = Task {
-+                try? await Task.sleep(nanoseconds: Self.wcSessionSendTimeoutNs)
-+                await WatchLogger.shared.log(
-+                    "⌚️ WCSession sendMessage timed out context=\(context)"
-+                        + " note=payload_still_pending no_auto_transferUserInfo"
-+                )
-+                gate.complete(cont)
-+            }
-+            session.sendMessage(
-+                envelope,
-+                replyHandler: { reply in
-+                    Task {
-+                        timeoutTask.cancel()
-+                        defer { gate.complete(cont) }
-+                        await onReply(reply)
-+                    }
-+                },
-+                errorHandler: { error in
-+                    Task {
-+                        timeoutTask.cancel()
-+                        defer { gate.complete(cont) }
-+                        await onError(error)
-+                    }
-+                }
-+            )
-+        }
-+    }
-+
-+    // MARK: - Timer
-+
-     private func startFlushTimer() async {
-         timerTask = Task {
-             while true {
-@@ -41,6 +188,8 @@ actor WatchLogger {
-         }
-     }
- 
-+    // MARK: - Logging
-+
-     func log(
-         _ message: String,
-         force: Bool = false,
-@@ -49,8 +198,8 @@ actor WatchLogger {
-         line: Int = #line
-     ) async {
-         let shortFile = (file as NSString).lastPathComponent
--        let timestamp = dateFormatter.string(from: Date())
--        let entry = "[\(timestamp)] [\(shortFile):\(line)] \(function) → \(message)"
-+        let timestamp = Self.dateFormatter.string(from: Date())
-+        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message)"
- 
-         logs.append(entry)
-         if logs.count > maxEntries {
-@@ -59,7 +208,6 @@ actor WatchLogger {
- 
-         print(entry)
- 
--        // Also append to daily log for local debugging
-         await appendToDailyLog(entry)
- 
-         await flushIfNeeded(force: force)
-@@ -67,10 +215,13 @@ actor WatchLogger {
- 
-     /// Appends text to the daily local debug log (never sent to phone).
-     func appendToDailyLog(_ text: String) async {
--        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
--            .appendingPathComponent("logs", isDirectory: true)
-+        let logDir = FileManager.default.urls(
-+            for: .documentDirectory, in: .userDomainMask
-+        ).first!.appendingPathComponent("logs", isDirectory: true)
- 
--        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-+        try? FileManager.default.createDirectory(
-+            at: logDir, withIntermediateDirectories: true
-+        )
- 
-         let dailyLogFile = logDir.appendingPathComponent("watch_log_daily.txt")
-         let logEntry = text + "\n"
-@@ -86,9 +237,13 @@ actor WatchLogger {
-         }
-     }
- 
-+    // MARK: - Flush
-+
-     func flushIfNeeded(force: Bool = false) async {
-         let now = Date()
--        let shouldFlush = force || now.timeIntervalSince(lastFlush) >= flushInterval || logs.count >= flushSizeThreshold
-+        let shouldFlush = force
-+            || now.timeIntervalSince(lastFlush) >= flushInterval
-+            || logs.count >= flushSizeThreshold
- 
-         if shouldFlush {
-             await flushToPhone()
-@@ -96,247 +251,481 @@ actor WatchLogger {
-     }
- 
-     private func flushToPhone() async {
--        guard !logs.isEmpty else {
-+        guard !logs.isEmpty else { return }
-+
-+        updateCachedCountsIfStale()
-+        await logFileInventory()
-+
-+        let allContent = logs.joined(separator: "\n")
-+        let originalUTF8Count = allContent.utf8.count
-+        let totalLineCount = logs.count
-+        let originalLines = logs
-+
-+        logs.removeAll()
-+        lastFlush = Date()
-+
-+        // Single payload fits within cap — send directly
-+        if originalUTF8Count <= logSizeCap {
-+            await sendLogPayload(allContent)
-             return
-         }
- 
--        // Capture logsToSend BEFORE sending
--        var logsToSend = logs.joined(separator: "\n")
-+        // 4E: Split oversized payloads into sequential chunks (max 4 × logSizeCap)
-+        let maxChunks = 4
-+        let groupId = UUID().uuidString
-+
-+        // Content budget per chunk: logSizeCap minus worst-case chunk marker overhead.
-+        // Marker byte cost is subtracted so the total chunk payload stays within logSizeCap.
-+        let worstCaseMarker = "📦 log_flush_chunk chunk=\(maxChunks)/\(maxChunks) payload_id=\(groupId) lines_in_chunk=\(totalLineCount)"
-+        let markerOverhead = worstCaseMarker.utf8.count + 1
-+        let contentBudget = max(1, logSizeCap - markerOverhead)
-+
-+        // Pack lines greedily into chunks (line-boundary-aware)
-+        var chunks: [(content: String, lineCount: Int)] = []
-+        var currentLines: [String] = []
-+        var currentBytes = 0
-+        var lineIndex = 0
-+
-+        while lineIndex < originalLines.count {
-+            let line = originalLines[lineIndex]
-+            let addedBytes = (currentLines.isEmpty ? 0 : 1) + line.utf8.count
-+
-+            if currentBytes + addedBytes > contentBudget && !currentLines.isEmpty {
-+                chunks.append((
-+                    content: currentLines.joined(separator: "\n"),
-+                    lineCount: currentLines.count
-+                ))
-+                currentLines = []
-+                currentBytes = 0
-+
-+                if chunks.count >= maxChunks - 1 {
-+                    // Last allowed chunk — pack all remaining lines
-+                    let remaining = Array(originalLines[lineIndex...])
-+                    let remainingContent = remaining.joined(separator: "\n")
-+
-+                    if remainingContent.utf8.count <= contentBudget {
-+                        chunks.append((content: remainingContent, lineCount: remaining.count))
-+                    } else {
-+                        // 4A truncation on the last chunk
-+                        let truncMarker = "⚠️ log_flush_truncated cap_bytes=\(logSizeCap) original_bytes=\(originalUTF8Count) lines_total=\(totalLineCount)"
-+                        let truncMarkerBytes = truncMarker.utf8.count + 1
-+                        let truncBudget = max(0, contentBudget - truncMarkerBytes)
-+
-+                        var truncLines: [String] = []
-+                        var truncBytes = 0
-+                        for rl in remaining {
-+                            let added = (truncLines.isEmpty ? 0 : 1) + rl.utf8.count
-+                            if truncBytes + added > truncBudget { break }
-+                            truncLines.append(rl)
-+                            truncBytes += added
-+                        }
-+
-+                        let truncContent = truncMarker + "\n" + truncLines.joined(separator: "\n")
-+                        chunks.append((content: truncContent, lineCount: truncLines.count))
-+                    }
-+                    lineIndex = originalLines.count
-+                    break
-+                }
-+                continue
-+            }
-+
-+            currentLines.append(line)
-+            currentBytes += addedBytes
-+            lineIndex += 1
-+        }
-+
-+        if !currentLines.isEmpty {
-+            chunks.append((
-+                content: currentLines.joined(separator: "\n"),
-+                lineCount: currentLines.count
-+            ))
-+        }
-+
-+        let totalChunks = chunks.count
- 
--        // Truncate to size cap
--        if logsToSend.utf8.count > logSizeCap {
--            let cappedData = logsToSend.data(using: .utf8)?.prefix(logSizeCap) ?? Data()
--            logsToSend = String(data: cappedData, encoding: .utf8) ?? String(logsToSend.prefix(logSizeCap))
-+        for (index, chunk) in chunks.enumerated() {
-+            let chunkNumber = index + 1
-+            let chunkMarker = "📦 log_flush_chunk chunk=\(chunkNumber)/\(totalChunks) payload_id=\(groupId) lines_in_chunk=\(chunk.lineCount)"
-+            let finalContent = chunkMarker + "\n" + chunk.content
-+            await sendLogPayload(finalContent)
-         }
-+    }
- 
--        // Generate payloadId
-+    /// Sends a single log payload (or chunk) to the phone via WCSession.
-+    private func sendLogPayload(_ content: String) async {
-         let payloadId = UUID().uuidString
- 
--        // Write to per-payload file BEFORE sending
--        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
--            .appendingPathComponent("logs", isDirectory: true)
--        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-+        let logDir = FileManager.default.urls(
-+            for: .documentDirectory, in: .userDomainMask
-+        ).first!.appendingPathComponent("logs", isDirectory: true)
-+        try? FileManager.default.createDirectory(
-+            at: logDir, withIntermediateDirectories: true
-+        )
- 
--        let perPayloadFile = logDir.appendingPathComponent("watch_log_\(payloadId).txt")
--        if let data = logsToSend.data(using: .utf8) {
-+        let perPayloadFile = logDir.appendingPathComponent(
-+            "watch_log_\(payloadId).txt"
-+        )
-+        if let data = content.data(using: .utf8) {
-             try? data.write(to: perPayloadFile)
-         }
- 
--        // Clear in-memory logs ONLY after file write
--        logs.removeAll()
--        lastFlush = Date()
--
--        // Create envelope
-         let envelope: [String: Any] = [
-             "type": "watchLogs",
-             "payloadId": payloadId,
--            "data": logsToSend
-+            "data": content
-         ]
- 
--        // Do NOT activate session - WatchState owns activation
--        if session.isReachable && session.activationState == .activated {
--            // Use sendMessage with replyHandler for immediate ACK
-+        if session.isReachable {
-+            guard prepareSessionForImmediateSend() else {
-+                await storePendingPayload(
-+                    payloadId: payloadId,
-+                    type: "watchLogs",
-+                    filePath: perPayloadFile.path
-+                )
-+                _ = session.transferUserInfo(envelope)
-+                await log(
-+                    "⌚️ Logs queued for background delivery"
-+                        + " (payloadId: \(payloadId))"
-+                        + " watch_log_files=\(cachedWatchLogFiles)"
-+                        + " drain_files=\(cachedDrainFiles)"
-+                        + " note=activation_timeout"
-+                )
-+                return
-+            }
-+
-             let filePath = perPayloadFile.path
--            session.sendMessage(
-+            await storePendingPayload(
-+                payloadId: payloadId,
-+                type: "watchLogs",
-+                filePath: filePath
-+            )
-+            await sendMessageAwaitingReply(
-                 envelope,
--                replyHandler: { reply in
--                    Task {
--                        // Check if ACK received
--                        if let ackType = reply["type"] as? String,
--                           ackType == "ack",
--                           let ackPayloadId = reply["payloadId"] as? String,
--                           ackPayloadId == payloadId {
--                            // ACK received - delete file
--                            try? FileManager.default.removeItem(at: perPayloadFile)
--                            await WatchLogger.shared.removePendingPayload(payloadId)
--                            await WatchLogger.shared.log("⌚️ Logs ACK received from phone for payloadId: \(payloadId)")
--                        }
--                    }
--                },
--                errorHandler: { error in
--                    Task {
--                        await WatchLogger.shared.log("⌚️ Failed to send logs to phone: \(error.localizedDescription)")
--                        // Keep file, mark as pending for retry
--                        await WatchLogger.shared.storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: filePath)
-+                context: "flush payloadId=\(payloadId)"
-+            ) { reply in
-+                if let ackType = reply["type"] as? String,
-+                   ackType == "ack",
-+                   let ackId = WatchConnectivityPayloadIds.payloadIdString(
-+                       reply["payloadId"]
-+                   ),
-+                   ackId == payloadId {
-+                    let res = WatchLogger.removeFileTracked(
-+                        at: perPayloadFile
-+                    )
-+                    if res.succeeded {
-+                        await WatchLogger.shared
-+                            .removePendingPayload(payloadId)
-                     }
-+                    await WatchLogger.shared
-+                        .logCleanup(
-+                            path: "ack_reply", flow: "flush",
-+                            artifact: "watch_log",
-+                            payloadId: payloadId,
-+                            result: res
-+                        )
-                 }
--            )
-+            } onError: { error in
-+                await WatchLogger.shared.log(
-+                    "⌚️ Failed to send logs: "
-+                        + error.localizedDescription
-+                )
-+            }
-         } else {
--            // Not reachable - persist locally and mark as pending
--            await storePendingPayload(payloadId: payloadId, type: "watchLogs", filePath: perPayloadFile.path)
--            // Optionally use transferUserInfo for background delivery
-+            await storePendingPayload(
-+                payloadId: payloadId,
-+                type: "watchLogs",
-+                filePath: perPayloadFile.path
-+            )
-             _ = session.transferUserInfo(envelope)
--            await log("⌚️ Logs queued for background delivery to phone (payloadId: \(payloadId))")
-+            await log(
-+                "⌚️ Logs queued for background delivery"
-+                    + " (payloadId: \(payloadId))"
-+                    + " watch_log_files=\(cachedWatchLogFiles)"
-+                    + " drain_files=\(cachedDrainFiles)"
-+            )
-         }
-     }
- 
-+    // MARK: - Persisted log flush + retention
-+
-     func flushPersistedLogs() async {
--        let logDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
--            .appendingPathComponent("logs", isDirectory: true)
-+        let lastKnownBuild = UserDefaults.standard.string(
-+            forKey: lastKnownBuildKey
-+        )
-+        if lastKnownBuild != build {
-+            UserDefaults.standard.set(build, forKey: lastKnownBuildKey)
-+            await log(
-+                "[UPGRADE] build changed"
-+                    + " from \(lastKnownBuild ?? "nil") to \(build)",
-+                force: true
-+            )
-+        }
-+
-+        updateCachedCountsIfStale()
-+        await logFileInventory()
-+
-+        await drainComplicationLogs()
- 
--        // Scan for per-payload log files
--        guard let files = try? FileManager.default.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]) else {
-+        let logDir = FileManager.default.urls(
-+            for: .documentDirectory, in: .userDomainMask
-+        ).first!.appendingPathComponent("logs", isDirectory: true)
-+
-+        guard let files = try? FileManager.default.contentsOfDirectory(
-+            at: logDir,
-+            includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]
-+        ) else { return }
-+
-+        let perPayloadFiles = files.filter { file in
-+            file.lastPathComponent.hasPrefix("watch_log_")
-+                && file.lastPathComponent.hasSuffix(".txt")
-+                && file.lastPathComponent != "watch_log_daily.txt"
-+        }
-+
-+        _ = await applyWatchLogRetention(
-+            perPayloadFiles: perPayloadFiles
-+        )
-+
-+        guard session.isReachable else { return }
-+
-+        if !prepareSessionForImmediateSend() {
-+            await log(
-+                "⌚️ flush_persisted_logs skipping_query_acks"
-+                    + " note=session_not_activated"
-+            )
-             return
-         }
- 
--        let perPayloadFiles = files.filter { file in
--            file.lastPathComponent.hasPrefix("watch_log_") &&
--            file.lastPathComponent.hasSuffix(".txt") &&
--            file.lastPathComponent != "watch_log_daily.txt"
-+        let pendingPayloads = await getPendingPayloads()
-+        let pendingIds = pendingPayloads.compactMap {
-+            WatchConnectivityPayloadIds.payloadIdString($0["payloadId"])
-+        }
-+
-+        if !pendingIds.isEmpty {
-+            let queryEnvelope: [String: Any] = [
-+                "type": "queryAcks",
-+                "pendingIds": pendingIds
-+            ]
-+            await sendMessageAwaitingReply(
-+                queryEnvelope,
-+                context: "query_acks"
-+            ) { reply in
-+                guard let ackType = reply["type"] as? String,
-+                      ackType == "batchAck"
-+                else {
-+                    await WatchLogger.shared.resendPendingPayloads()
-+                    return
-+                }
-+
-+                let ackIds = WatchConnectivityPayloadIds.payloadIdStrings(
-+                    from: reply["ackIds"]
-+                )
-+
-+                if ackIds.isEmpty {
-+                    await WatchLogger.shared.resendPendingPayloads()
-+                    return
-+                }
-+
-+                var errCount = 0
-+                for ackId in ackIds {
-+                    let path = logDir.appendingPathComponent(
-+                        "watch_log_\(ackId).txt"
-+                    )
-+                    if WatchLogger.removeFileQuietly(at: path) {
-+                        await WatchLogger.shared
-+                            .removePendingPayload(ackId)
-+                    } else {
-+                        errCount += 1
-+                    }
-+                }
-+                let result = errCount > 0 ? "err" : "ok"
-+                await WatchLogger.shared.log(
-+                    "⌚️ [CLEANUP] path=query_acks"
-+                        + " artifact=watch_log"
-+                        + " count=\(ackIds.count)"
-+                        + " result=\(result)"
-+                )
-+                await WatchLogger.shared
-+                    .resendPendingPayloads()
-+            } onError: { error in
-+                await WatchLogger.shared.log(
-+                    "⌚️ Failed to query ACKs: "
-+                        + error.localizedDescription
-+                )
-+                await WatchLogger.shared.resendPendingPayloads()
-+            }
-+        } else {
-+            await resendPendingPayloads()
-         }
-+    }
- 
--        // Apply retention caps
-+    /// Deletes age-expired and excess watch_log files, emits a
-+    /// [CLEANUP] retention summary when any files are removed.
-+    /// Returns the surviving file list.
-+    private func applyWatchLogRetention(
-+        perPayloadFiles: [URL]
-+    ) async -> [URL] {
-         let now = Date()
-         var validFiles: [URL] = []
--        var filesToDelete: [URL] = []
-+        var expiredFiles: [URL] = []
-+        var oldestDeletedAge: TimeInterval = 0
- 
-         for file in perPayloadFiles {
--            // Check age
--            if let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
--               let creationDate = attributes[.creationDate] as? Date {
--                let age = now.timeIntervalSince(creationDate)
-+            if let attrs = try? FileManager.default.attributesOfItem(
-+                atPath: file.path
-+            ),
-+                let created = attrs[.creationDate] as? Date {
-+                let age = now.timeIntervalSince(created)
-                 if age > maxFileAge {
--                    filesToDelete.append(file)
-+                    expiredFiles.append(file)
-+                    oldestDeletedAge = max(oldestDeletedAge, age)
-                     continue
-                 }
-             }
-             validFiles.append(file)
-         }
- 
--        // Delete old files
--        for file in filesToDelete {
--            try? FileManager.default.removeItem(at: file)
-+        var deletedCount = 0
-+        var errCount = 0
-+
-+        for file in expiredFiles {
-+            if Self.removeFileQuietly(at: file) {
-+                deletedCount += 1
-+            } else {
-+                errCount += 1
-+            }
-         }
- 
--        // Enforce max files (keep most recent)
-         if validFiles.count > maxPerPayloadFiles {
--            // Sort by creation date, keep most recent
--            let sortedFiles = validFiles.sorted { file1, file2 in
--                let date1 = ((try? FileManager.default.attributesOfItem(atPath: file1.path))?[.creationDate] as? Date) ?? Date.distantPast
--                let date2 = ((try? FileManager.default.attributesOfItem(atPath: file2.path))?[.creationDate] as? Date) ?? Date.distantPast
--                return date1 > date2
--            }
--            let filesToRemove = sortedFiles.suffix(validFiles.count - maxPerPayloadFiles)
--            for file in filesToRemove {
--                try? FileManager.default.removeItem(at: file)
-+            let sorted = validFiles.sorted { f1, f2 in
-+                let d1 = ((try? FileManager.default.attributesOfItem(
-+                    atPath: f1.path
-+                ))?[.creationDate] as? Date) ?? .distantPast
-+                let d2 = ((try? FileManager.default.attributesOfItem(
-+                    atPath: f2.path
-+                ))?[.creationDate] as? Date) ?? .distantPast
-+                return d1 > d2
-             }
--            validFiles = Array(sortedFiles.prefix(maxPerPayloadFiles))
--        }
--
--        // If reachable, query ACKs first, then resend remaining files
--        if session.isReachable && session.activationState == .activated {
--            // 1. Query ACKs for pending payloads
--            let pendingPayloads = await getPendingPayloads()
--            let pendingIds = pendingPayloads.compactMap { $0["payloadId"] as? String }
--
--            if !pendingIds.isEmpty {
--                let queryEnvelope: [String: Any] = [
--                    "type": "queryAcks",
--                    "pendingIds": pendingIds
--                ]
--
--                session.sendMessage(
--                    queryEnvelope,
--                    replyHandler: { reply in
--                        Task {
--                            // Handle batchAck response
--                            if let batchAckType = reply["type"] as? String,
--                               batchAckType == "batchAck",
--                               let ackIds = reply["ackIds"] as? [String] {
--                                // Delete acknowledged files
--                                for ackId in ackIds {
--                                    let filePath = logDir.appendingPathComponent("watch_log_\(ackId).txt")
--                                    try? FileManager.default.removeItem(at: filePath)
--                                    await WatchLogger.shared.removePendingPayload(ackId)
--                                }
--                                // Resend remaining files
--                                await WatchLogger.shared.resendPendingPayloads()
--                            }
--                        }
--                    },
--                    errorHandler: { error in
--                        Task {
--                            await WatchLogger.shared.log("⌚️ Failed to query ACKs: \(error.localizedDescription)")
--                            // Still try to resend
--                            await WatchLogger.shared.resendPendingPayloads()
--                        }
--                    }
--                )
--            } else {
--                // No pending payloads, just resend any remaining files
--                await resendPendingPayloads()
-+            let excess = sorted.suffix(
-+                validFiles.count - maxPerPayloadFiles
-+            )
-+            for file in excess {
-+                if let attrs = try? FileManager.default.attributesOfItem(
-+                    atPath: file.path
-+                ),
-+                    let created = attrs[.creationDate] as? Date {
-+                    oldestDeletedAge = max(
-+                        oldestDeletedAge, now.timeIntervalSince(created)
-+                    )
-+                }
-+                if Self.removeFileQuietly(at: file) {
-+                    deletedCount += 1
-+                } else {
-+                    errCount += 1
-+                }
-             }
--        } else {
--            // Not reachable - do NOT delete files, optionally use transferUserInfo
--            // Files will be resent when reachable
-+            validFiles = Array(sorted.prefix(maxPerPayloadFiles))
-         }
-+
-+        if deletedCount > 0 || errCount > 0 {
-+            let hours = Int(oldestDeletedAge / 3600)
-+            let result = errCount > 0 ? "err" : "ok"
-+            await log(
-+                "⌚️ [CLEANUP] path=retention artifact=watch_log"
-+                    + " deleted=\(deletedCount)"
-+                    + " remaining=\(validFiles.count)"
-+                    + " oldest_age_hours=\(hours)"
-+                    + " result=\(result)"
-+            )
-+        }
-+
-+        return validFiles
-     }
- 
--    /// Resends pending payload files using sendMessage (not transferUserInfo) when reachable.
-+    // MARK: - Resend pending payloads
-+
-     func resendPendingPayloads() async {
--        guard session.isReachable && session.activationState == .activated else {
-+        guard session.isReachable else { return }
-+        guard prepareSessionForImmediateSend() else {
-+            await log(
-+                "⌚️ resend_pending_payloads skipped"
-+                    + " note=session_not_activated"
-+            )
-             return
-         }
- 
--        // Get pending payloads
-         let pendingPayloads = await getPendingPayloads()
- 
--        for pendingRecord in pendingPayloads {
--            guard let payloadId = pendingRecord["payloadId"] as? String,
--                  let type = pendingRecord["type"] as? String,
-+        for record in pendingPayloads {
-+            guard let payloadId = WatchConnectivityPayloadIds.payloadIdString(
-+                      record["payloadId"]
-+                  ),
-+                  let type = record["type"] as? String,
-                   type == "watchLogs",
--                  let filePath = pendingRecord["filePath"] as? String else {
--                continue
--            }
-+                  let filePath = record["filePath"] as? String
-+            else { continue }
- 
-             let fileURL = URL(fileURLWithPath: filePath)
- 
--            // Read file
-             guard let data = try? Data(contentsOf: fileURL),
-                   let logString = String(data: data, encoding: .utf8),
--                  !logString.isEmpty else {
--                // File doesn't exist or is empty - remove from pending
-+                  !logString.isEmpty
-+            else {
-                 await removePendingPayload(payloadId)
-                 continue
-             }
- 
--            // Create envelope
-             let envelope: [String: Any] = [
-                 "type": "watchLogs",
-                 "payloadId": payloadId,
-                 "data": logString
-             ]
- 
--            // Resend using sendMessage (not transferUserInfo) to get immediate ACK
--            session.sendMessage(
-+            await sendMessageAwaitingReply(
-                 envelope,
--                replyHandler: { reply in
--                    Task {
--                        // Check if ACK received
--                        if let ackType = reply["type"] as? String,
--                           ackType == "ack",
--                           let ackPayloadId = reply["payloadId"] as? String,
--                           ackPayloadId == payloadId {
--                            // ACK received - delete file
--                            try? FileManager.default.removeItem(at: fileURL)
--                            await WatchLogger.shared.removePendingPayload(payloadId)
--                            await WatchLogger.shared.log("⌚️ Resent logs ACK received for payloadId: \(payloadId)")
--                        }
--                    }
--                },
--                errorHandler: { error in
--                    Task {
--                        await WatchLogger.shared.log("⌚️ Failed to resend logs for payloadId \(payloadId): \(error.localizedDescription)")
--                        // Keep file for next retry
-+                context: "resend payloadId=\(payloadId)"
-+            ) { reply in
-+                if let ackType = reply["type"] as? String,
-+                   ackType == "ack",
-+                   let ackId = WatchConnectivityPayloadIds.payloadIdString(
-+                       reply["payloadId"]
-+                   ),
-+                   ackId == payloadId {
-+                    let res = WatchLogger.removeFileTracked(
-+                        at: fileURL
-+                    )
-+                    if res.succeeded {
-+                        await WatchLogger.shared
-+                            .removePendingPayload(payloadId)
-                     }
-+                    await WatchLogger.shared
-+                        .logCleanup(
-+                            path: "ack_reply", flow: "resend",
-+                            artifact: "watch_log",
-+                            payloadId: payloadId,
-+                            result: res
-+                        )
-                 }
--            )
-+            } onError: { error in
-+                await WatchLogger.shared.log(
-+                    "⌚️ Failed to resend for \(payloadId): "
-+                        + error.localizedDescription
-+                )
-+            }
-         }
-     }
- 
--    /// Stores a pending payload record for later ACK matching.
--    func storePendingPayload(payloadId: String, type: String, filePath: String) async {
--        var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
-+    // MARK: - Pending payload storage
-+
-+    /// Replaces any existing pending row with the same `payloadId` before append, so repeated
-+    /// failures for one payload cannot multiply list entries (only `createdAtEpoch` refreshes).
-+    func storePendingPayload(
-+        payloadId: String, type: String, filePath: String
-+    ) async {
-+        var pending = UserDefaults.standard.array(
-+            forKey: pendingPayloadsKey
-+        ) as? [[String: Any]] ?? []
-+
-+        pending.removeAll { $0["payloadId"] as? String == payloadId }
- 
-         let record: [String: Any] = [
-             "payloadId": payloadId,
-@@ -344,32 +733,477 @@ actor WatchLogger {
-             "filePath": filePath,
-             "createdAtEpoch": Date().timeIntervalSince1970
-         ]
-+        pending.append(record)
- 
--        pendingPayloads.append(record)
--
--        // Clean up old records (older than 7 days)
-         let now = Date().timeIntervalSince1970
--        pendingPayloads = pendingPayloads.filter { record in
--            if let createdAt = record["createdAtEpoch"] as? TimeInterval {
--                return (now - createdAt) < (7 * 24 * 60 * 60)
-+        pending = pending.filter { rec in
-+            if let t = rec["createdAtEpoch"] as? TimeInterval {
-+                return (now - t) < maxFileAge
-             }
-             return true
-         }
- 
--        UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
-+        UserDefaults.standard.set(pending, forKey: pendingPayloadsKey)
-     }
- 
--    /// Removes a pending payload record after ACK.
-     func removePendingPayload(_ payloadId: String) async {
--        var pendingPayloads = UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
--        pendingPayloads.removeAll { record in
--            record["payloadId"] as? String == payloadId
--        }
--        UserDefaults.standard.set(pendingPayloads, forKey: pendingPayloadsKey)
-+        var pending = UserDefaults.standard.array(
-+            forKey: pendingPayloadsKey
-+        ) as? [[String: Any]] ?? []
-+        pending.removeAll { $0["payloadId"] as? String == payloadId }
-+        UserDefaults.standard.set(pending, forKey: pendingPayloadsKey)
-     }
- 
--    /// Gets all pending payload records.
-     func getPendingPayloads() async -> [[String: Any]] {
--        return UserDefaults.standard.array(forKey: pendingPayloadsKey) as? [[String: Any]] ?? []
-+        UserDefaults.standard.array(
-+            forKey: pendingPayloadsKey
-+        ) as? [[String: Any]] ?? []
-+    }
-+
-+    // MARK: - Drain File Cleanup
-+
-+    /// Deletes drain files and pending payload records for the given
-+    /// payloadIds. Idempotent: tolerates missing files, duplicate calls,
-+    /// and overlap between batchAck and watchLogConfirm.
-+    /// Emits per-artifact-type [CLEANUP] events.
-+    func deleteFilesForPayloadIds(_ ids: [String]) async {
-+        let pendingPayloads = await getPendingPayloads()
-+        let pendingByPayloadId = Dictionary(
-+            pendingPayloads.compactMap { rec -> (String, String)? in
-+                guard let pid = WatchConnectivityPayloadIds.payloadIdString(
-+                          rec["payloadId"]
-+                      ),
-+                      let path = rec["filePath"] as? String
-+                else { return nil }
-+                return (pid, path)
-+            },
-+            uniquingKeysWith: { first, _ in first }
-+        )
-+        let logsDir = ComplicationLogBuffer.sharedContainerURL()?
-+            .appendingPathComponent("logs", isDirectory: true)
-+
-+        var watchLogOk = 0, watchLogErr = 0
-+        var pendingRecordCount = 0
-+        var drainOk = 0, drainErr = 0
-+
-+        for id in ids {
-+            var watchLogFailed = false
-+            if let filePath = pendingByPayloadId[id] {
-+                let res = Self.removeFileTracked(atPath: filePath)
-+                if res.succeeded {
-+                    watchLogOk += 1
-+                } else {
-+                    watchLogErr += 1
-+                    watchLogFailed = true
-+                }
-+            }
-+
-+            if !watchLogFailed {
-+                await removePendingPayload(id)
-+                pendingRecordCount += 1
-+            }
-+
-+            if let logsDir {
-+                let drainFile = logsDir.appendingPathComponent(
-+                    "complication_log.drain.\(id).txt"
-+                )
-+                let res = Self.removeFileTracked(at: drainFile)
-+                if res.succeeded { drainOk += 1 }
-+                else { drainErr += 1 }
-+            }
-+        }
-+
-+        let sampleIds = ids.prefix(3).joined(separator: "|")
-+        if watchLogOk + watchLogErr > 0 {
-+            let result = watchLogErr > 0 ? "err" : "ok"
-+            await log(
-+                "⌚️ [CLEANUP] path=confirm artifact=watch_log"
-+                    + " count=\(watchLogOk + watchLogErr)"
-+                    + " sample_ids=\(sampleIds)"
-+                    + " result=\(result)"
-+            )
-+        }
-+        if pendingRecordCount > 0 {
-+            await log(
-+                "⌚️ [CLEANUP] path=confirm"
-+                    + " artifact=pending_record"
-+                    + " count=\(pendingRecordCount) result=ok"
-+            )
-+        }
-+        if drainOk + drainErr > 0 {
-+            let result = drainErr > 0 ? "err" : "ok"
-+            await log(
-+                "⌚️ [CLEANUP] path=confirm artifact=drain"
-+                    + " count=\(drainOk + drainErr)"
-+                    + " result=\(result)"
-+            )
-+        }
-+    }
-+
-+    // MARK: - Complication Log Drain
-+
-+    private func drainComplicationLogs() async {
-+        guard let containerURL = ComplicationLogBuffer
-+            .sharedContainerURL() else { return }
-+
-+        let logsDir = containerURL.appendingPathComponent(
-+            "logs", isDirectory: true
-+        )
-+        let fileManager = FileManager.default
-+
-+        guard let allFiles = try? fileManager.contentsOfDirectory(
-+            at: logsDir, includingPropertiesForKeys: [.creationDateKey]
-+        ) else { return }
-+
-+        var drainFiles = allFiles
-+            .filter {
-+                $0.lastPathComponent.hasPrefix("complication_log.drain.")
-+                    && $0.lastPathComponent.hasSuffix(".txt")
-+            }
-+            .sorted { url1, url2 in
-+                let d1 = (try? url1.resourceValues(
-+                    forKeys: [.creationDateKey]
-+                ).creationDate) ?? .distantPast
-+                let d2 = (try? url2.resourceValues(
-+                    forKeys: [.creationDateKey]
-+                ).creationDate) ?? .distantPast
-+                return d1 < d2
-+            }
-+
-+        drainFiles = await applyDrainRetention(
-+            drainFiles: drainFiles
-+        )
-+
-+        for drainFile in drainFiles {
-+            await sendLogContentFromFile(fileURL: drainFile)
-+        }
-+
-+        let logFile = logsDir.appendingPathComponent("complication_log.txt")
-+        guard fileManager.fileExists(atPath: logFile.path) else { return }
-+
-+        let drainURL = logsDir.appendingPathComponent(
-+            "complication_log.drain.\(UUID().uuidString).txt"
-+        )
-+        do {
-+            try fileManager.moveItem(at: logFile, to: drainURL)
-+        } catch {
-+            return
-+        }
-+
-+        await sendLogContentFromFile(fileURL: drainURL)
-+    }
-+
-+    /// Deletes drain files exceeding maxFileAge or maxPerPayloadFiles,
-+    /// emits [CLEANUP] retention summary. Returns surviving files.
-+    private func applyDrainRetention(
-+        drainFiles: [URL]
-+    ) async -> [URL] {
-+        let now = Date()
-+        var deletedCount = 0
-+        var errCount = 0
-+        var oldestDeletedAge: TimeInterval = 0
-+
-+        var remaining = drainFiles.filter { file in
-+            guard let created = (try? file.resourceValues(
-+                forKeys: [.creationDateKey]
-+            ).creationDate),
-+                now.timeIntervalSince(created) > maxFileAge
-+            else { return true }
-+
-+            let age = now.timeIntervalSince(created)
-+            oldestDeletedAge = max(oldestDeletedAge, age)
-+            if Self.removeFileQuietly(at: file) {
-+                deletedCount += 1
-+            } else {
-+                errCount += 1
-+            }
-+            return false
-+        }
-+
-+        if remaining.count > maxPerPayloadFiles {
-+            let excess = remaining.prefix(
-+                remaining.count - maxPerPayloadFiles
-+            )
-+            for file in excess {
-+                if let created = (try? file.resourceValues(
-+                    forKeys: [.creationDateKey]
-+                ).creationDate) {
-+                    oldestDeletedAge = max(
-+                        oldestDeletedAge, now.timeIntervalSince(created)
-+                    )
-+                }
-+                if Self.removeFileQuietly(at: file) {
-+                    deletedCount += 1
-+                } else {
-+                    errCount += 1
-+                }
-+            }
-+            remaining = Array(remaining.suffix(maxPerPayloadFiles))
-+        }
-+
-+        if deletedCount > 0 || errCount > 0 {
-+            let hours = Int(oldestDeletedAge / 3600)
-+            let result = errCount > 0 ? "err" : "ok"
-+            await log(
-+                "⌚️ [CLEANUP] path=retention artifact=drain"
-+                    + " deleted=\(deletedCount)"
-+                    + " remaining=\(remaining.count)"
-+                    + " oldest_age_hours=\(hours)"
-+                    + " result=\(result)"
-+            )
-+        }
-+
-+        return remaining
-+    }
-+
-+    private static func payloadIdFromDrainFile(_ fileURL: URL) -> String {
-+        let name = fileURL.deletingPathExtension().lastPathComponent
-+        let prefix = "complication_log.drain."
-+        if let range = name.range(of: prefix) {
-+            let candidate = String(name[range.upperBound...])
-+            if !candidate.isEmpty { return candidate }
-+        }
-+        return UUID().uuidString
-+    }
-+
-+    private static let drainSizeCap = 64 * 1024
-+
-+    private func sendLogContentFromFile(fileURL: URL) async {
-+        guard let data = try? Data(contentsOf: fileURL),
-+              var content = String(data: data, encoding: .utf8),
-+              !content.trimmingCharacters(in: .whitespacesAndNewlines)
-+                  .isEmpty
-+        else {
-+            try? FileManager.default.removeItem(at: fileURL)
-+            return
-+        }
-+
-+        if content.utf8.count > Self.drainSizeCap {
-+            let rawData = Data(content.utf8)
-+            let truncData = rawData.prefix(Self.drainSizeCap)
-+            if let nl = truncData.lastIndex(of: UInt8(ascii: "\n")) {
-+                content = String(
-+                    decoding: truncData[...nl], as: UTF8.self
-+                ) + "[truncated]\n"
-+            } else {
-+                content = String(
-+                    decoding: truncData, as: UTF8.self
-+                ) + "\n[truncated]\n"
-+            }
-+        }
-+
-+        let payloadId = Self.payloadIdFromDrainFile(fileURL)
-+        let envelope: [String: Any] = [
-+            "type": "watchLogs",
-+            "payloadId": payloadId,
-+            "data": content
-+        ]
-+
-+        let filePath = fileURL.path
-+
-+        if session.isReachable {
-+            guard prepareSessionForImmediateSend() else {
-+                await storePendingPayload(
-+                    payloadId: payloadId,
-+                    type: "watchLogs",
-+                    filePath: filePath
-+                )
-+                _ = session.transferUserInfo(envelope)
-+                await log(
-+                    "⌚️ Drain logs queued for background delivery"
-+                        + " (payloadId: \(payloadId))"
-+                        + " watch_log_files=\(cachedWatchLogFiles)"
-+                        + " drain_files=\(cachedDrainFiles)"
-+                        + " note=activation_timeout"
-+                )
-+                return
-+            }
-+
-+            await storePendingPayload(
-+                payloadId: payloadId,
-+                type: "watchLogs",
-+                filePath: filePath
-+            )
-+
-+            await sendMessageAwaitingReply(
-+                envelope,
-+                context: "drain payloadId=\(payloadId)"
-+            ) { reply in
-+                if let ackType = reply["type"] as? String,
-+                   ackType == "ack",
-+                   let ackId = WatchConnectivityPayloadIds.payloadIdString(
-+                       reply["payloadId"]
-+                   ),
-+                   ackId == payloadId {
-+                    let res = WatchLogger.removeFileTracked(
-+                        at: fileURL
-+                    )
-+                    if res.succeeded {
-+                        await WatchLogger.shared
-+                            .removePendingPayload(payloadId)
-+                    }
-+                    await WatchLogger.shared
-+                        .logCleanup(
-+                            path: "ack_reply", flow: "drain",
-+                            artifact: "drain",
-+                            payloadId: payloadId,
-+                            result: res
-+                        )
-+                }
-+            } onError: { error in
-+                await WatchLogger.shared.log(
-+                    "⌚️ Failed to send drain logs"
-+                        + " (payloadId: \(payloadId)): "
-+                        + error.localizedDescription
-+                )
-+                await WatchLogger.shared.storePendingPayload(
-+                    payloadId: payloadId,
-+                    type: "watchLogs",
-+                    filePath: filePath
-+                )
-+            }
-+        } else {
-+            _ = session.transferUserInfo(envelope)
-+            await storePendingPayload(
-+                payloadId: payloadId,
-+                type: "watchLogs",
-+                filePath: filePath
-+            )
-+        }
-+    }
-+
-+    // MARK: - Cleanup log helper
-+
-+    /// Formats and emits a [CLEANUP] line for ack_reply paths.
-+    private func logCleanup(
-+        path: String, flow: String, artifact: String,
-+        payloadId: String, result res: RemoveResult
-+    ) async {
-+        var msg = "⌚️ [CLEANUP] path=\(path) flow=\(flow)"
-+        msg += " artifact=\(artifact)"
-+        msg += " payloadId=\(payloadId)"
-+        msg += " outcome=\(res.outcome)"
-+        if let err = res.error {
-+            msg += " result=err error=\(err)"
-+        } else {
-+            msg += " result=ok"
-+        }
-+        await log(msg)
-+    }
-+
-+    // MARK: - Observability (E2, E3)
-+
-+    /// E3: Recompute cached file counts if stale (10s TTL).
-+    private func updateCachedCountsIfStale() {
-+        let now = Date()
-+        guard now.timeIntervalSince(cachedCountsTimestamp) >= 10
-+        else { return }
-+
-+        let fileManager = FileManager.default
-+        let logDir = fileManager.urls(
-+            for: .documentDirectory, in: .userDomainMask
-+        ).first?.appendingPathComponent("logs", isDirectory: true)
-+
-+        if let logDir, let files = try? fileManager.contentsOfDirectory(
-+            at: logDir, includingPropertiesForKeys: nil
-+        ) {
-+            cachedWatchLogFiles = files.filter {
-+                $0.lastPathComponent.hasPrefix("watch_log_")
-+                    && $0.lastPathComponent.hasSuffix(".txt")
-+                    && $0.lastPathComponent != "watch_log_daily.txt"
-+            }.count
-+        }
-+
-+        if let containerURL = ComplicationLogBuffer
-+            .sharedContainerURL() {
-+            let drainsDir = containerURL.appendingPathComponent(
-+                "logs", isDirectory: true
-+            )
-+            if let files = try? fileManager.contentsOfDirectory(
-+                at: drainsDir, includingPropertiesForKeys: nil
-+            ) {
-+                cachedDrainFiles = files.filter {
-+                    $0.lastPathComponent
-+                        .hasPrefix("complication_log.drain.")
-+                        && $0.lastPathComponent.hasSuffix(".txt")
-+                }.count
-+            }
-+        }
-+
-+        cachedCountsTimestamp = now
-+    }
-+
-+    /// E2: Best-effort daily inventory of log files and pending payloads.
-+    private func logFileInventory() async {
-+        let lastInventory = UserDefaults.standard.double(
-+            forKey: lastInventoryKey
-+        )
-+        let now = Date().timeIntervalSince1970
-+        guard (now - lastInventory) >= 24 * 60 * 60 else { return }
-+
-+        let fileManager = FileManager.default
-+        var watchLogsCount = 0
-+        var watchLogsBytes: UInt64 = 0
-+        var drainsCount = 0
-+        var drainsBytes: UInt64 = 0
-+
-+        let logDir = fileManager.urls(
-+            for: .documentDirectory, in: .userDomainMask
-+        ).first?.appendingPathComponent("logs", isDirectory: true)
-+
-+        if let logDir, let files = try? fileManager.contentsOfDirectory(
-+            at: logDir, includingPropertiesForKeys: [.fileSizeKey]
-+        ) {
-+            for file in files
-+                where file.lastPathComponent.hasPrefix("watch_log_")
-+                && file.lastPathComponent.hasSuffix(".txt")
-+                && file.lastPathComponent != "watch_log_daily.txt" {
-+                watchLogsCount += 1
-+                if let attrs = try? fileManager.attributesOfItem(
-+                    atPath: file.path
-+                ),
-+                    let size = attrs[.size] as? UInt64 {
-+                    watchLogsBytes += size
-+                }
-+            }
-+        }
-+
-+        if let containerURL = ComplicationLogBuffer
-+            .sharedContainerURL() {
-+            let drainsDir = containerURL.appendingPathComponent(
-+                "logs", isDirectory: true
-+            )
-+            if let files = try? fileManager.contentsOfDirectory(
-+                at: drainsDir, includingPropertiesForKeys: [.fileSizeKey]
-+            ) {
-+                for file in files
-+                    where file.lastPathComponent
-+                    .hasPrefix("complication_log.drain.")
-+                    && file.lastPathComponent.hasSuffix(".txt") {
-+                    drainsCount += 1
-+                    if let attrs = try? fileManager.attributesOfItem(
-+                        atPath: file.path
-+                    ),
-+                        let size = attrs[.size] as? UInt64 {
-+                        drainsBytes += size
-+                    }
-+                }
-+            }
-+        }
-+
-+        let pendingCount = (UserDefaults.standard.array(
-+            forKey: pendingPayloadsKey
-+        ) as? [[String: Any]])?.count ?? 0
-+
-+        await log(
-+            "⌚️ [INVENTORY]"
-+                + " watch_logs_count=\(watchLogsCount)"
-+                + " watch_logs_bytes=\(watchLogsBytes)"
-+                + " drains_count=\(drainsCount)"
-+                + " drains_bytes=\(drainsBytes)"
-+                + " pending_count=\(pendingCount)"
-+        )
-+
-+        UserDefaults.standard.set(now, forKey: lastInventoryKey)
-     }
- }
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
-index 1a0377ad0..7cc707240 100644
+index a597e09e3..2e0dde9b5 100644
 --- a/Trio/Sources/Application/AppDelegate.swift
 +++ b/Trio/Sources/Application/AppDelegate.swift
-@@ -11,7 +11,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+@@ -11,13 +11,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
  
      func application(
          _: UIApplication,
@@ -1520,25 +64,21 @@ index 1a0377ad0..7cc707240 100644
      ) -> Bool {
          // Default to `true` if the key doesn't exist — Trio is opt-out, not opt-in.
          // Read before touching Firebase: an explicit opt-out means we never
-@@ -19,15 +19,44 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+         // configure it, so no component can queue or upload anything.
          let crashReportingEnabled: Bool = PropertyPersistentFlags.shared.crashlyticsSharingEnabled ?? true
          CrashReportingGate.configureAtLaunch(enabled: crashReportingEnabled)
- 
-+        // Check for unexpected termination from previous launch, then mark this launch.
-+        // Note: AppTerminationTracker uses UserDefaults for state persistence. In rare cases
-+        // (ultra-rapid termination <1s), the state may not be synced before iOS kills the app.
-+        // If this becomes a problem, consider: (A) file-based atomic writes, (B) hybrid
-+        // UserDefaults + file approach. For now, UserDefaults is sufficient for most cases.
 +        AppTerminationTracker.shared.checkForUnexpectedTermination()
 +        AppTerminationTracker.shared.markAppLaunched(launchOptions: launchOptions)
-+
+ 
          return true
      }
- 
--    /// Foreground-transition entry point for telemetry cadence. Re-evaluates
--    /// the overdue window every time the user brings Trio to the foreground,
--    /// since `scheduleRecurring`'s GCD timer doesn't fire while suspended.
--    /// No-op if a send already landed within the last 24h.
+@@ -28,6 +30,27 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
+     /// No-op if a send already landed within the last 24h.
+     func applicationWillEnterForeground(_: UIApplication) {
+         telemetry?.checkAndSendIfOverdue(reason: .foreground)
++        AppTerminationTracker.shared.markAppWillEnterForeground()
++    }
++
 +    func applicationDidBecomeActive(_: UIApplication) {
 +        AppTerminationTracker.shared.markAppBecameActive()
 +    }
@@ -1551,15 +91,6 @@ index 1a0377ad0..7cc707240 100644
 +        AppTerminationTracker.shared.markAppEnteredBackground()
 +    }
 +
-+    /// Foreground-transition entry point. Drives telemetry cadence
-+    /// (re-evaluates the overdue window — `scheduleRecurring`'s GCD timer
-+    /// doesn't fire while suspended; no-op if a send landed within 24h)
-+    /// and notifies `AppTerminationTracker` so lifecycle state is fresh.
-     func applicationWillEnterForeground(_: UIApplication) {
-         telemetry?.checkAndSendIfOverdue(reason: .foreground)
-+        AppTerminationTracker.shared.markAppWillEnterForeground()
-+    }
-+
 +    func applicationWillTerminate(_: UIApplication) {
 +        AppTerminationTracker.shared.markAppWillTerminate()
 +    }
@@ -1569,26 +100,49 @@ index 1a0377ad0..7cc707240 100644
      }
  
      func application(
+diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
+index 2410c8597..dcb8762f6 100644
+--- a/Trio/Sources/Application/TrioApp.swift
++++ b/Trio/Sources/Application/TrioApp.swift
+@@ -80,6 +80,7 @@ extension Notification.Name {
+         _ = resolver.resolve(BluetoothStateManager.self)!
+         _ = resolver.resolve(PluginManager.self)!
+         _ = resolver.resolve(AlertPermissionsChecker.self)!
++        _ = resolver.resolve(CloudLogUploadService.self)!
+         if #available(iOS 16.2, *) {
+             _ = resolver.resolve(LiveActivityManager.self)!
+         }
+@@ -128,7 +129,7 @@ extension Notification.Name {
+     }
+ 
+     init() {
+-        TrioLogger.install(AppLogStore.shared)
++        TrioLogger.install(TeeLogSink(primary: AppLogStore.shared, tees: [CloudLogSink.shared]))
+         FileProtectionFixer.fixFlagFileProtectionForPropertyPersistentFlags() // TODO: ‼️ REMOVE ME BEFORE PUBLIC BETA / RELEASE
+ 
+         let notificationCenter = Foundation.NotificationCenter.default
 diff --git a/Trio/Sources/Assemblies/ServiceAssembly.swift b/Trio/Sources/Assemblies/ServiceAssembly.swift
-index 3b675466c..fcdfec219 100644
+index a6a9f4fe6..e5c830b9c 100644
 --- a/Trio/Sources/Assemblies/ServiceAssembly.swift
 +++ b/Trio/Sources/Assemblies/ServiceAssembly.swift
-@@ -29,6 +29,7 @@ final class ServiceAssembly: Assembly {
+@@ -21,6 +21,8 @@ final class ServiceAssembly: Assembly {
          container.register(GarminManager.self) { r in BaseGarminManager(resolver: r) }
          container.register(ContactImageManager.self) { r in BaseContactImageManager(resolver: r) }
          container.register(AlertPermissionsChecker.self) { r in AlertPermissionsChecker(resolver: r) }
 +        container.register(CloudLogUploadService.self) { _ in CloudLogUploadService() }
++            .inObjectScope(.container)
          if #available(iOS 16.2, *) {
              container.register(LiveActivityManager.self) { r in
                  LiveActivityManager(resolver: r)
 diff --git a/Trio/Sources/Helpers/AppTerminationTracker.swift b/Trio/Sources/Helpers/AppTerminationTracker.swift
 new file mode 100644
-index 000000000..f04e55860
+index 000000000..95f56d418
 --- /dev/null
 +++ b/Trio/Sources/Helpers/AppTerminationTracker.swift
-@@ -0,0 +1,306 @@
-+import Foundation
+@@ -0,0 +1,315 @@
++import FirebaseCore
 +import FirebaseCrashlytics
++import Foundation
 +import UIKit
 +import Darwin
 +
@@ -1627,6 +181,10 @@ index 000000000..f04e55860
 +        // Private initializer for singleton
 +    }
 +
++    private var crashlyticsAvailable: Bool {
++        FirebaseApp.app() != nil && (PropertyPersistentFlags.shared.crashlyticsSharingEnabled ?? true)
++    }
++
 +    // MARK: - Public Methods
 +
 +    /// Called when app finishes launching
@@ -1639,26 +197,27 @@ index 000000000..f04e55860
 +        // Log launch options for diagnostics
 +        if let launchOptions = launchOptions, !launchOptions.isEmpty {
 +            let optionsDescription = launchOptions.map { "\($0.key.rawValue)" }.joined(separator: ", ")
-+            Crashlytics.crashlytics().log("App launched with options: \(optionsDescription)")
++            if crashlyticsAvailable {
++                Crashlytics.crashlytics().log("App launched with options: \(optionsDescription)")
++            }
 +        }
 +
 +        let message = "App launched at \(timestamp)"
-+        debug(.default, message)
-+        info(.default, message)
++        info(.lifecycle, message)
 +    }
 +
 +    /// Called when app becomes active
 +    func markAppBecameActive() {
 +        updateState(.active)
 +        let message = "App became active"
-+        debug(.default, message)
++        debug(.lifecycle, message)
 +    }
 +
 +    /// Called when app will resign active
 +    func markAppWillResignActive() {
 +        updateState(.inactive)
 +        let message = "App will resign active"
-+        debug(.default, message)
++        debug(.lifecycle, message)
 +    }
 +
 +    /// Called when app enters background
@@ -1667,14 +226,14 @@ index 000000000..f04e55860
 +        // Save critical state before going to background
 +        saveDiagnosticState()
 +        let message = "App entered background"
-+        debug(.default, message)
++        debug(.lifecycle, message)
 +    }
 +
 +    /// Called when app will enter foreground
 +    func markAppWillEnterForeground() {
 +        updateState(.active)
 +        let message = "App will enter foreground"
-+        debug(.default, message)
++        debug(.lifecycle, message)
 +    }
 +
 +    /// Called when app will terminate normally
@@ -1682,8 +241,7 @@ index 000000000..f04e55860
 +        updateState(.terminated)
 +        userDefaults.set(reason.rawValue, forKey: "AppTerminationTracker.lastTerminationReason")
 +        let message = "App will terminate (reason: \(reason.rawValue))"
-+        debug(.default, message)
-+        info(.default, message)
++        info(.lifecycle, message)
 +    }
 +
 +    /// Called when iOS sends a memory warning
@@ -1698,20 +256,23 @@ index 000000000..f04e55860
 +            memoryInfoString = " | Memory: \(memoryInfo.map { "\($0.key)=\($0.value)MB" }.joined(separator: ", "))"
 +
 +            // Log to Crashlytics
-+            Crashlytics.crashlytics().log("Memory info: \(memoryInfo)")
-+            for (key, value) in memoryInfo {
-+                Crashlytics.crashlytics().setCustomValue(value, forKey: "memory_\(key)")
++            if crashlyticsAvailable {
++                Crashlytics.crashlytics().log("Memory info: \(memoryInfo)")
++                for (key, value) in memoryInfo {
++                    Crashlytics.crashlytics().setCustomValue(value, forKey: "memory_\(key)")
++                }
 +            }
 +        }
 +
 +        // Log to Crashlytics
-+        Crashlytics.crashlytics().log("⚠️ Memory warning received (count: \(count))")
-+        Crashlytics.crashlytics().setCustomValue(count, forKey: "memory_warning_count")
++        if crashlyticsAvailable {
++            Crashlytics.crashlytics().log("⚠️ Memory warning received (count: \(count))")
++            Crashlytics.crashlytics().setCustomValue(count, forKey: "memory_warning_count")
++        }
 +
 +        // Log to file and Better Stack with warning level
 +        let message = "⚠️ Memory warning received (count: \(count))\(memoryInfoString)"
-+        debug(.default, message)
-+        warning(.default, message, description: "iOS sent memory pressure warning. This may indicate the app is using too much memory and could be terminated.")
++        warning(.lifecycle, message, description: "iOS sent memory pressure warning. This may indicate the app is using too much memory and could be terminated.")
 +    }
 +
 +    /// Checks for unexpected termination from previous session
@@ -1819,9 +380,8 @@ index 000000000..f04e55860
 +        let shortMessage = "App was unexpectedly terminated. Last state: \(lastState.rawValue), Time since: \(Int(timeSinceLastState))s, Reason: \(reason.rawValue)\(memoryInfoString)"
 +
 +        // Log to file and Better Stack with error level
-+        debug(.default, fullMessage)
 +        warning(
-+            .default,
++            .lifecycle,
 +            shortMessage,
 +            description: "The app was terminated unexpectedly by iOS. This may indicate memory pressure, watchdog timeout, or other system-level issues.",
 +            error: NSError(
@@ -1835,6 +395,8 @@ index 000000000..f04e55860
 +                ]
 +            )
 +        )
++
++        guard crashlyticsAvailable else { return }
 +
 +        // Log to Crashlytics
 +        Crashlytics.crashlytics().log("🔴 Unexpected termination detected: \(fullMessage)")
@@ -1895,11 +457,12 @@ index 000000000..f04e55860
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
 new file mode 100644
-index 000000000..2bdf9e1eb
+index 000000000..ad722e602
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,82 @@
 +import Foundation
++import os
 +
 +/// Better Stack / Logtail provider.
 +///
@@ -1909,6 +472,12 @@ index 000000000..2bdf9e1eb
 +    private let tokenProvider: () -> String?
 +    private let ingestionURLProvider: () -> URL?
 +    private let session: URLSession
++
++    // Cloud logging must not use TrioLogger, otherwise upload failures would feed rows back into the queue.
++    private let osLog = os.Logger(
++        subsystem: Bundle.main.bundleIdentifier ?? "org.nightscout.Trio",
++        category: "CloudLogging"
++    )
 +
 +    init(
 +        tokenProvider: @escaping () -> String?,
@@ -1920,16 +489,21 @@ index 000000000..2bdf9e1eb
 +        self.session = session
 +    }
 +
++    func encodedSize(of events: [CloudLogEvent]) -> Int? {
++        try? JSONEncoder().encode(events).count
++    }
++
 +    func upload(events: [CloudLogEvent]) async -> Result<Void, CloudLogUploadError> {
 +        guard !events.isEmpty else { return .success(()) }
 +
 +        guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-+            debug(.service, "Cloud logging: not configured (no token)")
++            osLog.debug("Cloud logging: not configured (no token)")
 +            return .failure(.notConfigured)
 +        }
 +
-+        guard let url = ingestionURLProvider() else {
-+            debug(.service, "Cloud logging: invalid URL")
++        // The bearer token must never be sent in cleartext.
++        guard let url = ingestionURLProvider(), url.scheme?.lowercased() == "https" else {
++            osLog.debug("Cloud logging: invalid URL")
 +            return .failure(.invalidURL)
 +        }
 +
@@ -1941,7 +515,7 @@ index 000000000..2bdf9e1eb
 +        do {
 +            request.httpBody = try JSONEncoder().encode(events)
 +        } catch {
-+            debug(.service, "Cloud logging: encoding failed: \(error)")
++            osLog.error("Cloud logging: encoding failed: \(String(describing: error), privacy: .public)")
 +            return .failure(.encoding(error))
 +        }
 +
@@ -1955,9 +529,8 @@ index 000000000..2bdf9e1eb
 +            guard http.statusCode == 202 else {
 +                let preview = String(data: data.prefix(4096), encoding: .utf8)
 +
-+                debug(
-+                    .service,
-+                    "Cloud logging upload failed: status=\(http.statusCode) events=\(events.count) bodyPreview=\(preview ?? "<non-utf8>")"
++                osLog.error(
++                    "Cloud logging upload failed: status=\(http.statusCode) events=\(events.count) bodyPreview=\(preview ?? "<non-utf8>", privacy: .public)"
 +                )
 +
 +                return .failure(.unexpectedStatus(code: http.statusCode, bodyPreview: preview))
@@ -1965,7 +538,7 @@ index 000000000..2bdf9e1eb
 +
 +            return .success(())
 +        } catch {
-+            debug(.service, "Cloud logging: transport error: \(error)")
++            osLog.error("Cloud logging: transport error: \(String(describing: error), privacy: .public)")
 +            return .failure(.transport(error))
 +        }
 +    }
@@ -2011,433 +584,12 @@ index 000000000..38a4d43bd
 +        return try? JSONDecoder().decode(BetterStackSettings.self, from: data)
 +    }
 +}
-diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
-new file mode 100644
-index 000000000..d58b2437d
---- /dev/null
-+++ b/Trio/Sources/Logger/CloudLogging/CloudLogEntryAggregator.swift
-@@ -0,0 +1,111 @@
-+import Foundation
-+
-+enum CloudLogEntryAggregator {
-+    /// Aggregates physical log lines into logical log entries using a start-of-entry regex.
-+    ///
-+    /// - Important: `lines` must be physical lines (already split on `\n`) and must not contain trailing `\n`.
-+    static func aggregate(lines: [String], startPattern: NSRegularExpression) -> [String] {
-+        guard !lines.isEmpty else { return [] }
-+
-+        var entries: [String] = []
-+        var current: [String] = []
-+
-+        func isStart(_ line: String) -> Bool {
-+            let ns = line as NSString
-+            let range = NSRange(location: 0, length: ns.length)
-+            return startPattern.firstMatch(in: line, range: range) != nil
-+        }
-+
-+        for line in lines {
-+            if isStart(line) {
-+                if !current.isEmpty {
-+                    entries.append(current.joined(separator: "\n"))
-+                }
-+                current = [line]
-+            } else {
-+                if current.isEmpty {
-+                    // If we start mid-entry (e.g., offset in the middle), treat it as a single entry.
-+                    current = [line]
-+                } else {
-+                    current.append(line)
-+                }
-+            }
-+        }
-+
-+        if !current.isEmpty {
-+            entries.append(current.joined(separator: "\n"))
-+        }
-+
-+        return entries
-+    }
-+
-+    /// Splits newline-terminated data into physical lines at the byte level.
-+    ///
-+    /// Splitting on raw `0x0A` bytes (instead of decoding first) keeps exact byte accounting:
-+    /// an invalid UTF-8 byte decodes to U+FFFD (3 bytes), so re-encoding a decoded line would no
-+    /// longer match what is on disk. `byteCounts[i]` is the raw size of `lines[i]` excluding its newline.
-+    ///
-+    /// - Important: `data` must end with `0x0A`. Invariant: `byteCounts.reduce(0, +) + byteCounts.count == data.count`.
-+    static func splitLines(_ data: Data) -> (lines: [String], byteCounts: [Int]) {
-+        var lines: [String] = []
-+        var byteCounts: [Int] = []
-+
-+        var sliceStart = data.startIndex
-+        for idx in data.indices where data[idx] == 0x0A {
-+            let slice = data[sliceStart ..< idx]
-+            lines.append(String(decoding: slice, as: UTF8.self))
-+            byteCounts.append(slice.count)
-+            sliceStart = data.index(after: idx)
-+        }
-+        // Anything after the last newline would be a partial line; callers guarantee there is none.
-+
-+        return (lines, byteCounts)
-+    }
-+
-+    /// Like `aggregate`, but stops after `maxEntries` complete logical entries so a multi-line
-+    /// entry is never split by the cap.
-+    ///
-+    /// `consumedBytes` is the raw byte length (line bytes plus one newline each) of the physical
-+    /// lines belonging to the returned entries, so the next pass can resume exactly at the start
-+    /// line of the first un-returned entry. When the cap is not hit, all lines are consumed.
-+    ///
-+    /// - Precondition: `maxEntries >= 1` and `lines.count == byteCounts.count`. For non-empty
-+    ///   `lines` at least one entry is always returned, so progress is unconditional.
-+    static func aggregateCapped(
-+        lines: [String],
-+        byteCounts: [Int],
-+        startPattern: NSRegularExpression,
-+        maxEntries: Int
-+    ) -> (entries: [String], consumedBytes: Int) {
-+        precondition(maxEntries >= 1)
-+        precondition(lines.count == byteCounts.count)
-+        guard !lines.isEmpty else { return ([], 0) }
-+
-+        var entries: [String] = []
-+        var current: [String] = []
-+        var consumedBytes = 0
-+
-+        func isStart(_ line: String) -> Bool {
-+            let ns = line as NSString
-+            let range = NSRange(location: 0, length: ns.length)
-+            return startPattern.firstMatch(in: line, range: range) != nil
-+        }
-+
-+        for (index, line) in lines.enumerated() {
-+            if isStart(line), !current.isEmpty {
-+                entries.append(current.joined(separator: "\n"))
-+                current = []
-+                if entries.count == maxEntries {
-+                    // `consumedBytes` covers every line before this start line.
-+                    return (entries, consumedBytes)
-+                }
-+            }
-+            // A mid-entry start (continuation lines first) simply forms the leading entry.
-+            current.append(line)
-+            consumedBytes += byteCounts[index] + 1
-+        }
-+
-+        entries.append(current.joined(separator: "\n"))
-+        return (entries, consumedBytes)
-+    }
-+}
-diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
-new file mode 100644
-index 000000000..6d47d9cac
---- /dev/null
-+++ b/Trio/Sources/Logger/CloudLogging/CloudLogLineParsing.swift
-@@ -0,0 +1,298 @@
-+import Foundation
-+
-+enum CloudLogPlatform: String {
-+    case ios
-+    case watchos
-+}
-+
-+struct CloudParsedLogLine {
-+    let dt: String?
-+    let category: String?
-+    let level: String?
-+    let message: String
-+    let file: String?
-+    let method: String?
-+    let lineNumber: String?
-+    /// Identifies the log source for BetterStack filtering (e.g. "complication").
-+    let source: String?
-+    /// Build number embedded at write time, or nil for old-format lines.
-+    var build: String? = nil
-+}
-+
-+enum CloudLogLineParser {
-+    // iPhone format:
-+    // <TIMESTAMP> [b:<BUILD>] [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>: <message>
-+    // (the [b:BUILD] token is optional for backward compatibility)
-+    static func parseIOS(_ entry: String) -> CloudParsedLogLine? {
-+        let trimmedEntry = entry.trimmingCharacters(in: .newlines)
-+        guard !trimmedEntry.isEmpty else { return nil }
-+
-+        let lines = trimmedEntry.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-+        var header = lines.first ?? trimmedEntry
-+        let continuation = lines.dropFirst().joined(separator: "\n")
-+
-+        // Timestamp = first token
-+        let tokens = header.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-+        let rawTs = tokens.first.map(String.init)
-+        let dt = rawTs.flatMap(normalizeTimestamp)
-+
-+        // Extract optional [b:BUILD] token and strip from header before category parsing
-+        var extractedBuild: String?
-+        if let buildRange = header.range(of: #"\[b:([^\]]+)\]"#, options: .regularExpression) {
-+            let token = String(header[buildRange])
-+            extractedBuild = token.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).replacingOccurrences(of: "b:", with: "")
-+            header = header.replacingCharacters(in: buildRange, with: "").replacingOccurrences(of: "  ", with: " ")
-+        }
-+
-+        // Category = first [...] after timestamp
-+        var category: String?
-+        if let range = header.range(of: #"^\S+\s+\[([^\]]+)\]"#, options: [.regularExpression]) {
-+            // Extract using a second regex capture to keep code simple.
-+            if let match = header[range].range(of: #"\[([^\]]+)\]"#, options: .regularExpression) {
-+                let bracketed = String(header[match])
-+                category = bracketed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-+            }
-+        }
-+
-+        // Extract file, method, and line number
-+        // Format: [CATEGORY] <File.swift> - <function> - <line> - <LEVEL>:
-+        // Example: [Nightscout] NightscoutManager.swift - uploadNonCoreDataTreatments(_:) - 999 - DEV:
-+        var file: String?
-+        var method: String?
-+        var lineNumber: String?
-+
-+        // Pattern: \] (.+\.swift) - (.+?) - (\d+) - (<LEVEL>):
-+        // Method name can contain special chars like (_:), so we match everything between the delimiters.
-+        // Level can vary depending on logger implementation ("DEV", "DEBUG", "WARN", "WARNING", ...),
-+        // so keep it permissive to avoid losing file/method/line parsing.
-+        let fileMethodLineRegex = #"\]\s+([^\s]+\.swift)\s+-\s+(.+?)\s+-\s+(\d+)\s+-\s+([A-Z]+):"#
-+        if let regex = try? NSRegularExpression(pattern: fileMethodLineRegex) {
-+            let nsHeader = header as NSString
-+            let range = NSRange(location: 0, length: nsHeader.length)
-+            if let regexMatch = regex.firstMatch(in: header, range: range), regexMatch.numberOfRanges >= 5 {
-+                // Group 1: file, Group 2: method, Group 3: line number
-+                let fileRange = regexMatch.range(at: 1)
-+                let methodRange = regexMatch.range(at: 2)
-+                let lineRange = regexMatch.range(at: 3)
-+
-+                if fileRange.location != NSNotFound {
-+                    file = nsHeader.substring(with: fileRange)
-+                }
-+                if methodRange.location != NSNotFound {
-+                    method = nsHeader.substring(with: methodRange)
-+                }
-+                if lineRange.location != NSNotFound {
-+                    lineNumber = nsHeader.substring(with: lineRange)
-+                }
-+            }
-+        }
-+
-+        // Level = delimiter-aware: " - (DEV|INFO|WARN|ERR):"
-+        let levelRegex = #"\s-\s([A-Z]+):\s"#
-+        guard let levelMatch = header.range(of: levelRegex, options: .regularExpression) else {
-+            // If we can't confidently parse, still return the original line as message.
-+            let msg = continuation.isEmpty ? header : "\(header)\n\(continuation)"
-+            return CloudParsedLogLine(dt: dt, category: category, level: nil, message: msg, file: file, method: method, lineNumber: lineNumber, source: nil, build: extractedBuild)
-+        }
-+
-+        // Extract the actual level token and normalize
-+        let levelToken = String(header[levelMatch])
-+            .replacingOccurrences(of: " - ", with: "")
-+            .replacingOccurrences(of: ":", with: "")
-+            .trimmingCharacters(in: .whitespacesAndNewlines)
-+
-+        let normalizedLevel: String?
-+        switch levelToken {
-+        case "DEV", "DEBUG": normalizedLevel = "debug"
-+        case "INFO": normalizedLevel = "info"
-+        case "WARN", "WARNING": normalizedLevel = "warn"
-+        case "ERR", "ERROR": normalizedLevel = "error"
-+        default: normalizedLevel = nil
-+        }
-+
-+        // Message = everything after "<LEVEL>: "
-+        let messageStart = header.index(levelMatch.upperBound, offsetBy: 0)
-+        let parsedFirstLineMessage = String(header[messageStart...]).trimmingCharacters(in: .newlines)
-+        let firstLineMessage = parsedFirstLineMessage.isEmpty ? header : parsedFirstLineMessage
-+        let fullMessage = continuation.isEmpty ? firstLineMessage : "\(firstLineMessage)\n\(continuation)"
-+
-+        // Apply message-based level detection to upgrade levels when appropriate
-+        let finalLevel = detectLevelFromMessage(fullMessage, originalLevel: normalizedLevel)
-+
-+        return CloudParsedLogLine(
-+            dt: dt,
-+            category: category,
-+            level: finalLevel,
-+            message: fullMessage,
-+            file: file,
-+            method: method,
-+            lineNumber: lineNumber,
-+            source: nil,
-+            build: extractedBuild
-+        )
-+    }
-+
-+    // Watch format:
-+    // [<TIMESTAMP>] [b:<BUILD>] [<File.swift>:<line>] <function>() → <message>
-+    // (the [b:BUILD] token is optional for backward compatibility)
-+    static func parseWatch(_ entry: String) -> CloudParsedLogLine? {
-+        let trimmedEntry = entry.trimmingCharacters(in: .newlines)
-+        guard !trimmedEntry.isEmpty else { return nil }
-+
-+        let lines = trimmedEntry.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-+        var header = lines.first ?? trimmedEntry
-+        let continuation = lines.dropFirst().joined(separator: "\n")
-+
-+        // Timestamp = first [...] token
-+        var dt: String?
-+        if let tsRange = header.range(of: #"^\[([^\]]+)\]"#, options: [.regularExpression]) {
-+            let bracketed = String(header[tsRange])
-+            let raw = bracketed.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-+            dt = normalizeTimestamp(raw)
-+        }
-+
-+        // Extract optional [b:BUILD] token and strip it from the header before further parsing
-+        var extractedBuild: String?
-+        if let buildRange = header.range(of: #"\[b:([^\]]+)\]"#, options: .regularExpression) {
-+            let token = String(header[buildRange])
-+            extractedBuild = token.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).replacingOccurrences(of: "b:", with: "")
-+            header = header.replacingCharacters(in: buildRange, with: "").replacingOccurrences(of: "  ", with: " ")
-+        }
-+
-+        // Category = filename from "[File.swift:line]" (without .swift extension)
-+        var category: String?
-+        category = extractWatchCategory(from: header)
-+
-+        // Extract file, line number, and function name
-+        // Format: [TIMESTAMP] [File.swift:line] function() → message
-+        var file: String?
-+        var lineNumber: String?
-+        var method: String?
-+
-+        // Extract file + line independent of method parsing, since watch log methods can be:
-+        // - finalizePendingData()            (trailing "()")
-+        // - scheduleUIUpdate(with:)         (no trailing "()", includes signature)
-+        // - session(_:didReceiveUserInfo:)  (no trailing "()", includes signature)
-+        let fileLineRegex = #"\[[^\]]+\]\s+\[([^\]:]+\.swift):(\d+)\]"#
-+        if let regex = try? NSRegularExpression(pattern: fileLineRegex) {
-+            let nsHeader = header as NSString
-+            let range = NSRange(location: 0, length: nsHeader.length)
-+            if let regexMatch = regex.firstMatch(in: header, range: range), regexMatch.numberOfRanges >= 3 {
-+                let fileRange = regexMatch.range(at: 1)
-+                let lineRange = regexMatch.range(at: 2)
-+                if fileRange.location != NSNotFound {
-+                    file = nsHeader.substring(with: fileRange)
-+                }
-+                if lineRange.location != NSNotFound {
-+                    lineNumber = nsHeader.substring(with: lineRange)
-+                }
-+            }
-+        }
-+
-+        let arrowRange = header.range(of: "→") ?? header.range(of: "->")
-+        if let arrowRange {
-+            // Method = substring between the second closing bracket and the arrow
-+            if let firstClose = header.firstIndex(of: "]") {
-+                let afterFirst = header.index(after: firstClose)
-+                if let secondClose = header[afterFirst...].firstIndex(of: "]") {
-+                    var start = header.index(after: secondClose)
-+                    while start < header.endIndex, header[start].isWhitespace {
-+                        start = header.index(after: start)
-+                    }
-+                    let candidate = String(header[start..<arrowRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-+                    if !candidate.isEmpty {
-+                        method = candidate.hasSuffix("()") ? String(candidate.dropLast(2)) : candidate
-+                    }
-+                }
-+            }
-+        }
-+
-+        // Message = everything after the arrow
-+        let fullMessage: String
-+        if let arrowRange {
-+            let msg = header[arrowRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-+            let firstLineMessage = msg.isEmpty ? header : String(msg)
-+            fullMessage = continuation.isEmpty ? firstLineMessage : "\(firstLineMessage)\n\(continuation)"
-+        } else {
-+            fullMessage = continuation.isEmpty ? header : "\(header)\n\(continuation)"
-+        }
-+
-+        // Apply message-based level detection to upgrade levels when appropriate
-+        let finalLevel = detectLevelFromMessage(fullMessage, originalLevel: nil)
-+
-+        let source: String? = (file == "ComplicationLogBuffer.swift" || file == "TrioComplicationDataStore.swift") ? "complication" : nil
-+
-+        return CloudParsedLogLine(dt: dt, category: category, level: finalLevel, message: fullMessage, file: file, method: method, lineNumber: lineNumber, source: source, build: extractedBuild)
-+    }
-+
-+    /// Normalizes "yyyy-MM-dd'T'HH:mm:ssZ" like "...+0100" into "...+01:00" if possible.
-+    /// Returns nil if normalization is not possible.
-+    static func normalizeTimestamp(_ raw: String) -> String? {
-+        // Only normalize if it ends with "+HHMM" or "-HHMM"
-+        let tzRegex = #"([+-]\d{2})(\d{2})$"#
-+        guard let tzRange = raw.range(of: tzRegex, options: .regularExpression) else {
-+            return nil
-+        }
-+
-+        let tz = raw[tzRange]
-+        let tzStr = String(tz)
-+        guard tzStr.count == 5 else { return nil }
-+
-+        let hh = tzStr.prefix(3) // +01
-+        let mm = tzStr.suffix(2) // 00
-+        let normalized = raw.replacingCharacters(in: tzRange, with: "\(hh):\(mm)")
-+        return normalized
-+    }
-+
-+    private static func extractWatchCategory(from line: String) -> String? {
-+        let pattern = #"^\[[^\]]+\]\s+\[([^\]:]+)\.swift:\d+\]"#
-+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-+        let nsLine = line as NSString
-+        let range = NSRange(location: 0, length: nsLine.length)
-+        guard let match = regex.firstMatch(in: line, range: range), match.numberOfRanges >= 2 else { return nil }
-+        let capture = match.range(at: 1)
-+        guard capture.location != NSNotFound else { return nil }
-+        return nsLine.substring(with: capture)
-+    }
-+
-+    /// Detects log level from message content, upgrading the level when error/warning patterns are detected.
-+    /// This helps classify logs that were incorrectly logged with `debug()` but contain error/warning indicators.
-+    ///
-+    /// - Parameters:
-+    ///   - message: The log message to analyze
-+    ///   - originalLevel: The level parsed from the log prefix (e.g., "debug", "info", "warn", "error")
-+    /// - Returns: The detected level, or the original level if no patterns match
-+    private static func detectLevelFromMessage(_ message: String, originalLevel: String?) -> String? {
-+        let lowercased = message.lowercased()
-+
-+        // Error patterns (critical failures) - check first
-+        if lowercased.contains("failed to retrieve file") ||
-+           lowercased.contains("error domain=diskerrordomain") ||
-+           lowercased.contains("could not find an existing file") ||
-+           lowercased.contains("unable to") && (lowercased.contains("file") || lowercased.contains("disk")) {
-+            return "error"
-+        }
-+
-+        // Warning patterns (issues needing attention, not critical)
-+        if message.contains("❌ Error sending watch state") ||
-+           lowercased.contains("error domain=wcerrordomain") ||
-+           lowercased.contains("warning:") {
-+            return "warn"
-+        }
-+
-+        // Info patterns (informational, expected conditions)
-+        if lowercased.contains("error domain=cberrordomain") ||
-+           lowercased.contains("pod disconnected") ||
-+           lowercased.contains("sensor disconnected") ||
-+           lowercased.contains("skipping") ||
-+           lowercased.contains("device message:") ||
-+           lowercased.contains("device manager for") ||
-+           lowercased.contains("not reachable") ||
-+           lowercased.contains("failed to send") {
-+            return "info"
-+        }
-+
-+        // If no pattern matches, return the original level
-+        return originalLevel
-+    }
-+}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
 new file mode 100644
-index 000000000..2187a67d9
+index 000000000..040c8982f
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,260 @@
 +import Foundation
 +
 +protocol CloudLogProvider {
@@ -2473,11 +625,35 @@ index 000000000..2187a67d9
 +    }
 +}
 +
++struct CloudLogCommonAttributes {
++    let build: String
++    let appVersion: String
++    let env: String
++
++    static let current: CloudLogCommonAttributes = {
++        let info = Bundle.main.infoDictionary
++        let env: String
++        if BuildDetails.shared.isTestFlightBuild() {
++            env = "testflight"
++        } else {
++            #if DEBUG
++                env = "debug"
++            #else
++                env = "release"
++            #endif
++        }
++        return CloudLogCommonAttributes(
++            build: info?["CFBundleVersion"] as? String ?? "unknown",
++            appVersion: info?["CFBundleShortVersionString"] as? String ?? "unknown",
++            env: env
++        )
++    }()
++}
++
 +struct CloudLogEvent: Encodable {
 +    let message: String
 +    let dt: String?
 +    let attributes: [String: String]?
-+    let raw: String?
 +
 +    // Custom encoding to flatten attributes to top-level fields
 +    enum CodingKeys: String, CodingKey {
@@ -2489,24 +665,29 @@ index 000000000..2187a67d9
 +        case appVersion
 +        case env
 +        case level
++        case severity
 +        case file
 +        case method
 +        case lineNumber
 +        case source
-+        case raw
 +        case event
 +        case windowId = "window_id"
 +        case taskType = "task_type"
 +    }
++
++    private static let maxMessageBytes = 64 * 1024
++    private static let truncationSuffix = "…[truncated]"
++
++    private static let eventRegex = try? NSRegularExpression(pattern: #"\bevent=([^ ]+)"#)
++    private static let windowIdRegex = try? NSRegularExpression(pattern: #"\bwindow_id=(-?[0-9]+)"#)
++    private static let taskTypeRegex = try? NSRegularExpression(pattern: #"\btask_type=([^ ]+)"#)
++    private static let complicationRegex = try? NSRegularExpression(pattern: #"\bsrc=complication\b"#)
 +
 +    func encode(to encoder: Encoder) throws {
 +        var container = encoder.container(keyedBy: CodingKeys.self)
 +        try container.encode(message, forKey: .message)
 +        if let dt = dt {
 +            try container.encode(dt, forKey: .dt)
-+        }
-+        if let raw = raw {
-+            try container.encode(raw, forKey: .raw)
 +        }
 +
 +        // Flatten attributes to top-level fields
@@ -2529,6 +710,9 @@ index 000000000..2187a67d9
 +            if let level = attrs["level"] {
 +                try container.encode(level, forKey: .level)
 +            }
++            if let severity = attrs["severity"] {
++                try container.encode(severity, forKey: .severity)
++            }
 +            if let file = attrs["file"] {
 +                try container.encode(file, forKey: .file)
 +            }
@@ -2543,21 +727,122 @@ index 000000000..2187a67d9
 +            }
 +        }
 +
-+        if let value = Self.extractToken(from: message, pattern: #"\bevent=([^ ]+)"#) {
++        if let value = Self.extractToken(from: message, regex: Self.eventRegex) {
 +            try container.encode(value, forKey: .event)
 +        }
-+        if let value = Self.extractToken(from: message, pattern: #"\bwindow_id=(-?[0-9]+)"#),
++        if let value = Self.extractToken(from: message, regex: Self.windowIdRegex),
 +           let intValue = Int(value)
 +        {
 +            try container.encode(intValue, forKey: .windowId)
 +        }
-+        if let value = Self.extractToken(from: message, pattern: #"\btask_type=([^ ]+)"#) {
++        if let value = Self.extractToken(from: message, regex: Self.taskTypeRegex) {
 +            try container.encode(value, forKey: .taskType)
 +        }
 +    }
 +
-+    private static func extractToken(from string: String, pattern: String) -> String? {
-+        guard let regex = try? NSRegularExpression(pattern: pattern),
++    static func make(from record: LogRecord, common: CloudLogCommonAttributes) -> CloudLogEvent {
++        let isWatch = record.category.hasPrefix("Watch/")
++
++        let legacyLevel: String
++        let severity: String
++        switch record.level {
++        case .debug:
++            legacyLevel = "debug"
++            severity = "debug"
++        case .info:
++            legacyLevel = "info"
++            severity = "info"
++        case .notice:
++            legacyLevel = "info"
++            severity = "notice"
++        case .warning:
++            legacyLevel = "warn"
++            severity = "warning"
++        case .error:
++            legacyLevel = "error"
++            severity = "error"
++        case .fault:
++            legacyLevel = "error"
++            severity = "fault"
++        }
++
++        let source: String
++        if matches(complicationRegex, in: record.message) {
++            source = "complication"
++        } else if isWatch {
++            source = "watch"
++        } else {
++            source = "phone"
++        }
++
++        var attributes: [String: String] = [
++            "platform": isWatch ? "watchos" : "ios",
++            "build": common.build,
++            "category": record.category,
++            "appVersion": common.appVersion,
++            "env": common.env,
++            "level": legacyLevel,
++            "severity": severity,
++            "source": source
++        ]
++        if !record.file.isEmpty, record.file != "Watch", !record.function.isEmpty, record.line > 0 {
++            attributes["file"] = record.file
++            attributes["method"] = record.function
++            attributes["lineNumber"] = String(record.line)
++        }
++
++        return CloudLogEvent(
++            message: truncated(record.message),
++            dt: isoString(from: record.timestamp),
++            attributes: attributes
++        )
++    }
++
++    static func dropped(count: UInt64, common: CloudLogCommonAttributes) -> CloudLogEvent {
++        CloudLogEvent(
++            message: "event=cloud_log_dropped count=\(count) CloudLogQueue dropped rows before upload",
++            dt: isoString(from: Date()),
++            attributes: [
++                "platform": "ios",
++                "build": common.build,
++                "category": "CloudLogging",
++                "appVersion": common.appVersion,
++                "env": common.env,
++                "level": "warn",
++                "severity": "warning",
++                "source": "phone"
++            ]
++        )
++    }
++
++    private static func isoString(from date: Date) -> String {
++        let formatter = ISO8601DateFormatter()
++        formatter.timeZone = TimeZone(secondsFromGMT: 0)
++        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++        return formatter.string(from: date)
++    }
++
++    private static func truncated(_ message: String) -> String {
++        guard message.utf8.count > maxMessageBytes else { return message }
++        let budget = maxMessageBytes - truncationSuffix.utf8.count
++        var result = ""
++        var used = 0
++        for character in message {
++            let size = String(character).utf8.count
++            if used + size > budget { break }
++            result.append(character)
++            used += size
++        }
++        return result + truncationSuffix
++    }
++
++    private static func matches(_ regex: NSRegularExpression?, in string: String) -> Bool {
++        guard let regex else { return false }
++        return regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)) != nil
++    }
++
++    private static func extractToken(from string: String, regex: NSRegularExpression?) -> String? {
++        guard let regex,
 +              let match = regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)),
 +              match.numberOfRanges > 1,
 +              let range = Range(match.range(at: 1), in: string)
@@ -2565,25 +850,641 @@ index 000000000..2187a67d9
 +        return String(string[range])
 +    }
 +}
-diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogQueue.swift b/Trio/Sources/Logger/CloudLogging/CloudLogQueue.swift
 new file mode 100644
-index 000000000..abce87784
+index 000000000..7326d88f5
 --- /dev/null
-+++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
-@@ -0,0 +1,194 @@
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogQueue.swift
+@@ -0,0 +1,458 @@
 +import Foundation
++import os
++
++// The upload cursor is a (segment, byte offset) pair rather than a timestamp: watch rows arrive hours late
++// carrying their original timestamps, so a "last uploaded timestamp" would skip them or re-send everything.
++// The queue is strictly FIFO in arrival order, and the cursor marks the next unread line in that order.
++final class CloudLogQueue: @unchecked Sendable {
++    static let shared = CloudLogQueue()
++
++    struct Cursor: Codable, Equatable {
++        var segment: UInt64
++        var offset: UInt64
++    }
++
++    struct Batch {
++        var start: Cursor
++        var items: [(record: LogRecord, end: Cursor)]
++        /// Rows skipped immediately before each item (parallel to `items`); never persisted.
++        var itemSkips: [Int]
++        /// Cursor after everything this batch read; equals the last item's end when there are items.
++        var end: Cursor
++        /// Part of the dropped counter that is persisted in state; `commit` subtracts it.
++        var persistedDropped: UInt64
++        /// Undecodable or over-long rows skipped while reading this batch; reported once, not persisted.
++        var skippedInBatch: UInt64
++
++        var droppedToReport: UInt64 { persistedDropped &+ skippedInBatch }
++    }
++
++    private struct State: Codable {
++        var segment: UInt64
++        var offset: UInt64
++        var dropped: UInt64
++    }
++
++    private struct Segment {
++        let seq: UInt64
++        let url: URL
++    }
++
++    private static let log = os.Logger(
++        subsystem: Bundle.main.bundleIdentifier ?? "org.nightscout.Trio",
++        category: "CloudLogging"
++    )
++
++    private static let newline = UInt8(ascii: "\n")
++    private static let protection = FileProtectionType.completeUntilFirstUserAuthentication
++
++    static var defaultDirectory: URL {
++        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
++            ?? FileManager.default.temporaryDirectory
++        return base.appendingPathComponent("CloudLogQueue", isDirectory: true)
++    }
++
++    private let directory: URL
++    private let segmentMaxBytes: Int
++    private let maxTotalBytes: Int
++    private let maxAge: TimeInterval
++    private let fileManager: FileManager
++    private let queue = DispatchQueue(label: "org.nightscout.Trio.CloudLogQueue", qos: .utility)
++    private let encoder: JSONEncoder
++    private let decoder: JSONDecoder
++
++    // Everything below is confined to `queue`.
++    private var cursor = Cursor(segment: 1, offset: 0)
++    private var dropped: UInt64 = 0
++    private var activeSeq: UInt64 = 1
++    private var activeSize: UInt64 = 0
++
++    init(
++        directory: URL = CloudLogQueue.defaultDirectory,
++        segmentMaxBytes: Int = 1_000_000,
++        maxTotalBytes: Int = 32_000_000,
++        maxAge: TimeInterval = 7 * 24 * 60 * 60,
++        fileManager: FileManager = .default
++    ) {
++        self.directory = directory
++        self.segmentMaxBytes = segmentMaxBytes
++        self.maxTotalBytes = maxTotalBytes
++        self.maxAge = maxAge
++        self.fileManager = fileManager
++
++        let encoder = JSONEncoder()
++        encoder.dateEncodingStrategy = .secondsSince1970
++        self.encoder = encoder
++        let decoder = JSONDecoder()
++        decoder.dateDecodingStrategy = .secondsSince1970
++        self.decoder = decoder
++
++        queue.sync { self.setUp() }
++    }
++
++    func append(_ records: [LogRecord]) {
++        guard !records.isEmpty else { return }
++        queue.async { self.write(records) }
++    }
++
++    func appendSync(_ records: [LogRecord]) {
++        guard !records.isEmpty else { return }
++        queue.sync { self.write(records) }
++    }
++
++    func addDropped(_ n: UInt64) {
++        guard n > 0 else { return }
++        queue.async {
++            self.dropped &+= n
++            self.saveState()
++        }
++    }
++
++    func nextBatch(maxBytes: Int, maxRecords: Int) async -> Batch? {
++        await withCheckedContinuation { continuation in
++            queue.async {
++                continuation.resume(returning: self.readBatch(maxBytes: maxBytes, maxRecords: maxRecords))
++            }
++        }
++    }
++
++    func commit(through end: Cursor, droppedReported: UInt64) async {
++        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
++            queue.async {
++                if Self.precedes(self.cursor, end) {
++                    self.cursor = end
++                }
++                self.dropped = self.dropped >= droppedReported ? self.dropped - droppedReported : 0
++                for segment in self.listSegments() where segment.seq < self.cursor.segment && segment.seq != self.activeSeq {
++                    self.removeFile(segment.url)
++                }
++                self.saveState()
++                continuation.resume()
++            }
++        }
++    }
++
++    // MARK: - Setup
++
++    private func setUp() {
++        do {
++            try fileManager.createDirectory(
++                at: directory,
++                withIntermediateDirectories: true,
++                attributes: [.protectionKey: Self.protection]
++            )
++            try fileManager.setAttributes([.protectionKey: Self.protection], ofItemAtPath: directory.path)
++            var url = directory
++            var values = URLResourceValues()
++            values.isExcludedFromBackup = true
++            try url.setResourceValues(values)
++        } catch {
++            Self.log.error("Queue directory setup failed: \(error.localizedDescription, privacy: .public)")
++        }
++
++        var segments = listSegments()
++        if segments.isEmpty {
++            createSegment(seq: 1)
++            segments = listSegments()
++        }
++        guard let oldest = segments.first, let active = segments.last else { return }
++        activeSeq = active.seq
++
++        var loaded: State?
++        if let data = try? Data(contentsOf: stateURL) {
++            loaded = try? JSONDecoder().decode(State.self, from: data)
++        }
++        if let loaded {
++            cursor = Cursor(segment: loaded.segment, offset: loaded.offset)
++            dropped = loaded.dropped
++        } else {
++            cursor = Cursor(segment: oldest.seq, offset: 0)
++            dropped = 0
++        }
++
++        if let current = segments.first(where: { $0.seq == cursor.segment }) {
++            let size = fileSize(current.url)
++            if cursor.offset > size { cursor.offset = size }
++        } else {
++            cursor = Cursor(segment: oldest.seq, offset: 0)
++        }
++
++        activeSize = fileSize(active.url)
++        if activeSize > 0, lastByte(of: active.url, size: activeSize) != Self.newline {
++            writeToActive(Data([Self.newline]))
++        }
++
++        enforceCaps()
++        saveState()
++    }
++
++    // MARK: - Writing
++
++    private func write(_ records: [LogRecord]) {
++        var buffer = Data()
++        for record in records {
++            guard var line = try? encoder.encode(record) else {
++                dropped &+= 1
++                continue
++            }
++            line.append(Self.newline)
++            if activeSize > 0, activeSize + UInt64(buffer.count) + UInt64(line.count) > UInt64(segmentMaxBytes) {
++                writeToActive(buffer)
++                buffer.removeAll(keepingCapacity: true)
++                rotate()
++            }
++            buffer.append(line)
++        }
++        writeToActive(buffer)
++        if activeSize >= UInt64(segmentMaxBytes) {
++            rotate()
++        }
++        enforceCaps()
++    }
++
++    private func writeToActive(_ data: Data) {
++        guard !data.isEmpty else { return }
++        let url = segmentURL(activeSeq)
++        if !fileManager.fileExists(atPath: url.path) {
++            createSegment(seq: activeSeq)
++        }
++        do {
++            let handle = try FileHandle(forWritingTo: url)
++            defer { try? handle.close() }
++            try handle.seekToEnd()
++            try handle.write(contentsOf: data)
++            activeSize += UInt64(data.count)
++        } catch {
++            dropped &+= UInt64(data.reduce(0) { $1 == Self.newline ? $0 + 1 : $0 })
++            Self.log.error("Segment write failed: \(error.localizedDescription, privacy: .public)")
++        }
++    }
++
++    private func rotate() {
++        guard activeSize > 0 else { return }
++        activeSeq += 1
++        activeSize = 0
++        createSegment(seq: activeSeq)
++    }
++
++    private func createSegment(seq: UInt64) {
++        let url = segmentURL(seq)
++        if !fileManager.createFile(atPath: url.path, contents: nil, attributes: [.protectionKey: Self.protection]) {
++            Self.log.error("Could not create segment \(seq)")
++        }
++    }
++
++    // MARK: - Caps
++
++    private func enforceCaps() {
++        var changed = false
++        while true {
++            let segments = listSegments()
++            guard let oldest = segments.first else { break }
++            let total = segments.reduce(UInt64(0)) { $0 + fileSize($1.url) }
++            let modified = (try? fileManager.attributesOfItem(atPath: oldest.url.path)[.modificationDate]) as? Date
++            let tooBig = total > UInt64(maxTotalBytes)
++            let tooOld = modified.map { Date().timeIntervalSince($0) > maxAge } ?? false
++            guard tooBig || tooOld else { break }
++
++            if oldest.seq == activeSeq {
++                if segments.count > 1 { break }
++                if activeSize == 0 {
++                    activeSeq += 1
++                    createSegment(seq: activeSeq)
++                } else {
++                    rotate()
++                }
++            }
++
++            dropped &+= unreadLines(in: oldest)
++            removeFile(oldest.url)
++            if let next = listSegments().first, cursor.segment <= oldest.seq {
++                cursor = Cursor(segment: next.seq, offset: 0)
++            }
++            changed = true
++        }
++        if changed { saveState() }
++    }
++
++    private func unreadLines(in segment: Segment) -> UInt64 {
++        if segment.seq < cursor.segment { return 0 }
++        guard let data = try? Data(contentsOf: segment.url) else { return 0 }
++        let start = segment.seq == cursor.segment ? Int(min(cursor.offset, UInt64(data.count))) : 0
++        var count: UInt64 = 0
++        for byte in data[start...] where byte == Self.newline {
++            count += 1
++        }
++        return count
++    }
++
++    // MARK: - Reading
++
++    private func readBatch(maxBytes: Int, maxRecords: Int) -> Batch? {
++        let start = cursor
++        var pos = cursor
++        var items: [(record: LogRecord, end: Cursor)] = []
++        var itemSkips: [Int] = []
++        var pendingSkips = 0
++        var bytes = 0
++        var limitHit = false
++        var skippingOverlongLine = false
++
++        while !limitHit {
++            let segments = listSegments()
++            guard let segment = segments.first(where: { $0.seq == pos.segment }) else {
++                guard let next = segments.first(where: { $0.seq > pos.segment }) else { break }
++                pos = Cursor(segment: next.seq, offset: 0)
++                continue
++            }
++            let isActive = segment.seq == activeSeq
++
++            guard let data = readWindow(of: segment.url, offset: pos.offset, length: maxBytes), !data.isEmpty else {
++                if !isActive, let next = segments.first(where: { $0.seq > segment.seq }) {
++                    pos = Cursor(segment: next.seq, offset: 0)
++                    continue
++                }
++                break
++            }
++
++            var consumed = 0
++            let windowStart = pos.offset
++            while consumed < data.count {
++                let from = data.startIndex + consumed
++                guard let newlineIndex = data[from...].firstIndex(of: Self.newline) else { break }
++                let lineLength = newlineIndex - from + 1
++                if !items.isEmpty, bytes + lineLength > maxBytes {
++                    limitHit = true
++                    break
++                }
++                let lineEnd = Cursor(segment: segment.seq, offset: windowStart + UInt64(consumed + lineLength))
++                consumed += lineLength
++                if skippingOverlongLine {
++                    // Tail of an over-long row already counted as one skip
++                    skippingOverlongLine = false
++                } else if lineLength > 1 {
++                    let line = Data(data[from..<newlineIndex])
++                    if let record = try? decoder.decode(LogRecord.self, from: line) {
++                        items.append((record, lineEnd))
++                        itemSkips.append(pendingSkips)
++                        pendingSkips = 0
++                        bytes += lineLength
++                    } else {
++                        pendingSkips += 1
++                    }
++                }
++                pos = lineEnd
++                if items.count >= maxRecords || bytes >= maxBytes {
++                    limitHit = true
++                    break
++                }
++            }
++            if limitHit { break }
++
++            if consumed == 0 {
++                if data.count >= maxBytes {
++                    let skipEnd = Cursor(segment: segment.seq, offset: pos.offset + UInt64(data.count))
++                    if !skippingOverlongLine { pendingSkips += 1 }
++                    skippingOverlongLine = true
++                    pos = skipEnd
++                } else if !isActive, let next = segments.first(where: { $0.seq > segment.seq }) {
++                    pos = Cursor(segment: next.seq, offset: 0)
++                } else {
++                    break
++                }
++            }
++        }
++
++        // Skips after the last item are re-read (and counted) by the next batch, so only earlier ones count here.
++        let skipped = items.isEmpty ? pendingSkips : itemSkips.reduce(0, +)
++
++        if items.isEmpty, skipped == 0, Self.precedes(cursor, pos) {
++            cursor = pos
++            saveState()
++        } else if dropped != 0 {
++            saveState()
++        }
++
++        if items.isEmpty, dropped == 0, skipped == 0 { return nil }
++        return Batch(
++            start: start,
++            items: items,
++            itemSkips: itemSkips,
++            end: items.last?.end ?? pos,
++            persistedDropped: dropped,
++            skippedInBatch: UInt64(skipped)
++        )
++    }
++
++    private func readWindow(of url: URL, offset: UInt64, length: Int) -> Data? {
++        do {
++            let handle = try FileHandle(forReadingFrom: url)
++            defer { try? handle.close() }
++            try handle.seek(toOffset: offset)
++            return try handle.read(upToCount: length)
++        } catch {
++            Self.log.error("Segment read failed: \(error.localizedDescription, privacy: .public)")
++            return nil
++        }
++    }
++
++    // MARK: - Files
++
++    private var stateURL: URL {
++        directory.appendingPathComponent("state.json")
++    }
++
++    private func segmentURL(_ seq: UInt64) -> URL {
++        directory.appendingPathComponent("seg-" + String(format: "%020llu", seq) + ".jsonl")
++    }
++
++    private func listSegments() -> [Segment] {
++        let names = (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
++        return names.compactMap { name -> Segment? in
++            guard name.hasPrefix("seg-"), name.hasSuffix(".jsonl") else { return nil }
++            let digits = name.dropFirst(4).dropLast(6)
++            guard let seq = UInt64(digits) else { return nil }
++            return Segment(seq: seq, url: directory.appendingPathComponent(name))
++        }
++        .sorted { $0.seq < $1.seq }
++    }
++
++    private func fileSize(_ url: URL) -> UInt64 {
++        let size = (try? fileManager.attributesOfItem(atPath: url.path)[.size]) as? NSNumber
++        return size?.uint64Value ?? 0
++    }
++
++    private func lastByte(of url: URL, size: UInt64) -> UInt8? {
++        do {
++            let handle = try FileHandle(forReadingFrom: url)
++            defer { try? handle.close() }
++            try handle.seek(toOffset: size - 1)
++            return try handle.read(upToCount: 1)?.first
++        } catch {
++            Self.log.error("Segment tail read failed: \(error.localizedDescription, privacy: .public)")
++            return nil
++        }
++    }
++
++    private func removeFile(_ url: URL) {
++        do {
++            try fileManager.removeItem(at: url)
++        } catch {
++            Self.log.error("Segment delete failed: \(error.localizedDescription, privacy: .public)")
++        }
++    }
++
++    private func saveState() {
++        let state = State(segment: cursor.segment, offset: cursor.offset, dropped: dropped)
++        do {
++            let data = try JSONEncoder().encode(state)
++            try data.write(to: stateURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
++        } catch {
++            Self.log.error("State save failed: \(error.localizedDescription, privacy: .public)")
++        }
++    }
++
++    private static func precedes(_ lhs: Cursor, _ rhs: Cursor) -> Bool {
++        lhs.segment != rhs.segment ? lhs.segment < rhs.segment : lhs.offset < rhs.offset
++    }
++}
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogSink.swift b/Trio/Sources/Logger/CloudLogging/CloudLogSink.swift
+new file mode 100644
+index 000000000..0ec25d67c
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogSink.swift
+@@ -0,0 +1,149 @@
++import Foundation
++import os
 +import UIKit
 +
-+extension Notification.Name {
-+    static let trioWatchLogsAppended = Notification.Name("trioWatchLogsAppended")
-+}
++// Feeds every log record (phone and watch) into the durable CloudLogQueue. accept() only touches an
++// in-memory buffer under a lock; the hand-off to disk happens on a private queue, coalesced.
++final class CloudLogSink: LogSink, @unchecked Sendable {
++    static let shared = CloudLogSink()
 +
-+/// App lifecycle + periodic trigger wrapper.
++    static let pendingLimit = 5000
++    static let batchSize = 200
++    static let flushDelay: TimeInterval = 1
++
++    private static let enabledKey = "cloudLogging.enabled"
++    private static let osLogger = os.Logger(
++        subsystem: Bundle.main.bundleIdentifier ?? "org.nightscout.Trio",
++        category: "CloudLogging"
++    )
++
++    private struct Pending: Sendable {
++        var records: [LogRecord] = []
++        var droppedCount: UInt64 = 0
++        var enabled: Bool
++        var flushScheduled = false
++        var batchFlushScheduled = false
++    }
++
++    private let cloudQueue: CloudLogQueue
++    private let defaults: UserDefaults
++    private let notificationCenter: Foundation.NotificationCenter
++    private let pending: OSAllocatedUnfairLock<Pending>
++    private let queue = DispatchQueue(label: "CloudLogSink.queue", qos: .utility)
++    private var observers: [NSObjectProtocol] = []
++
++    init(
++        queue cloudQueue: CloudLogQueue = .shared,
++        defaults: UserDefaults = .standard,
++        notificationCenter: Foundation.NotificationCenter = .default
++    ) {
++        self.cloudQueue = cloudQueue
++        self.defaults = defaults
++        self.notificationCenter = notificationCenter
++        pending = OSAllocatedUnfairLock(initialState: Pending(enabled: Self.readEnabled(defaults)))
++
++        observers = [
++            notificationCenter.addObserver(
++                forName: UserDefaults.didChangeNotification,
++                object: defaults,
++                queue: nil
++            ) { [weak self] _ in
++                guard let self else { return }
++                self.queue.async { self.refreshEnabled() }
++            },
++            notificationCenter.addObserver(
++                forName: UIApplication.didEnterBackgroundNotification,
++                object: nil,
++                queue: nil
++            ) { [weak self] _ in
++                guard let self else { return }
++                self.queue.async { self.drain(synchronously: false) }
++            },
++            notificationCenter.addObserver(
++                forName: UIApplication.willTerminateNotification,
++                object: nil,
++                queue: nil
++            ) { [weak self] _ in
++                guard let self else { return }
++                self.queue.sync { self.drain(synchronously: true) }
++            }
++        ]
++    }
++
++    deinit {
++        for observer in observers {
++            notificationCenter.removeObserver(observer)
++        }
++    }
++
++    func accept(_ record: LogRecord) {
++        let (scheduleDelayed, flushNow) = pending.withLock { state -> (Bool, Bool) in
++            guard state.enabled else { return (false, false) }
++            state.records.append(record)
++            if state.records.count > Self.pendingLimit {
++                // Drop a chunk so a full buffer doesn't shift on every record
++                let excess = state.records.count - Self.pendingLimit
++                let dropCount = max(excess, Self.pendingLimit / 10)
++                state.records.removeFirst(dropCount)
++                state.droppedCount += UInt64(dropCount)
++            }
++            let scheduleDelayed = !state.flushScheduled
++            state.flushScheduled = true
++            let flushNow = state.records.count >= Self.batchSize && !state.batchFlushScheduled
++            if flushNow { state.batchFlushScheduled = true }
++            return (scheduleDelayed, flushNow)
++        }
++        if flushNow {
++            queue.async { self.drain(synchronously: false) }
++        }
++        if scheduleDelayed {
++            queue.asyncAfter(deadline: .now() + Self.flushDelay) {
++                self.drain(synchronously: false)
++            }
++        }
++    }
++
++    func flush() async {
++        await withCheckedContinuation { continuation in
++            queue.async {
++                self.drain(synchronously: true)
++                continuation.resume()
++            }
++        }
++    }
++
++    func records(in _: DateInterval, minimumLevel _: LogLevel) async -> [LogRecord] {
++        []
++    }
++
++    private static func readEnabled(_ defaults: UserDefaults) -> Bool {
++        defaults.object(forKey: enabledKey) as? Bool != false
++    }
++
++    private func refreshEnabled() {
++        let enabled = Self.readEnabled(defaults)
++        pending.withLock { $0.enabled = enabled }
++    }
++
++    private func drain(synchronously: Bool) {
++        let (records, dropped) = pending.withLock { state -> ([LogRecord], UInt64) in
++            defer {
++                state.records = []
++                state.droppedCount = 0
++                state.flushScheduled = false
++                state.batchFlushScheduled = false
++            }
++            return (state.records, state.droppedCount)
++        }
++        if dropped > 0 {
++            cloudQueue.addDropped(dropped)
++            Self.osLogger.warning("Pending buffer overflowed; dropped \(dropped, privacy: .public) rows")
++        }
++        guard !records.isEmpty else { return }
++        if synchronously {
++            cloudQueue.appendSync(records)
++        } else {
++            cloudQueue.append(records)
++        }
++    }
++}
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
+new file mode 100644
+index 000000000..73fce8dd2
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
+@@ -0,0 +1,288 @@
++import Foundation
++import os
++import UIKit
++
++/// App lifecycle + periodic trigger wrapper that drains `CloudLogQueue` to the cloud provider.
 +///
 +/// - Manual trigger: `uploadNow()`
 +/// - Lifecycle triggers: foreground/background
 +/// - Periodic trigger: every 30 seconds while app is running
-+/// - Watch log nudge: immediate upload + timer reset when watch logs arrive
++/// - Build change: one pass at start when `CFBundleVersion` differs from the last run
 +final class CloudLogUploadService {
 +    // Settings UI (first-choice config)
 +    static let userDefaultsEnabledKey = "cloudLogging.enabled"
@@ -2593,11 +1494,24 @@ index 000000000..abce87784
 +    // Legacy key (kept for backwards compatibility)
 +    static let legacyUserDefaultsTokenKey = "cloudLogging.betterStackSourceToken"
 +
-+    private let uploader: CloudLogUploader
++    private static let maxBatchesPerPass = 20
++    private static let maxRequestsPerPass = 100
++    private static let batchMaxBytes = 768_000
++    private static let batchMaxRecords = 1000
++    private static let maxRequestBytes = 1_000_000
++
++    // Cloud logging must not use TrioLogger, otherwise upload failures would feed rows back into the queue.
++    private static let osLog = os.Logger(
++        subsystem: Bundle.main.bundleIdentifier ?? "org.nightscout.Trio",
++        category: "CloudLogging"
++    )
++
++    private let provider: BetterStackLogtailProvider
 +    private var timer: Timer?
 +    private var observers: [NSObjectProtocol] = []
 +    private let tokenProvider: () -> String?
 +    private let ingestionURLProvider: () -> URL?
++    private let passInFlight = OSAllocatedUnfairLock<Bool>(initialState: false)
 +
 +    init() {
 +        tokenProvider = {
@@ -2651,27 +1565,10 @@ index 000000000..abce87784
 +            return URL(string: "https://in.logs.betterstack.com/")
 +        }
 +
-+        let provider = BetterStackLogtailProvider(
++        provider = BetterStackLogtailProvider(
 +            tokenProvider: tokenProvider,
 +            ingestionURLProvider: ingestionURLProvider
 +        )
-+
-+        let pairs: [CloudLogUploader.RotatingPair] = [
-+            .init(
-+                currentPath: SimpleLogReporter.logFile,
-+                previousPath: SimpleLogReporter.logFilePrev,
-+                platform: .ios,
-+                parser: CloudLogLineParser.parseIOS
-+            ),
-+            .init(
-+                currentPath: SimpleLogReporter.watchLogFile,
-+                previousPath: SimpleLogReporter.watchLogFilePrev,
-+                platform: .watchos,
-+                parser: CloudLogLineParser.parseWatch
-+            )
-+        ]
-+
-+        uploader = CloudLogUploader(provider: provider, pairs: pairs)
 +
 +        start()
 +    }
@@ -2681,16 +1578,105 @@ index 000000000..abce87784
 +    }
 +
 +    func uploadNow() {
-+        // Only run when configured (no privacy gating in this repo).
-+        guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-+            return
-+        }
-+        guard ingestionURLProvider() != nil else {
-+            return
-+        }
++        guard isConfigured else { return }
 +
-+        Task {
-+            _ = await uploader.uploadNow()
++        Task { [weak self] in
++            await self?.runPass()
++        }
++    }
++
++    private var isConfigured: Bool {
++        guard let token = tokenProvider(), !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            return false
++        }
++        return ingestionURLProvider() != nil
++    }
++
++    // MARK: - Upload pass
++
++    private func runPass() async {
++        guard isConfigured else { return }
++
++        let acquired = passInFlight.withLock { running -> Bool in
++            if running { return false }
++            running = true
++            return true
++        }
++        guard acquired else { return }
++        defer { passInFlight.withLock { $0 = false } }
++
++        // Persist pending in-memory rows first so this pass (notably the background one) sees them.
++        await CloudLogSink.shared.flush()
++
++        let common = CloudLogCommonAttributes.current
++        let queue = CloudLogQueue.shared
++        var requests = 0
++
++        for _ in 0 ..< Self.maxBatchesPerPass {
++            guard let batch = await queue.nextBatch(
++                maxBytes: Self.batchMaxBytes,
++                maxRecords: Self.batchMaxRecords
++            ) else { return }
++
++            // Only dropped-row reporting to send (skipped rows or counter): no items to bisect.
++            if batch.items.isEmpty {
++                guard requests < Self.maxRequestsPerPass else { return }
++                requests += 1
++                let event = CloudLogEvent.dropped(count: batch.droppedToReport, common: common)
++                guard case .success = await provider.upload(events: [event]) else { return }
++                await queue.commit(through: batch.end, droppedReported: batch.persistedDropped)
++                continue
++            }
++
++            let itemEvents = batch.items.map { CloudLogEvent.make(from: $0.record, common: common) }
++            var persistedPending = batch.persistedDropped
++            var lo = 0
++            var hi = batch.items.count
++
++            while lo < batch.items.count {
++                // Skipped rows count with the range that ends after them; persisted drops go with the first commit.
++                func droppedCount(_ upper: Int) -> UInt64 {
++                    persistedPending &+ UInt64(batch.itemSkips[lo ..< upper].reduce(0, +))
++                }
++                func events(upTo upper: Int) -> [CloudLogEvent] {
++                    let dropped = droppedCount(upper)
++                    let dropEvents = dropped > 0 ? [CloudLogEvent.dropped(count: dropped, common: common)] : []
++                    return dropEvents + itemEvents[lo ..< upper]
++                }
++
++                // Halve the range until the encoded request fits (keep at least one item).
++                while hi - lo > 1,
++                      let size = provider.encodedSize(of: events(upTo: hi)),
++                      size > Self.maxRequestBytes
++                {
++                    hi = lo + max(1, (hi - lo) / 2)
++                }
++
++                guard requests < Self.maxRequestsPerPass else { return }
++                requests += 1
++
++                switch await provider.upload(events: events(upTo: hi)) {
++                case .success:
++                    await queue.commit(through: batch.items[hi - 1].end, droppedReported: persistedPending)
++                    persistedPending = 0
++                    lo = hi
++                    hi = batch.items.count
++                case let .failure(error):
++                    guard case let .unexpectedStatus(code, _) = error, code == 400 || code == 413 else { return }
++                    if hi - lo > 1 {
++                        // Bisect: retry the first half; the rest follows once it is committed.
++                        hi = lo + (hi - lo) / 2
++                        continue
++                    }
++                    // A permanently rejected single row must not wedge the queue.
++                    Self.osLog.error("Cloud logging: dropping rejected row (status=\(code))")
++                    let lostSkips = UInt64(batch.itemSkips[lo])
++                    await queue.commit(through: batch.items[lo].end, droppedReported: 0)
++                    queue.addDropped(1 &+ lostSkips)
++                    lo += 1
++                    hi = batch.items.count
++                }
++            }
 +        }
 +    }
 +
@@ -2706,7 +1692,6 @@ index 000000000..abce87784
 +                queue: .main
 +            ) { [weak self] _ in
 +                self?.uploadNow()
-+                self?.resetUploadTimer()
 +            }
 +        )
 +
@@ -2716,26 +1701,11 @@ index 000000000..abce87784
 +                object: nil,
 +                queue: .main
 +            ) { [weak self] _ in
-+                self?.uploadNow()
-+                self?.resetUploadTimer()
++                self?.uploadInBackgroundTask()
 +            }
 +        )
 +
-+        // Watch log nudge: immediate upload + timer reset.
-+        // queue: .main ensures resetUploadTimer() runs on the main thread
-+        // regardless of which thread the notification was posted from.
-+        observers.append(
-+            center.addObserver(
-+                forName: .trioWatchLogsAppended,
-+                object: nil,
-+                queue: .main
-+            ) { [weak self] _ in
-+                self?.uploadNow()
-+                self?.resetUploadTimer()
-+            }
-+        )
-+
-+        resetUploadTimer()
++        startTimer()
 +
 +        // Detect build change and flush immediately so backlogged lines carry the old build
 +        let lastKnownBuildKey = "cloudLogUploadService.lastKnownBuild"
@@ -2747,11 +1717,39 @@ index 000000000..abce87784
 +        }
 +    }
 +
-+    private func resetUploadTimer() {
++    private func uploadInBackgroundTask() {
++        guard isConfigured else { return }
++
++        let taskID = OSAllocatedUnfairLock<UIBackgroundTaskIdentifier>(initialState: .invalid)
++        let endTask: @Sendable () -> Void = {
++            let id = taskID.withLock { current -> UIBackgroundTaskIdentifier in
++                defer { current = .invalid }
++                return current
++            }
++            guard id != .invalid else { return }
++            DispatchQueue.main.async {
++                UIApplication.shared.endBackgroundTask(id)
++            }
++        }
++
++        let id = UIApplication.shared.beginBackgroundTask(withName: "CloudLogUpload") {
++            endTask()
++        }
++        taskID.withLock { $0 = id }
++
++        Task { [weak self] in
++            await self?.runPass()
++            endTask()
++        }
++    }
++
++    private func startTimer() {
 +        timer?.invalidate()
-+        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
++        let newTimer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
 +            self?.uploadNow()
 +        }
++        RunLoop.main.add(newTimer, forMode: .common)
++        timer = newTimer
 +    }
 +
 +    private func stop() {
@@ -2765,576 +1763,54 @@ index 000000000..abce87784
 +        observers.removeAll()
 +    }
 +}
-diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
+diff --git a/Trio/Sources/Logger/Core/TeeLogSink.swift b/Trio/Sources/Logger/Core/TeeLogSink.swift
 new file mode 100644
-index 000000000..c76a018e9
+index 000000000..51ddd986f
 --- /dev/null
-+++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploader.swift
-@@ -0,0 +1,515 @@
++++ b/Trio/Sources/Logger/Core/TeeLogSink.swift
+@@ -0,0 +1,30 @@
 +import Foundation
 +
-+/// iPhone-only log tailer/uploader.
-+///
-+/// - Keeps file-based logs as the source of truth.
-+/// - Tails files using byte offsets (no buffering).
-+/// - Handles daily rotation where `*_log.txt` is moved to `*_log_prev.txt`.
-+actor CloudLogUploader {
-+    struct RotatingPair {
-+        let currentPath: String
-+        let previousPath: String
-+        let platform: CloudLogPlatform
-+        let parser: (String) -> CloudParsedLogLine?
++// Reads come from the primary sink only; tees are write-only.
++final class TeeLogSink: LogSink, Sendable {
++    private let primary: any LogSink
++    private let tees: [any LogSink]
++
++    init(primary: any LogSink, tees: [any LogSink]) {
++        self.primary = primary
++        self.tees = tees
 +    }
 +
-+    private struct TailState: Codable {
-+        var offset: UInt64
-+    }
-+
-+    private let provider: CloudLogProvider
-+    private let pairs: [RotatingPair]
-+    private let userDefaults: UserDefaults
-+    private let stateKey = "cloudLogUploader.tailState.v1"
-+
-+    /// A file larger than this with no stored offset is assumed to be pre-existing history rather
-+    /// than new content, and is seeded to end-of-file instead of being queued for full re-upload.
-+    private let seedToEndOfFileThreshold: UInt64 = 1024 * 1024
-+
-+    private var isUploading = false
-+
-+    // MARK: - Better Stack ingestion filter (reduce volume; local logs unchanged)
-+
-+    private var ingestionThrottleLastSent: [String: Date] = [:]
-+    private let ingestionThrottleInterval: TimeInterval = 60
-+    private let ingestionStorageErrorMaxChars = 300
-+    private let ingestionAutosensShortMaxChars = 15
-+
-+    init(
-+        provider: CloudLogProvider,
-+        pairs: [RotatingPair],
-+        userDefaults: UserDefaults = .standard
-+    ) {
-+        self.provider = provider
-+        self.pairs = pairs
-+        self.userDefaults = userDefaults
-+    }
-+
-+    /// Returns true if this run completed without provider failures.
-+    @discardableResult
-+    func uploadNow() async -> Bool {
-+        guard !isUploading else { return true }
-+        isUploading = true
-+        defer { isUploading = false }
-+
-+        var allSucceeded = true
-+        for pair in pairs {
-+            let ok = await uploadRotatingPair(pair)
-+            if !ok { allSucceeded = false }
-+        }
-+        return allSucceeded
-+    }
-+
-+    // MARK: - Rotation + tail logic
-+
-+    private func uploadRotatingPair(_ pair: RotatingPair) async -> Bool {
-+        let currentURL = URL(fileURLWithPath: pair.currentPath)
-+        let prevURL = URL(fileURLWithPath: pair.previousPath)
-+
-+        var currentState = loadState(for: pair.currentPath)
-+        var prevState = loadState(for: pair.previousPath)
-+        var succeeded = true
-+
-+        // Seed to end-of-file for a large file we have no stored offset for. An app update can
-+        // migrate the data container, and although the offsets are now keyed by filename rather
-+        // than absolute path, a fresh install — or the first run after this change ships — still
-+        // arrives with no state. Starting such a file at 0 would queue its entire accumulated
-+        // history for re-upload, which over a poor link never completes. Files at or below the
-+        // threshold are small enough to upload in full, so they still start at 0.
-+        if loadStateIfPresent(for: pair.currentPath) == nil,
-+           let size = fileSize(currentURL), size > seedToEndOfFileThreshold
-+        {
-+            currentState.offset = size
-+            saveState(currentState, for: pair.currentPath)
-+        }
-+        if loadStateIfPresent(for: pair.previousPath) == nil,
-+           let size = fileSize(prevURL), size > seedToEndOfFileThreshold
-+        {
-+            prevState.offset = size
-+            saveState(prevState, for: pair.previousPath)
-+        }
-+
-+        // Reset offsets if file shrank (rotation or truncation).
-+        if let currentSize = fileSize(currentURL), currentSize < currentState.offset {
-+            let offsetBeforeReset = currentState.offset
-+            currentState.offset = 0
-+            saveState(currentState, for: pair.currentPath)
-+
-+            // Daily rotation moves `current` → `previous`; those bytes were already tailed under
-+            // `currentPath`. Seed `previousPath` offset so we do not re-upload the same range.
-+            if let prevSize = fileSize(prevURL) {
-+                prevState.offset = min(offsetBeforeReset, prevSize)
-+                saveState(prevState, for: pair.previousPath)
-+            }
-+        }
-+        if let prevSize = fileSize(prevURL), prevSize < prevState.offset {
-+            prevState.offset = 0
-+            saveState(prevState, for: pair.previousPath)
-+        }
-+
-+        // Upload current tail.
-+        let okCurrent = await uploadNewContent(
-+            fileURL: currentURL,
-+            filePathKey: pair.currentPath,
-+            startOffset: currentState.offset,
-+            platform: pair.platform,
-+            parser: pair.parser
-+        )
-+        if !okCurrent { succeeded = false }
-+
-+        // Upload previous tail as well (best-effort for late rotation or missed uploads).
-+        let okPrev = await uploadNewContent(
-+            fileURL: prevURL,
-+            filePathKey: pair.previousPath,
-+            startOffset: prevState.offset,
-+            platform: pair.platform,
-+            parser: pair.parser
-+        )
-+        if !okPrev { succeeded = false }
-+
-+        return succeeded
-+    }
-+
-+    private func uploadNewContent(
-+        fileURL: URL,
-+        filePathKey: String,
-+        startOffset: UInt64,
-+        platform: CloudLogPlatform,
-+        parser: (String) -> CloudParsedLogLine?
-+    ) async -> Bool {
-+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return true }
-+        guard let size = fileSize(fileURL), size > startOffset else { return true }
-+
-+        guard let (lines, byteCounts, windowOffset) = readCompleteLines(fileURL: fileURL, startOffset: startOffset) else {
-+            return true
-+        }
-+        guard !lines.isEmpty else {
-+            saveState(TailState(offset: windowOffset), for: filePathKey)
-+            return true
-+        }
-+
-+        // Cap at entry boundaries (after aggregation) so a multi-line entry is never split across
-+        // two events. Each pass yields at most `maxEventsPerRequest` entries, i.e. one upload batch.
-+        let (entries, consumedBytes) = aggregateEntries(
-+            physicalLines: lines,
-+            byteCounts: byteCounts,
-+            platform: platform
-+        )
-+        let nextOffset = startOffset + UInt64(consumedBytes)
-+        guard !entries.isEmpty else {
-+            saveState(TailState(offset: nextOffset), for: filePathKey)
-+            return true
-+        }
-+
-+        let commonAttributes = buildCommonAttributes(platform: platform)
-+
-+        // Build events (best-effort parsing; always upload the line).
-+        let events: [CloudLogEvent] = entries.compactMap { entry in
-+            let parsed = parser(entry)
-+            var attrs = commonAttributes
-+            if let parsed {
-+                if let c = parsed.category { attrs["category"] = c }
-+                if let l = parsed.level { attrs["level"] = l }
-+                if let f = parsed.file { attrs["file"] = f }
-+                if let m = parsed.method { attrs["method"] = m }
-+                if let ln = parsed.lineNumber { attrs["lineNumber"] = ln }
-+                if let s = parsed.source { attrs["source"] = s }
-+                if let b = parsed.build { attrs["build"] = b }
-+                let msg = truncateMessage(parsed.message)
-+                return CloudLogEvent(message: msg, dt: parsed.dt, attributes: attrs, raw: entry)
-+            } else {
-+                let msg = truncateMessage(entry)
-+                return CloudLogEvent(message: msg, dt: nil, attributes: attrs, raw: entry)
-+            }
-+        }
-+
-+        // Apply ingestion filter: drop/throttle/trim for Better Stack volume reduction (local logs unchanged).
-+        let eventsToUpload = applyIngestionFilter(events, now: Date())
-+
-+        // Upload in batches with both count and byte-budget caps.
-+        // This helps avoid 413 errors regardless of log verbosity.
-+        let batches = buildBatches(events: eventsToUpload)
-+        for batch in batches {
-+            switch await provider.upload(events: batch) {
-+            case .success:
-+                continue
-+            case .failure:
-+                // Critical: do NOT advance offsets.
-+                debug(.service, "CloudLogUploader: upload failed for \(filePathKey), offset not advanced")
-+                return false
-+            }
-+        }
-+
-+        // Only advance the file offset after the final batch succeeds.
-+        var state = loadState(for: filePathKey)
-+        state.offset = nextOffset
-+        saveState(state, for: filePathKey)
-+        return true
-+    }
-+
-+    /// Maximum number of bytes consumed per invocation of `readCompleteLines`.
-+    /// Bounding the read prevents a single pass from attempting to process an
-+    /// unbounded backlog, which would make one upload failure discard all progress.
-+    private let maxReadBytesPerPass = 512 * 1024
-+
-+    /// Reads up to `maxReadBytesPerPass` bytes from startOffset and returns only complete
-+    /// lines (ending with '\n') along with each line's raw byte count (excluding the newline).
-+    /// No entry or line cap is applied here; the caller caps at entry boundaries after aggregation.
-+    /// When `lines` is empty, `nextOffset` is where the next pass should resume (unchanged for a
-+    /// partial line, past the window for an over-long line).
-+    private func readCompleteLines(
-+        fileURL: URL,
-+        startOffset: UInt64
-+    ) -> (lines: [String], byteCounts: [Int], nextOffset: UInt64)? {
-+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
-+        defer { try? handle.close() }
-+
-+        do {
-+            try handle.seek(toOffset: startOffset)
-+            let data = try handle.read(upToCount: maxReadBytesPerPass) ?? Data()
-+            guard !data.isEmpty else { return ([], [], startOffset) }
-+
-+            // Only advance to the last newline to avoid uploading a partial final line.
-+            guard let lastNewlineIdx = data.lastIndex(of: 0x0A) else {
-+                // No newline anywhere in the window. Two very different cases:
-+                //  - a short read: a partial final line is still being written, so wait for it.
-+                //  - a full window: this single line is longer than the read budget. Returning
-+                //    `startOffset` here would re-read the same bytes forever and never advance,
-+                //    reintroducing the permanent stall this bounded read exists to prevent.
-+                //    Skip the window instead. The skipped bytes are dropped for good; when a
-+                //    newline is finally reached only the trailing fragment of the entry surfaces
-+                //    (without its beginning), accepted as the price of guaranteed forward progress.
-+                guard data.count == maxReadBytesPerPass else { return ([], [], startOffset) }
-+                debug(
-+                    .service,
-+                    "CloudLogUploader: no newline in \(data.count)B window at offset \(startOffset), skipping over-long line"
-+                )
-+                return ([], [], startOffset + UInt64(data.count))
-+            }
-+
-+            let completeData = data.prefix(upTo: data.index(after: lastNewlineIdx))
-+            let (lines, byteCounts) = CloudLogEntryAggregator.splitLines(Data(completeData))
-+            assert(
-+                byteCounts.reduce(0, +) + byteCounts.count == completeData.count,
-+                "CloudLogUploader: line byte counts must account for every byte read"
-+            )
-+
-+            let nextOffset = startOffset + UInt64(completeData.count)
-+            return (lines, byteCounts, nextOffset)
-+        } catch {
-+            return nil
++    func accept(_ record: LogRecord) {
++        primary.accept(record)
++        for tee in tees {
++            tee.accept(record)
 +        }
 +    }
 +
-+    /// Aggregates physical lines into at most `maxEventsPerRequest` logical entries and reports how
-+    /// many raw bytes those entries span, so the next pass resumes at an entry boundary.
-+    private func aggregateEntries(
-+        physicalLines: [String],
-+        byteCounts: [Int],
-+        platform: CloudLogPlatform
-+    ) -> (entries: [String], consumedBytes: Int) {
-+        let pattern: String
-+        switch platform {
-+        case .ios:
-+            pattern = #"^\d{4}-\d{2}-\d{2}T"#
-+        case .watchos:
-+            pattern = #"^\[\d{4}-\d{2}-\d{2}T"#
-+        }
-+
-+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-+            // Fallback to line-by-line (capped) if regex compilation fails (shouldn't happen).
-+            let kept = Array(physicalLines.prefix(maxEventsPerRequest))
-+            let consumed = byteCounts.prefix(kept.count).reduce(0) { $0 + $1 + 1 }
-+            return (kept, consumed)
-+        }
-+
-+        return CloudLogEntryAggregator.aggregateCapped(
-+            lines: physicalLines,
-+            byteCounts: byteCounts,
-+            startPattern: regex,
-+            maxEntries: maxEventsPerRequest
-+        )
-+    }
-+
-+    // MARK: - Attributes
-+
-+    private func buildCommonAttributes(platform: CloudLogPlatform) -> [String: String] {
-+        var attrs: [String: String] = [:]
-+        attrs["platform"] = platform.rawValue
-+
-+        let env: String
-+        if BuildDetails.shared.isTestFlightBuild() {
-+            env = "testflight"
-+        } else {
-+            #if DEBUG
-+                env = "debug"
-+            #else
-+                env = "release"
-+            #endif
-+        }
-+        attrs["env"] = env
-+
-+        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
-+            attrs["appVersion"] = version
-+        }
-+        if let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
-+            attrs["build"] = build
-+        }
-+
-+        return attrs
-+    }
-+
-+    // MARK: - Ingestion filter (Better Stack volume reduction)
-+
-+    /// Drops or trims events before upload. Local log files are unchanged.
-+    private func applyIngestionFilter(_ events: [CloudLogEvent], now: Date) -> [CloudLogEvent] {
-+        var result: [CloudLogEvent] = []
-+        for event in events {
-+            // Rule 2: Drop all PersistedProperty "Saved value successfully".
-+            if event.message.contains("[PersistedProperty:") && event.message.contains("Saved value successfully.") {
-+                continue
-+            }
-+
-+            // Rule 1: Throttle OpenAPS Dynamic ISF prediction lines (1 per 60s per subtype).
-+            if event.message.contains("Dynamic ISF (Logarithmic Formula)") {
-+                let key: String?
-+                if event.message.contains("adjusted predictions for IOB and ZT") { key = "openaps:IOB_ZT" }
-+                else if event.message.contains("adjusted prediction for UAM") { key = "openaps:UAM" }
-+                else { key = nil }
-+                if let key = key {
-+                    if let last = ingestionThrottleLastSent[key], now.timeIntervalSince(last) < ingestionThrottleInterval {
-+                        continue
-+                    }
-+                    ingestionThrottleLastSent[key] = now
-+                }
-+            }
-+
-+            // Rule 5: Throttle short autosens.js lines (e.g. "autosens.js: 2g").
-+            if let autosensRange = event.message.range(of: "autosens.js:") {
-+                let rest = event.message[autosensRange.upperBound...].trimmingCharacters(in: .whitespaces)
-+                if rest.count <= ingestionAutosensShortMaxChars {
-+                    let key = "autosens:short"
-+                    if let last = ingestionThrottleLastSent[key], now.timeIntervalSince(last) < ingestionThrottleInterval {
-+                        continue
-+                    }
-+                    ingestionThrottleLastSent[key] = now
-+                }
-+            }
-+
-+            // Rule 3: Trim "Watch received data" — drop from "glucoseValues = (" onward in message and raw.
-+            var message = event.message
-+            var raw = event.raw
-+            if message.contains("Watch received data") {
-+                message = trimWatchReceivedDataMessage(message)
-+                if let r = raw, r.contains("Watch received data") {
-+                    raw = trimWatchReceivedDataMessage(r)
-+                }
-+            }
-+
-+            // Rule 4: Trim long storage/error messages (e.g. "Failed to retrieve file").
-+            if message.contains("Failed to retrieve file") && message.count > ingestionStorageErrorMaxChars {
-+                message = String(message.prefix(ingestionStorageErrorMaxChars)) + "…"
-+                raw = nil
-+            }
-+
-+            if message != event.message || raw != event.raw {
-+                result.append(CloudLogEvent(message: message, dt: event.dt, attributes: event.attributes, raw: raw))
-+            } else {
-+                result.append(event)
-+            }
-+        }
-+        return result
-+    }
-+
-+    /// Keeps content before `glucoseValues = (` (or `glucoseValues =     (` etc.); drops the rest to reduce Better Stack payload size.
-+    private func trimWatchReceivedDataMessage(_ text: String) -> String {
-+        // Match "glucoseValues =" followed by optional whitespace and "(" (watch state uses variable spacing).
-+        guard let keyRange = text.range(of: "glucoseValues =") else { return text }
-+        let afterKey = text[keyRange.upperBound...]
-+        guard afterKey.firstIndex(where: { $0 == "(" }) != nil else { return text }
-+        return String(text[..<keyRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-+    }
-+
-+    // MARK: - State store
-+
-+    /// Reduces a file path to a stable identifier (its last path component) so that tail offsets
-+    /// survive iOS data-container migrations, which change the absolute path but not the filename.
-+    /// Named distinctly from the `stateKey` UserDefaults constant above to keep the two readable.
-+    private func tailStateKey(for path: String) -> String {
-+        (path as NSString).lastPathComponent
-+    }
-+
-+    private func loadState(for path: String) -> TailState {
-+        loadStateIfPresent(for: path) ?? TailState(offset: 0)
-+    }
-+
-+    /// Returns the stored `TailState` for the given path, or `nil` if none has been persisted.
-+    /// The `nil` case is distinct from a stored offset of 0 and is what lets a first run after a
-+    /// container migration seed to end-of-file rather than re-uploading the whole history.
-+    private func loadStateIfPresent(for path: String) -> TailState? {
-+        guard let data = userDefaults.data(forKey: stateKey),
-+              let dict = try? JSONDecoder().decode([String: TailState].self, from: data),
-+              let state = dict[tailStateKey(for: path)]
-+        else {
-+            return nil
-+        }
-+        return state
-+    }
-+
-+    private func saveState(_ state: TailState, for path: String) {
-+        var dict: [String: TailState] = [:]
-+        if let data = userDefaults.data(forKey: stateKey),
-+           let decoded = try? JSONDecoder().decode([String: TailState].self, from: data)
-+        {
-+            dict = decoded
-+        }
-+        dict[tailStateKey(for: path)] = state
-+        if let encoded = try? JSONEncoder().encode(dict) {
-+            userDefaults.set(encoded, forKey: stateKey)
++    func flush() async {
++        await primary.flush()
++        for tee in tees {
++            await tee.flush()
 +        }
 +    }
 +
-+    // MARK: - File helpers
-+
-+    private func fileSize(_ url: URL) -> UInt64? {
-+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-+              let size = attrs[.size] as? NSNumber
-+        else { return nil }
-+        return size.uint64Value
-+    }
-+
-+    // MARK: - Request sizing helpers
-+
-+    private let maxMessageBytes = 256 * 1024
-+    private let maxRequestBytes = 8 * 1024 * 1024
-+    private let maxEventsPerRequest = 250
-+
-+    private func truncateMessage(_ message: String) -> String {
-+        guard message.utf8.count > maxMessageBytes else { return message }
-+        let data = message.data(using: .utf8) ?? Data()
-+        return truncateUTF8(data: data, maxBytes: maxMessageBytes)
-+    }
-+
-+    private func buildBatches(events: [CloudLogEvent]) -> [[CloudLogEvent]] {
-+        guard !events.isEmpty else { return [] }
-+
-+        var result: [[CloudLogEvent]] = []
-+        var current: [CloudLogEvent] = []
-+        var currentBytes = 2 // "[]"
-+        let encoder = JSONEncoder()
-+
-+        for event in events {
-+            let eventBytes = (try? encoder.encode(event).count) ?? Int.max
-+            let additionalBytes = current.isEmpty ? eventBytes : (1 + eventBytes) // comma for non-first
-+
-+            let wouldExceedCount = current.count >= maxEventsPerRequest
-+            let wouldExceedBytes = (currentBytes + additionalBytes) > maxRequestBytes
-+
-+            if wouldExceedCount || wouldExceedBytes {
-+                if !current.isEmpty {
-+                    result.append(current)
-+                }
-+                current = [event]
-+                currentBytes = 2 + eventBytes
-+
-+                // If a single event still exceeds the request budget (should be rare due to truncation),
-+                // upload it alone to avoid an infinite loop.
-+                if currentBytes > maxRequestBytes {
-+                    result.append(current)
-+                    current.removeAll(keepingCapacity: true)
-+                    currentBytes = 2
-+                }
-+            } else {
-+                current.append(event)
-+                currentBytes += additionalBytes
-+            }
-+        }
-+
-+        if !current.isEmpty {
-+            result.append(current)
-+        }
-+
-+        return result
-+    }
-+
-+    /// Truncate UTF-8 data without emitting replacement characters.
-+    private func truncateUTF8(data: Data, maxBytes: Int) -> String {
-+        guard data.count > maxBytes else {
-+            return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-+        }
-+
-+        var truncated = data.prefix(maxBytes)
-+
-+        // If we're mid-codepoint, drop trailing bytes until valid UTF-8.
-+        // Worst-case UTF-8 sequence length is 4, so this loop should be short,
-+        // but we keep it safe for malformed input.
-+        while !truncated.isEmpty {
-+            if let s = String(data: truncated, encoding: .utf8) {
-+                return s
-+            }
-+            truncated = truncated.dropLast(1)
-+        }
-+
-+        return ""
++    func records(in window: DateInterval, minimumLevel: LogLevel) async -> [LogRecord] {
++        await primary.records(in: window, minimumLevel: minimumLevel)
 +    }
 +}
-diff --git a/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift b/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift
-index 254d723ec..4a5460494 100644
---- a/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift
-+++ b/Trio/Sources/Logger/IssueReporter/SimpleLogReporter.swift
-@@ -4,12 +4,13 @@ import System
- 
- final class SimpleLogReporter: IssueReporter {
-     private let fileManager = FileManager.default
-+    private let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
- 
--    private var dateFormatter: DateFormatter {
--        let dateFormatter = DateFormatter()
--        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
--        return dateFormatter
--    }
-+    private static let dateFormatter: DateFormatter = {
-+        let formatter = DateFormatter()
-+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
-+        return formatter
-+    }()
- 
-     func setup() {}
- 
-@@ -43,7 +44,7 @@ final class SimpleLogReporter: IssueReporter {
-             }
-         }
- 
--        let logEntry = "\(dateFormatter.string(from: now)) [\(category)] \(file.file) - \(function) - \(line) - \(message)\n"
-+        let logEntry = "\(SimpleLogReporter.dateFormatter.string(from: now)) [b:\(build)] [\(category)] \(file.file) - \(function) - \(line) - \(message)\n"
-         let data = logEntry.data(using: .utf8)!
-         try? data.append(fileURL: URL(fileURLWithPath: SimpleLogReporter.logFile))
-     }
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
-index 47097a834..ab464331b 100644
+index 67b787314..ad0d5ea3d 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
 +++ b/Trio/Sources/Modules/Settings/SettingItems.swift
-@@ -422,6 +422,17 @@ enum SettingItems {
+@@ -430,6 +430,12 @@ enum SettingItems {
              ],
              path: ["Services", "Nightscout", "Fetch and Remote Control"]
          ),
 +        SettingItem(
 +            title: "Cloud Logging",
 +            view: .cloudLogging,
-+            searchContents: [
-+                "Enable Cloud Logging",
-+                "Source token",
-+                "Ingestion URL",
-+                "Test Connection"
-+            ],
++            searchContents: ["Enable Cloud Logging", "Source token", "Ingestion URL", "Test Connection"],
 +            path: ["Services", "Cloud Logging"]
 +        ),
          SettingItem(title: "Tidepool", view: .serviceSettings, path: ["Services"]),
@@ -3342,7 +1818,7 @@ index 47097a834..ab464331b 100644
      ]
 diff --git a/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift b/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
 new file mode 100644
-index 000000000..cd48dfb23
+index 000000000..a4af1da71
 --- /dev/null
 +++ b/Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
 @@ -0,0 +1,150 @@
@@ -3475,9 +1951,9 @@ index 000000000..cd48dfb23
 +                attributes: [
 +                    "platform": "ios",
 +                    "category": "CloudLogging",
-+                    "level": "info"
-+                ],
-+                raw: "Trio cloud logging test event"
++                    "level": "info",
++                    "source": "phone"
++                ]
 +            )
 +        ]
 +
@@ -3529,155 +2005,6 @@ index b7d111602..76e4ab666 100644
          case .autosensSettings:
              AutosensSettings.RootView(resolver: resolver)
          case .smbSettings:
-diff --git a/TrioTests/CloudLogEntryAggregatorTests.swift b/TrioTests/CloudLogEntryAggregatorTests.swift
-new file mode 100644
-index 000000000..7925abdd6
---- /dev/null
-+++ b/TrioTests/CloudLogEntryAggregatorTests.swift
-@@ -0,0 +1,143 @@
-+import Foundation
-+import Testing
-+
-+@testable import Trio
-+
-+@Suite("Cloud Log Entry Aggregation Tests") struct CloudLogEntryAggregatorTests {
-+    @Test("iOS multi-line entry aggregation groups by timestamp start") func testIOSAggregation() throws {
-+        let start = try NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}T"#)
-+
-+        let lines: [String] = [
-+            "2026-01-01T08:32:30+0100 [DeviceManager] Foo.swift - bar() - 1 - INFO: Starting request",
-+            "{",
-+            "  \"a\": 1,",
-+            "  \"b\": 2",
-+            "}",
-+            "2026-01-01T08:32:31+0100 [DeviceManager] Foo.swift - bar() - 2 - INFO: Done"
-+        ]
-+
-+        let entries = CloudLogEntryAggregator.aggregate(lines: lines, startPattern: start)
-+        #expect(entries.count == 2)
-+        #expect(entries[0].contains("\n{\n  \"a\": 1,"))
-+        #expect(entries[0].hasPrefix("2026-01-01T08:32:30+0100"))
-+        #expect(entries[1].hasPrefix("2026-01-01T08:32:31+0100"))
-+    }
-+
-+    @Test("watch multi-line entry aggregation groups by bracketed timestamp start") func testWatchAggregation() throws {
-+        let start = try NSRegularExpression(pattern: #"^\[\d{4}-\d{2}-\d{2}T"#)
-+
-+        let lines: [String] = [
-+            "[2026-01-01T08:35:51+0100] [WatchLogger.swift:169] flushToPhone() → ⌚️ Something happened",
-+            "stacktrace line 1",
-+            "stacktrace line 2",
-+            "[2026-01-01T08:35:52+0100] [WatchState.swift:1] tick() → Next entry"
-+        ]
-+
-+        let entries = CloudLogEntryAggregator.aggregate(lines: lines, startPattern: start)
-+        #expect(entries.count == 2)
-+        #expect(entries[0].contains("stacktrace line 1\nstacktrace line 2"))
-+        #expect(entries[0].hasPrefix("[2026-01-01T08:35:51+0100]"))
-+        #expect(entries[1].hasPrefix("[2026-01-01T08:35:52+0100]"))
-+    }
-+
-+    private func iosLine(_ n: Int) -> String {
-+        let s = String(format: "%02d", n)
-+        return "2026-01-01T08:32:\(s)+0100 [DeviceManager] Foo.swift - bar() - \(n) - INFO: line \(n)"
-+    }
-+
-+    @Test("entry cap never splits a multi-line stack trace") func testCapKeepsStackTraceWhole() throws {
-+        let start = try NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}T"#)
-+
-+        // 3 single-line entries, then a 5-line trace (entry #4), then more entries. With a
-+        // physical-line cap of 5 the cut would land inside the trace; the entry cap must not.
-+        var lines: [String] = [iosLine(1), iosLine(2), iosLine(3)]
-+        let traceLines = [iosLine(4), "    at Frame.one()", "    at Frame.two()", "    at Frame.three()", "    at Frame.four()"]
-+        lines += traceLines
-+        lines += [iosLine(5), iosLine(6), iosLine(7)]
-+
-+        let data = Data((lines.joined(separator: "\n") + "\n").utf8)
-+        let split = CloudLogEntryAggregator.splitLines(data)
-+        #expect(split.lines == lines)
-+
-+        let result = CloudLogEntryAggregator.aggregateCapped(
-+            lines: split.lines,
-+            byteCounts: split.byteCounts,
-+            startPattern: start,
-+            maxEntries: 5
-+        )
-+
-+        #expect(result.entries.count == 5)
-+        #expect(result.entries[3] == traceLines.joined(separator: "\n"))
-+        #expect(result.entries[4] == iosLine(5))
-+
-+        let returnedLines = lines.prefix(3 + 5 + 1)
-+        let expectedConsumed = returnedLines.reduce(0) { $0 + $1.utf8.count + 1 }
-+        #expect(result.consumedBytes == expectedConsumed)
-+        let rest = String(decoding: data.dropFirst(result.consumedBytes), as: UTF8.self)
-+        #expect(rest.hasPrefix(iosLine(6)))
-+    }
-+
-+    @Test("byte accounting is exact with multi-byte and invalid UTF-8") func testExactByteAccounting() throws {
-+        let start = try NSRegularExpression(pattern: #"^\[\d{4}-\d{2}-\d{2}T"#)
-+
-+        var data = Data()
-+        data.append(Data("[2026-01-01T08:35:51+0100] [WatchLogger.swift:169] flushToPhone() → ⌚️ ok\n".utf8))
-+        data.append(Data("[2026-01-01T08:35:52+0100] bad byte ".utf8))
-+        data.append(0xFF)
-+        data.append(Data(" here\n".utf8))
-+        let thirdStart = data.count
-+        data.append(Data("[2026-01-01T08:35:53+0100] third\n".utf8))
-+
-+        let split = CloudLogEntryAggregator.splitLines(data)
-+        #expect(split.lines.count == 3)
-+        #expect(split.byteCounts.reduce(0, +) + split.byteCounts.count == data.count)
-+        // The invalid byte decodes to U+FFFD (3 bytes) but is counted as 1 raw byte.
-+        #expect(split.lines[1].utf8.count == split.byteCounts[1] + 2)
-+
-+        let result = CloudLogEntryAggregator.aggregateCapped(
-+            lines: split.lines,
-+            byteCounts: split.byteCounts,
-+            startPattern: start,
-+            maxEntries: 2
-+        )
-+        #expect(result.entries.count == 2)
-+        #expect(result.consumedBytes == thirdStart)
-+        #expect(data[thirdStart] == UInt8(ascii: "["))
-+        #expect(String(decoding: data.dropFirst(result.consumedBytes), as: UTF8.self)
-+            .hasPrefix("[2026-01-01T08:35:53+0100]"))
-+    }
-+
-+    @Test("no cap hit consumes the whole input") func testNoCapHitConsumesAll() throws {
-+        let start = try NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}T"#)
-+        let lines = [iosLine(1), "{", "}", iosLine(2)]
-+        let data = Data((lines.joined(separator: "\n") + "\n").utf8)
-+        let split = CloudLogEntryAggregator.splitLines(data)
-+
-+        let result = CloudLogEntryAggregator.aggregateCapped(
-+            lines: split.lines,
-+            byteCounts: split.byteCounts,
-+            startPattern: start,
-+            maxEntries: 250
-+        )
-+        #expect(result.entries.count == 2)
-+        #expect(result.consumedBytes == data.count)
-+    }
-+
-+    @Test("mid-entry start forms one leading entry that is counted") func testMidEntryStart() throws {
-+        let start = try NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}T"#)
-+        let lines = ["    at Frame.tail1()", "    at Frame.tail2()", iosLine(1), iosLine(2)]
-+        let data = Data((lines.joined(separator: "\n") + "\n").utf8)
-+        let split = CloudLogEntryAggregator.splitLines(data)
-+
-+        let result = CloudLogEntryAggregator.aggregateCapped(
-+            lines: split.lines,
-+            byteCounts: split.byteCounts,
-+            startPattern: start,
-+            maxEntries: 1
-+        )
-+        #expect(result.entries == ["    at Frame.tail1()\n    at Frame.tail2()"])
-+        let expected = lines.prefix(2).reduce(0) { $0 + $1.utf8.count + 1 }
-+        #expect(result.consumedBytes == expected)
-+        #expect(String(decoding: data.dropFirst(result.consumedBytes), as: UTF8.self).hasPrefix(iosLine(1)))
-+    }
-+}
 -- 
 2.56.0
 

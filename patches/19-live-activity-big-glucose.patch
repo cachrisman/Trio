@@ -1,59 +1,26 @@
-From f19efd8dc260554bbcb4f57b5dbaabafe48fac56 Mon Sep 17 00:00:00 2001
+From bf42f54267918b5ba32193a6bf0ad09a2249b3fd Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Mon, 19 Oct 2026 23:41:30 +0200
+Date: Fri, 6 Nov 2026 17:58:43 +0100
 Subject: [PATCH] feat: live-activity-big-glucose
 
 Trio-Patch-Source-Branch: feature/live-activity-big-glucose
-Trio-Patch-Base: 0bdd266c2e789d2ef4ee8507beecf453f5c171e5
-Trio-Patch-Feature-Tip: d9ab15294b222e2f2663b50a7dea36c8ef56ba23
-Trio-Patch-Generated: 2026-10-19T21:41:29Z
+Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
+Trio-Patch-Feature-Tip: 953a4aabd1ecf5f05dadcee6a1f138d64ff47dc6
+Trio-Patch-Generated: 2026-11-06T16:58:32Z
 Trio-Patch-Source-Commits:
- a6ef3186eb365e523c6f0cb8639f352b81e70bce Connect to Dexcom G7, ONE+ and Stelo directly
- e82293364401b38ad4d6f590fa6c75153f6ed6b9 Name Stelo in the Dexcom G7 picker entry
- a386413f324ea6c1c7310792e1e58cb65d9e6338 Merge branch 'dev' into feat/g7-direct
- 5fa1db94ddadd81e6e13a26eae1c87d8518f609a Merge branch 'dev' into feat/g7-direct
- c79a20d4e13a930036f5c4cfed4b56a12fb5343e Bump G7SensorKit: pairing robustness and Share
- 522b4c28ca01bcc303e01d7c18893c3076b5d5f1 Merge branch 'dev' into feat/g7-direct
- 5eaf8b37c2bef1a0ec41150df5506236a1af9683 Merge branch 'dev' into feat/g7-direct
- 048a0efdaaff733f142148413b15949774839f76 Merge branch 'dev' into feat/g7-direct
- e87b6527232d817fcd8ee2e2e397a1d0d7ef0f4e Merge branch 'dev' into feat/g7-direct
- a54bdf9442d4dc694bd9e887bd051c63d3818e9f Merge remote-tracking branch 'nightscout/dev' into feat/g7-direct
- aed367b8cb2bac482e3891773a697120da5ce52a Bump G7SensorKit: failed-sensor parsing and alert fix
- 7c6283559cad9a3414ea600b8c7a15f1468ff5ab Own glucose alerts when the G7 is paired directly
- 7b080ec9bd269cecfe62512c83ca194e4924de2c Add themed alarm sound sets and loop short tones to a 5s floor
- 5332b6368049a55e3a4800fd4e82b78230669dad Default every alarm to its Acoustic Medium themed sound
- c6475e6c8a6fbf32fb096b494e20a2506e36e7c7 Lead the tone picker with themed sets, collapse the rest under Other Sounds
- d5b8c68f2138e68f92b25f61bb3db0075cb56b98 Cover the themed sound catalog and new defaults
- 4ac46ad8a27e2973a7b26fe68ee11cea7a6961dd Credit the bundled voices and tidy the urgency controls
- b9c3b3949db9ea9ec3d5d289f229e48e624dd83a Linting fixes
- 1f19080345c4adc992c6d970c7392f6292775dd4 Merge pull request #1548 from nightscout/feat/g7-direct
- e797b4adf1cf1e6d3a0d700ba235d712b9d840f7 CI: Bump APP_DEV_VERSION to 1.0.2.12 [skip ci]
- b3daae1a30f25bb6e8fcac79339690607c01d745 Merge branch 'dev' into feat/alarm-sound-themes
- cd6ad0706db1e7a546360d4631f75b24a402ba58 Merge pull request #1645 from dnzxy/feat/alarm-sound-themes
- bcebda2f5881b5835cecdade8593f951493ac899 CI: Bump APP_DEV_VERSION to 1.0.2.13 [skip ci]
  8b02571515ca5fa66200ba13c68575958191bba9 Live Activity: Big Glucose lock-screen style (TRIO-086)
  b36f51e2e4f8c888b48f5066e3902b7562c29f44 fix: scale Big Glucose chart to its visible window and drop bigGlucose from smartStackView (TRIO-086)
  ba53308b3a34c67cbb136e581fd83c648250be85 Live Activity: centre Big Glucose reading, 40/60 column split, 4h compact chart (TRIO-086)
  d9ab15294b222e2f2663b50a7dea36c8ef56ba23 Live Activity: size Big Glucose columns with a proportional Layout instead of GeometryReader (TRIO-086)
+ 2518e7a5b60dfd20f743f10b42a3cf365fdce4a9 Merge dev (1.0.2.59) into feature/live-activity-big-glucose; tree = dev + patches 01-18
+ 953a4aabd1ecf5f05dadcee6a1f138d64ff47dc6 Re-apply Big Glucose Live Activity onto upstream 1.0.2.59 + patches 01-18
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
- b2a84c5fb6c0308688dc07cae692121cb5707dc8
- a6d2925d3df964cd76bd910d889a75d2bc457183
- 73bd89ef649c9bbb0ef09012913ca55ccd00b66d
- 29d3643cfdebac277555a4cfdeb8f5a554522d81
- c61a0c7559b7bb2bb6fbfbe0890ae7101888b5f5
- fb5695f304873672312b44255bc8e7435f929d01
- d37612a9ddd1412ebc497450b29d49226ecc66bb
- 58b31d4581a40cae708d0289af28ea501323983f
- 9fe0b156d592ab8c6fe8c575bbe55bc6b9a38083
- 4c8d7814c6bfa4b975ee8fac5cd5ea471e91ec24
- 82170482f66ba39a70daed86207154bd5527b699
- 4be80a810b1b3ca0c38add94ccd45859e8df50e7
- b80e8d5def3d6cfa81e8efa26c610ec562b384fd
  b5210902dd1b6a52c47e5826c4f9c483d31bbdaf
  1680a9b6832800f5ae84a6300b59b14d1c74897d
  2ab2145f5863c4ebcc7053c5d7ab5fefa138df99
  db42864167dd7f555f52ced24abcef4439b9352b
+ ea01619f5391b0214d89bac49690a854e077114b
 ---
  LiveActivity/LiveActivity.swift               |  72 +++++++
  .../Views/LiveActivityChartView.swift         |  54 ++++--
@@ -66,14 +33,14 @@ Trio-Patch-Source-PatchIds:
  .../SettingsExportStateModel.swift            |  14 ++
  .../LiveActivityAttributes+Helper.swift       |  12 ++
  .../LiveActivity/LiveActivityAttributes.swift |   8 +
- .../LiveActivityGlucoseStyle.swift            |  31 ++-
- 12 files changed, 517 insertions(+), 21 deletions(-)
+ .../LiveActivityGlucoseStyle.swift            |  27 +++
+ 12 files changed, 515 insertions(+), 19 deletions(-)
 
 diff --git a/LiveActivity/LiveActivity.swift b/LiveActivity/LiveActivity.swift
-index bee5e6dda..7432b757a 100644
+index 83850653e..8619bc5f6 100644
 --- a/LiveActivity/LiveActivity.swift
 +++ b/LiveActivity/LiveActivity.swift
-@@ -370,6 +370,69 @@ private extension LiveActivityAttributes.ContentState {
+@@ -369,6 +369,69 @@ private extension LiveActivityAttributes.ContentState {
              isInitialState: false
          )
      }
@@ -143,7 +110,7 @@ index bee5e6dda..7432b757a 100644
  }
  
  @available(iOS 17.0, iOSApplicationExtension 17.0, *)
-@@ -395,3 +458,12 @@ private extension LiveActivityAttributes.ContentState {
+@@ -394,3 +457,12 @@ private extension LiveActivityAttributes.ContentState {
      LiveActivityAttributes.ContentState.testNarrowDetailed
      LiveActivityAttributes.ContentState.testExpiredDetailed
  }
@@ -265,7 +232,7 @@ index 31d0aecbd..6c033e2eb 100644
  
          return ForEach(chartData, id: \.self) { item in
 diff --git a/LiveActivity/Views/LiveActivityView.swift b/LiveActivity/Views/LiveActivityView.swift
-index d33f63303..15dfbdf13 100644
+index 522b9409e..331baf8cd 100644
 --- a/LiveActivity/Views/LiveActivityView.swift
 +++ b/LiveActivity/Views/LiveActivityView.swift
 @@ -184,6 +184,8 @@ struct LiveActivityView: View {
@@ -424,10 +391,10 @@ index 2084bc67e..41d2ab954 100644
      }
  }
 diff --git a/Trio/Sources/Models/TrioSettings.swift b/Trio/Sources/Models/TrioSettings.swift
-index 797a6bf0a..babb290ee 100644
+index ad2c31e71..7188a2bcf 100644
 --- a/Trio/Sources/Models/TrioSettings.swift
 +++ b/Trio/Sources/Models/TrioSettings.swift
-@@ -69,6 +69,8 @@ struct TrioSettings: JSON, Equatable, Encodable {
+@@ -70,6 +70,8 @@ struct TrioSettings: JSON, Equatable, Encodable {
      var lockScreenView: LockScreenView = .simple
      var smartStackView: LockScreenView = .simple
      var liveActivitySimpleFontSize: LiveActivityFontSize = .large
@@ -436,7 +403,7 @@ index 797a6bf0a..babb290ee 100644
      var displayGlucoseForecasts: Bool = false
      var bolusShortcut: BolusShortcutLimit = .notAllowed
      var timeInRangeType: TimeInRangeType = .timeInTightRange
-@@ -344,7 +346,7 @@ extension TrioSettings: Decodable {
+@@ -352,7 +354,7 @@ extension TrioSettings: Decodable {
          }
  
          if let smartStackView = try? container.decode(LockScreenView.self, forKey: .smartStackView) {
@@ -445,7 +412,7 @@ index 797a6bf0a..babb290ee 100644
          }
  
          if let liveActivitySimpleFontSize = try? container
-@@ -353,6 +355,18 @@ extension TrioSettings: Decodable {
+@@ -361,6 +363,18 @@ extension TrioSettings: Decodable {
              settings.liveActivitySimpleFontSize = liveActivitySimpleFontSize
          }
  
@@ -552,7 +519,7 @@ index 735d3e36b..f2e3a99fa 100644
                                      }
                                  }.padding(.top)
 diff --git a/Trio/Sources/Modules/LiveActivitySettings/View/LiveActivitySimpleWidgetConfiguration.swift b/Trio/Sources/Modules/LiveActivitySettings/View/LiveActivitySimpleWidgetConfiguration.swift
-index 67a49969f..dcff50d05 100644
+index 162f0da01..a1df01bc6 100644
 --- a/Trio/Sources/Modules/LiveActivitySettings/View/LiveActivitySimpleWidgetConfiguration.swift
 +++ b/Trio/Sources/Modules/LiveActivitySettings/View/LiveActivitySimpleWidgetConfiguration.swift
 @@ -157,3 +157,180 @@ struct LiveActivitySimpleWidgetConfiguration: BaseView {
@@ -678,11 +645,11 @@ index 67a49969f..dcff50d05 100644
 +    }
 +
 +    private var previewGlucoseText: String {
-+        LiveActivityAttributes.ContentState.formatGlucose(Self.previewGlucose, units: state.units, forceSign: false)
++        Self.previewGlucose.formatted(for: state.units)
 +    }
 +
 +    private var previewDeltaText: String {
-+        LiveActivityAttributes.ContentState.formatGlucose(Self.previewDelta, units: state.units, forceSign: true)
++        Decimal(Self.previewDelta).formattedDelta(for: state.units)
 +    }
 +
 +    private var previewTimeText: String {
@@ -737,10 +704,10 @@ index 67a49969f..dcff50d05 100644
 +    }
 +}
 diff --git a/Trio/Sources/Modules/SettingsExport/SettingsExportStateModel.swift b/Trio/Sources/Modules/SettingsExport/SettingsExportStateModel.swift
-index c7538095e..d4186a5fa 100644
+index 365240bc5..8defc1161 100644
 --- a/Trio/Sources/Modules/SettingsExport/SettingsExportStateModel.swift
 +++ b/Trio/Sources/Modules/SettingsExport/SettingsExportStateModel.swift
-@@ -919,6 +919,20 @@ extension SettingsExport {
+@@ -912,6 +912,20 @@ extension SettingsExport {
                          value: trioSettings.liveActivitySimpleFontSize.displayName
                      )
                  }
@@ -762,7 +729,7 @@ index c7538095e..d4186a5fa 100644
                      category: notificationsCategory,
                      subcategory: liveActivitySubcategory,
 diff --git a/Trio/Sources/Services/LiveActivity/LiveActivityAttributes+Helper.swift b/Trio/Sources/Services/LiveActivity/LiveActivityAttributes+Helper.swift
-index 6bc456a76..851ee3938 100644
+index 8058e26c5..f7fa243bd 100644
 --- a/Trio/Sources/Services/LiveActivity/LiveActivityAttributes+Helper.swift
 +++ b/Trio/Sources/Services/LiveActivity/LiveActivityAttributes+Helper.swift
 @@ -25,6 +25,15 @@ extension LiveActivityAttributes.SimpleViewStyle {
@@ -779,9 +746,9 @@ index 6bc456a76..851ee3938 100644
 +}
 +
  extension LiveActivityAttributes.ContentState {
-     static func formatGlucose(_ value: Int, units: GlucoseUnits, forceSign: Bool) -> String {
-         let formatter = NumberFormatter()
-@@ -150,6 +159,9 @@ extension LiveActivityAttributes.ContentState {
+     static func calculateChange(chart: [GlucoseData], units: GlucoseUnits) -> String {
+         guard chart.count >= 2 else { return "" }
+@@ -118,6 +127,9 @@ extension LiveActivityAttributes.ContentState {
              useDetailedViewIOS: settings.lockScreenView == .detailed,
              useDetailedViewWatchOS: settings.smartStackView == .detailed,
              simpleViewStyle: LiveActivityAttributes.SimpleViewStyle(settings: settings),
@@ -818,7 +785,7 @@ index 68401f47c..283ea7b63 100644
  
          /// true for the first state that is set on the activity
 diff --git a/Trio/Sources/Services/LiveActivity/LiveActivityGlucoseStyle.swift b/Trio/Sources/Services/LiveActivity/LiveActivityGlucoseStyle.swift
-index 9ad9359d9..74dfa8cc0 100644
+index 36779b541..74dfa8cc0 100644
 --- a/Trio/Sources/Services/LiveActivity/LiveActivityGlucoseStyle.swift
 +++ b/Trio/Sources/Services/LiveActivity/LiveActivityGlucoseStyle.swift
 @@ -23,6 +23,19 @@ enum LiveActivityFontSize: String, Codable, Hashable, CaseIterable, Identifiable
@@ -840,17 +807,6 @@ index 9ad9359d9..74dfa8cc0 100644
 +
      var verticalPadding: CGFloat? {
          self == .extraLarge ? 0 : nil
-     }
-@@ -33,8 +46,8 @@ enum LiveActivityFontSize: String, Codable, Hashable, CaseIterable, Identifiable
-             return .title2
-         case .medium:
-             return .title1
--        case .large,
--             .extraLarge:
-+        case .extraLarge,
-+             .large:
-             return .largeTitle
-         }
      }
 @@ -59,3 +72,17 @@ extension LiveActivityAttributes.SimpleViewStyle {
          return .system(size: scaled, weight: .bold)

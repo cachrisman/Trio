@@ -1,12 +1,12 @@
-From fa2802f9103837ee97742fea8237e3c3b4547bb2 Mon Sep 17 00:00:00 2001
+From 18c4f7028250525a219c63c430e31e54db9aa80a Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Thu, 24 Sep 2026 18:41:17 +0200
+Date: Fri, 6 Nov 2026 17:40:33 +0100
 Subject: [PATCH] feat: watch-session-crash-guard
 
 Trio-Patch-Source-Branch: feature/watch-session-crash-guard
-Trio-Patch-Base: 2516b23c414128c9a3dc5055be896936b1a7d52c
-Trio-Patch-Feature-Tip: dab5ecb8c6ba1bb9b9478fa0cfe1eccdf800e2f7
-Trio-Patch-Generated: 2026-09-24T16:41:07Z
+Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
+Trio-Patch-Feature-Tip: 740421b4321ba54b86c0780667dde7a8b5fdb157
+Trio-Patch-Generated: 2026-11-06T16:40:21Z
 Trio-Patch-Source-Commits:
  31568c5eebfcee5621f890e3b0c650a7d79d92ed feat: ns-richer-settings
  f0111815ecc217dd6cdac32e133d47994f798852 feat: g7-reading-time-with-seconds
@@ -25,6 +25,8 @@ Trio-Patch-Source-Commits:
  ff05a57e9aecbc4f34532515f62525e543185c3c Merge dev (1.0.0.3) into feature/watch-session-crash-guard
  2c64315b7d1609aa152e7c64abaa94d9637e0d2e watch: dedupe the no-replyHandler envelope path again (TRIO-047)
  dab5ecb8c6ba1bb9b9478fa0cfe1eccdf800e2f7 watch: record a no-reply envelope as processed only once it was handled (TRIO-047)
+ c16e26f582a20537570cef1663e080b2a8833cd1 Merge dev (1.0.2.59) into feature/watch-session-crash-guard; tree = dev + patches 01-09
+ 740421b4321ba54b86c0780667dde7a8b5fdb157 Port watch-session crash guard onto upstream 1.0.2.59
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  f19d9363a9ac847de8e6c12a5acd685d05be56fa
@@ -42,24 +44,42 @@ Trio-Patch-Source-PatchIds:
  40b36224e87fd6e18c9a38873bd375cfcdc8133e
  53cfddcecb13099e5aab5b08099cb938b36e07c3
  863d493d64ac3789f37c8cffa5e197abd674ded9
+ e8b66af3f0a430d7821b659abea2f23c62b25e00
 ---
- Trio/Sources/Application/TrioApp.swift        |  59 +++++----
- .../WatchManager/AppleWatchManager.swift      | 122 +++++++++---------
- 2 files changed, 99 insertions(+), 82 deletions(-)
+ Trio/Sources/Application/TrioApp.swift        | 41 +++++++++----
+ .../WatchManager/AppleWatchManager.swift      | 60 +++++++++++--------
+ 2 files changed, 62 insertions(+), 39 deletions(-)
 
 diff --git a/Trio/Sources/Application/TrioApp.swift b/Trio/Sources/Application/TrioApp.swift
-index 7b224221c..e2632de96 100644
+index dcb8762f6..f1b13508d 100644
 --- a/Trio/Sources/Application/TrioApp.swift
 +++ b/Trio/Sources/Application/TrioApp.swift
-@@ -66,34 +66,48 @@ extension Notification.Name {
+@@ -65,24 +65,39 @@ extension Notification.Name {
+         LockedResolver(resolver: assembler.resolver, lock: resolverLock)
      }
  
++    /// Resolves a service, logging instead of crashing when it is missing.
++    @discardableResult private func resolveOrLog<T>(_ type: T.Type) -> T? {
++        let service = resolver.resolve(type)
++        if service == nil {
++            error(.lifecycle, "Could not resolve \(String(describing: type)) at launch; skipped it")
++        }
++        return service
++    }
++
++    /// DeviceDataManager, APSManager, FetchGlucoseManager, FetchTreatmentsManager (remote carbs and
++    /// temp targets feed the loop), IOBService, GlucoseAlertCoordinator, NotLoopingMonitor and
++    /// TrioAlertManager stay force-unwrapped on purpose: if a closed-loop or alarm service is missing,
++    /// the app must stop at launch rather than run without the loop, IOB or alarms.
      private func loadServices() {
 -        resolver.resolve(AppearanceManager.self)!.setupGlobalAppearance()
--        _ = resolver.resolve(DeviceDataManager.self)!
--        _ = resolver.resolve(APSManager.self)!
--        _ = resolver.resolve(FetchGlucoseManager.self)!
--        _ = resolver.resolve(FetchTreatmentsManager.self)!
++        if let appearanceManager = resolveOrLog(AppearanceManager.self) {
++            appearanceManager.setupGlobalAppearance()
++        }
+         _ = resolver.resolve(DeviceDataManager.self)!
+         _ = resolver.resolve(APSManager.self)!
+         _ = resolver.resolve(FetchGlucoseManager.self)!
+         _ = resolver.resolve(FetchTreatmentsManager.self)!
 -        _ = resolver.resolve(CalendarManager.self)!
 -        _ = resolver.resolve(UserNotificationsManager.self)!
 -        _ = resolver.resolve(WatchManager.self)!
@@ -69,13 +89,7 @@ index 7b224221c..e2632de96 100644
 -        _ = resolver.resolve(BluetoothStateManager.self)!
 -        _ = resolver.resolve(PluginManager.self)!
 -        _ = resolver.resolve(AlertPermissionsChecker.self)!
-+        if let appearance = resolveOrLog(AppearanceManager.self) {
-+            appearance.setupGlobalAppearance()
-+        }
-+        resolveOrLog(DeviceDataManager.self)
-+        resolveOrLog(APSManager.self)
-+        resolveOrLog(FetchGlucoseManager.self)
-+        resolveOrLog(FetchTreatmentsManager.self)
+-        _ = resolver.resolve(CloudLogUploadService.self)!
 +        resolveOrLog(CalendarManager.self)
 +        resolveOrLog(UserNotificationsManager.self)
 +        resolveOrLog(WatchManager.self)
@@ -90,89 +104,39 @@ index 7b224221c..e2632de96 100644
 -            _ = resolver.resolve(LiveActivityManager.self)!
 +            resolveOrLog(LiveActivityManager.self)
          }
--        _ = resolver.resolve(IOBService.self)!
--        _ = resolver.resolve(GlucoseAlertCoordinator.self)!
--        _ = resolver.resolve(NotLoopingMonitor.self)!
-+        resolveOrLog(GlucoseAlertCoordinator.self)
-+        resolveOrLog(NotLoopingMonitor.self)
-         _ = DeviceAlertsStore.shared
--        // Last: needs the pump manager's AlertResponder registration and the
--        // seeded DeviceAlertsStore in place before re-presenting alerts.
--        resolver.resolve(TrioAlertManager.self)!.replayUnacknowledgedAlerts()
-+        resolveOrLog(IOBService.self)
-+
-+        // This must come last: re-presenting unacknowledged alerts requires the pump manager's
-+        // AlertResponder registration and the seeded DeviceAlertsStore to already be in place.
-+        // Routed through the resolveOrLog helper rather than a force unwrap.
-+        _ = resolveOrLog(TrioAlertManager.self)?.replayUnacknowledgedAlerts()
- 
-         startTelemetry()
-     }
- 
-+    @discardableResult
-+    private func resolveOrLog<T>(_ type: T.Type) -> T? {
-+        guard let service = resolver.resolve(type) else {
-+            warning(.default, "loadServices: failed to resolve \(type) — skipping")
-+            return nil
-+        }
-+        return service
-+    }
-+
-     /// Telemetry starts here, not in `AppDelegate.didFinishLaunching`: resolving
-     /// `TelemetryClient` constructs the APS/device graph, whose first pump/CGM
-     /// save crashes while the persistent stores are still loading.
-@@ -113,7 +127,8 @@ extension Notification.Name {
+         _ = resolver.resolve(IOBService.self)!
+         _ = resolver.resolve(GlucoseAlertCoordinator.self)!
+@@ -114,7 +129,7 @@ extension Notification.Name {
      ///   3. scheduleRecurring: best-effort fallback for the rare case
      ///      where the app stays foregrounded for a full 24h.
      private func startTelemetry() {
 -        let telemetry = resolver.resolve(TelemetryClient.self)!
-+        // Routed through resolveOrLog rather than a force unwrap, like the rest of loadServices.
 +        guard let telemetry = resolveOrLog(TelemetryClient.self) else { return }
          // hands the foreground-transition hook its reference; nil until now
          appDelegate.telemetry = telemetry
          telemetry.initializeInstallID()
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 1699e0fe5..ce578a06a 100644
+index 5fd5079d3..4f2b194f5 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-@@ -2,7 +2,6 @@ import Combine
- import CoreData
- import FirebaseCrashlytics
- import Foundation
--import G7SensorKit
- import Swinject
- import UIKit
- import WatchConnectivity
-@@ -24,7 +23,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-     @Injected() private var settingsManager: SettingsManager!
-     @Injected() private var fileStorage: FileStorage!
-     @Injected() private var glucoseStorage: GlucoseStorage!
--    @Injected() private var fetchGlucoseManager: FetchGlucoseManager!
-     @Injected() private var determinationStorage: DeterminationStorage!
-     @Injected() private var overrideStorage: OverrideStorage!
-     @Injected() private var tempTargetStorage: TempTargetsStorage!
-@@ -73,6 +71,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-     private let processedIdsTTL: TimeInterval = 7 * 24 * 60 * 60 // 7 days
-     private let pendingAcksKey = "watchPendingAcks"
+@@ -47,6 +47,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     private var pendingSendWorkItem: DispatchWorkItem?
+     private var coalescerFirstScheduledAt: Date?
  
 +    // Delegate-triggered state push debounce (crash guard — absorbs rapid WCSession delegate storms)
 +    private var pendingDelegateWorkItem: DispatchWorkItem?
 +    private var delegateCoalesceCount = 0
 +
-     typealias PumpEvent = PumpEventStored.EventType
- 
-     let viewContext = CoreDataStack.shared.persistentContainer.viewContext
-@@ -204,13 +206,26 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+     // Queue drain state
+     private var hasPerformedStartupQueueDrain = false
+     private var lastQueueDeepDrainAt: TimeInterval = 0
+@@ -198,13 +202,29 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          )
      }
  
 -    /// Attempts to reestablish the Watch connection if it becomes unreachable
 -    private func retryConnection() {
 -        guard let session = session else { return }
--
--        if !session.isReachable {
--            debug(.watchManager, "📱 Attempting to reactivate session...")
--            session.activate()
 +    /// Cancel-and-replace debounce for delegate-triggered state pushes.
 +    /// Collapses N rapid callbacks (e.g. watch reboot storm) into one push after a 0.5s quiet window.
 +    private func scheduleDelegateTriggeredUpdate(source: String) {
@@ -180,12 +144,18 @@ index 1699e0fe5..ce578a06a 100644
 +            guard let self else { return }
 +            self.pendingDelegateWorkItem?.cancel()
 +            self.delegateCoalesceCount += 1
-+
+ 
+-        if !session.isReachable {
+-            debug(.watch, "Reactivating watch session")
+-            session.activate()
 +            let count = self.delegateCoalesceCount
 +            let workItem = DispatchWorkItem { [weak self] in
 +                guard let self else { return }
-+                debug(.watchManager, "📡 delegate_coalescer_fired source=\(source) coalesced=\(count)")
++                debug(.watch, "delegate_coalescer_fired source=\(source) coalesced=\(count)")
 +                self.delegateCoalesceCount = 0
++                // This push supersedes any queued coalescer send (patch 09 behaviour)
++                self.pendingSendWorkItem?.cancel()
++                self.coalescerFirstScheduledAt = nil
 +                Task {
 +                    let state = await self.setupWatchState()
 +                    await self.sendDataToWatch(state)
@@ -196,75 +166,19 @@ index 1699e0fe5..ce578a06a 100644
          }
      }
  
-@@ -313,18 +328,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                     watchState.currentGlucose = "\(latestGlucoseValue)"
-                 }
- 
--                // C-210-2 (#2a): stamp the active G7's EGV sequence when it lines up with this
--                // reading (within ~1.5 min; readings are 5 min apart), so the watch complication
--                // arbitration can dedup the direct-BLE vs phone-WC race by sequence. Direct-G7 only.
--                if !latestGlucose.isManual,
--                   let g7 = self.fetchGlucoseManager?.cgmManager as? G7CGMManager,
--                   let seq = g7.latestReading?.sequence,
--                   let seqDate = g7.latestReadingTimestamp,
--                   let glucoseDate = latestGlucose.date,
--                   abs(seqDate.timeIntervalSince(glucoseDate)) < 90 {
--                    watchState.g7Sequence = Int(seq)
--                }
--
-                 /// Calculate latest color
-                 let hardCodedLow = Decimal(55)
-                 let hardCodedHigh = Decimal(220)
-@@ -654,11 +657,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-             dictionary[WatchMessageKeys.readingEpoch] = newestReading.date.timeIntervalSince1970
-         }
- 
--        // C-210-2 (#2a): G7 EGV sequence for the watch's complication arbitration (nil for non-G7).
--        if let g7Sequence = state.g7Sequence {
--            dictionary[WatchMessageKeys.g7Sequence] = g7Sequence
--        }
--
-         return dictionary
-     }
- 
-@@ -888,7 +886,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-             (WatchMessageKeys.readingEpoch, "readingEpoch"),
-             (WatchMessageKeys.transferEnqueuedAt, "transferEnqueuedAt"),
-             (WatchMessageKeys.date, "date"),
--            (WatchMessageKeys.g7Sequence, "g7Sequence"), // C-210-2 (#2a): dedup BLE/WC by sequence
-         ]
-         for (key, name) in complicationAllowlist {
-             if let value = fullMessage[key] {
-@@ -921,7 +918,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-         }
- 
-         let budgetSnapshot = session.remainingComplicationUserInfoTransfers
--        debug(.watchManager, "🔍 complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch) queue_depth=\(session.outstandingUserInfoTransfers.count)")
-+        debug(.watchManager, "🔍 complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch)")
- 
-         // sendMessage (budget-free watch UI path) — always fires with fullMessage
-         if session.isReachable {
-@@ -1002,7 +999,6 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-         do {
-             try session.updateApplicationContext(ctx)
-             debug(.watchManager, "📦 context_succeeded reading_epoch=\(readingEpoch)")
--            debug(.watchManager, "📤 Transferred new WatchState snapshot via=updateApplicationContext reading_date_epoch_seconds=\(readingEpoch) userinfo_budget_exhausted=\(budgetExhausted) queue_depth=\(session.outstandingUserInfoTransfers.count)")
-         } catch {
-             debug(.watchManager, "📦 context_failed context_update_failed=true error=\(error)")
-         }
-@@ -1034,6 +1030,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1054,6 +1074,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
 +        guard activationState == .activated else {
-+            debug(.watchManager, "📱 Ignoring activation callback — state is \(activationState.rawValue), not .activated")
++            debug(.watch, "Watch session activation completed in non-activated state \(activationState.rawValue)")
 +            return
 +        }
 +
-         debug(.watchManager, "📱 Phone session activated state=\(activationState.rawValue) isReachable=\(session.isReachable) isPaired=\(session.isPaired) isWatchAppInstalled=\(session.isWatchAppInstalled) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
- 
-         // R2b: clear dispatch gate on activation so the first post-launch transfer always fires
-@@ -1045,14 +1046,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         info(
+             .watch,
+             "Watch session activated, state \(activationState.rawValue), reachable: \(session.isReachable), paired: \(session.isPaired), watch app installed: \(session.isWatchAppInstalled), remaining budget: \(session.remainingComplicationUserInfoTransfers)"
+@@ -1068,14 +1093,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              cancelStaleQueuedTransfers()
          }
  
@@ -279,107 +193,30 @@ index 1699e0fe5..ce578a06a 100644
 +        scheduleDelegateTriggeredUpdate(source: "activationCompleted")
      }
  
-     // MARK: - Processed IDs Management
-@@ -1173,16 +1167,14 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
- 
-     /// Implements the replyHandler version of didReceiveMessage for ACK support.
-     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
--        // Validate envelope structure
--        guard let type = message["type"] as? String,
--              let payloadId = message["payloadId"] as? String else {
--            // Not an envelope message - delegate to legacy handler
-+        // Validate envelope structure — check type first so queryAcks (no payloadId) isn't rejected
-+        guard let type = message["type"] as? String else {
-             self.session(session, didReceiveMessage: message)
-             replyHandler([:])
-             return
-         }
- 
--        // Handle ACK query
-+        // Handle ACK query (no payloadId required)
-         if type == "queryAcks" {
-             if let pendingIds = message["pendingIds"] as? [String] {
-                 let ackIds = getAcknowledgedIds(from: pendingIds)
-@@ -1191,8 +1183,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-                     "ackIds": ackIds
-                 ]
-                 replyHandler(batchAck)
--                return
-+            } else {
-+                replyHandler([:])
-             }
-+            return
-+        }
-+
-+        guard let payloadId = message["payloadId"] as? String else {
-+            self.session(session, didReceiveMessage: message)
-+            replyHandler([:])
-+            return
-         }
- 
-         // Deduplicate BEFORE any Crashlytics calls
-@@ -1253,19 +1253,32 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-             // Check if this is an envelope message
-             if let type = message["type"] as? String,
-                let payloadId = message["payloadId"] as? String {
--                if self?.isProcessed(payloadId) == true { return }
--                self?.recordProcessed(payloadId)
--
-+                // This is an envelope message but no replyHandler - handle it.
-+                // TRIO-047: skip payloads already handled (the watch resends what it believes
-+                // unacknowledged), then handle, then record — the same handle-then-record order as
-+                // the replyHandler variant (TRIO-043), so termination mid-handling yields a duplicate
-+                // on resend rather than a loss. There is no ACK on this path. Check and record both
-+                // run here on the main queue. A torn-down manager handles and records nothing, so a
-+                // resend is handled later. Only a payload actually handled is recorded: an unknown
-+                // type or missing data must not block a later valid delivery of the same payloadId.
-+                guard let self else { return }
-+                if self.isProcessed(payloadId) { return }
-+                var handled = false
-                 if type == "watchLogs" {
-                     if let logData = message["data"] as? String {
-                         SimpleLogReporter.appendToWatchLog(logData)
-                         Foundation.NotificationCenter.default.post(name: .trioWatchLogsAppended, object: nil)
-+                        handled = true
-                     }
-                 } else if type == "watchError" {
-                     if let errorData = message["data"] as? [String: Any] {
--                        self?.handleWatchError(errorData)
-+                        self.handleWatchError(errorData)
-+                        handled = true
-                     }
-                 }
-+                if handled {
-+                    self.recordProcessed(payloadId)
-+                }
-                 return
-             }
- 
-@@ -1497,22 +1510,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
-         debug(.watchManager, "📱 Phone reachability changed: isReachable=\(session.isReachable) remaining_budget=\(session.remainingComplicationUserInfoTransfers)")
+     func session(_: WCSession, didReceiveMessage message: [String: Any]) {
+@@ -1260,20 +1278,10 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+         debug(.watch, "Watch reachable: \(session.isReachable), remaining budget: \(session.remainingComplicationUserInfoTransfers)")
  
          if session.isReachable {
 -            DispatchQueue.main.async {
 -                self.pendingSendWorkItem?.cancel()
 -                self.coalescerFirstScheduledAt = nil
 -            }
+             // Try to send data when connection is established
 -            Task {
 -                let state = await self.setupWatchState()
 -                await self.sendDataToWatch(state)
 -            }
 +            scheduleDelegateTriggeredUpdate(source: "reachabilityChanged")
- 
--            // Send pending ACKs when watch becomes reachable
-             sendPendingAcksIfReachable()
          } else {
 -            // Try to reconnect after a short delay
 -            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
 -                self?.retryConnection()
 -            }
-+            debug(.watchManager, "📱 Watch became unreachable — waiting for system reconnection")
++            debug(.watch, "Watch became unreachable, waiting for the system to reconnect")
          }
      }
  
 -- 
-2.55.0
+2.56.0
 

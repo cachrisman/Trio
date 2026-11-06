@@ -1,21 +1,24 @@
-From a6196c95d44e2c6ae9679594faecde668a84f930 Mon Sep 17 00:00:00 2001
+From 1ee72149bc8b744c7373b015382952cd94f1c4ea Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 16 Oct 2026 21:40:54 +0200
+Date: Fri, 6 Nov 2026 17:55:47 +0100
 Subject: [PATCH] feat: ns-backfill-on-pull
 
-Trio-Patch-Source-Branch: feature/ns-backfill-on-pull
-Trio-Patch-Base: 32ded642831a1f5c788f043be392137cc245dd2a
-Trio-Patch-Feature-Tip: 8707a351be2188e52456281b3d4bf0d75e7c6ec9
-Trio-Patch-Generated: 2026-10-16T19:40:53Z
+Trio-Patch-Source-Branch: feature/ns-backfill-on-pull-232
+Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
+Trio-Patch-Feature-Tip: f92924640b7735ec30bca3d0efd805325bff5457
+Trio-Patch-Generated: 2026-11-06T16:55:36Z
 Trio-Patch-Source-Commits:
  c59e5b077ab35784390cf02e632ec94613c2b17c feat: backfill Nightscout glucose before pull-to-force-loop (TRIO-074)
  5a65d702ce0e4d7aab09a0e72ded276300ae7202 fix: store Nightscout-fetched glucose as already uploaded to Nightscout (TRIO-077)
  8707a351be2188e52456281b3d4bf0d75e7c6ec9 fix: keep local-source glucose eligible for Nightscout upload on backfill (TRIO-077)
+ 4ea955202d8f19dce2ab22c0ff5eb70ea0dca8f8 Merge dev (1.0.2.59) into ns-backfill-on-pull rebuild branch; tree = dev + patches 01-14
+ f92924640b7735ec30bca3d0efd805325bff5457 Re-apply ns-backfill-on-pull onto upstream 1.0.2.59 + patches 01-14
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  0ef556d7dca62a1469e496d297dd48480ed731dd
  0bbaf8b9cb58b805658d58fc55ab11d977f2b614
  a7772461495a081a18616a1059891ec2dd5ac5b1
+ d0b1b78e21bbbf6a4947dceacdf34c8dfdf7239d
 ---
  Trio/Sources/APS/Storage/GlucoseStorage.swift |  38 +++--
  .../Modules/Home/HomeNightscoutBackfill.swift | 103 +++++++++++++
@@ -29,7 +32,7 @@ Trio-Patch-Source-PatchIds:
  create mode 100644 Trio/Sources/Modules/Home/HomeNightscoutBackfill.swift
 
 diff --git a/Trio/Sources/APS/Storage/GlucoseStorage.swift b/Trio/Sources/APS/Storage/GlucoseStorage.swift
-index 27b2753bf..37051d718 100644
+index 3e999f2cc..aacaace9d 100644
 --- a/Trio/Sources/APS/Storage/GlucoseStorage.swift
 +++ b/Trio/Sources/APS/Storage/GlucoseStorage.swift
 @@ -11,6 +11,7 @@ protocol GlucoseStorage {
@@ -40,7 +43,7 @@ index 27b2753bf..37051d718 100644
      func addManualGlucose(glucose: Int)
      func isGlucoseDataFresh(_ glucoseDate: Date?) -> Bool
      func syncDate() -> Date
-@@ -77,7 +78,12 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+@@ -66,7 +67,12 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
      ///  to deal with source switching perfectly, so instead we will backfill glucose if and only if
      ///  it isn't within 3.5 minutes of an existing glucose reading, which is simple but not perfect.
      ///  But since this is a corner case that really shouldn't happen often, it's good enough.
@@ -53,7 +56,7 @@ index 27b2753bf..37051d718 100644
          let context = makeContext()
          context.name = "backfillGlucose"
          let clamped = clampToMinimum(glucose)
-@@ -103,7 +109,7 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+@@ -94,7 +100,7 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
  
              do {
                  // Store glucose values in Core Data
@@ -62,7 +65,7 @@ index 27b2753bf..37051d718 100644
              } catch {
                  throw CoreDataError.creationError(
                      function: #function,
-@@ -213,18 +219,26 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+@@ -202,18 +208,26 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
          }
      }
  
@@ -94,7 +97,7 @@ index 27b2753bf..37051d718 100644
          }
  
          guard context.hasChanges else { return }
-@@ -232,7 +246,11 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+@@ -221,7 +235,11 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
          updateSubject.send()
      }
  
@@ -107,7 +110,7 @@ index 27b2753bf..37051d718 100644
          var remainingGlucose = glucose
          let batchInsert = NSBatchInsertRequest(
              entity: GlucoseStored.entity(),
-@@ -243,7 +261,7 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+@@ -232,7 +250,7 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
                      return true
                  }
                  let entry = remainingGlucose.removeFirst()
@@ -116,7 +119,7 @@ index 27b2753bf..37051d718 100644
                  return false
              }
          )
-@@ -251,13 +269,13 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
+@@ -240,13 +258,13 @@ final class BaseGlucoseStorage: GlucoseStorage, Injectable {
          updateSubject.send()
      }
  
@@ -242,10 +245,10 @@ index 000000000..b1234c7ef
 +    }
 +}
 diff --git a/Trio/Sources/Modules/Home/HomeStateModel.swift b/Trio/Sources/Modules/Home/HomeStateModel.swift
-index f595ffe9c..171c376b7 100644
+index 08c074467..54584436b 100644
 --- a/Trio/Sources/Modules/Home/HomeStateModel.swift
 +++ b/Trio/Sources/Modules/Home/HomeStateModel.swift
-@@ -817,6 +817,33 @@ extension Home {
+@@ -827,6 +827,33 @@ extension Home {
              }
          }
  
@@ -325,10 +328,10 @@ index d042fd464..7bbfba720 100644
              while !state.isLooping, Date().timeIntervalSince(start) < 3 {
                  try? await Task.sleep(for: .milliseconds(100))
 diff --git a/Trio/Sources/Modules/Home/View/HomeRootView.swift b/Trio/Sources/Modules/Home/View/HomeRootView.swift
-index e84cac530..5eafe6310 100644
+index bff06f502..84cb65adb 100644
 --- a/Trio/Sources/Modules/Home/View/HomeRootView.swift
 +++ b/Trio/Sources/Modules/Home/View/HomeRootView.swift
-@@ -41,6 +41,7 @@ extension Home {
+@@ -40,6 +40,7 @@ extension Home {
          @State var pullOffset: CGFloat = 0
          @State var isRefreshArmed = false
          @State var isForcingLoop = false
@@ -337,10 +340,10 @@ index e84cac530..5eafe6310 100644
          /// Date under the finger while the chart is scrubbed, else nil. Owned here because the
          /// readout lives in the meal slot, outside the chart.
 diff --git a/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift b/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift
-index 8bc9d1009..56d5e36bb 100644
+index b5eba4e48..dfeb76d26 100644
 --- a/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift
 +++ b/Trio/Sources/Modules/NightscoutConfig/NightscoutConfigStateModel.swift
-@@ -142,11 +142,13 @@ extension NightscoutConfig {
+@@ -139,11 +139,13 @@ extension NightscoutConfig {
                  backfilling = true
              }
  
@@ -356,11 +359,11 @@ index 8bc9d1009..56d5e36bb 100644
                      Task.detached {
                          await self.healthKitManager.uploadGlucose()
 diff --git a/TrioTests/CoreDataTests/GlucoseStorageTests.swift b/TrioTests/CoreDataTests/GlucoseStorageTests.swift
-index 032013a35..7065fa1a9 100644
+index d6eac5802..ec59e016f 100644
 --- a/TrioTests/CoreDataTests/GlucoseStorageTests.swift
 +++ b/TrioTests/CoreDataTests/GlucoseStorageTests.swift
-@@ -202,6 +202,94 @@ import Testing
-         #expect(clampedEntries?.count == 1, "Sub-39 backfilled glucose should be clamped and stored as 39")
+@@ -243,6 +243,94 @@ import Testing
+         #expect(backfilled?.count == 1, "Backfilled CGM reading near a manual entry should be stored")
      }
  
 +    @Test("Nightscout-fetched backfill is stored as already uploaded to Nightscout") func testNightscoutBackfillMarkedUploaded() async throws {
@@ -451,9 +454,9 @@ index 032013a35..7065fa1a9 100644
 +        #expect(pending.contains { $0.sgv == 174 }, "Plain backfill reading should be queued for upload")
 +    }
 +
-     @Test(
-         "Test glucose alarms",
-         .enabled(if: false, "Flaky test, disabled while investigating")
+     private func insertManualGlucose(_ glucose: Int16, at date: Date) async throws {
+         try await testContext.perform {
+             let manualGlucose = GlucoseStored(context: testContext)
 diff --git a/TrioTests/LoopIndicatorTests.swift b/TrioTests/LoopIndicatorTests.swift
 index d6564eeeb..0615d649d 100644
 --- a/TrioTests/LoopIndicatorTests.swift
