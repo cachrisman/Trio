@@ -139,11 +139,13 @@ extension NightscoutConfig {
                 backfilling = true
             }
 
+            // A local glucose source is not the remote Nightscout, so those readings still need uploading.
+            let alreadyUploaded = !settingsManager.settings.useLocalGlucoseSource
             let glucose = await nightscoutManager.fetchGlucose(since: Date().addingTimeInterval(-1.days.timeInterval))
 
             if glucose.isNotEmpty {
                 do {
-                    try await glucoseStorage.storeGlucose(glucose)
+                    try await glucoseStorage.backfillGlucose(glucose, alreadyUploadedToNightscout: alreadyUploaded)
 
                     Task.detached {
                         await self.healthKitManager.uploadGlucose()
