@@ -120,7 +120,6 @@ trailingClosures \
 --exclude OmnipodKit \
 --exclude LibreLoop \
 --exclude RoundWhiteDiscKit \
---exclude LoopAlgorithm \
 --exclude build \
 --exclude .build \
 --exclude DerivedData \
@@ -128,4 +127,6 @@ trailingClosures \
 --exclude SourcePackages \
 --exclude '**/*.pb.swift' \
 --exclude AccuChekKit \
---exclude EversenseKit
+--exclude EversenseKit \
+--exclude SyaiKit
+      

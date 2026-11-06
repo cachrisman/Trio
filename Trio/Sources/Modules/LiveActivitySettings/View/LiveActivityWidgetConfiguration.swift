@@ -211,7 +211,7 @@ struct LiveActivityWidgetConfiguration: BaseView {
     // MARK: - Palette
 
     private static let paletteRest: [LiveActivityItem] = [
-        .currentGlucoseLarge, .currentGlucoseLargeUncolored, .iob, .cob, .updatedLabel, .totalDailyDose,
+        .currentGlucoseLarge, .currentGlucoseLargeUncolored, .iob, .cob, .updatedLabel, .totalDailyDose
     ]
 
     private static var paletteRestRows: [[LiveActivityItem]] {
@@ -645,7 +645,7 @@ struct DummyChartGroupBoxStyle: GroupBoxStyle {
         .padding()
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .background(Color.chart, in: RoundedRectangle(cornerRadius: 12))
-        .frame(width: UIScreen.main.bounds.width * 0.9)
+        .containerRelativeFrame(.horizontal) { width, _ in width * 0.9 }
     }
 }
 
