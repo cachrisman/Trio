@@ -1293,6 +1293,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
     }
 
+    /// Exists only for the Carbs Required "Log Carbs" request, the one watch message sent with a reply handler.
+    /// Any other message is answered with an empty reply and is never forwarded to the dosing dispatch in
+    /// `session(_:didReceiveMessage:)`.
+    func session(_: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        if handleLogCarbsRequest(message, replyHandler: replyHandler) { return }
+
+        replyHandler([:])
+        warning(.watch, "Ignored watch message with reply handler, keys: \(message.keys.sorted().joined(separator: ", "))")
+    }
+
     func session(_: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         let raw = applicationContext["complicationLastValidTimestamp"]
         let timestamp = (raw as? TimeInterval) ?? (raw as? NSNumber)?.doubleValue
@@ -1690,5 +1700,27 @@ extension BaseWatchManager {
         case tempTargetStopped = "temp_target_stopped"
         case genericSuccess = "success"
         case genericFailure = "failure"
+    }
+}
+
+// Carbs Required "Log Carbs" from the watch. Reached from the reply-handler
+// `session(_:didReceiveMessage:replyHandler:)`, only for messages carrying the log-carbs key.
+extension BaseWatchManager {
+    /// Returns true if `message` was a log-carbs request (and the reply is now owned here).
+    func handleLogCarbsRequest(_ message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) -> Bool {
+        guard message[WatchMessageKeys.logCarbsGrams] != nil else { return false }
+
+        let grams = (message[WatchMessageKeys.logCarbsGrams] as? NSNumber)?.decimalValue
+        let alertID = message[WatchMessageKeys.logCarbsAlertID] as? String
+        info(.watch, "Received Log Carbs request from watch")
+        Task { [weak self] in
+            let outcome = await self?.notificationsManager.logCarbsRequired(grams: grams, alertID: alertID) ?? .failed
+            var reply: [String: Any] = [WatchMessageKeys.logCarbsResult: outcome.rawValue]
+            if outcome == .exceedsMaxCarbs, let maxCarbs = self?.settingsManager.settings.maxCarbs {
+                reply[WatchMessageKeys.maxCarbs] = NSDecimalNumber(decimal: maxCarbs).intValue
+            }
+            replyHandler(reply)
+        }
+        return true
     }
 }

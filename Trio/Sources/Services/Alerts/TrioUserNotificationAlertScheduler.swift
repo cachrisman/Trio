@@ -37,7 +37,7 @@ final class TrioUserNotificationAlertScheduler {
         content.title = alert.backgroundContent.title
         content.body = alert.backgroundContent.body
         content.threadIdentifier = alert.identifier.managerIdentifier
-        content.userInfo = [
+        var userInfo: [AnyHashable: Any] = [
             AlertUserInfoKey.managerIdentifier.rawValue: alert.identifier.managerIdentifier,
             AlertUserInfoKey.alertIdentifier.rawValue: alert.identifier.alertIdentifier
         ]
@@ -49,6 +49,11 @@ final class TrioUserNotificationAlertScheduler {
         // both the phone (`BaseUserNotificationsManager`) and watch
         // (`WatchNotificationHandler`) UN delegates.
         content.categoryIdentifier = NotificationCategoryIdentifier.trioAlert.rawValue
+        if let carbs = CarbsRequiredPayloads.shared.payload(for: alert.identifier.alertIdentifier) {
+            content.categoryIdentifier = NotificationCategoryIdentifier.carbsRequired.rawValue
+            userInfo.merge(CarbsRequiredNotification.userInfo(grams: carbs.grams, alertID: carbs.alertID)) { _, new in new }
+        }
+        content.userInfo = userInfo
 
         return UNNotificationRequest(
             identifier: alert.identifier.value,
@@ -97,5 +102,27 @@ private extension Alert.Trigger {
         case let .repeating(interval):
             return UNTimeIntervalNotificationTrigger(timeInterval: max(interval, 60), repeats: true)
         }
+    }
+}
+
+/// `Alert` has no slot for notification userInfo or a category, so the coordinator
+/// parks the Carbs Required payload here, keyed by alert identifier, just before
+/// `issueAlert`; `makeRequest` picks it up.
+final class CarbsRequiredPayloads {
+    static let shared = CarbsRequiredPayloads()
+
+    private let lock = NSLock()
+    private var payloads: [String: (grams: Int, alertID: String)] = [:]
+
+    func set(grams: Int, alertID: String, for alertIdentifier: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        payloads[alertIdentifier] = (grams, alertID)
+    }
+
+    func payload(for alertIdentifier: String) -> (grams: Int, alertID: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return payloads[alertIdentifier]
     }
 }
