@@ -157,3 +157,180 @@ struct LiveActivitySimpleWidgetConfiguration: BaseView {
         }.padding(.vertical)
     }
 }
+
+struct LiveActivityBigGlucoseWidgetConfiguration: BaseView {
+    let resolver: Resolver
+
+    @ObservedObject var state: LiveActivitySettings.StateModel
+
+    private static let previewGlucose = 123
+    private static let previewDelta = 6
+
+    @State private var shouldDisplayHintFont: Bool = false
+    @State private var hintDetent = PresentationDetent.large
+
+    @Environment(\.colorScheme) var colorScheme
+    @Environment(AppState.self) var appState
+
+    private var selectedStyle: LiveActivityAttributes.BigGlucoseViewStyle {
+        LiveActivityAttributes.BigGlucoseViewStyle(
+            fontSize: state.bigGlucoseFontSize,
+            colorByRange: state.bigGlucoseColorByRange
+        )
+    }
+
+    var body: some View {
+        List {
+            Section {
+                previewCard
+            } header: {
+                Text("Preview")
+            }.listRowBackground(Color.chart)
+
+            Section {
+                Picker(selection: $state.bigGlucoseFontSize) {
+                    ForEach(LiveActivityFontSize.allCases) { size in
+                        Text(size.displayName).tag(size)
+                    }
+                } label: {
+                    Text("Font Size")
+                }
+
+                hintRow
+            } header: {
+                Text("Glucose Reading Font")
+            }.listRowBackground(Color.chart)
+
+            Section {
+                Toggle("Color Glucose by Range", isOn: $state.bigGlucoseColorByRange)
+
+                Text("When off, the glucose reading is white. When on, it is colored by glucose range using your Glucose Color Scheme.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            } header: {
+                Text("Glucose Color")
+            }.listRowBackground(Color.chart)
+        }
+        .listSectionSpacing(sectionSpacing)
+        .sheet(isPresented: $shouldDisplayHintFont) {
+            SettingInputHintView(
+                hintDetent: $hintDetent,
+                shouldDisplayHint: $shouldDisplayHintFont,
+                hintLabel: String(localized: "Glucose Reading Font"),
+                hintText: AnyView(fontHintText),
+                sheetTitle: String(localized: "Help", comment: "Help sheet title")
+            )
+        }
+        .scrollContentBackground(.hidden)
+        .background(appState.trioBackgroundColor(for: colorScheme))
+        .navigationTitle("Widget Configuration")
+        .navigationBarTitleDisplayMode(.automatic)
+    }
+
+    private var previewCard: some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(previewGlucoseText)
+                    .font(selectedStyle.glucoseFont)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.4)
+
+                HStack(spacing: 4) {
+                    Text("\u{2197}")
+                    Text(previewDeltaText)
+                }
+                .font(selectedStyle.trendFont)
+                .lineLimit(1)
+            }
+            .foregroundStyle(previewReadingColor)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.08))
+                    .overlay(
+                        Text("Chart")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    )
+                    .frame(height: 64)
+
+                Text("1.5 U · 20 g · \(previewTimeText)")
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .frame(width: 180)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.1 : 0.05))
+        )
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text("Lock Screen widget preview"))
+    }
+
+    private var previewGlucoseText: String {
+        Self.previewGlucose.formatted(for: state.units)
+    }
+
+    private var previewDeltaText: String {
+        Decimal(Self.previewDelta).formattedDelta(for: state.units)
+    }
+
+    private var previewTimeText: String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter.string(from: Date())
+    }
+
+    private var previewReadingColor: Color {
+        guard state.bigGlucoseColorByRange else { return .primary }
+
+        let isMgdL = state.units == .mgdL
+
+        let hardCodedLow = isMgdL ? Decimal(55) : 55.asMmolL
+        let hardCodedHigh = isMgdL ? Decimal(220) : 220.asMmolL
+
+        return Trio.getDynamicGlucoseColor(
+            glucoseValue: isMgdL ? Decimal(Self.previewGlucose) : Self.previewGlucose.asMmolL,
+            highGlucoseColorValue: hardCodedHigh,
+            lowGlucoseColorValue: hardCodedLow,
+            targetGlucose: isMgdL ? Decimal(100) : 100.asMmolL,
+            glucoseColorScheme: state.glucoseColorScheme
+        )
+    }
+
+    private var fontHintText: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Default: Large").bold()
+            Text(
+                "Changes the size of the current glucose reading on the Big Glucose Lock Screen widget. The trend arrow and delta scale with it. Readings that do not fit, such as mmol/L values, shrink to fit."
+            )
+            Text(
+                "Sizes follow your iPhone's text size setting, so the reading keeps scaling if you change the text size in iOS Settings."
+            )
+        }
+    }
+
+    private var hintRow: some View {
+        HStack(alignment: .center) {
+            Text("Set the size of the glucose reading.")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .lineLimit(nil)
+            Spacer()
+            Button(action: { shouldDisplayHintFont.toggle() }) {
+                Image(systemName: "questionmark.circle")
+            }
+            .buttonStyle(BorderlessButtonStyle())
+            .accessibilityLabel(Text("More information about Glucose Reading Font"))
+        }.padding(.vertical)
+    }
+}

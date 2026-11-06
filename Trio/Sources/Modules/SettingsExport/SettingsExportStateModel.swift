@@ -912,6 +912,20 @@ extension SettingsExport {
                         value: trioSettings.liveActivitySimpleFontSize.displayName
                     )
                 }
+                if trioSettings.lockScreenView == .bigGlucose {
+                    addSetting(
+                        category: notificationsCategory,
+                        subcategory: liveActivitySubcategory,
+                        name: String(localized: "Font Size"),
+                        value: trioSettings.liveActivityBigGlucoseFontSize.displayName
+                    )
+                    addSetting(
+                        category: notificationsCategory,
+                        subcategory: liveActivitySubcategory,
+                        name: String(localized: "Color Glucose by Range"),
+                        value: trioSettings.liveActivityBigGlucoseColorByRange ? String(localized: "Enabled") : String(localized: "Disabled")
+                    )
+                }
                 addSetting(
                     category: notificationsCategory,
                     subcategory: liveActivitySubcategory,
