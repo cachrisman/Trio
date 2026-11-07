@@ -1,12 +1,12 @@
-From 807f0f8437263abf8080dc94aa4c9fcb59d20368 Mon Sep 17 00:00:00 2001
+From 55bdd569692f06432eed528b1f41484ec59b5321 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 6 Nov 2026 16:35:06 +0100
+Date: Sat, 7 Nov 2026 21:49:04 +0100
 Subject: [PATCH] feat: cloud-logging
 
 Trio-Patch-Source-Branch: feature/cloud-logging
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 2915659d3c978f9530306125a2f1e87c5f113904
-Trio-Patch-Generated: 2026-11-06T15:34:53Z
+Trio-Patch-Feature-Tip: 5b9aae3a589cf8531df1e773eaccadb011c52f40
+Trio-Patch-Generated: 2026-11-07T20:48:53Z
 Trio-Patch-Source-Commits:
  fc417ef5189f50f479dea4579a726fa7dc6677e6 feat: ns-richer-settings
  c7c8d208badaa588d5eb2050dd74ef4487ce4efe feat: g7-reading-time-with-seconds
@@ -16,6 +16,8 @@ Trio-Patch-Source-Commits:
  2ff4c78e54729f5a5e35d1c9f4bb8e3304c9c4d1 cloud logging: cap each upload pass at entry boundaries so multi-line entries are never split (TRIO-040)
  e7ca9cb159f39c54884ec3d20e7ea102fccf1bb2 Merge dev (1.0.2.59) into feature/cloud-logging; tree = dev + patches 01-05
  2915659d3c978f9530306125a2f1e87c5f113904 cloud logging: rebuild as a LogSink tee on upstream's log pipeline
+ ded8f582e0013c722cab34acb51d1118910b1009 cloud logging: forward alert acks and text, determination reasons and device-log errors to BetterStack (TRIO-102)
+ 5b9aae3a589cf8531df1e773eaccadb011c52f40 cloud logging: start the determination observer from CloudLogUploadService, not TrioApp (TRIO-102)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  f19d9363a9ac847de8e6c12a5acd685d05be56fa
@@ -24,6 +26,8 @@ Trio-Patch-Source-PatchIds:
  155ae686f2d7b0cac8d1446cb5acca53e406843d
  0d10d2820f2c0b25f8973380913b37431d5c2fe6
  7ab8129126244d626529ebd0f2d0681999b4e663
+ ae3d22bc2ee2c8958b7473917658e59bc953160a
+ 4f88bf956d5fbddd47dc9b8a77c3ed57f32f6b39
 ---
  Trio/Sources/Application/AppDelegate.swift    |  25 +-
  Trio/Sources/Application/TrioApp.swift        |   3 +-
@@ -31,25 +35,36 @@ Trio-Patch-Source-PatchIds:
  .../Helpers/AppTerminationTracker.swift       | 315 ++++++++++++
  .../BetterStackLogtailProvider.swift          |  82 ++++
  .../CloudLogging/BetterStackSettings.swift    |  35 ++
+ .../CloudDeterminationLogger.swift            |  67 +++
+ .../CloudDeviceLogForwarder.swift             |  37 ++
+ .../CloudLogForwardingLogic.swift             | 110 +++++
  .../CloudLogging/CloudLogProvider.swift       | 260 ++++++++++
  .../Logger/CloudLogging/CloudLogQueue.swift   | 458 ++++++++++++++++++
  .../Logger/CloudLogging/CloudLogSink.swift    | 149 ++++++
- .../CloudLogging/CloudLogUploadService.swift  | 288 +++++++++++
+ .../CloudLogging/CloudLogUploadService.swift  | 290 +++++++++++
  Trio/Sources/Logger/Core/TeeLogSink.swift     |  30 ++
+ .../Logger/DeviceLog/DeviceLogStore.swift     |   5 +
+ Trio/Sources/Logger/Export/LogExport.swift    |   2 +-
  .../Modules/Settings/SettingItems.swift       |   6 +
  .../View/CloudLoggingSettingsView.swift       | 150 ++++++
  .../Settings/View/Subviews/ServicesView.swift |   1 +
  Trio/Sources/Router/Screen.swift              |   3 +
- 15 files changed, 1805 insertions(+), 2 deletions(-)
+ .../Services/Alerts/TrioAlertManager.swift    |  12 +-
+ .../Logging/CloudLogForwardingTests.swift     | 154 ++++++
+ 22 files changed, 2192 insertions(+), 4 deletions(-)
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudDeterminationLogger.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudDeviceLogForwarder.swift
+ create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogForwardingLogic.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogQueue.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogSink.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
  create mode 100644 Trio/Sources/Logger/Core/TeeLogSink.swift
  create mode 100644 Trio/Sources/Modules/Settings/View/CloudLoggingSettingsView.swift
+ create mode 100644 TrioTests/Logging/CloudLogForwardingTests.swift
 
 diff --git a/Trio/Sources/Application/AppDelegate.swift b/Trio/Sources/Application/AppDelegate.swift
 index a597e09e3..2e0dde9b5 100644
@@ -582,6 +597,238 @@ index 000000000..38a4d43bd
 +            return nil
 +        }
 +        return try? JSONDecoder().decode(BetterStackSettings.self, from: data)
++    }
++}
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudDeterminationLogger.swift b/Trio/Sources/Logger/CloudLogging/CloudDeterminationLogger.swift
+new file mode 100644
+index 000000000..322e54eb9
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudDeterminationLogger.swift
+@@ -0,0 +1,67 @@
++import Combine
++import CoreData
++import Foundation
++
++// Forwards each new OrefDetermination to the cloud sink (only; the in-app export already reads them from
++// CoreData). Subscribes the same way IOBService does.
++final class CloudDeterminationLogger: @unchecked Sendable {
++    static let shared = CloudDeterminationLogger()
++
++    private let queue = DispatchQueue(label: "CloudDeterminationLogger.queue", qos: .utility)
++    private var subscription: AnyCancellable?
++    // Confined to `queue`
++    private var dedupe = DeterminationDedupe<NSManagedObjectID>(capacity: 100)
++    private var started = false
++
++    func start() {
++        // Synchronous: entityChangePublisher doesn't replay, so subscribe before start() returns
++        queue.sync {
++            guard !self.started else { return }
++            self.started = true
++            self.subscription = CoreDataStack.shared.entityChangePublisher
++                .receive(on: self.queue)
++                .filteredByEntityName("OrefDetermination")
++                .sink { [weak self] ids in self?.handle(ids) }
++        }
++    }
++
++    private func handle(_ ids: Set<NSManagedObjectID>) {
++        let context = CoreDataStack.shared.newTaskContext()
++        context.name = "cloudDeterminationLogger"
++        let lines: [(NSManagedObjectID, Bool, Date?, String)] = context.performAndWait {
++            ids.compactMap { id in
++                guard let determination = try? context.existingObject(with: id) as? OrefDetermination else { return nil }
++                return (
++                    id,
++                    determination.enacted,
++                    determination.deliverAt ?? determination.timestamp,
++                    LogExport.algorithmText(determination)
++                )
++            }
++        }
++        for (id, enacted, date, text) in lines {
++            switch dedupe.observe(id: id, enacted: enacted, date: date) {
++            case .new:
++                emit("Determination \(text)", at: date ?? Date())
++            case .enactedFlip:
++                let deliverAt = date.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown"
++                emit("Determination enacted (deliverAt \(deliverAt))", at: Date())
++            case .none:
++                break
++            }
++        }
++    }
++
++    private func emit(_ message: String, at date: Date) {
++        CloudLogSink.shared.accept(LogRecord(
++            timestamp: date,
++            level: .info,
++            category: "Algorithm",
++            message: message,
++            file: #fileID,
++            function: #function,
++            line: #line,
++            launchID: LaunchID.current
++        ))
++    }
++}
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudDeviceLogForwarder.swift b/Trio/Sources/Logger/CloudLogging/CloudDeviceLogForwarder.swift
+new file mode 100644
+index 000000000..1b852cf2c
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudDeviceLogForwarder.swift
+@@ -0,0 +1,37 @@
++import Foundation
++
++// Sends the diagnostic subset of device-log entries straight to the cloud sink. It deliberately bypasses
++// TrioLogger: LogExport already merges DeviceLogStore, so tee'ing through AppLogStore would duplicate lines.
++final class CloudDeviceLogForwarder: @unchecked Sendable {
++    static let shared = CloudDeviceLogForwarder()
++
++    private let policy: DeviceLogForwardingPolicy
++    private let sink: LogSink
++
++    init(policy: DeviceLogForwardingPolicy = DeviceLogForwardingPolicy(), sink: LogSink = CloudLogSink.shared) {
++        self.policy = policy
++        self.sink = sink
++    }
++
++    /// Called synchronously from `DeviceLogStore.log`, so the timestamp is the event time.
++    func forward(managerIdentifier: String, typeRawValue: String, message: String) {
++        let timestamp = Date()
++        guard let decision = policy.decide(
++            managerIdentifier: managerIdentifier,
++            typeRawValue: typeRawValue,
++            message: message
++        ) else { return }
++        // Category can't be derived cheaply here (DeviceLogStore doesn't know the active managers), so the
++        // manager identifier rides in the message.
++        sink.accept(LogRecord(
++            timestamp: timestamp,
++            level: decision.isWarning ? .warning : .info,
++            category: "Device",
++            message: decision.text,
++            file: #fileID,
++            function: #function,
++            line: #line,
++            launchID: LaunchID.current
++        ))
++    }
++}
+diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogForwardingLogic.swift b/Trio/Sources/Logger/CloudLogging/CloudLogForwardingLogic.swift
+new file mode 100644
+index 000000000..df8b99dc4
+--- /dev/null
++++ b/Trio/Sources/Logger/CloudLogging/CloudLogForwardingLogic.swift
+@@ -0,0 +1,110 @@
++import Foundation
++
++// Pure, Foundation-only decisions for forwarding device logs and determinations to the cloud.
++// Kept free of LoopKit, CoreData and UIKit so it can be unit tested in isolation.
++
++enum DeviceLogForwardingFilter {
++    static let maxMessageLength = 1000
++    static let latencyMarker = "connect latency"
++    static let connectedMarker = "CONNECTED"
++
++    /// `typeRawValue` is the LoopKit `DeviceLogEntryType.rawValue`.
++    static func shouldForward(typeRawValue: String, message: String) -> Bool {
++        if typeRawValue == "error" || typeRawValue == "connection" { return true }
++        return message.contains(latencyMarker) || message.contains(connectedMarker)
++    }
++
++    static func isWarning(typeRawValue: String) -> Bool {
++        typeRawValue == "error"
++    }
++
++    static func format(managerIdentifier: String, typeRawValue: String, message: String, reserving reserved: Int = 0) -> String {
++        let text = "\(managerIdentifier) [\(typeRawValue)] \(message)"
++        let limit = max(0, maxMessageLength - reserved)
++        return text.count > limit ? String(text.prefix(limit)) : text
++    }
++}
++
++/// Lock-protected; `DeviceLogStore.log` is called from arbitrary threads.
++final class DeviceLogForwardingPolicy: @unchecked Sendable {
++    struct Decision: Equatable {
++        let isWarning: Bool
++        let text: String
++    }
++
++    static let backfillMarker = "Backfill frame of unexpected length"
++    static let backfillInterval: TimeInterval = 5 * 60
++
++    private let clock: () -> Date
++    private let lock = NSLock()
++    private var lastBackfillForward: Date?
++    private var suppressedBackfill = 0
++
++    init(clock: @escaping () -> Date = { Date() }) {
++        self.clock = clock
++    }
++
++    func decide(managerIdentifier: String, typeRawValue: String, message: String) -> Decision? {
++        guard DeviceLogForwardingFilter.shouldForward(typeRawValue: typeRawValue, message: message) else { return nil }
++        var suffix = ""
++        if message.contains(Self.backfillMarker) {
++            let now = clock()
++            lock.lock()
++            if let last = lastBackfillForward, now >= last, now.timeIntervalSince(last) < Self.backfillInterval {
++                suppressedBackfill += 1
++                lock.unlock()
++                return nil
++            }
++            if suppressedBackfill > 0 { suffix = " (+\(suppressedBackfill) suppressed)" }
++            suppressedBackfill = 0
++            lastBackfillForward = now
++            lock.unlock()
++        }
++        let text = DeviceLogForwardingFilter.format(
++            managerIdentifier: managerIdentifier,
++            typeRawValue: typeRawValue,
++            message: message,
++            reserving: suffix.count
++        ) + suffix
++        return Decision(isWarning: DeviceLogForwardingFilter.isWarning(typeRawValue: typeRawValue), text: text)
++    }
++}
++
++/// Remembers recently seen determinations; reports new ones and a later flip to enacted once.
++struct DeterminationDedupe<ID: Hashable> {
++    enum Outcome: Equatable {
++        case new
++        case enactedFlip
++        case none
++    }
++
++    let capacity: Int
++    private var seen: [ID: Bool] = [:]
++    private var order: [ID] = []
++
++    init(capacity: Int = 100) {
++        self.capacity = max(1, capacity)
++    }
++
++    var count: Int { seen.count }
++
++    /// Old determinations arrive as updates (Nightscout upload flags, relaunch, history replay)
++    /// and must not be re-logged, so only determinations this close to now are reported.
++    static var recencyWindow: TimeInterval { 15 * 60 }
++
++    mutating func observe(id: ID, enacted: Bool, date: Date?, now: Date = Date()) -> Outcome {
++        let recent = date.map { abs(now.timeIntervalSince($0)) <= Self.recencyWindow } ?? false
++        if let wasEnacted = seen[id] {
++            guard enacted, !wasEnacted else { return .none }
++            seen[id] = true
++            return recent ? .enactedFlip : .none
++        }
++        guard recent else { return .none }
++        seen[id] = enacted
++        order.append(id)
++        if order.count > capacity {
++            seen.removeValue(forKey: order.removeFirst())
++        }
++        return .new
 +    }
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
@@ -1471,10 +1718,10 @@ index 000000000..0ec25d67c
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 new file mode 100644
-index 000000000..73fce8dd2
+index 000000000..523b52a76
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,290 @@
 +import Foundation
 +import os
 +import UIKit
@@ -1683,6 +1930,8 @@ index 000000000..73fce8dd2
 +    // MARK: - Scheduling
 +
 +    private func start() {
++        // Determination rows ride the same cloud pipeline; start their observer with the uploader.
++        CloudDeterminationLogger.shared.start()
 +        let center = Foundation.NotificationCenter.default
 +
 +        observers.append(
@@ -1799,6 +2048,35 @@ index 000000000..51ddd986f
 +        await primary.records(in: window, minimumLevel: minimumLevel)
 +    }
 +}
+diff --git a/Trio/Sources/Logger/DeviceLog/DeviceLogStore.swift b/Trio/Sources/Logger/DeviceLog/DeviceLogStore.swift
+index 2c5703199..61739e659 100644
+--- a/Trio/Sources/Logger/DeviceLog/DeviceLogStore.swift
++++ b/Trio/Sources/Logger/DeviceLog/DeviceLogStore.swift
+@@ -82,6 +82,11 @@ final class DeviceLogStore: @unchecked Sendable {
+         message: String,
+         completion: ((Error?) -> Void)? = nil
+     ) {
++        CloudDeviceLogForwarder.shared.forward(
++            managerIdentifier: managerIdentifier,
++            typeRawValue: type.rawValue,
++            message: message
++        )
+         let date = Date()
+         queue.async {
+             if let deviceLog = self.deviceLog {
+diff --git a/Trio/Sources/Logger/Export/LogExport.swift b/Trio/Sources/Logger/Export/LogExport.swift
+index f81295c7e..ff0b34766 100644
+--- a/Trio/Sources/Logger/Export/LogExport.swift
++++ b/Trio/Sources/Logger/Export/LogExport.swift
+@@ -239,7 +239,7 @@ final class LogExport: Injectable {
+         }
+     }
+ 
+-    private static func algorithmText(_ determination: OrefDetermination) -> String {
++    static func algorithmText(_ determination: OrefDetermination) -> String {
+         func number(_ value: NSDecimalNumber?) -> String? {
+             value.flatMap { numberFormatter.string(from: $0) }
+         }
 diff --git a/Trio/Sources/Modules/Settings/SettingItems.swift b/Trio/Sources/Modules/Settings/SettingItems.swift
 index 67b787314..ad0d5ea3d 100644
 --- a/Trio/Sources/Modules/Settings/SettingItems.swift
@@ -2005,6 +2283,216 @@ index b7d111602..76e4ab666 100644
          case .autosensSettings:
              AutosensSettings.RootView(resolver: resolver)
          case .smbSettings:
+diff --git a/Trio/Sources/Services/Alerts/TrioAlertManager.swift b/Trio/Sources/Services/Alerts/TrioAlertManager.swift
+index a4d3ddedd..512d02c68 100644
+--- a/Trio/Sources/Services/Alerts/TrioAlertManager.swift
++++ b/Trio/Sources/Services/Alerts/TrioAlertManager.swift
+@@ -216,7 +216,10 @@ final class BaseTrioAlertManager: TrioAlertManager, Injectable {
+     // MARK: - Issue / Retract
+ 
+     func issueAlert(_ alert: Alert) {
+-        info(.alerts, "Alert \(alert.identifier.value) issued, level \(alert.interruptionLevel)")
++        let content = alert.foregroundContent ?? alert.backgroundContent
++        let contentText = "\(content.title) \(content.body)"
++            .components(separatedBy: .newlines).joined(separator: " ")
++        info(.alerts, "Alert \(alert.identifier.value) issued, level \(alert.interruptionLevel): \(contentText)")
+ 
+         let now = Date()
+         let fireDate: Date
+@@ -360,6 +363,7 @@ final class BaseTrioAlertManager: TrioAlertManager, Injectable {
+     // MARK: - Acknowledgement
+ 
+     func handleAcknowledgement(identifier: Alert.Identifier) {
++        info(.alerts, "Alert \(identifier.value) acknowledged")
+         modalScheduler.unschedule(identifier: identifier)
+         userNotificationScheduler.unschedule(identifier: identifier)
+         Task { @MainActor in
+@@ -421,12 +425,17 @@ final class BaseTrioAlertManager: TrioAlertManager, Injectable {
+         // The snooze path acknowledges too, so history and the issuing device
+         // still see the user's response.
+         let duration = Self.snoozeDuration(forActionIdentifier: response.actionIdentifier)
++        info(
++            .alerts,
++            "Alert \(identifier.value) notification response \(response.actionIdentifier), snooze \(Int(duration))s"
++        )
+         modalScheduler.snooze(identifier: identifier, duration: duration)
+         userNotificationScheduler.unschedule(identifier: identifier)
+     }
+ 
+     func acknowledgeAllOutstanding() {
+         let outstanding = alertHistoryStorage.unacknowledgedAlertsWithinLast24Hours()
++        info(.alerts, "Acknowledging all outstanding alerts (\(outstanding.count))")
+         for entry in outstanding {
+             let identifier = Alert.Identifier(
+                 managerIdentifier: entry.managerIdentifier,
+@@ -549,6 +558,7 @@ extension BaseTrioAlertManager: TrioModalAlertResponder, TrioUserNotificationAle
+     func requestSnooze(identifier: Alert.Identifier, duration: TimeInterval) {
+         // Dismissal is the user's response — full ack (history + device) first.
+         handleAcknowledgement(identifier: identifier)
++        info(.alerts, "Alert \(identifier.value) snoozed for \(Int(duration))s")
+         let untilDate = duration > 0 ? Date().addingTimeInterval(duration) : .distantPast
+         if let glucoseType = GlucoseAlertType(slug: identifier.alertIdentifier) {
+             broadcaster.notify(GlucoseSnoozeObserver.self, on: .main) { (observer: GlucoseSnoozeObserver) in
+diff --git a/TrioTests/Logging/CloudLogForwardingTests.swift b/TrioTests/Logging/CloudLogForwardingTests.swift
+new file mode 100644
+index 000000000..421915e90
+--- /dev/null
++++ b/TrioTests/Logging/CloudLogForwardingTests.swift
+@@ -0,0 +1,154 @@
++import Foundation
++import XCTest
++
++#if CLOUD_LOG_HARNESS
++    @testable import Logic
++#else
++    @testable import Trio
++#endif
++
++final class CloudLogForwardingTests: XCTestCase {
++    private final class Clock: @unchecked Sendable {
++        var now = Date(timeIntervalSince1970: 1_000_000)
++        func advance(_ seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
++    }
++
++    // MARK: Filter
++
++    func testForwardsErrorAndConnectionTypes() {
++        XCTAssertTrue(DeviceLogForwardingFilter.shouldForward(typeRawValue: "error", message: "boom"))
++        XCTAssertTrue(DeviceLogForwardingFilter.shouldForward(typeRawValue: "connection", message: "linked"))
++    }
++
++    func testForwardsLatencyAndConnectedTraces() {
++        XCTAssertTrue(DeviceLogForwardingFilter.shouldForward(typeRawValue: "delegate", message: "connect latency 1.2s"))
++        XCTAssertTrue(DeviceLogForwardingFilter.shouldForward(typeRawValue: "receive", message: "state CONNECTED"))
++    }
++
++    func testDropsHexAndDelegateTraffic() {
++        for type in ["send", "receive", "delegate", "delegateResponse"] {
++            XCTAssertFalse(DeviceLogForwardingFilter.shouldForward(typeRawValue: type, message: "0x4A 0B 11 FF"), type)
++        }
++    }
++
++    func testLevelMapping() {
++        XCTAssertTrue(DeviceLogForwardingFilter.isWarning(typeRawValue: "error"))
++        XCTAssertFalse(DeviceLogForwardingFilter.isWarning(typeRawValue: "connection"))
++    }
++
++    // MARK: Message
++
++    func testMessageFormat() {
++        let decision = DeviceLogForwardingPolicy().decide(managerIdentifier: "G7", typeRawValue: "error", message: "bad")
++        XCTAssertEqual(decision, .init(isWarning: true, text: "G7 [error] bad"))
++    }
++
++    func testTruncatesTo1000Characters() {
++        let decision = DeviceLogForwardingPolicy().decide(
++            managerIdentifier: "G7",
++            typeRawValue: "error",
++            message: String(repeating: "x", count: 5000)
++        )
++        XCTAssertEqual(decision?.text.count, 1000)
++        XCTAssertTrue(decision?.text.hasPrefix("G7 [error] xxx") == true)
++    }
++
++    // MARK: Backfill rate limit
++
++    func testBackfillRateLimitAndSuppressedCount() {
++        let clock = Clock()
++        let policy = DeviceLogForwardingPolicy(clock: { clock.now })
++        let message = "Backfill frame of unexpected length 7"
++        func decide() -> DeviceLogForwardingPolicy.Decision? {
++            policy.decide(managerIdentifier: "G7", typeRawValue: "error", message: message)
++        }
++        XCTAssertEqual(decide()?.text, "G7 [error] \(message)")
++        clock.advance(10)
++        XCTAssertNil(decide())
++        clock.advance(100)
++        XCTAssertNil(decide())
++        clock.advance(300)
++        XCTAssertEqual(decide()?.text, "G7 [error] \(message) (+2 suppressed)")
++        clock.advance(1)
++        XCTAssertNil(decide())
++        clock.advance(300)
++        XCTAssertEqual(decide()?.text, "G7 [error] \(message) (+1 suppressed)")
++    }
++
++    func testBackfillSuffixStaysWithinLimit() {
++        let clock = Clock()
++        let policy = DeviceLogForwardingPolicy(clock: { clock.now })
++        let message = "Backfill frame of unexpected length " + String(repeating: "y", count: 2000)
++        _ = policy.decide(managerIdentifier: "G7", typeRawValue: "error", message: message)
++        _ = policy.decide(managerIdentifier: "G7", typeRawValue: "error", message: message)
++        clock.advance(301)
++        let text = policy.decide(managerIdentifier: "G7", typeRawValue: "error", message: message)?.text
++        XCTAssertEqual(text?.count, 1000)
++        XCTAssertTrue(text?.hasSuffix(" (+1 suppressed)") == true)
++    }
++
++    func testOtherMessagesAreNotRateLimited() {
++        let policy = DeviceLogForwardingPolicy()
++        XCTAssertNotNil(policy.decide(managerIdentifier: "G7", typeRawValue: "error", message: "a"))
++        XCTAssertNotNil(policy.decide(managerIdentifier: "G7", typeRawValue: "error", message: "a"))
++    }
++
++    // MARK: Determination dedupe
++
++    private let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
++
++    func testDedupeReportsNewOnce() {
++        var dedupe = DeterminationDedupe<Int>()
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: false, date: now, now: now), .new)
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: false, date: now, now: now), .none)
++    }
++
++    func testEnactedFlipReportedOnce() {
++        var dedupe = DeterminationDedupe<Int>()
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: false, date: now, now: now), .new)
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: true, date: now, now: now), .enactedFlip)
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: true, date: now, now: now), .none)
++    }
++
++    func testAlreadyEnactedNewIsNotFlip() {
++        var dedupe = DeterminationDedupe<Int>()
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: true, date: now, now: now), .new)
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: true, date: now, now: now), .none)
++    }
++
++    func testMemoryIsBounded() {
++        var dedupe = DeterminationDedupe<Int>(capacity: 100)
++        for id in 0 ..< 1000 {
++            XCTAssertEqual(dedupe.observe(id: id, enacted: false, date: now, now: now), .new)
++        }
++        XCTAssertEqual(dedupe.count, 100)
++        // Evicted IDs are forgotten; recent ones are still deduped
++        XCTAssertEqual(dedupe.observe(id: 999, enacted: false, date: now, now: now), .none)
++        XCTAssertEqual(dedupe.observe(id: 0, enacted: false, date: now, now: now), .new)
++    }
++
++    func testStaleOrFutureUnseenDeterminationIsIgnored() {
++        var dedupe = DeterminationDedupe<Int>()
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: false, date: now.addingTimeInterval(-16 * 60), now: now), .none)
++        XCTAssertEqual(dedupe.observe(id: 2, enacted: false, date: now.addingTimeInterval(16 * 60), now: now), .none)
++        XCTAssertEqual(dedupe.count, 0)
++    }
++
++    func testNilDateIsIgnored() {
++        var dedupe = DeterminationDedupe<Int>()
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: false, date: nil, now: now), .none)
++    }
++
++    func testRecentDeterminationIsNew() {
++        var dedupe = DeterminationDedupe<Int>()
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: false, date: now.addingTimeInterval(-14 * 60), now: now), .new)
++    }
++
++    func testEnactedFlipWithStaleDateIsIgnored() {
++        var dedupe = DeterminationDedupe<Int>()
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: false, date: now, now: now), .new)
++        let later = now.addingTimeInterval(20 * 60)
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: true, date: now, now: later), .none)
++        XCTAssertEqual(dedupe.observe(id: 1, enacted: true, date: later, now: later), .none)
++    }
++}
 -- 
 2.56.0
 
