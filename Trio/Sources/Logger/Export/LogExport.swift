@@ -239,7 +239,7 @@ final class LogExport: Injectable {
         }
     }
 
-    private static func algorithmText(_ determination: OrefDetermination) -> String {
+    static func algorithmText(_ determination: OrefDetermination) -> String {
         func number(_ value: NSDecimalNumber?) -> String? {
             value.flatMap { numberFormatter.string(from: $0) }
         }

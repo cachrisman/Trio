@@ -80,6 +80,7 @@ extension Notification.Name {
         _ = resolver.resolve(BluetoothStateManager.self)!
         _ = resolver.resolve(PluginManager.self)!
         _ = resolver.resolve(AlertPermissionsChecker.self)!
+        _ = resolver.resolve(CloudLogUploadService.self)!
         if #available(iOS 16.2, *) {
             _ = resolver.resolve(LiveActivityManager.self)!
         }
@@ -128,7 +129,7 @@ extension Notification.Name {
     }
 
     init() {
-        TrioLogger.install(AppLogStore.shared)
+        TrioLogger.install(TeeLogSink(primary: AppLogStore.shared, tees: [CloudLogSink.shared]))
         FileProtectionFixer.fixFlagFileProtectionForPropertyPersistentFlags() // TODO: ‼️ REMOVE ME BEFORE PUBLIC BETA / RELEASE
 
         let notificationCenter = Foundation.NotificationCenter.default
