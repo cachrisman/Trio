@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -149,9 +150,16 @@ class Symbolicator:
     @staticmethod
     def tag_for(report):
         h = report["header"]
-        return "trio-v%s-%s-localCI" % (h.get("app_version"), h.get("build_version"))
+        ver, build = h.get("app_version"), h.get("build_version")
+        # The tag becomes a cache path component: accept only dotted digits.
+        for v in (ver, build):
+            if not isinstance(v, str) or not re.fullmatch(r"\d+(\.\d+)*", v):
+                return None
+        return "trio-v%s-%s-localCI" % (ver, build)
 
     def dsym_map(self, tag):
+        if tag is None:
+            return {}
         if tag in self._maps:
             return self._maps[tag]
         d = os.path.join(self.cache_dir, tag)
@@ -380,8 +388,10 @@ def post_events(events, host, token, opener=None, on_batch=None):
     """POST in batches. Returns (events_sent, error_message_or_None).
 
     on_batch(batch) is called after each successfully posted batch."""
-    opener = opener or default_opener()
     url = host.rstrip("/")
+    if not host_allowed(url):
+        return 0, "post failed: host not allowed"
+    opener = opener or default_opener()
     sent = 0
 
     def scrub(s):
@@ -425,6 +435,23 @@ def post_events(events, host, token, opener=None, on_batch=None):
         if on_batch:
             on_batch(batch)
     return sent, None
+
+
+def host_allowed(url):
+    """True only for https://in.logs.betterstack.com or https://*.betterstackdata.com (port 443)."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        hostname, port = parts.hostname, parts.port
+    except ValueError:
+        return False
+    if parts.scheme != "https" or "@" in parts.netloc:
+        return False
+    if parts.username is not None or parts.password is not None:
+        return False
+    if port not in (None, 443) or not hostname:
+        return False
+    hostname = hostname.lower()
+    return hostname == "in.logs.betterstack.com" or hostname.endswith(".betterstackdata.com")
 
 
 def keychain_get(runner, service, account):
@@ -504,8 +531,9 @@ def _run(args, runner, opener, state_dir, cache_dir):
                   file=sys.stderr)
             return 2
         host = keychain_get(runner, args.keychain_service, "betterstack-host") or DEFAULT_HOST
-        if not host.startswith("https://"):
-            print("trio-crash-ingest: refusing non-https BetterStack host", file=sys.stderr)
+        if not host_allowed(host):
+            print("trio-crash-ingest: refusing BetterStack host (must be https on "
+                  "in.logs.betterstack.com or *.betterstackdata.com)", file=sys.stderr)
             return 2
 
     device = "skipped"

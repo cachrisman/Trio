@@ -247,7 +247,7 @@ class RunTests(Base):
         self.assertNotIn("INC-1", tci.load_state(self.state)["incident_ids"])
 
     def test_network_error_does_not_leak_token(self):
-        err_msg = tci.post_events([{"a": 1}], "https://h", TOKEN,
+        err_msg = tci.post_events([{"a": 1}], tci.DEFAULT_HOST, TOKEN,
                                   lambda req, timeout=0: (_ for _ in ()).throw(OSError("bad " + TOKEN)))[1]
         self.assertNotIn(TOKEN, err_msg)
 
@@ -270,7 +270,7 @@ class RunTests(Base):
             sizes.append(len(json.loads(req.data)))
             return Resp()
 
-        n, err = tci.post_events([{"i": i} for i in range(120)], "https://h", TOKEN, opener)
+        n, err = tci.post_events([{"i": i} for i in range(120)], tci.DEFAULT_HOST, TOKEN, opener)
         self.assertEqual((n, err, sizes), (120, None, [50, 50, 20]))
 
 
@@ -370,9 +370,12 @@ class RedirectTests(Base):
         srv = http.server.HTTPServer(("127.0.0.1", 0), H)
         th = threading.Thread(target=srv.serve_forever, daemon=True)
         th.start()
+        orig_allowed = tci.host_allowed
+        tci.host_allowed = lambda url: True  # loopback server stands in for BetterStack
         try:
             n, err = tci.post_events([{"a": 1}], "http://127.0.0.1:%d" % srv.server_port, TOKEN)
         finally:
+            tci.host_allowed = orig_allowed
             srv.shutdown()
             srv.server_close()
         self.assertEqual(n, 0)
@@ -382,7 +385,7 @@ class RedirectTests(Base):
 
     def test_redirect_handler_returns_no_request(self):
         h = tci._NoRedirect()
-        req = urllib.request.Request("https://h", data=b"x", method="POST")
+        req = urllib.request.Request(tci.DEFAULT_HOST, data=b"x", method="POST")
         self.assertIsNone(h.redirect_request(req, None, 302, "Found", {}, "http://evil/"))
 
 
@@ -562,3 +565,73 @@ class DownloadRecoveryTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostAllowlistTests(Base):
+    def test_accepted(self):
+        for u in (tci.DEFAULT_HOST, "https://in.logs.betterstack.com/",
+                  "https://s123.eu-nbg-2.betterstackdata.com",
+                  "https://s123.eu-nbg-2.betterstackdata.com:443"):
+            self.assertTrue(tci.host_allowed(u), u)
+
+    def test_rejected(self):
+        for u in ("http://in.logs.betterstack.com",
+                  "https://in.logs.betterstack.com@evil.example",
+                  "https://evil.example",
+                  "https://betterstackdata.com.evil.example",
+                  "https://in.logs.betterstack.com:8443",
+                  "https://user:pw@in.logs.betterstack.com",
+                  "https://in.logs.betterstack.com:bad", ""):
+            self.assertFalse(tci.host_allowed(u), u)
+
+    def test_post_events_refuses_bad_host(self):
+        def opener(req, timeout=0):
+            raise AssertionError("opener must not be called")
+        sent, err = tci.post_events([{"a": 1}], "https://evil.example", TOKEN, opener=opener)
+        self.assertEqual(sent, 0)
+        self.assertIsNotNone(err)
+
+    def test_main_bad_keychain_host(self):
+        make_ips(self.src, "a.ips")
+
+        def run(args, timeout=0):
+            if args[0] == "security":
+                if "betterstack-token" in args:
+                    return 0, TOKEN + "\n", ""
+                return 0, "https://evil.example\n", ""
+            return 1, "", "release not found"
+
+        def opener(req, timeout=0):
+            raise AssertionError("opener must not be called")
+        rc, _out, err = self.run_main([], runner=run, opener=opener)
+        self.assertEqual(rc, 2)
+        self.assertIn("refusing", err)
+
+
+class TagTraversalTests(Base):
+    def test_bad_versions_rejected(self):
+        for bad in ("../../x", "1/2", ["1"], 5, "", "1."):
+            ips = make_ips(self.src, "a.ips", header={"build_version": bad})
+            report = tci.parse_ips(ips)
+            self.assertIsNone(tci.Symbolicator.tag_for(report), bad)
+            ips = make_ips(self.src, "b.ips", header={"app_version": bad})
+            self.assertIsNone(tci.Symbolicator.tag_for(tci.parse_ips(ips)), bad)
+
+    def test_good_version(self):
+        report = tci.parse_ips(make_ips(self.src, "a.ips"))
+        self.assertEqual(tci.Symbolicator.tag_for(report), "trio-v1.0.2-237-localCI")
+
+    def test_traversal_unsymbolicated_no_gh_no_files(self):
+        calls = []
+
+        def run(args, timeout=0):
+            calls.append(args)
+            return 1, "", ""
+        for bad in ("../../x", "1/2", ["1"]):
+            ips = make_ips(self.src, "a.ips", header={"build_version": bad})
+            sym = tci.Symbolicator(self.cache, "o/r", run)
+            res = sym.symbolicate(tci.parse_ips(ips), [{"uuid": UUID, "base": 1, "offset": 1}])
+            self.assertEqual(res, [None])
+        self.assertEqual(calls, [])
+        self.assertFalse(os.path.exists(self.cache))
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["src"])
