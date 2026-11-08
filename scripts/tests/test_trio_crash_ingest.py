@@ -309,11 +309,15 @@ class SymbolicatorFetchTests(Base):
         self.assertEqual(sym.symbolicate(self.report(), [{"uuid": UUID, "base": 1, "offset": 1}]), [None])
         self.assertTrue(os.path.exists(os.path.join(self.cache, "trio-v1.0.2-237-localCI", "MISSING")))
 
-    def test_release_without_dsym_asset_is_missing(self):
+    def test_release_without_dsym_asset_defers_within_grace(self):
         sym = tci.Symbolicator(self.cache, "o/r",
-                               lambda a, timeout=0: (1, "", "no assets match the file pattern"))
-        self.assertEqual(sym.symbolicate(self.report(), [{"uuid": UUID, "base": 1, "offset": 1}]), [None])
-        self.assertTrue(os.path.exists(os.path.join(self.cache, "trio-v1.0.2-237-localCI", "MISSING")))
+                               lambda a, timeout=0: (1, "", "no assets match the file pattern"),
+                               now=lambda: 1000.0)
+        with self.assertRaises(tci.Deferred):
+            sym.symbolicate(self.report(), [{"uuid": UUID, "base": 1, "offset": 1}])
+        d = os.path.join(self.cache, "trio-v1.0.2-237-localCI")
+        self.assertTrue(os.path.exists(os.path.join(d, "NOASSET")))
+        self.assertFalse(os.path.exists(os.path.join(d, "MISSING")))
 
     def test_other_gh_error_defers(self):
         sym = tci.Symbolicator(self.cache, "o/r", lambda a, timeout=0: (1, "", "dial tcp: timeout"))
@@ -567,6 +571,7 @@ class DownloadRecoveryTests(Base):
         self.assertFalse(os.path.exists(os.path.join(d, "dsym")))
         self.assertFalse(os.path.exists(os.path.join(d, "MISSING")))
         state["good"] = True
+        sym = tci.Symbolicator(self.cache, "o/r", run)  # next run: Deferred is per-run
         sym.symbolicate(self.report(), items)
         self.assertTrue(os.path.isdir(os.path.join(d, "dsym")))
 
@@ -732,6 +737,157 @@ class TagFallbackTests(Base):
             sym.symbolicate(self.report(), self.ITEMS)
         self.assertEqual(gh_tags, self.TAGS[:2])  # never fell through to "local"
         self.assertFalse(os.path.exists(os.path.join(self.cache, self.TAGS[1], "MISSING")))
+
+
+NOASSET_ERR = "no assets match the file pattern"
+
+
+class NoAssetGraceTests(Base):
+    TAG = "trio-v1.0.2-237-localCI"
+    ITEMS = [{"uuid": UUID.lower(), "base": 4096, "offset": 8}]
+
+    def d(self):
+        return os.path.join(self.cache, self.TAG)
+
+    def marker(self, name):
+        return os.path.join(self.d(), name)
+
+    def report(self):
+        return tci.parse_ips(make_ips(self.src, "a.ips"))
+
+    def runner_for(self, state, gh_calls=None):
+        """state['asset'] toggles whether the localCI release has the dSYM asset."""
+        def run(args, timeout=0):
+            if args[0] == "security":
+                return (0, TOKEN + "\n", "") if "betterstack-token" in args else (1, "", "")
+            if args[0] == "gh":
+                if gh_calls is not None:
+                    gh_calls.append(args[3])
+                if args[3] != self.TAG:
+                    return 1, "", "release not found"
+                if not state["asset"]:
+                    return 1, "", NOASSET_ERR
+                d = args[args.index("-D") + 1]
+                with zipfile.ZipFile(os.path.join(d, "Trio.app.dSYM.zip"), "w") as z:
+                    z.writestr("Trio.app.dSYM/Contents/Resources/DWARF/Trio", "x")
+                return 0, "", ""
+            if args[0] == "dwarfdump":
+                return 0, "UUID: %s (arm64) %s\n" % (UUID, args[-1]), ""
+            if args[0] == "atos":
+                return 0, "main (in Trio) (App.swift:3)\n", ""
+            return 1, "", ""
+        return run
+
+    def test_a_within_grace_report_deferred_not_recorded(self):
+        make_ips(self.src, "a.ips")
+        rc, out, _ = self.run_main([], self.runner_for({"asset": False}))
+        self.assertEqual(rc, 0)
+        self.assertIn("new=0", out)
+        self.assertIn("sent=0", out)
+        self.assertIn("deferred=1", out)
+        self.assertEqual(tci.load_state(self.state)["incident_ids"], {})
+        self.assertTrue(os.path.exists(self.marker("NOASSET")))
+        self.assertFalse(os.path.exists(self.marker("MISSING")))
+
+    def test_b_backdated_noasset_becomes_missing_and_posts_unsymbolicated(self):
+        make_ips(self.src, "a.ips")
+        os.makedirs(self.d())
+        with open(self.marker("NOASSET"), "w") as f:
+            f.write("%d\n" % (tci.time.time() - tci.ASSET_GRACE_SECONDS - 60))
+
+        rc, out, _ = self.run_main(["--dry-run"], self.runner_for({"asset": False}))
+        self.assertEqual(rc, 0)
+        self.assertIn("new=1", out)
+        self.assertIn("unsymbolicated=1", out)
+        self.assertNotIn("deferred=", out)
+        self.assertTrue(os.path.exists(self.marker("MISSING")))
+
+    def test_garbage_noasset_marker_is_rewritten(self):
+        os.makedirs(self.d())
+        with open(self.marker("NOASSET"), "w") as f:
+            f.write("not a number")
+        sym = tci.Symbolicator(self.cache, "o/r", self.runner_for({"asset": False}),
+                               now=lambda: 5000.0)
+        with self.assertRaises(tci.Deferred):
+            sym.symbolicate(self.report(), self.ITEMS)
+        with open(self.marker("NOASSET")) as f:
+            self.assertEqual(float(f.read()), 5000.0)
+
+    def test_noasset_first_seen_not_overwritten(self):
+        clock = [1000.0]
+        state = {"asset": False}
+        run = self.runner_for(state)
+        for t in (1000.0, 2000.0):
+            clock[0] = t
+            sym = tci.Symbolicator(self.cache, "o/r", run, now=lambda: clock[0])
+            with self.assertRaises(tci.Deferred):
+                sym.symbolicate(self.report(), self.ITEMS)
+        with open(self.marker("NOASSET")) as f:
+            self.assertEqual(float(f.read()), 1000.0)
+
+    def test_c_asset_appears_on_second_run(self):
+        state = {"asset": False}
+        run = self.runner_for(state)
+        sym1 = tci.Symbolicator(self.cache, "o/r", run)
+        with self.assertRaises(tci.Deferred):
+            sym1.symbolicate(self.report(), self.ITEMS)
+        self.assertTrue(os.path.exists(self.marker("NOASSET")))
+        state["asset"] = True
+        sym2 = tci.Symbolicator(self.cache, "o/r", run)
+        self.assertEqual(sym2.symbolicate(self.report(), self.ITEMS),
+                         ["main (in Trio) (App.swift:3)"])
+        self.assertFalse(os.path.exists(self.marker("NOASSET")))
+
+    def test_d_release_not_found_is_immediately_missing(self):
+        sym = tci.Symbolicator(self.cache, "o/r", lambda a, timeout=0: (1, "", "release not found"))
+        self.assertEqual(sym.symbolicate(self.report(), self.ITEMS), [None])
+        self.assertTrue(os.path.exists(self.marker("MISSING")))
+        self.assertFalse(os.path.exists(self.marker("NOASSET")))
+
+    def test_e_gh_called_once_per_tag_across_reports(self):
+        make_ips(self.src, "a.ips", incident="INC-1")
+        make_ips(self.src, "b.ips", incident="INC-2")
+        gh_calls = []
+        rc, out, _ = self.run_main([], self.runner_for({"asset": False}, gh_calls))
+        self.assertIn("deferred=2", out)
+        self.assertEqual(gh_calls, [self.TAG])
+
+    def test_cleanup_keeps_markers(self):
+        os.makedirs(self.d())
+        for name in ("MISSING", "NOASSET"):
+            with open(self.marker(name), "w") as f:
+                f.write("1\n")
+        tci.Symbolicator._cleanup(self.d(), os.path.join(self.d(), "dsym"))
+        self.assertTrue(os.path.exists(self.marker("MISSING")))
+        self.assertTrue(os.path.exists(self.marker("NOASSET")))
+
+
+class CollisionRuleTests(Base):
+    def test_f_localci_wins_uuid_collision(self):
+        tags = TagFallbackTests.TAGS
+        atos_paths = []
+
+        def run(args, timeout=0):
+            if args[0] == "gh":
+                d = args[args.index("-D") + 1]
+                with zipfile.ZipFile(os.path.join(d, "Trio.app.dSYM.zip"), "w") as z:
+                    z.writestr("Trio.app.dSYM/Contents/Resources/DWARF/Trio", "x")
+                return 0, "", ""
+            if args[0] == "dwarfdump":
+                return 0, "UUID: %s (arm64) %s\n" % (UUID, args[-1]), ""
+            if args[0] == "atos":
+                atos_paths.append(args[args.index("-o") + 1])
+                return 0, "main (in Trio) (App.swift:3)\n", ""
+            return 1, "", ""
+        sym = tci.Symbolicator(self.cache, "o/r", run)
+        report = tci.parse_ips(make_ips(self.src, "a.ips"))
+        dmap = sym.dsym_map_for(report)
+        self.assertIn(os.path.join(self.cache, tags[0], "dsym"), dmap[UUID.lower()][0])
+        sym.symbolicate(report, TagFallbackTests.ITEMS)
+        self.assertEqual(len(atos_paths), 1)
+        self.assertIn(os.sep + tags[0] + os.sep, atos_paths[0])
+        for t in tags[1:]:
+            self.assertNotIn(os.sep + t + os.sep, atos_paths[0])
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,6 +34,10 @@ BATCH_SIZE = 50
 MAX_FRAMES = 40
 TIMEOUT_DEVICE = 600
 RELEASE_CONTEXTS = ("localCI", "cloudCI", "local")
+# record-release.sh creates the GitHub release before uploading Trio.app.dSYM.zip (and an
+# upload failure is non-fatal), so "release exists, asset absent" may be transient: keep
+# retrying for this long after first seeing it before treating it as permanent.
+ASSET_GRACE_SECONDS = 24 * 3600
 
 
 class Deferred(Exception):
@@ -142,11 +147,13 @@ UUID_RE = re.compile(r"UUID:\s*([0-9A-Fa-f-]+)\s*\((\w+)\)")
 class Symbolicator:
     """Wraps gh / unzip / dwarfdump / atos. `runner(args, timeout=)` is injectable."""
 
-    def __init__(self, cache_dir, repo, runner=run_cmd):
+    def __init__(self, cache_dir, repo, runner=run_cmd, now=time.time):
         self.cache_dir = cache_dir
         self.repo = repo
         self.runner = runner
+        self.now = now  # injectable clock (unix seconds) for the NOASSET grace check
         self._maps = {}  # tag -> {uuid: (dwarf_path, arch)}, or None when the tag is MISSING
+        self._deferred = {}  # tag -> Deferred raised this run (re-raised without calling gh again)
         self._resolved = {}  # (version, build) -> {uuid: (dwarf_path, arch)}
 
     @staticmethod
@@ -181,18 +188,45 @@ class Symbolicator:
         return self._resolved[key]
 
     def _tag_map(self, tag):
-        """dSYM map for one tag, or None when that release/asset is MISSING."""
+        """dSYM map for one tag, or None when that release/asset is MISSING.
+
+        A Deferred is remembered per tag for the life of this Symbolicator, so a pending
+        tag costs one gh call per run rather than one per report.
+        """
         if tag in self._maps:
             return self._maps[tag]
+        if tag in self._deferred:
+            raise self._deferred[tag]
         d = os.path.join(self.cache_dir, tag)
         dsym = os.path.join(d, "dsym")
         if os.path.exists(os.path.join(d, "MISSING")):
             self._maps[tag] = None
         else:
             if not os.path.isdir(dsym):
-                self._download(tag, d, dsym)
+                try:
+                    self._download(tag, d, dsym)
+                except Deferred as e:
+                    self._deferred[tag] = e
+                    raise
             self._maps[tag] = self._build_map(dsym) if os.path.isdir(dsym) else None
         return self._maps[tag]
+
+    def _mark_missing(self, d):
+        with open(os.path.join(d, "MISSING"), "w") as f:
+            f.write("release or dSYM asset not found\n")
+
+    def _first_seen_noasset(self, d):
+        """Unix time the asset was first seen absent; records now if unset or unreadable."""
+        path = os.path.join(d, "NOASSET")
+        try:
+            with open(path, "r") as f:
+                return float(f.read().strip())
+        except (OSError, ValueError):
+            pass
+        now = self.now()
+        with open(path, "w") as f:
+            f.write("%d\n" % now)
+        return now
 
     def _download(self, tag, d, dsym):
         os.makedirs(d, exist_ok=True)
@@ -203,12 +237,18 @@ class Symbolicator:
              "-p", "Trio.app.dSYM.zip", "-D", d], timeout=300)
         if rc != 0:
             text = (out + err).lower()
-            # Release absent, or present without the dSYM asset: permanent, so fall back to
-            # unsymbolicated frames instead of deferring forever.
-            if ("release not found" in text or "http 404" in text
-                    or "no assets match" in text):
-                with open(os.path.join(d, "MISSING"), "w") as f:
-                    f.write("release or dSYM asset not found\n")
+            # Release absent: permanent, so fall back to unsymbolicated frames.
+            if "release not found" in text or "http 404" in text:
+                self._mark_missing(d)
+                return
+            # Release present without the dSYM asset: the upload may still be coming, so
+            # defer (NOASSET holds first-seen time) until ASSET_GRACE_SECONDS has elapsed,
+            # then treat as permanent like a missing release.
+            if "no assets match" in text:
+                first = self._first_seen_noasset(d)
+                if self.now() - first < ASSET_GRACE_SECONDS:
+                    raise Deferred("dSYM asset not yet uploaded for %s" % tag)
+                self._mark_missing(d)
                 return
             raise Deferred("gh download failed for %s (rc=%s)" % (tag, rc))
         partial = dsym + ".partial"
@@ -216,13 +256,17 @@ class Symbolicator:
             with zipfile.ZipFile(zip_path) as z:
                 z.extractall(partial)
             os.replace(partial, dsym)
+            try:
+                os.unlink(os.path.join(d, "NOASSET"))
+            except OSError:
+                pass
         except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError) as e:
             self._cleanup(d, dsym)
             raise Deferred("unzip failed for %s: %s" % (tag, e))
 
     @staticmethod
     def _cleanup(d, dsym):
-        """Remove leftovers of an earlier attempt (never the MISSING marker)."""
+        """Remove leftovers of an earlier attempt (never the MISSING or NOASSET markers)."""
         try:
             os.unlink(os.path.join(d, "Trio.app.dSYM.zip"))
         except OSError:
