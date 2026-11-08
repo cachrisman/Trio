@@ -162,6 +162,11 @@ class Symbolicator:
         return ["trio-v%s-%s-%s" % (ver, build, ctx) for ctx in RELEASE_CONTEXTS]
 
     def dsym_map_for(self, report):
+        """uuid -> (dwarf_path, arch) merged across every candidate tag that has dSYMs.
+
+        MISSING tags are skipped; on a uuid collision the earlier candidate wins, so a
+        localCI asset lacking the crash's UUIDs doesn't block cloudCI/local.
+        """
         tags = self.tags_for(report)
         if not tags:
             return {}
@@ -171,8 +176,7 @@ class Symbolicator:
             for tag in tags:  # Deferred from any candidate propagates (retry next run)
                 m = self._tag_map(tag)
                 if m is not None:
-                    result = m
-                    break
+                    result = {**m, **result}
             self._resolved[key] = result
         return self._resolved[key]
 

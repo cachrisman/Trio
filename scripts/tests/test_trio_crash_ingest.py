@@ -74,6 +74,8 @@ class FakeAtosRunner:
 def prefilled_symbolicator(runner):
     s = tci.Symbolicator("/nonexistent", "o/r", runner)
     s._maps["trio-v1.0.2-237-localCI"] = {UUID.lower(): ("/dw/Trio", "arm64")}
+    s._maps["trio-v1.0.2-237-cloudCI"] = None
+    s._maps["trio-v1.0.2-237-local"] = None
     return s
 
 
@@ -331,6 +333,8 @@ class SymbolicatorFetchTests(Base):
         calls = []
 
         def run(args, timeout=0):
+            if args[0] == "gh" and args[3] != tag:
+                return 1, "", "release not found"
             calls.append(args[0])
             if args[0] == "gh":
                 d = args[args.index("-D") + 1]
@@ -517,6 +521,8 @@ class DownloadRecoveryTests(Base):
         gh_args = []
 
         def run(args, timeout=0):
+            if args[0] == "gh" and args[3] != self.TAG:
+                return 1, "", "release not found"
             if args[0] == "gh":
                 gh_args.append(args)
                 self.assertFalse(os.path.exists(os.path.join(d, "Trio.app.dSYM.zip")))
@@ -539,6 +545,8 @@ class DownloadRecoveryTests(Base):
         state = {"good": False}
 
         def run(args, timeout=0):
+            if args[0] == "gh" and args[3] != self.TAG:
+                return 1, "", "release not found"
             if args[0] == "gh":
                 with open(os.path.join(d, "Trio.app.dSYM.zip"), "wb") as f:
                     if not state["good"]:
@@ -678,12 +686,36 @@ class TagFallbackTests(Base):
         sym.symbolicate(self.report(), self.ITEMS)
         self.assertEqual(gh_tags, self.TAGS)
 
-    def test_first_success_wins(self):
+    def test_all_present_tags_are_merged(self):
         run, gh_tags = self.fake({self.TAGS[0]: "missing", self.TAGS[1]: "ok",
                                   self.TAGS[2]: "ok"})
         sym = tci.Symbolicator(self.cache, "o/r", run)
         self.assertEqual(sym.symbolicate(self.report(), self.ITEMS), ["main (in Trio) (App.swift:3)"])
-        self.assertEqual(gh_tags, self.TAGS[:2])
+        self.assertEqual(gh_tags, self.TAGS)
+
+    def test_localci_without_matching_uuid_falls_through_to_local(self):
+        other = "11111111-2222-3333-4444-555555555555"
+        gh_tags = []
+
+        def run(args, timeout=0):
+            if args[0] == "gh":
+                tag = args[3]
+                gh_tags.append(tag)
+                if tag == self.TAGS[1]:
+                    return 1, "", "release not found"
+                d = args[args.index("-D") + 1]
+                with zipfile.ZipFile(os.path.join(d, "Trio.app.dSYM.zip"), "w") as z:
+                    z.writestr("Trio.app.dSYM/Contents/Resources/DWARF/Trio", "x")
+                return 0, "", ""
+            if args[0] == "dwarfdump":
+                uuid = UUID if self.TAGS[2] in args[-1] else other
+                return 0, "UUID: %s (arm64) %s\n" % (uuid, args[-1]), ""
+            if args[0] == "atos":
+                return 0, "main (in Trio) (App.swift:3)\n", ""
+            return 1, "", ""
+        sym = tci.Symbolicator(self.cache, "o/r", run)
+        self.assertEqual(sym.symbolicate(self.report(), self.ITEMS), ["main (in Trio) (App.swift:3)"])
+        self.assertEqual(gh_tags, self.TAGS)
 
     def test_all_missing_unsymbolicated(self):
         run, gh_tags = self.fake({t: "missing" for t in self.TAGS})
