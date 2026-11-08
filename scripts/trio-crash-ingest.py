@@ -173,9 +173,12 @@ class Symbolicator:
              "-p", "Trio.app.dSYM.zip", "-D", d], timeout=300)
         if rc != 0:
             text = (out + err).lower()
-            if "release not found" in text or "http 404" in text:
+            # Release absent, or present without the dSYM asset: permanent, so fall back to
+            # unsymbolicated frames instead of deferring forever.
+            if ("release not found" in text or "http 404" in text
+                    or "no assets match" in text):
                 with open(os.path.join(d, "MISSING"), "w") as f:
-                    f.write("release not found\n")
+                    f.write("release or dSYM asset not found\n")
                 return
             raise Deferred("gh download failed for %s (rc=%s)" % (tag, rc))
         partial = dsym + ".partial"

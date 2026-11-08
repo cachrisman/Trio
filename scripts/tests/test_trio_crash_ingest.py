@@ -307,6 +307,12 @@ class SymbolicatorFetchTests(Base):
         self.assertEqual(sym.symbolicate(self.report(), [{"uuid": UUID, "base": 1, "offset": 1}]), [None])
         self.assertTrue(os.path.exists(os.path.join(self.cache, "trio-v1.0.2-237-localCI", "MISSING")))
 
+    def test_release_without_dsym_asset_is_missing(self):
+        sym = tci.Symbolicator(self.cache, "o/r",
+                               lambda a, timeout=0: (1, "", "no assets match the file pattern"))
+        self.assertEqual(sym.symbolicate(self.report(), [{"uuid": UUID, "base": 1, "offset": 1}]), [None])
+        self.assertTrue(os.path.exists(os.path.join(self.cache, "trio-v1.0.2-237-localCI", "MISSING")))
+
     def test_other_gh_error_defers(self):
         sym = tci.Symbolicator(self.cache, "o/r", lambda a, timeout=0: (1, "", "dial tcp: timeout"))
         with self.assertRaises(tci.Deferred):
