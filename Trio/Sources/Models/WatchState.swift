@@ -4,7 +4,10 @@ import SwiftUI
 struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
     var date: Date
     var currentGlucose: String?
+    /// Upstream field, no longer populated/sent (build 205 / P2) — the watch computes color locally.
     var currentGlucoseColorString: String?
+    /// Canonical mg/dL of the current reading (build 205 / P2), so the watch can compute the bubble color.
+    var currentGlucoseMgDl: Int?
     var trend: String?
     var delta: String?
     var glucoseValues: [WatchGlucoseObject] = []
@@ -39,14 +42,28 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
 
     var snoozeUntilDate: Date = .distantPast
 
+    /// G7 EGV sequence when the active CGM is G7 and it matches `latestGlucose`; watch attribution only.
+    var g7Sequence: Int?
+
+    /// G7 peripheral name from the active `G7CGMManager` when applicable; `nil` encodes as empty over WC.
+    var g7ActiveSensorName: String?
+    /// G7 sensor activation epoch (Int64 seconds) pairing with `g7ActiveSensorName` for identity (build 205 / C2); 0 = none.
+    var g7ActivationEpoch: Int64 = 0
+
+    /// UserDefaults key (phone) for the opt-in that tells the watch to use upstream G7 watch acquisition from its next launch.
+    static let g7WatchAcquisitionArmDefaultsKey = "Trio.watchG7UpstreamAcquisitionArm"
+    /// Whether the watch should use upstream G7 watch acquisition from its next launch.
+    var g7WatchAcquisitionArmEnabled: Bool = false
+
     static func == (lhs: WatchState, rhs: WatchState) -> Bool {
         lhs.date == rhs.date &&
             lhs.currentGlucose == rhs.currentGlucose &&
+            lhs.currentGlucoseMgDl == rhs.currentGlucoseMgDl &&
             lhs.trend == rhs.trend &&
             lhs.delta == rhs.delta &&
             lhs.glucoseValues.count == rhs.glucoseValues.count &&
             zip(lhs.glucoseValues, rhs.glucoseValues).allSatisfy {
-                $0.0.date == $0.1.date && $0.0.glucose == $0.1.glucose && $0.0.color == $0.1.color
+                $0.0.date == $0.1.date && $0.0.glucose == $0.1.glucose
             } &&
             lhs.minYAxisValue == rhs.minYAxisValue &&
             lhs.maxYAxisValue == rhs.maxYAxisValue &&
@@ -70,18 +87,22 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
             lhs.forecastConeMax == rhs.forecastConeMax &&
             lhs.forecastLines == rhs.forecastLines &&
             lhs.snoozeUntilDate == rhs.snoozeUntilDate &&
-            lhs.glucoseBobbleComplication == rhs.glucoseBobbleComplication
+            lhs.glucoseBobbleComplication == rhs.glucoseBobbleComplication &&
+            lhs.g7Sequence == rhs.g7Sequence &&
+            lhs.g7ActiveSensorName == rhs.g7ActiveSensorName &&
+            lhs.g7ActivationEpoch == rhs.g7ActivationEpoch &&
+            lhs.g7WatchAcquisitionArmEnabled == rhs.g7WatchAcquisitionArmEnabled
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(date)
         hasher.combine(currentGlucose)
+        hasher.combine(currentGlucoseMgDl)
         hasher.combine(trend)
         hasher.combine(delta)
         for value in glucoseValues {
             hasher.combine(value.date)
             hasher.combine(value.glucose)
-            hasher.combine(value.color)
         }
         hasher.combine(minYAxisValue)
         hasher.combine(maxYAxisValue)
@@ -106,5 +127,9 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
         hasher.combine(forecastLines)
         hasher.combine(snoozeUntilDate)
         hasher.combine(glucoseBobbleComplication)
+        hasher.combine(g7Sequence)
+        hasher.combine(g7ActiveSensorName)
+        hasher.combine(g7ActivationEpoch)
+        hasher.combine(g7WatchAcquisitionArmEnabled)
     }
 }
