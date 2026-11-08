@@ -276,6 +276,98 @@ class RunTests(Base):
         self.assertEqual((n, err, sizes), (120, None, [50, 50, 20]))
 
 
+class StatusEventTests(Base):
+    def opener(self, reqs, fail_on=None):
+        class Resp:
+            status = 202
+
+            def read(self):
+                return b""
+
+            def close(self):
+                pass
+
+        def op(req, timeout=0):
+            reqs.append(req)
+            if fail_on is not None and len(reqs) == fail_on:
+                raise urllib.error.HTTPError(req.full_url, 500, "err", {},
+                                             io.BytesIO(("boom " + TOKEN).encode()))
+            return Resp()
+        return op
+
+    def test_flag_off_no_crashes_no_posts(self):
+        reqs = []
+        rc, out, _ = self.run_main([], self.runner(), self.opener(reqs))
+        self.assertEqual((rc, reqs), (0, []))
+        self.assertNotIn("status=", out)
+
+    def test_flag_on_no_crashes_one_post(self):
+        reqs = []
+        rc, out, _ = self.run_main(["--status-event"], self.runner(), self.opener(reqs))
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(reqs), 1)
+        events = json.loads(reqs[0].data)
+        self.assertEqual(len(events), 1)
+        e = events[0]
+        self.assertEqual(e["event"], "crash_ingest_run")
+        self.assertEqual(e["ingest"], "mac_crash_ingest")
+        self.assertEqual(e["device"], "skipped")
+        self.assertIs(e["crash_post_error"], False)
+        for k in ("files", "bad", "skipped_type", "old", "duplicate", "new", "sent",
+                  "unsymbolicated", "deferred"):
+            self.assertEqual(e[k], 0)
+        self.assertTrue(e["dt"].endswith("Z"))
+        self.assertTrue(out.rstrip().endswith(" status=sent"))
+        self.assertEqual(e["message"] + " status=sent", out.rstrip())
+
+    def test_flag_on_with_crashes_status_last(self):
+        make_ips(self.src, "a.ips")
+        make_ips(self.src, "b.ips", incident="INC-2")
+        reqs = []
+        rc, out, _ = self.run_main(["--status-event"], self.runner(), self.opener(reqs))
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(reqs), 2)
+        crashes = json.loads(reqs[0].data)
+        self.assertEqual({e["event"] for e in crashes}, {"crash_report"})
+        status = json.loads(reqs[1].data)
+        self.assertEqual(len(status), 1)
+        self.assertEqual(status[0]["event"], "crash_ingest_run")
+        self.assertEqual(status[0]["sent"], len(crashes))
+        self.assertEqual(status[0]["new"], 2)
+        self.assertEqual(set(tci.load_state(self.state)["incident_ids"]), {"INC-1", "INC-2"})
+
+    def test_status_post_failure(self):
+        make_ips(self.src, "a.ips")
+        reqs = []
+        rc, out, err = self.run_main(["--status-event"], self.runner(),
+                                     self.opener(reqs, fail_on=2))
+        self.assertEqual(rc, 1)
+        self.assertNotIn(TOKEN, out + err)
+        self.assertIn("trio-crash-ingest: status post failed", err)
+        self.assertTrue(out.rstrip().endswith(" status=failed"))
+        self.assertEqual(set(tci.load_state(self.state)["incident_ids"]), {"INC-1"})
+
+    def test_status_failure_no_crashes_leaves_state_untouched(self):
+        reqs = []
+        rc, _, err = self.run_main(["--status-event"], self.runner(),
+                                   self.opener(reqs, fail_on=1))
+        self.assertEqual(rc, 1)
+        self.assertNotIn(TOKEN, err)
+        self.assertEqual(tci.load_state(self.state)["incident_ids"], {})
+
+    def test_dry_run_prints_status_json(self):
+        make_ips(self.src, "a.ips")
+        reqs = []
+        rc, out, _ = self.run_main(["--dry-run", "--status-event"], self.runner(),
+                                   self.opener(reqs))
+        self.assertEqual(rc, 0)
+        self.assertEqual(reqs, [])
+        objs = [json.loads(l) for l in out.splitlines() if l.startswith("{")]
+        self.assertEqual([o["event"] for o in objs], ["crash_report", "crash_ingest_run"])
+        self.assertEqual(objs[1]["new"], 1)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "sent.json")))
+
+
 def _dev(udid, platform="iOS", reality="physical", pairing="paired"):
     return {"hardwareProperties": {"platform": platform, "udid": udid, "reality": reality},
             "connectionProperties": {"pairingState": pairing}}

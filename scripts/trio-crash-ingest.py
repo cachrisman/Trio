@@ -658,6 +658,7 @@ def _main(argv, runner, opener):
     ap.add_argument("--no-device", action="store_true")
     ap.add_argument("--device", metavar="UDID", default=None)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--status-event", action="store_true")
     ap.add_argument("--max-age-days", type=float, default=30)
     ap.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR)
@@ -772,6 +773,27 @@ def _run(args, runner, opener, state_dir, cache_dir):
                 c["new"], c["sent"], c["unsymbolicated"]))
     if c["deferred"]:
         line += " deferred=%d" % c["deferred"]
+    if args.status_event:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        status = {
+            "dt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "message": line,
+            "event": "crash_ingest_run",
+            "ingest": "mac_crash_ingest",
+        }
+        for k in ("files", "bad", "skipped_type", "old", "duplicate", "new", "sent",
+                  "unsymbolicated", "deferred"):
+            status[k] = int(c[k])
+        status["device"] = device
+        status["crash_post_error"] = rc != 0
+        if args.dry_run:
+            print(json.dumps(status, sort_keys=True))
+        else:
+            _, serr = post_events([status], host, token, opener)
+            if serr:
+                print("trio-crash-ingest: status " + serr, file=sys.stderr)
+                rc = 1
+            line += " status=failed" if serr else " status=sent"
     print(line)
     return rc
 
