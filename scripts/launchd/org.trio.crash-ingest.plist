@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Hourly Trio crash-report ingest (TRIO-104): pulls Trio .ips off the paired iPhone
-  (idevicecrashreport -k, never removes them), symbolicates with the release dSYMs and
+  (xcrun devicectl, read-only: never deletes them), symbolicates with the release dSYMs and
   posts one event per crash to BetterStack. See scripts/trio-crash-ingest.py.
 
   Install:

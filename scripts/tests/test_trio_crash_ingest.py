@@ -276,28 +276,138 @@ class RunTests(Base):
         self.assertEqual((n, err, sizes), (120, None, [50, 50, 20]))
 
 
+def _dev(udid, platform="iOS", reality="physical", pairing="paired"):
+    return {"hardwareProperties": {"platform": platform, "udid": udid, "reality": reality},
+            "connectionProperties": {"pairingState": pairing}}
+
+
+def _f(rel, is_dir=False):
+    return {"relativePath": rel, "resources": {"isDirectory": is_dir}}
+
+
+class FakeDevicectl:
+    def __init__(self, devices=None, files=None, list_rc=0, files_rc=0,
+                 devices_raw=None, fail_copy=()):
+        self.devices, self.files = devices or [], files or []
+        self.list_rc, self.files_rc = list_rc, files_rc
+        self.devices_raw, self.fail_copy = devices_raw, fail_copy
+        self.calls, self.json_paths = [], []
+
+    def __call__(self, args, timeout=0):
+        self.calls.append(args)
+        if "--json-output" in args:
+            path = args[args.index("--json-output") + 1]
+            self.json_paths.append(path)
+        if args[2:4] == ["list", "devices"]:
+            if self.list_rc == 0:
+                with open(path, "w") as f:
+                    f.write(self.devices_raw if self.devices_raw is not None
+                            else json.dumps({"result": {"devices": self.devices}}))
+            return self.list_rc, "", ""
+        if args[2:5] == ["device", "info", "files"]:
+            if self.files_rc == 0:
+                with open(path, "w") as f:
+                    json.dump({"result": {"files": self.files}}, f)
+            return self.files_rc, "", ""
+        if args[2:5] == ["device", "copy", "from"]:
+            src = args[args.index("--source") + 1]
+            if src in self.fail_copy:
+                return 1, "", "boom"
+            with open(args[args.index("--destination") + 1], "w") as f:
+                f.write("{}")
+            return 0, "", ""
+        raise AssertionError(args)
+
+    def copies(self):
+        return [c for c in self.calls if c[2:5] == ["device", "copy", "from"]]
+
+
 class DeviceTests(Base):
-    def test_k_always_and_retry_with_n(self):
-        calls = []
+    def pull(self, fake, **kw):
+        self.stg = os.path.join(self.tmp, "state", "stg")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = tci.pull_device(self.stg, fake, **kw)
+        self.err = err.getvalue()
+        return status
 
-        def run(args, timeout=0):
-            calls.append(args)
-            return (1, "", "No device found") if len(calls) == 1 else (0, "", "")
+    def test_discovery_picks_paired_physical_ios(self):
+        fake = FakeDevicectl(devices=[
+            _dev("SIM", reality="virtual"), _dev("UNPAIRED", pairing="unpaired"),
+            _dev("WATCH", platform="watchOS"), _dev("PHONE")],
+            files=[_f("Trio-2026-11-03-073506.ips")])
+        self.assertEqual(self.pull(fake), "ok")
+        self.assertEqual(fake.copies()[0][fake.copies()[0].index("--device") + 1], "PHONE")
+        self.assertIn("device=PHONE listed=1 new=1 copy_failed=0", self.err)
+        self.assertTrue(os.path.exists(os.path.join(self.stg, "Trio-2026-11-03-073506.ips")))
 
-        with contextlib.redirect_stderr(io.StringIO()):
-            status = tci.pull_device(os.path.join(self.tmp, "stg"), run)
-        self.assertEqual(status, "ok")
-        self.assertEqual(len(calls), 2)
-        for c in calls:
-            self.assertIn("-k", c)
-            self.assertNotIn("--remove-all", c)
-        self.assertNotIn("-n", calls[0])
-        self.assertIn("-n", calls[1])
+    def test_device_flag_skips_discovery(self):
+        fake = FakeDevicectl(files=[_f("Trio-a.ips")])
+        self.assertEqual(self.pull(fake, device="UDID1"), "ok")
+        self.assertFalse(any(c[2:4] == ["list", "devices"] for c in fake.calls))
+        self.assertIn("UDID1", fake.calls[0])
 
-    def test_unreachable(self):
-        with contextlib.redirect_stderr(io.StringIO()):
-            status = tci.pull_device(os.path.join(self.tmp, "stg"), lambda a, timeout=0: (1, "No device", ""))
-        self.assertEqual(status, "unreachable")
+    def test_unreachable_cases(self):
+        for fake in (FakeDevicectl(devices=[_dev("U", pairing="unpaired")]),
+                     FakeDevicectl(list_rc=1),
+                     FakeDevicectl(devices_raw="not json"),
+                     FakeDevicectl(devices=[_dev("U")], files_rc=1)):
+            self.assertEqual(self.pull(fake), "unreachable")
+            self.assertEqual(fake.copies(), [])
+
+    def test_filtering(self):
+        fake = FakeDevicectl(files=[
+            _f("Trio-1.ips"), _f("Trio Watch App-2.ips"),
+            _f("ProxiedDevice-ab/Retired/Trio Watch App-3.ips"),
+            _f("Other-4.ips"), _f("Trio-5.txt"), _f("Trio-dir.ips", True),
+            _f("diskwrites_Trio-7.ips"), _f("Trio-6.diskwrites_resource.ips.gz"),
+            _f("JetsamEvent-8.ips")])
+        self.assertEqual(self.pull(fake, device="U"), "ok")
+        got = sorted(c[c.index("--source") + 1] for c in fake.copies())
+        self.assertEqual(got, ["ProxiedDevice-ab/Retired/Trio Watch App-3.ips",
+                               "Trio Watch App-2.ips", "Trio-1.ips"])
+        self.assertIn("listed=3 new=3", self.err)
+
+    def test_skips_existing_destination(self):
+        os.makedirs(os.path.join(self.tmp, "state", "stg"))
+        have = os.path.join(self.tmp, "state", "stg", "Trio-1.ips")
+        with open(have, "w") as f:
+            f.write("old")
+        fake = FakeDevicectl(files=[_f("Trio-1.ips"), _f("Trio-2.ips")])
+        self.pull(fake, device="U")
+        self.assertEqual(len(fake.copies()), 1)
+        with open(have) as fh:
+            self.assertEqual(fh.read(), "old")
+        self.assertIn("listed=2 new=1", self.err)
+
+    def test_rejects_unsafe_paths(self):
+        fake = FakeDevicectl(files=[_f("/etc/Trio-1.ips"), _f("../Trio-2.ips"),
+                                    _f("a/../../Trio-3.ips"), _f(""), _f("Trio-4\0.ips"),
+                                    _f("Trio-ok.ips")])
+        self.assertEqual(self.pull(fake, device="U"), "ok")
+        self.assertEqual([c[c.index("--source") + 1] for c in fake.copies()], ["Trio-ok.ips"])
+        self.assertIn("skipping unsafe path", self.err)
+
+    def test_failed_copy_leaves_no_partial_and_rest_copy(self):
+        fake = FakeDevicectl(files=[_f("Trio-1.ips"), _f("Trio-2.ips"), _f("Trio-3.ips")],
+                             fail_copy=("Trio-2.ips",))
+        self.assertEqual(self.pull(fake, device="U"), "ok")
+        names = sorted(os.listdir(self.stg))
+        self.assertEqual(names, ["Trio-1.ips", "Trio-3.ips"])
+        self.assertIn("new=2 copy_failed=1", self.err)
+
+    def test_read_only_verbs_and_temp_cleanup(self):
+        fake = FakeDevicectl(devices=[_dev("U")], files=[_f("Trio-1.ips")])
+        self.pull(fake)
+        for c in fake.calls:
+            self.assertEqual(c[:2], ["xcrun", "devicectl"])
+            joined = " ".join(c)
+            for bad in ("delete", "remove", "uninstall", "copy to"):
+                self.assertNotIn(bad, joined)
+        self.assertTrue(fake.json_paths)
+        for p in fake.json_paths:
+            self.assertFalse(os.path.exists(os.path.dirname(p)))
+        self.assertEqual(os.listdir(os.path.join(self.tmp, "state")), ["stg"])
 
 
 class SymbolicatorFetchTests(Base):

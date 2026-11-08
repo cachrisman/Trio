@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Pull Trio crash reports (.ips) off a paired iPhone, symbolicate them with
+"""Pull Trio crash reports (.ips) off a paired iPhone with Apple's devicectl
+(read-only: list devices, list files, copy from), symbolicate them with
 the build's dSYMs from GitHub releases, and post one structured JSON event per
 crash to BetterStack's HTTP log ingest, deduplicated by incident id.
 
@@ -529,18 +530,99 @@ def keychain_get(runner, service, account):
 
 # --------------------------------------------------------------- device pull
 
-def pull_device(staging, runner=run_cmd):
+def _devicectl_json(runner, args, timeout, tmpdir, name):
+    """Run a devicectl verb with --json-output; return (parsed JSON | None, error text)."""
+    out_path = os.path.join(tmpdir, name)
+    rc, _out, err = runner(args + ["--json-output", out_path], timeout=timeout)
+    if rc != 0:
+        return None, "rc=%s" % rc
+    try:
+        with open(out_path, encoding="utf-8") as f:
+            return json.load(f), ""
+    except (OSError, ValueError):
+        return None, "unparsable JSON"
+
+
+def _safe_relpath(rel):
+    if not isinstance(rel, str) or not rel or "\0" in rel or rel.startswith("/") \
+            or os.path.isabs(rel):
+        return False
+    return ".." not in rel.replace("\\", "/").split("/")
+
+
+def _find_device(runner, tmpdir):
+    data, why = _devicectl_json(
+        runner, ["xcrun", "devicectl", "list", "devices"], 120, tmpdir, "devices.json")
+    if data is None:
+        print("trio-crash-ingest: devicectl list devices failed (%s)" % why, file=sys.stderr)
+        return None
+    for d in _list(_dict(data.get("result") if isinstance(data, dict) else None).get("devices")):
+        hw = _dict(_dict(d).get("hardwareProperties"))
+        conn = _dict(_dict(d).get("connectionProperties"))
+        if (hw.get("reality") == "physical" and hw.get("platform") == "iOS"
+                and conn.get("pairingState") == "paired" and hw.get("udid")):
+            return hw["udid"]
+    print("trio-crash-ingest: no paired physical iOS device found", file=sys.stderr)
+    return None
+
+
+def pull_device(staging, runner=run_cmd, device=None):
+    # Why devicectl: under launchd, macOS Local Network privacy silently refuses
+    # the ad-hoc-signed Homebrew idevicecrashreport ('No route to host'). devicectl
+    # is Apple-signed and its networking goes through CoreDevice (verified under launchd).
+    # Only read-only verbs are used: list devices, device info files, device copy from.
     os.makedirs(staging, exist_ok=True)
-    # Always -k: without it idevicecrashreport deletes reports from the phone.
-    base = ["idevicecrashreport", "-k"]
-    tail = ["-f", "Trio", staging]
-    for extra in ([], ["-n"]):
-        rc, out, err = runner(base + extra + tail, timeout=TIMEOUT_DEVICE)
-        if rc == 0 and "No device" not in (out + err):
-            return "ok"
-        print("trio-crash-ingest: idevicecrashreport%s failed (rc=%s)" % (
-            " -n" if extra else "", rc), file=sys.stderr)
-    return "unreachable"
+    tmpdir = tempfile.mkdtemp(prefix=".devicectl-",
+                              dir=os.path.dirname(os.path.abspath(staging)))
+    try:
+        udid = device or _find_device(runner, tmpdir)
+        if not udid:
+            return "unreachable"
+        data, why = _devicectl_json(
+            runner, ["xcrun", "devicectl", "device", "info", "files", "--device", udid,
+                     "--domain-type", "systemCrashLogs"], 180, tmpdir, "files.json")
+        if data is None:
+            print("trio-crash-ingest: devicectl list crash logs failed (%s)" % why,
+                  file=sys.stderr)
+            return "unreachable"
+        files = _list(_dict(_dict(data).get("result")).get("files"))
+        kept = new = failed = 0
+        for entry in files:
+            entry = _dict(entry)
+            rel = entry.get("relativePath")
+            if _dict(entry.get("resources")).get("isDirectory"):
+                continue
+            if not _safe_relpath(rel):
+                print("trio-crash-ingest: skipping unsafe path %r" % (rel,), file=sys.stderr)
+                continue
+            base = rel.replace("\\", "/").rsplit("/", 1)[-1]
+            if not (base.endswith(".ips")
+                    and (base.startswith("Trio-") or base.startswith("Trio Watch App-"))):
+                continue
+            kept += 1
+            dest = os.path.join(staging, rel)
+            if os.path.exists(dest):
+                continue  # reports are immutable: already pulled
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            part = dest + ".partial"
+            rc, _o, _e = runner(
+                ["xcrun", "devicectl", "device", "copy", "from", "--device", udid,
+                 "--domain-type", "systemCrashLogs", "--source", rel,
+                 "--destination", part], timeout=120)
+            if rc == 0 and os.path.exists(part):
+                os.replace(part, dest)
+                new += 1
+            else:
+                failed += 1
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+        print("trio-crash-ingest: devicectl device=%s listed=%d new=%d copy_failed=%d"
+              % (udid, kept, new, failed), file=sys.stderr)
+        return "ok"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------- main
@@ -560,6 +642,7 @@ def _main(argv, runner, opener):
     ap = argparse.ArgumentParser(prog="trio-crash-ingest")
     ap.add_argument("--from", dest="from_dirs", action="append", default=[], metavar="DIR")
     ap.add_argument("--no-device", action="store_true")
+    ap.add_argument("--device", metavar="UDID", default=None)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max-age-days", type=float, default=30)
     ap.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
@@ -606,7 +689,7 @@ def _run(args, runner, opener, state_dir, cache_dir):
     dirs = list(args.from_dirs)
     if not args.no_device:
         staging = os.path.join(state_dir, "staging")
-        device = pull_device(staging, runner)
+        device = pull_device(staging, runner, device=args.device)
         dirs.append(staging)
 
     c = dict(files=0, bad=0, skipped_type=0, old=0, duplicate=0, new=0, sent=0,
