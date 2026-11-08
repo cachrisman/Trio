@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hourly Trio crash-report ingest (TRIO-104): pulls Trio .ips off the paired iPhone
+  (idevicecrashreport -k, never removes them), symbolicates with the release dSYMs and
+  posts one event per crash to BetterStack. See scripts/trio-crash-ingest.py.
+
+  Install:
+    cp scripts/launchd/org.trio.crash-ingest.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.trio.crash-ingest.plist
+  Run now:   launchctl kickstart gui/$(id -u)/org.trio.crash-ingest
+  Remove:    launchctl bootout gui/$(id -u)/org.trio.crash-ingest
+  Log:       ~/Library/Logs/trio-crash-ingest.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.trio.crash-ingest</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-I</string>
+        <string>/Users/charlie/Code/personal/health/diabetes/Trio-dev/scripts/trio-crash-ingest.py</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONDONTWRITEBYTECODE</key>
+        <string>1</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/Users/charlie/Library/Logs/trio-crash-ingest.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/charlie/Library/Logs/trio-crash-ingest.log</string>
+</dict>
+</plist>
