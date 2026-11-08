@@ -557,11 +557,21 @@ def _find_device(runner, tmpdir):
         print("trio-crash-ingest: devicectl list devices failed (%s)" % why, file=sys.stderr)
         return None
     for d in _list(_dict(data.get("result") if isinstance(data, dict) else None).get("devices")):
-        hw = _dict(_dict(d).get("hardwareProperties"))
-        conn = _dict(_dict(d).get("connectionProperties"))
-        if (hw.get("reality") == "physical" and hw.get("platform") == "iOS"
-                and conn.get("pairingState") == "paired" and hw.get("udid")):
-            return hw["udid"]
+        d = _dict(d)
+        props = _dict(d.get("properties"))
+        hw_new, conn_new = _dict(props.get("hardware")), _dict(props.get("connection"))
+        # hardwareProperties/connectionProperties are deprecated; fall back per field
+        hw_old = _dict(d.get("hardwareProperties"))
+        conn_old = _dict(d.get("connectionProperties"))
+
+        def pick(new, old, key):
+            return new[key] if key in new else old.get(key)
+
+        udid = pick(hw_new, hw_old, "udid")
+        if (pick(hw_new, hw_old, "reality") == "physical"
+                and pick(hw_new, hw_old, "platform") == "iOS"
+                and pick(conn_new, conn_old, "pairingState") == "paired" and udid):
+            return udid
     print("trio-crash-ingest: no paired physical iOS device found", file=sys.stderr)
     return None
 
@@ -605,6 +615,10 @@ def pull_device(staging, runner=run_cmd, device=None):
                 continue  # reports are immutable: already pulled
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             part = dest + ".partial"
+            try:
+                os.remove(part)  # stale leftover from an interrupted earlier run
+            except OSError:
+                pass
             rc, _o, _e = runner(
                 ["xcrun", "devicectl", "device", "copy", "from", "--device", udid,
                  "--domain-type", "systemCrashLogs", "--source", rel,
@@ -620,7 +634,7 @@ def pull_device(staging, runner=run_cmd, device=None):
                     pass
         print("trio-crash-ingest: devicectl device=%s listed=%d new=%d copy_failed=%d"
               % (udid, kept, new, failed), file=sys.stderr)
-        return "ok"
+        return "copy_failed" if new == 0 and failed > 0 else "ok"
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

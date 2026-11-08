@@ -281,13 +281,19 @@ def _dev(udid, platform="iOS", reality="physical", pairing="paired"):
             "connectionProperties": {"pairingState": pairing}}
 
 
+def _dev_props(udid, platform="iOS", reality="physical", pairing="paired"):
+    return {"properties": {"hardware": {"platform": platform, "udid": udid, "reality": reality},
+                           "connection": {"pairingState": pairing}}}
+
+
 def _f(rel, is_dir=False):
     return {"relativePath": rel, "resources": {"isDirectory": is_dir}}
 
 
 class FakeDevicectl:
     def __init__(self, devices=None, files=None, list_rc=0, files_rc=0,
-                 devices_raw=None, fail_copy=()):
+                 devices_raw=None, fail_copy=(), refuse_existing=False):
+        self.refuse_existing = refuse_existing
         self.devices, self.files = devices or [], files or []
         self.list_rc, self.files_rc = list_rc, files_rc
         self.devices_raw, self.fail_copy = devices_raw, fail_copy
@@ -313,7 +319,10 @@ class FakeDevicectl:
             src = args[args.index("--source") + 1]
             if src in self.fail_copy:
                 return 1, "", "boom"
-            with open(args[args.index("--destination") + 1], "w") as f:
+            dst = args[args.index("--destination") + 1]
+            if self.refuse_existing and os.path.exists(dst):
+                return 1, "", "exists"
+            with open(dst, "w") as f:
                 f.write("{}")
             return 0, "", ""
         raise AssertionError(args)
@@ -395,6 +404,37 @@ class DeviceTests(Base):
         names = sorted(os.listdir(self.stg))
         self.assertEqual(names, ["Trio-1.ips", "Trio-3.ips"])
         self.assertIn("new=2 copy_failed=1", self.err)
+
+    def test_all_copies_failed_is_copy_failed(self):
+        fake = FakeDevicectl(files=[_f("Trio-1.ips"), _f("Trio-2.ips")],
+                             fail_copy=("Trio-1.ips", "Trio-2.ips"))
+        self.assertEqual(self.pull(fake, device="U"), "copy_failed")
+        self.assertIn("new=0 copy_failed=2", self.err)
+
+    def test_nothing_to_copy_is_ok(self):
+        fake = FakeDevicectl(files=[])
+        self.assertEqual(self.pull(fake, device="U"), "ok")
+
+    def test_stale_partial_is_removed_before_copy(self):
+        os.makedirs(os.path.join(self.tmp, "state", "stg"))
+        stale = os.path.join(self.tmp, "state", "stg", "Trio-1.ips.partial")
+        with open(stale, "w") as f:
+            f.write("junk")
+        fake = FakeDevicectl(files=[_f("Trio-1.ips")], refuse_existing=True)
+        self.assertEqual(self.pull(fake, device="U"), "ok")
+        self.assertEqual(os.listdir(self.stg), ["Trio-1.ips"])
+
+    def test_discovery_properties_schema(self):
+        fake = FakeDevicectl(devices=[_dev_props("SIM", reality="virtual"), _dev_props("PHONE")],
+                             files=[_f("Trio-1.ips")])
+        self.assertEqual(self.pull(fake), "ok")
+        self.assertIn("device=PHONE", self.err)
+
+    def test_discovery_deprecated_schema_only(self):
+        fake = FakeDevicectl(devices=[_dev("UNPAIRED", pairing="unpaired"), _dev("PHONE")],
+                             files=[_f("Trio-1.ips")])
+        self.assertEqual(self.pull(fake), "ok")
+        self.assertIn("device=PHONE", self.err)
 
     def test_read_only_verbs_and_temp_cleanup(self):
         fake = FakeDevicectl(devices=[_dev("U")], files=[_f("Trio-1.ips")])
