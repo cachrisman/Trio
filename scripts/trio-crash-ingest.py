@@ -32,6 +32,7 @@ APP_IMAGE_NAMES = {"Trio", "Trio Watch App"}
 BATCH_SIZE = 50
 MAX_FRAMES = 40
 TIMEOUT_DEVICE = 600
+RELEASE_CONTEXTS = ("localCI", "cloudCI", "local")
 
 
 class Deferred(Exception):
@@ -145,31 +146,48 @@ class Symbolicator:
         self.cache_dir = cache_dir
         self.repo = repo
         self.runner = runner
-        self._maps = {}  # tag -> {uuid: (dwarf_path, arch)}
+        self._maps = {}  # tag -> {uuid: (dwarf_path, arch)}, or None when the tag is MISSING
+        self._resolved = {}  # (version, build) -> {uuid: (dwarf_path, arch)}
 
     @staticmethod
-    def tag_for(report):
+    def tags_for(report):
+        """Candidate release tags, in lookup order; [] when version/build are invalid."""
         h = report["header"]
         ver, build = h.get("app_version"), h.get("build_version")
         # The tag becomes a cache path component: accept only dotted digits.
         for v in (ver, build):
             if not isinstance(v, str) or not re.fullmatch(r"\d+(\.\d+)*", v):
-                return None
-        return "trio-v%s-%s-localCI" % (ver, build)
+                return []
+        # record-release.sh tags with one of these contexts; the report can't say which.
+        return ["trio-v%s-%s-%s" % (ver, build, ctx) for ctx in RELEASE_CONTEXTS]
 
-    def dsym_map(self, tag):
-        if tag is None:
+    def dsym_map_for(self, report):
+        tags = self.tags_for(report)
+        if not tags:
             return {}
+        key = (report["header"]["app_version"], report["header"]["build_version"])
+        if key not in self._resolved:
+            result = {}
+            for tag in tags:  # Deferred from any candidate propagates (retry next run)
+                m = self._tag_map(tag)
+                if m is not None:
+                    result = m
+                    break
+            self._resolved[key] = result
+        return self._resolved[key]
+
+    def _tag_map(self, tag):
+        """dSYM map for one tag, or None when that release/asset is MISSING."""
         if tag in self._maps:
             return self._maps[tag]
         d = os.path.join(self.cache_dir, tag)
         dsym = os.path.join(d, "dsym")
         if os.path.exists(os.path.join(d, "MISSING")):
-            self._maps[tag] = {}
+            self._maps[tag] = None
         else:
             if not os.path.isdir(dsym):
                 self._download(tag, d, dsym)
-            self._maps[tag] = self._build_map(dsym) if os.path.isdir(dsym) else {}
+            self._maps[tag] = self._build_map(dsym) if os.path.isdir(dsym) else None
         return self._maps[tag]
 
     def _download(self, tag, d, dsym):
@@ -232,7 +250,7 @@ class Symbolicator:
     def symbolicate(self, report, items):
         """items: [{uuid, base, offset}]; returns list of atos strings or None."""
         results = [None] * len(items)
-        dmap = self.dsym_map(self.tag_for(report))
+        dmap = self.dsym_map_for(report)
         if not dmap:
             return results
         by_image = {}

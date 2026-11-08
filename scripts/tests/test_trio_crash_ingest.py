@@ -563,10 +563,6 @@ class DownloadRecoveryTests(Base):
         self.assertTrue(os.path.isdir(os.path.join(d, "dsym")))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class HostAllowlistTests(Base):
     def test_accepted(self):
         for u in (tci.DEFAULT_HOST, "https://in.logs.betterstack.com/",
@@ -613,13 +609,15 @@ class TagTraversalTests(Base):
         for bad in ("../../x", "1/2", ["1"], 5, "", "1."):
             ips = make_ips(self.src, "a.ips", header={"build_version": bad})
             report = tci.parse_ips(ips)
-            self.assertIsNone(tci.Symbolicator.tag_for(report), bad)
+            self.assertEqual(tci.Symbolicator.tags_for(report), [], bad)
             ips = make_ips(self.src, "b.ips", header={"app_version": bad})
-            self.assertIsNone(tci.Symbolicator.tag_for(tci.parse_ips(ips)), bad)
+            self.assertEqual(tci.Symbolicator.tags_for(tci.parse_ips(ips)), [], bad)
 
     def test_good_version(self):
         report = tci.parse_ips(make_ips(self.src, "a.ips"))
-        self.assertEqual(tci.Symbolicator.tag_for(report), "trio-v1.0.2-237-localCI")
+        self.assertEqual(tci.Symbolicator.tags_for(report),
+                         ["trio-v1.0.2-237-localCI", "trio-v1.0.2-237-cloudCI",
+                          "trio-v1.0.2-237-local"])
 
     def test_traversal_unsymbolicated_no_gh_no_files(self):
         calls = []
@@ -635,3 +633,74 @@ class TagTraversalTests(Base):
         self.assertEqual(calls, [])
         self.assertFalse(os.path.exists(self.cache))
         self.assertEqual(sorted(os.listdir(self.tmp)), ["src"])
+
+
+class TagFallbackTests(Base):
+    TAGS = ["trio-v1.0.2-237-localCI", "trio-v1.0.2-237-cloudCI", "trio-v1.0.2-237-local"]
+    ITEMS = [{"uuid": UUID.lower(), "base": 4096, "offset": 8}]
+
+    def report(self):
+        return tci.parse_ips(make_ips(self.src, "a.ips"))
+
+    def fake(self, outcomes):
+        """outcomes: tag -> 'ok' | 'missing' | 'error'. Returns (runner, gh_tags)."""
+        gh_tags = []
+
+        def run(args, timeout=0):
+            if args[0] == "gh":
+                tag = args[3]
+                gh_tags.append(tag)
+                if outcomes[tag] == "missing":
+                    return 1, "", "release not found"
+                if outcomes[tag] == "error":
+                    return 1, "", "dial tcp: timeout"
+                d = args[args.index("-D") + 1]
+                with zipfile.ZipFile(os.path.join(d, "Trio.app.dSYM.zip"), "w") as z:
+                    z.writestr("Trio.app.dSYM/Contents/Resources/DWARF/Trio", "x")
+                return 0, "", ""
+            if args[0] == "dwarfdump":
+                return 0, "UUID: %s (arm64) %s\n" % (UUID, args[-1]), ""
+            if args[0] == "atos":
+                return 0, "main (in Trio) (App.swift:3)\n", ""
+            return 1, "", ""
+        return run, gh_tags
+
+    def test_local_used_when_localci_and_cloudci_missing(self):
+        run, gh_tags = self.fake({self.TAGS[0]: "missing", self.TAGS[1]: "missing",
+                                  self.TAGS[2]: "ok"})
+        sym = tci.Symbolicator(self.cache, "o/r", run)
+        res = sym.symbolicate(self.report(), self.ITEMS)
+        self.assertEqual(res, ["main (in Trio) (App.swift:3)"])
+        self.assertEqual(gh_tags, self.TAGS)
+        self.assertTrue(os.path.exists(os.path.join(self.cache, self.TAGS[0], "MISSING")))
+        self.assertTrue(os.path.isdir(os.path.join(self.cache, self.TAGS[2], "dsym")))
+        # resolution is cached per (version, build): no further gh calls
+        sym.symbolicate(self.report(), self.ITEMS)
+        self.assertEqual(gh_tags, self.TAGS)
+
+    def test_first_success_wins(self):
+        run, gh_tags = self.fake({self.TAGS[0]: "missing", self.TAGS[1]: "ok",
+                                  self.TAGS[2]: "ok"})
+        sym = tci.Symbolicator(self.cache, "o/r", run)
+        self.assertEqual(sym.symbolicate(self.report(), self.ITEMS), ["main (in Trio) (App.swift:3)"])
+        self.assertEqual(gh_tags, self.TAGS[:2])
+
+    def test_all_missing_unsymbolicated(self):
+        run, gh_tags = self.fake({t: "missing" for t in self.TAGS})
+        sym = tci.Symbolicator(self.cache, "o/r", run)
+        self.assertEqual(sym.symbolicate(self.report(), self.ITEMS), [None])
+        for t in self.TAGS:
+            self.assertTrue(os.path.exists(os.path.join(self.cache, t, "MISSING")), t)
+
+    def test_transient_error_after_missing_defers(self):
+        run, gh_tags = self.fake({self.TAGS[0]: "missing", self.TAGS[1]: "error",
+                                  self.TAGS[2]: "ok"})
+        sym = tci.Symbolicator(self.cache, "o/r", run)
+        with self.assertRaises(tci.Deferred):
+            sym.symbolicate(self.report(), self.ITEMS)
+        self.assertEqual(gh_tags, self.TAGS[:2])  # never fell through to "local"
+        self.assertFalse(os.path.exists(os.path.join(self.cache, self.TAGS[1], "MISSING")))
+
+
+if __name__ == "__main__":
+    unittest.main()
