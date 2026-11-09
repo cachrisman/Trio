@@ -1,6 +1,6 @@
-From 828144fa247389dace532915cb6f619ed37e2af5 Mon Sep 17 00:00:00 2001
+From e29588591efb8427c8e2d1b3f068f7b2f817c134 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 8 Nov 2026 11:31:04 +0100
+Date: Mon, 9 Nov 2026 12:49:36 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: fa7110af19fcac8ab0344f75342b6528f7e615a4
-Trio-Patch-Generated: 2026-11-08T10:30:49Z
+Trio-Patch-Feature-Tip: 0a0e982112fcdc5da1fd81a0b5406818b1d01c2e
+Trio-Patch-Generated: 2026-11-09T11:49:19Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -96,6 +96,7 @@ Trio-Patch-Source-Commits:
  5e8983f3034db072cf0673cb6c80ec274e084ea4 Merge dev (1.0.2.59) into feature/watch-g7; tree = dev + patches 01-05
  2dd3123d87ae0623ff511ce369202357712cc4a0 watch G7: port direct reading onto 1.0.2.59 and the merged G7SensorKit fork
  fa7110af19fcac8ab0344f75342b6528f7e615a4 watch G7: hop handle(_:) to main instead of assumeIsolated on BLE wakes (TRIO-103)
+ 0a0e982112fcdc5da1fd81a0b5406818b1d01c2e watch: one link_summary per G7 link, arm= on the heartbeat, describeReason maps .error (TRIO-107)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -171,10 +172,11 @@ Trio-Patch-Source-PatchIds:
  d967534f02e65718462a54b95236a00738b775d5
  22e28423c415ad242a8489aab406eec3f7c3006f
  804451871bac5b049c7d65f5559caca5e078f82d
+ 13e61118690d7c70f06d4b66e4b13b461984ef0e
 ---
  .../ComplicationLogForwarder.swift            |  171 ++
  .../ExtensionDelegate.swift                   |   95 +
- .../G7WatchSensorAdapter.swift                | 2009 ++++++++++++++
+ .../G7WatchSensorAdapter.swift                | 2011 ++++++++++++++
  .../Helper/WatchNotificationHandler.swift     |   36 +
  .../Helper/WatchResidentTelemetry.swift       |  137 +
  Trio Watch App Extension/TrioWatchApp.swift   |   32 +-
@@ -186,7 +188,7 @@ Trio-Patch-Source-PatchIds:
  .../WatchLogger+Legacy.swift                  |   18 +
  .../WatchState+Requests.swift                 |   22 +
  Trio Watch App Extension/WatchState.swift     | 2443 +++++++++++++++--
- .../WatchTelemetryRing.swift                  |  138 +
+ .../WatchTelemetryRing.swift                  |  351 +++
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |    4 +
@@ -205,7 +207,7 @@ Trio-Patch-Source-PatchIds:
  .../View/WatchConfigAppleWatchView.swift      |   15 +
  .../WatchConfig/WatchConfigStateModel.swift   |    9 +
  .../WatchManager/AppleWatchManager.swift      |  608 +++-
- 33 files changed, 9785 insertions(+), 403 deletions(-)
+ 33 files changed, 10000 insertions(+), 403 deletions(-)
  create mode 100644 Trio Watch App Extension/ComplicationLogForwarder.swift
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -501,10 +503,10 @@ index 000000000..f814cd123
 +}
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
 new file mode 100644
-index 000000000..cf27fb63f
+index 000000000..6d2de218a
 --- /dev/null
 +++ b/Trio Watch App Extension/G7WatchSensorAdapter.swift	
-@@ -0,0 +1,2009 @@
+@@ -0,0 +1,2011 @@
 +import Foundation
 +import G7SensorKit
 +import WatchKit
@@ -816,6 +818,7 @@ index 000000000..cf27fb63f
 +        let armEnabled = UserDefaults.standard.bool(forKey: Self.acquisitionArmDefaultsKey)
 +        G7BackgroundHints.isWatchAcquisitionArmEnabled = armEnabled
 +        isAcquisitionArmEnabled = armEnabled
++        WatchTelemetryRing.shared.setLinkArm(armEnabled ? "upstream" : "stock")
 +        sensor = G7Sensor(sensorID: UserDefaults.standard.string(forKey: Keys.sensorName))
 +        super.init()
 +        sensor.delegate = self
@@ -1365,7 +1368,7 @@ index 000000000..cf27fb63f
 +
 +        log(
 +            "heartbeat",
-+            "ext_session_active=\(lastKnownExtSessionActive) ext_session_state=\(extStateRaw) session_age_s=\(ageS) session_dead_since_s=\(deadSinceS) central_state=\(diag.centralStateRaw) scan_active=\(diag.isScanning) active_peripheral_state=\(diag.activePeripheralStateRaw ?? -1) connect_pending_age_s=\(diag.connectPendingAgeS ?? -1) s_since_discover=\(diag.secondsSinceLastDiscover ?? -1) last_rssi=\(diag.lastDiscoverRSSI ?? 127) connecting_ticks=\(consecutiveConnectingTicks)"
++            "ext_session_active=\(lastKnownExtSessionActive) ext_session_state=\(extStateRaw) session_age_s=\(ageS) session_dead_since_s=\(deadSinceS) central_state=\(diag.centralStateRaw) scan_active=\(diag.isScanning) active_peripheral_state=\(diag.activePeripheralStateRaw ?? -1) connect_pending_age_s=\(diag.connectPendingAgeS ?? -1) s_since_discover=\(diag.secondsSinceLastDiscover ?? -1) last_rssi=\(diag.lastDiscoverRSSI ?? 127) connecting_ticks=\(consecutiveConnectingTicks) arm=\(isAcquisitionArmEnabled ? "upstream" : "stock")"
 +        )
 +
 +        if !sessionNearExpiryLogged,
@@ -2313,6 +2316,7 @@ index 000000000..cf27fb63f
 +        case .expired: return "expired(2)"
 +        case .resignedFrontmost: return "resignedFrontmost(3)"
 +        case .suppressedBySystem: return "suppressedBySystem(4)"
++        case .error: return "error(-1)"
 +        @unknown default: return "unknown(\(r.rawValue))"
 +        }
 +    }
@@ -7352,10 +7356,10 @@ index 5c42512b1..304fa4379 100644
  }
 diff --git a/Trio Watch App Extension/WatchTelemetryRing.swift b/Trio Watch App Extension/WatchTelemetryRing.swift
 new file mode 100644
-index 000000000..1d9e5b4e6
+index 000000000..eb56de046
 --- /dev/null
 +++ b/Trio Watch App Extension/WatchTelemetryRing.swift	
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,351 @@
 +import Foundation
 +import G7SensorKit
 +
@@ -7404,7 +7408,14 @@ index 000000000..1d9e5b4e6
 +    private var contextScenePhase = "unknown"
 +    private var contextExtSessionActive = false
 +
++    private let linkTimeline = G7LinkTimeline()
++
 +    private init() {}
++
++    /// TRIO-107: acquisition arm (`upstream` / `stock`), set once by the adapter at init.
++    func setLinkArm(_ arm: String) {
++        linkTimeline.setArm(arm)
++    }
 +
 +    /// Adapter-driven context sync (sensor name + adapter session id + scene/ext for fork lines).
 +    func setContext(sensorName: String, g7Session: String, scenePhase: String, extSessionActive: Bool) {
@@ -7414,6 +7425,7 @@ index 000000000..1d9e5b4e6
 +        contextScenePhase = scenePhase
 +        contextExtSessionActive = extSessionActive
 +        lock.unlock()
++        linkTimeline.noteContext(scenePhase: scenePhase, g7Session: g7Session)
 +    }
 +
 +    /// Fork telemetry -> formatted `module=g7_core` line using emit-time context.
@@ -7439,6 +7451,16 @@ index 000000000..1d9e5b4e6
 +                WatchState.shared.bleWasRestored = true
 +                WatchState.shared.bleLastRestoreAt = Date()
 +            }
++        }
++        // TRIO-107: per-link summary. Same placement rules as above (after the enqueue, outside
++        // the ring's lock); the timeline has its own lock and non-matching events return at once.
++        for summary in linkTimeline.handle(event: payload.event, fields: payload.fields, ctxSession: sid) {
++            enqueue(G7StructuredTelemetryLogLine.formatBleModule(
++                sensorName: name,
++                event: "link_summary",
++                fields: summary.fields + " scene_phase=\(scene) ext_session_active=\(extActive) connect_seen=\(summary.connectSeen)",
++                g7Session: summary.session
++            ))
 +        }
 +    }
 +
@@ -7492,6 +7514,201 @@ index 000000000..1d9e5b4e6
 +        while let line = dequeueLine() {
 +            WatchLogger.shared.info(.g7, line)
 +        }
++    }
++}
++
++/// TRIO-107: one `link_summary` per G7 link. Fed from `WatchTelemetryRing.enqueueCoreTelemetry`,
++/// which relies on the library emitting its events in order on one serial queue, so every earlier
++/// event of a link is recorded before that link's `disconnect` arrives.
++final class G7LinkTimeline: @unchecked Sendable {
++    struct Summary {
++        let fields: String
++        let session: String
++        let connectSeen: Bool
++    }
++
++    private struct Link {
++        let t0: Date
++        let restored: Bool
++        var session: String?
++        var ready: Date?
++        var sub: Date?
++        var auth03: Date?
++        var auth05: Date?
++        var egv: Date?
++        var rssiAt: Date?
++        var rssiValue: String?
++        var gattFail: String?
++    }
++
++    private let lock = NSLock()
++    private var links: [String: Link] = [:]
++    private var lastOpenKey: String?
++    private var pendingRestored: Set<String> = []
++    private var arm = "unknown"
++    private var scenePhaseActive = false
++    private var lastLeftActive: Date?
++    private let createdAt = Date()
++    private let processStart: Date
++
++    init() {
++        processStart = Self.readProcessStart() ?? createdAt
++    }
++
++    private static func readProcessStart() -> Date? {
++        var info = kinfo_proc()
++        var size = MemoryLayout<kinfo_proc>.stride
++        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
++        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
++        let tv = info.kp_proc.p_starttime
++        guard tv.tv_sec > 0 else { return nil }
++        return Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1_000_000)
++    }
++
++    func setArm(_ value: String) {
++        lock.lock()
++        arm = value
++        lock.unlock()
++    }
++
++    func noteContext(scenePhase: String, g7Session: String) {
++        lock.lock()
++        let isActive = scenePhase == "active"
++        if scenePhaseActive, !isActive { lastLeftActive = Date() }
++        scenePhaseActive = isActive
++        if g7Session != "nil" {
++            for key in links.keys { links[key]?.session = g7Session }
++        }
++        lock.unlock()
++    }
++
++    private static let staleAfter: TimeInterval = 600
++
++    /// Returns the summaries to emit for the links this event closes (usually none).
++    func handle(event: String, fields: String, ctxSession: String) -> [Summary] {
++        switch event {
++        case "did_connect", "restored_didconnect_synthesized", "gatt_ready", "auth_notify_subscribed",
++             "auth_value_received", "egv_received", "rssi_read", "command_timeout",
++             "configure_block_skipped", "configure_retry_exhausted", "disconnect":
++            break
++        default:
++            return []
++        }
++        let now = Date()
++        lock.lock()
++        defer { lock.unlock() }
++        switch event {
++        case "restored_didconnect_synthesized":
++            if let id = Self.value("peripheral", in: fields) { pendingRestored.insert(id) }
++            return []
++        case "did_connect":
++            guard let id = Self.value("peripheral", in: fields) else { return [] }
++            var result: [Summary] = []
++            if let old = links[id] {
++                result.append(summarize(old, key: id, end: "superseded", endAt: now, wasRemote: "nil"))
++            }
++            // A link whose `disconnect` never arrives (e.g. a stray peripheral dropped by the manager
++            // first) is closed as `end=stale` once it is older than any real link, so `links` stays bounded.
++            for (key, link) in links where now.timeIntervalSince(link.t0) > Self.staleAfter {
++                result.append(summarize(link, key: key, end: "stale", endAt: now, wasRemote: "nil"))
++            }
++            let restored = pendingRestored.remove(id) != nil
++            links[id] = Link(t0: now, restored: restored, session: ctxSession == "nil" ? nil : ctxSession)
++            lastOpenKey = id
++            return result
++        case "disconnect":
++            let wasRemote = Self.value("was_remote", in: fields) ?? "nil"
++            if let id = Self.value("peripheral", in: fields), let link = links[id] {
++                return [summarize(link, key: id, end: "disconnect", endAt: now, wasRemote: wasRemote)]
++            }
++            let id = Self.value("peripheral", in: fields) ?? "unknown"
++            return [unknownSummary(key: id, wasRemote: wasRemote, session: ctxSession)]
++        default:
++            break
++        }
++        let key = Self.value("peripheral", in: fields) ?? lastOpenKey
++        guard let key, var link = links[key] else { return [] }
++        switch event {
++        case "gatt_ready":
++            if link.ready == nil { link.ready = now }
++        case "auth_notify_subscribed":
++            if link.sub == nil { link.sub = now }
++        case "auth_value_received":
++            let opcode = Self.value("opcode", in: fields)
++            if opcode == "0x03", link.auth03 == nil { link.auth03 = now }
++            if opcode == "0x05", link.auth05 == nil { link.auth05 = now }
++        case "egv_received":
++            if link.egv == nil { link.egv = now }
++        case "rssi_read":
++            if link.rssiAt == nil {
++                link.rssiAt = now
++                link.rssiValue = Self.value("value", in: fields) ?? "nil"
++            }
++        case "command_timeout":
++            if link.gattFail == nil {
++                link.gattFail = "command_timeout:" + (Self.value("op", in: fields) ?? "nil")
++            }
++        default: // configure_block_skipped, configure_retry_exhausted
++            if link.gattFail == nil { link.gattFail = event }
++        }
++        links[key] = link
++        return []
++    }
++
++    // Caller holds `lock`.
++    private func summarize(_ link: Link, key: String, end: String, endAt: Date, wasRemote: String) -> Summary {
++        links[key] = nil
++        if lastOpenKey == key { lastOpenKey = links.max { $0.value.t0 < $1.value.t0 }?.key }
++        func ms(_ d: Date?) -> Int {
++            guard let d else { return -1 }
++            return Int(d.timeIntervalSince(link.t0) * 1000)
++        }
++        let egv = ms(link.egv)
++        let outcome: String
++        if egv >= 0 {
++            outcome = "egv"
++        } else if link.auth03 != nil || link.auth05 != nil {
++            outcome = "auth_no_egv"
++        } else if link.sub != nil {
++            outcome = "no_auth"
++        } else {
++            outcome = "no_gatt"
++        }
++        let body = "outcome=\(outcome) end=\(end) peripheral=\(key.prefix(8)) restored=\(link.restored) "
++            + "ready_ms=\(ms(link.ready)) sub_ms=\(ms(link.sub)) auth03_ms=\(ms(link.auth03)) "
++            + "auth05_ms=\(ms(link.auth05)) egv_ms=\(egv) rssi_ms=\(ms(link.rssiAt)) "
++            + "rssi=\(link.rssiValue ?? "nil") gatt_fail=\(link.gattFail ?? "none") "
++            + "dur_ms=\(ms(endAt)) was_remote=\(wasRemote) "
++        return Summary(fields: body + tail(), session: link.session ?? "nil", connectSeen: true)
++    }
++
++    // Caller holds `lock`.
++    private func unknownSummary(key: String, wasRemote: String, session: String) -> Summary {
++        let body = "outcome=unknown end=disconnect peripheral=\(key.prefix(8)) restored=false "
++            + "ready_ms=-1 sub_ms=-1 auth03_ms=-1 auth05_ms=-1 egv_ms=-1 rssi_ms=-1 rssi=nil "
++            + "gatt_fail=none dur_ms=-1 was_remote=\(wasRemote) "
++        return Summary(fields: body + tail(), session: session, connectSeen: false)
++    }
++
++    // Caller holds `lock`. Trailing arm / process_age_s / since_fg_s fields.
++    private func tail() -> String {
++        let now = Date()
++        let sinceFg: Int
++        if scenePhaseActive {
++            sinceFg = 0
++        } else if let left = lastLeftActive {
++            sinceFg = Int(now.timeIntervalSince(left))
++        } else {
++            sinceFg = -1
++        }
++        return "arm=\(arm) process_age_s=\(Int(now.timeIntervalSince(processStart))) since_fg_s=\(sinceFg)"
++    }
++
++    private static func value(_ key: String, in fields: String) -> String? {
++        guard let r = fields.range(of: key + "=") else { return nil }
++        if r.lowerBound != fields.startIndex, fields[fields.index(before: r.lowerBound)] != " " { return nil }
++        let rest = fields[r.upperBound...]
++        return String(rest.prefix { $0 != " " })
 +    }
 +}
 diff --git a/Trio Watch App Tests/Unit Tests.swift b/Trio Watch App Tests/Unit Tests.swift
