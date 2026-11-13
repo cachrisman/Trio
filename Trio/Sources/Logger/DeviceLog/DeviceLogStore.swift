@@ -82,6 +82,11 @@ final class DeviceLogStore: @unchecked Sendable {
         message: String,
         completion: ((Error?) -> Void)? = nil
     ) {
+        CloudDeviceLogForwarder.shared.forward(
+            managerIdentifier: managerIdentifier,
+            typeRawValue: type.rawValue,
+            message: message
+        )
         let date = Date()
         queue.async {
             if let deviceLog = self.deviceLog {

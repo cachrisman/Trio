@@ -216,7 +216,10 @@ final class BaseTrioAlertManager: TrioAlertManager, Injectable {
     // MARK: - Issue / Retract
 
     func issueAlert(_ alert: Alert) {
-        info(.alerts, "Alert \(alert.identifier.value) issued, level \(alert.interruptionLevel)")
+        let content = alert.foregroundContent ?? alert.backgroundContent
+        let contentText = "\(content.title) \(content.body)"
+            .components(separatedBy: .newlines).joined(separator: " ")
+        info(.alerts, "Alert \(alert.identifier.value) issued, level \(alert.interruptionLevel): \(contentText)")
 
         let now = Date()
         let fireDate: Date
@@ -360,6 +363,7 @@ final class BaseTrioAlertManager: TrioAlertManager, Injectable {
     // MARK: - Acknowledgement
 
     func handleAcknowledgement(identifier: Alert.Identifier) {
+        info(.alerts, "Alert \(identifier.value) acknowledged")
         modalScheduler.unschedule(identifier: identifier)
         userNotificationScheduler.unschedule(identifier: identifier)
         Task { @MainActor in
@@ -421,12 +425,17 @@ final class BaseTrioAlertManager: TrioAlertManager, Injectable {
         // The snooze path acknowledges too, so history and the issuing device
         // still see the user's response.
         let duration = Self.snoozeDuration(forActionIdentifier: response.actionIdentifier)
+        info(
+            .alerts,
+            "Alert \(identifier.value) notification response \(response.actionIdentifier), snooze \(Int(duration))s"
+        )
         modalScheduler.snooze(identifier: identifier, duration: duration)
         userNotificationScheduler.unschedule(identifier: identifier)
     }
 
     func acknowledgeAllOutstanding() {
         let outstanding = alertHistoryStorage.unacknowledgedAlertsWithinLast24Hours()
+        info(.alerts, "Acknowledging all outstanding alerts (\(outstanding.count))")
         for entry in outstanding {
             let identifier = Alert.Identifier(
                 managerIdentifier: entry.managerIdentifier,
@@ -549,6 +558,7 @@ extension BaseTrioAlertManager: TrioModalAlertResponder, TrioUserNotificationAle
     func requestSnooze(identifier: Alert.Identifier, duration: TimeInterval) {
         // Dismissal is the user's response — full ack (history + device) first.
         handleAcknowledgement(identifier: identifier)
+        info(.alerts, "Alert \(identifier.value) snoozed for \(Int(duration))s")
         let untilDate = duration > 0 ? Date().addingTimeInterval(duration) : .distantPast
         if let glucoseType = GlucoseAlertType(slug: identifier.alertIdentifier) {
             broadcaster.notify(GlucoseSnoozeObserver.self, on: .main) { (observer: GlucoseSnoozeObserver) in
