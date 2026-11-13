@@ -1,12 +1,12 @@
-From 70c0b2193455b78f04f96a6430c8c145c6fee788 Mon Sep 17 00:00:00 2001
+From 6424d9d7cfbe891dd6a1e34b2721a607cd9249aa Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 13 Nov 2026 22:55:55 +0100
+Date: Fri, 13 Nov 2026 23:38:10 +0100
 Subject: [PATCH] feat: glucose-bobble-shared
 
 Trio-Patch-Source-Branch: feature/glucose-bobble-shared
 Trio-Patch-Base: 968c359ecbc9dcb754ec387947246388768a6193
-Trio-Patch-Feature-Tip: dd284fd7c97a1abd07e44ae6773d57970820de59
-Trio-Patch-Generated: 2026-11-13T21:55:39Z
+Trio-Patch-Feature-Tip: 2fe7c49217679323744809743e39f62c8a1d0a39
+Trio-Patch-Generated: 2026-11-13T22:37:59Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  846a186d1af3deaa5a9ef91be188bd0f8cfaab6c Let the Glucose Bobble place its trend arrow inside the ring
@@ -14,6 +14,7 @@ Trio-Patch-Source-Commits:
  b471e22922aae4d51425c508069548738bd24c9b Glucose Bobble: keep inside-ring text clear of a 45 degree arrow
  95e6d1cda9c71ce91d686d19bc35586d4816fc4b Glucose Bobble: optional solid ring colour
  dd284fd7c97a1abd07e44ae6773d57970820de59 glucose-bobble: inside-ring trend wedges and baseline-anchored text (TRIO-070)
+ 2fe7c49217679323744809743e39f62c8a1d0a39 glucose-bobble: inside-ring text baselines actually land on the canvas centre; layout F sizes (TRIO-070)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
@@ -22,12 +23,13 @@ Trio-Patch-Source-PatchIds:
  def34e438c168472070067e0e2605e5a6f11564c
  875214c847e8fe48e027ad302e2c563cd3e17ec6
  c32dc86bb6524108dec926246d326f28d0137cc9
+ bcd11bb3b7725d55b1a36b363dad407b38b58b85
 ---
  .../Home/View/Header/CurrentGlucoseView.swift |  15 -
  .../ContactImage/ContactPicture.swift         |  19 +-
- .../GlucoseBobbleContactView.swift            | 449 ++++++++++++++++--
+ .../GlucoseBobbleContactView.swift            | 457 ++++++++++++++++--
  Trio/Sources/Views/Triangle.swift             |  17 +
- 4 files changed, 436 insertions(+), 64 deletions(-)
+ 4 files changed, 444 insertions(+), 64 deletions(-)
  create mode 100644 Trio/Sources/Views/Triangle.swift
 
 diff --git a/Trio/Sources/Modules/Home/View/Header/CurrentGlucoseView.swift b/Trio/Sources/Modules/Home/View/Header/CurrentGlucoseView.swift
@@ -87,10 +89,10 @@ index b24a5b3f3..9887b23c2 100644
  
      private static func makeGlucoseBobbleImage(
 diff --git a/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift b/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift
-index f1322b5c5..4baa29282 100644
+index f1322b5c5..1eacc37f5 100644
 --- a/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift
 +++ b/Trio/Sources/Services/ContactImage/GlucoseBobbleContactView.swift
-@@ -9,23 +9,178 @@ struct GlucoseBobbleContactView: View {
+@@ -9,23 +9,185 @@ struct GlucoseBobbleContactView: View {
      let deltaText: String?
      let glucoseColor: Color
      let rotationDegrees: Double
@@ -118,14 +120,14 @@ index f1322b5c5..4baa29282 100644
 +        var glucoseFontSize: CGFloat {
 +            switch self {
 +            case .outsideRing: return 66
-+            case .insideRing: return 110
++            case .insideRing: return 104
 +            }
 +        }
 +
 +        var secondLineFontSize: CGFloat {
 +            switch self {
 +            case .outsideRing: return 26
-+            case .insideRing: return 50
++            case .insideRing: return 54
 +            }
 +        }
 +
@@ -160,28 +162,35 @@ index f1322b5c5..4baa29282 100644
 +        var glucoseTextFrameWidth: CGFloat {
 +            switch self {
 +            case .outsideRing: return textWidth
-+            case .insideRing: return 200
++            case .insideRing: return 196
 +            }
 +        }
 +
 +        var secondLineTextFrameWidth: CGFloat {
 +            switch self {
 +            case .outsideRing: return textWidth
-+            case .insideRing: return 140
++            case .insideRing: return 172
 +            }
 +        }
 +
 +        var glucoseBaselineOffset: CGFloat {
 +            switch self {
 +            case .outsideRing: return 0
-+            case .insideRing: return 2
++            case .insideRing: return -4
 +            }
 +        }
 +
 +        var secondLineBaselineOffset: CGFloat {
 +            switch self {
 +            case .outsideRing: return 0
-+            case .insideRing: return 66
++            case .insideRing: return 50
++            }
++        }
++
++        var secondLineItemSpacing: CGFloat {
++            switch self {
++            case .outsideRing: return 8
++            case .insideRing: return 5
 +            }
 +        }
 +
@@ -275,7 +284,7 @@ index f1322b5c5..4baa29282 100644
      }
  
      private var triangleColor: Color {
-@@ -44,47 +199,279 @@ struct GlucoseBobbleContactView: View {
+@@ -44,47 +206,280 @@ struct GlucoseBobbleContactView: View {
      }
  
      var body: some View {
@@ -363,7 +372,8 @@ index f1322b5c5..4baa29282 100644
 +            }
 +            .rotationEffect(.degrees(rotationDegrees))
 +
-+            insideRingTextLayer
++            positionedInsideRingGlucoseText
++            positionedInsideRingSecondLine
 +        }
 +        .frame(width: Layout.nativeSize, height: Layout.nativeSize)
 +    }
@@ -384,7 +394,7 @@ index f1322b5c5..4baa29282 100644
 +
 +    @ViewBuilder private var secondLine: some View {
 +        if minutesAgoText != nil || deltaText != nil {
-+            HStack(spacing: 8) {
++            HStack(spacing: trendArrowPlacement.secondLineItemSpacing) {
 +                if let minutesAgoText {
 +                    Text(minutesAgoText)
 +                }
@@ -405,18 +415,18 @@ index f1322b5c5..4baa29282 100644
 +        }
 +    }
 +
-+    private var insideRingTextLayer: some View {
-+        ZStack {
-+            glucoseTextLine
-+                .frame(width: trendArrowPlacement.glucoseTextFrameWidth)
-+                .alignmentGuide(VerticalAlignment.center) { $0[.firstTextBaseline] }
-+                .offset(y: trendArrowPlacement.glucoseBaselineOffset)
++    private var positionedInsideRingGlucoseText: some View {
++        glucoseTextLine
++            .frame(width: trendArrowPlacement.glucoseTextFrameWidth)
++            .alignmentGuide(VerticalAlignment.center) { $0[.firstTextBaseline] }
++            .offset(y: trendArrowPlacement.glucoseBaselineOffset)
++    }
 +
-+            secondLine
-+                .frame(width: trendArrowPlacement.secondLineTextFrameWidth)
-+                .alignmentGuide(VerticalAlignment.center) { $0[.firstTextBaseline] }
-+                .offset(y: trendArrowPlacement.secondLineBaselineOffset)
-+        }
++    private var positionedInsideRingSecondLine: some View {
++        secondLine
++            .frame(width: trendArrowPlacement.secondLineTextFrameWidth)
++            .alignmentGuide(VerticalAlignment.center) { $0[.firstTextBaseline] }
++            .offset(y: trendArrowPlacement.secondLineBaselineOffset)
 +    }
 +
 +    @ViewBuilder private var insideRingArrowLayer: some View {
