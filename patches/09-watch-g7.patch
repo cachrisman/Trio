@@ -1,6 +1,6 @@
-From e29588591efb8427c8e2d1b3f068f7b2f817c134 Mon Sep 17 00:00:00 2001
+From 219238c6f4e58f299d251b4e945afcb3916186db Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Mon, 9 Nov 2026 12:49:36 +0100
+Date: Fri, 13 Nov 2026 22:05:27 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 0a0e982112fcdc5da1fd81a0b5406818b1d01c2e
-Trio-Patch-Generated: 2026-11-09T11:49:19Z
+Trio-Patch-Feature-Tip: 0c85484b30d5631a3fe000a2d346ef547aa3e73f
+Trio-Patch-Generated: 2026-11-13T21:05:06Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -97,6 +97,7 @@ Trio-Patch-Source-Commits:
  2dd3123d87ae0623ff511ce369202357712cc4a0 watch G7: port direct reading onto 1.0.2.59 and the merged G7SensorKit fork
  fa7110af19fcac8ab0344f75342b6528f7e615a4 watch G7: hop handle(_:) to main instead of assumeIsolated on BLE wakes (TRIO-103)
  0a0e982112fcdc5da1fd81a0b5406818b1d01c2e watch: one link_summary per G7 link, arm= on the heartbeat, describeReason maps .error (TRIO-107)
+ 0c85484b30d5631a3fe000a2d346ef547aa3e73f watch-g7: take upstream 1.0.2.71 watch changes into the patch 09 files
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -173,6 +174,7 @@ Trio-Patch-Source-PatchIds:
  22e28423c415ad242a8489aab406eec3f7c3006f
  804451871bac5b049c7d65f5559caca5e078f82d
  13e61118690d7c70f06d4b66e4b13b461984ef0e
+ a65d451a9ad873d3a0d278f5aef129ad01730171
 ---
  .../ComplicationLogForwarder.swift            |  171 ++
  .../ExtensionDelegate.swift                   |   95 +
@@ -187,7 +189,7 @@ Trio-Patch-Source-PatchIds:
  .../WatchGlucoseHistoryStore.swift            |  225 ++
  .../WatchLogger+Legacy.swift                  |   18 +
  .../WatchState+Requests.swift                 |   22 +
- Trio Watch App Extension/WatchState.swift     | 2443 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2439 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  351 +++
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
@@ -207,7 +209,7 @@ Trio-Patch-Source-PatchIds:
  .../View/WatchConfigAppleWatchView.swift      |   15 +
  .../WatchConfig/WatchConfigStateModel.swift   |    9 +
  .../WatchManager/AppleWatchManager.swift      |  608 +++-
- 33 files changed, 10000 insertions(+), 403 deletions(-)
+ 33 files changed, 9997 insertions(+), 402 deletions(-)
  create mode 100644 Trio Watch App Extension/ComplicationLogForwarder.swift
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -2866,13 +2868,13 @@ index 20b50f21f..7b0a56b21 100644
              Spacer()
  
 diff --git a/Trio Watch App Extension/Views/TrioMainWatchView.swift b/Trio Watch App Extension/Views/TrioMainWatchView.swift
-index 7ea3b95eb..3e4e47836 100644
+index ad26386a9..48afa7272 100644
 --- a/Trio Watch App Extension/Views/TrioMainWatchView.swift	
 +++ b/Trio Watch App Extension/Views/TrioMainWatchView.swift	
-@@ -3,10 +3,11 @@ import SwiftUI
- import WatchKit
+@@ -4,10 +4,11 @@ import WatchKit
  
  struct TrioMainWatchView: View {
+     @Environment(\.scenePhase) private var scenePhase
 -    @State private var state = WatchState()
 +    @State private var state = WatchState.shared
  
@@ -2883,7 +2885,7 @@ index 7ea3b95eb..3e4e47836 100644
      @State private var rotationDegrees: Double = 0.0
      @State private var showingTempTargetSheet = false
  
-@@ -25,18 +26,17 @@ struct TrioMainWatchView: View {
+@@ -26,18 +27,17 @@ struct TrioMainWatchView: View {
          guard let lastUpdateTimestamp = state.lastWatchStateUpdate else {
              return true
          }
@@ -2906,7 +2908,7 @@ index 7ea3b95eb..3e4e47836 100644
      }
  
      // Active adjustment indicator
-@@ -62,12 +62,32 @@ struct TrioMainWatchView: View {
+@@ -63,12 +63,32 @@ struct TrioMainWatchView: View {
      var body: some View {
          NavigationStack(path: $navigationPath) {
              TabView(selection: $currentPage) {
@@ -2941,7 +2943,7 @@ index 7ea3b95eb..3e4e47836 100644
                      )
  
                      if state.showSyncingAnimation {
-@@ -85,86 +105,140 @@ struct TrioMainWatchView: View {
+@@ -86,86 +106,140 @@ struct TrioMainWatchView: View {
                                      7 // Font .body == 14, so half of default size for the SF Symbol image
                              )
                      }
@@ -4595,10 +4597,10 @@ index 000000000..106dabd9d
 +    }
 +}
 diff --git a/Trio Watch App Extension/WatchState+Requests.swift b/Trio Watch App Extension/WatchState+Requests.swift
-index 30799a2c8..a72fc60c3 100644
+index fc8b348a6..c41b0cc19 100644
 --- a/Trio Watch App Extension/WatchState+Requests.swift	
 +++ b/Trio Watch App Extension/WatchState+Requests.swift	
-@@ -178,12 +178,16 @@ extension WatchState {
+@@ -190,12 +190,16 @@ extension WatchState {
      func requestWatchStateUpdate() {
          guard let session = session else {
              WatchLogger.shared.warning(.connectivity, "No session for a state update")
@@ -4615,7 +4617,7 @@ index 30799a2c8..a72fc60c3 100644
              return
          }
  
-@@ -194,9 +198,27 @@ extension WatchState {
+@@ -206,9 +210,27 @@ extension WatchState {
  
              session.sendMessage(message, replyHandler: nil) { error in
                  WatchLogger.shared.warning(.connectivity, "Requesting a state update failed", error: error)
@@ -4644,7 +4646,7 @@ index 30799a2c8..a72fc60c3 100644
      }
  
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 5c42512b1..304fa4379 100644
+index 27b8897cc..beb4bb533 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,109 @@
@@ -4812,9 +4814,9 @@ index 5c42512b1..304fa4379 100644
      /// used to store carbs for combined meal-bolus-treatments
      var carbsAmount: Int = 0
      var fatAmount: Int = 0
-@@ -44,13 +158,15 @@ import WidgetKit
-     var bolusAmount: Double = 0.0
-     var confirmationProgress: Double = 0.0
+@@ -52,13 +166,15 @@ import WidgetKit
+         comment: "Watch message when a carbs or bolus entry was too old to send"
+     )
  
 -    // Safety limits
 +    // MARK: - Safety limits
@@ -4830,7 +4832,7 @@ index 5c42512b1..304fa4379 100644
      var bolusIncrement: Decimal = 0.05
      var confirmBolusFaster: Bool = false
  
-@@ -62,43 +178,424 @@ import WidgetKit
+@@ -70,7 +186,8 @@ import WidgetKit
      var forecastConeMax: [Double] = []
      var forecastLines: [String: [Double]] = [:] // "iob" / "cob" / "uam" / "zt" -> values
  
@@ -4840,8 +4842,9 @@ index 5c42512b1..304fa4379 100644
      var showCommsAnimation: Bool = false
      var showAcknowledgmentBanner: Bool = false
      var acknowledgementStatus: AcknowledgementStatus = .pending
-     var acknowledgmentMessage: String = ""
-     var shouldNavigateToRoot: Bool = true
+@@ -93,36 +210,416 @@ import WidgetKit
+         comment: "Error message when a bolus of zero or less is requested"
+     )
  
 -    // Bolus calculation progress
 -    var showBolusCalculationProgress: Bool = false
@@ -5269,8 +5272,8 @@ index 5c42512b1..304fa4379 100644
      }
  
      /// Configures the WatchConnectivity session if supported on the device
-@@ -114,6 +611,515 @@ import WidgetKit
-         }
+@@ -171,6 +668,515 @@ import WidgetKit
+         return true
      }
  
 +    // MARK: - HealthKit background delivery (R6)
@@ -5784,8 +5787,8 @@ index 5c42512b1..304fa4379 100644
 +
      // MARK: – Handle Acknowledgement Messages FROM Phone
  
-     func handleAcknowledgment(success: Bool, message: String, isFinal: Bool = true) {
-@@ -160,7 +1166,7 @@ import WidgetKit
+     /// Shows "Processing…" and starts the clock for the phone's answer
+@@ -247,7 +1253,7 @@ import WidgetKit
              if activationState == .activated {
                  WatchLogger.shared.info(.connectivity, "Session activated, phone reachable: \(session.isReachable)")
  
@@ -5794,7 +5797,7 @@ index 5c42512b1..304fa4379 100644
  
                  self.isReachable = session.isReachable
              }
-@@ -198,30 +1204,45 @@ import WidgetKit
+@@ -285,30 +1291,45 @@ import WidgetKit
              return
          }
  
@@ -5857,7 +5860,7 @@ index 5c42512b1..304fa4379 100644
  
          // Wall-clock staleness gate. Drops the queued backlog cheaply when
          // the watch app wakes after long disuse; without it, every payload
-@@ -230,7 +1251,14 @@ import WidgetKit
+@@ -317,7 +1338,14 @@ import WidgetKit
              if WatchLogger.shared.shouldLog("staleState") {
                  WatchLogger.shared.debug(.data, "Stale watch state from \(date) skipped")
              }
@@ -5873,7 +5876,7 @@ index 5c42512b1..304fa4379 100644
              return
          }
  
-@@ -240,19 +1268,203 @@ import WidgetKit
+@@ -327,18 +1355,202 @@ import WidgetKit
              if WatchLogger.shared.shouldLog("duplicateState") {
                  WatchLogger.shared.debug(.data, "Duplicate watch state from \(date) skipped")
              }
@@ -5890,18 +5893,16 @@ index 5c42512b1..304fa4379 100644
 -        DispatchQueue.main.async {
 -            self.scheduleUIUpdate(with: payload)
 -        }
--    }
- 
--    func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
--        if let error = error {
--            WatchLogger.shared.warning(.connectivity, "User info transfer to the phone failed", error: error)
--        }
++
 +        let extractedEpoch = (payload[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
 +        WatchLogger.shared.log("📬 didReceiveMessage reading_epoch=\(extractedEpoch) receive_wall=\(Date().timeIntervalSince1970)")
 +        WatchLogger.shared.log("Handling watchState from \(date)")
 +        processWatchMessage(message)
-+    }
-+
+     }
+ 
+-    func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
+-        if let error = error {
+-            WatchLogger.shared.warning(.connectivity, "User info transfer to the phone failed", error: error)
 +    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
 +        if WatchLogger.shared.handlePhoneMessage(userInfo) { return }
 +
@@ -6081,28 +6082,22 @@ index 5c42512b1..304fa4379 100644
 +        } else {
 +            transferRetryCount = 0
 +            WatchLogger.shared.debug(.connectivity, "userinfo_transfer_finished outcome=success")
-+        }
-     }
- 
-     /// Called when the reachability status of the paired iPhone changes
-@@ -263,8 +1475,12 @@ import WidgetKit
-                 WatchLogger.shared.debug(.connectivity, "Phone reachable: \(session.isReachable)")
-             }
- 
-+            self.isReachable = session.isReachable
-+
-             if session.isReachable {
--                self.forceConditionalWatchStateUpdate()
-+                if self.isColdStart, !self.forcedSinceActivation {
-+                    _ = self.forceConditionalWatchStateUpdate()
-+                }
- 
-                 // reset input amounts
-                 self.bolusAmount = 0
-@@ -276,40 +1492,348 @@ import WidgetKit
          }
      }
  
+@@ -359,45 +1571,355 @@ import WidgetKit
+             WatchLogger.shared.debug(.connectivity, "Phone reachable: \(isReachable)")
+         }
+ 
+-        if isReachable {
+-            forceConditionalWatchStateUpdate()
++        self.isReachable = isReachable
++
++        if isReachable, isColdStart, !forcedSinceActivation {
++            _ = forceConditionalWatchStateUpdate()
++        }
++    }
++
 +    // R4: applicationContext safety net — parallel delivery channel from iOS during budget exhaustion.
 +    // R5d: integrated sleep-gap detection (same three-constraint ordering as didReceiveUserInfo).
 +    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
@@ -6140,9 +6135,9 @@ index 5c42512b1..304fa4379 100644
 +                requiresNoPendingContent: requiresNoPendingContent,
 +                recordMarkerWithoutPendingTasks: !requiresNoPendingContent
 +            )
-+        }
-+    }
-+
+         }
+     }
+ 
      /// Conditionally triggers a watch state update if the last known update was too long ago or has never occurred.
      ///
 -    /// This method checks the `lastWatchStateUpdate` timestamp to determine how many seconds
@@ -6230,8 +6225,8 @@ index 5c42512b1..304fa4379 100644
 +
 +        guard !pendingConnectivityTasks.isEmpty else {
 +            clearDeferredConnectivityCompletionRetryOnMain()
-+            return
-+        }
+             return
+         }
 +
 +        let now = Date()
 +        if deferredConnectivityCompletionPath != path {
@@ -6241,8 +6236,8 @@ index 5c42512b1..304fa4379 100644
 +            deferredConnectivityCompletionDeadline = now.addingTimeInterval(connectivityDeferredRetryBudgetSeconds)
 +            deferredConnectivityCompletionAttempt = 0
 +        } else if deferredConnectivityCompletionWorkItem != nil {
-             return
-         }
++            return
++        }
 +
 +        let attempt = deferredConnectivityCompletionAttempt + 1
 +        let delay = min(
@@ -6464,7 +6459,7 @@ index 5c42512b1..304fa4379 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -319,6 +1843,8 @@ import WidgetKit
+@@ -407,6 +1929,8 @@ import WidgetKit
                      self.showSyncingAnimation = false
                  }
  
@@ -6473,7 +6468,7 @@ index 5c42512b1..304fa4379 100644
                  switch ackCode {
                  case .savingCarbs:
                      self.isMealBolusCombo = true
-@@ -339,86 +1865,222 @@ import WidgetKit
+@@ -427,86 +1951,222 @@ import WidgetKit
                  }
              }
  
@@ -6663,14 +6658,14 @@ index 5c42512b1..304fa4379 100644
 +    /// Updates the UI properties
 +    private func processRawDataForWatchState(_ message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
 +        WatchLogger.shared.log("Processing raw WatchState data with keys: \(message.keys.joined(separator: ", "))")
- 
--        if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
--            self.currentGlucoseColorString = currentGlucoseColorString
++
 +        startupFirstRefreshInFlight = false
 +
 +        syncTimeoutWorkItem?.cancel()
 +        syncTimeoutWorkItem = nil
-+
+ 
+-        if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
+-            self.currentGlucoseColorString = currentGlucoseColorString
 +        let effectiveReading = resolveEffectiveCGMReadingDate(from: message)
 +        let sequence = intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
 +
@@ -6730,7 +6725,7 @@ index 5c42512b1..304fa4379 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -433,50 +2095,27 @@ import WidgetKit
+@@ -521,50 +2181,27 @@ import WidgetKit
              self.lastLoopTime = lastLoopTime
          }
  
@@ -6797,7 +6792,7 @@ index 5c42512b1..304fa4379 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -497,43 +2136,54 @@ import WidgetKit
+@@ -585,43 +2222,54 @@ import WidgetKit
              }
          }
  
@@ -6877,7 +6872,7 @@ index 5c42512b1..304fa4379 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -555,37 +2205,456 @@ import WidgetKit
+@@ -643,37 +2291,456 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
@@ -6982,13 +6977,13 @@ index 5c42512b1..304fa4379 100644
 +            WatchLogger.shared.log(
 +                "⚠️ saveComplicationSnapshot: no reading_epoch or glucoseValues;"
 +                    + " top-level date is state snapshot time only — refusing as CGM reading — skipping save"
-             )
++            )
 +            return
 +        case .missing:
 +            WatchLogger.shared.log(
 +                "📸 saveComplicationSnapshot SKIPPED: no valid CGM reading timestamp"
 +                    + " (no reading_epoch, glucoseValues, or parseable date)"
-+            )
+             )
 +            return
 +        }
 +
@@ -7037,10 +7032,7 @@ index 5c42512b1..304fa4379 100644
 +
 +        TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
 +        lastPhoneEGVDate = readingDate // C-210-4: phone-path freshness for direct-BLE stall detection
- 
--            if snapshot != GlucoseComplicationSnapshot.load() {
--                snapshot.save()
--                didSave = true
++
 +        // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
 +        // Use only the threaded userInfoReceiveTimestamp; no fallback to instance state so attribution stays unambiguous.
 +        if fromUserInfo, let start = userInfoReceiveTimestamp {
@@ -7074,11 +7066,9 @@ index 5c42512b1..304fa4379 100644
 +            guard glucoseValue >= lowerBound, glucoseValue <= upperBound else {
 +                WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: glucose out of range")
 +                return
-             }
-         }
- 
--        if didSave {
--            WidgetCenter.shared.reloadAllTimelines()
++            }
++        }
++
 +        guard let effectiveReadingDate = TrioComplicationDataStore.lastValidTimestamp else {
 +            WatchLogger.shared.log("🔄 forceComplicationUpdate SKIPPED: no valid CGM reading timestamp")
 +            return
@@ -7284,7 +7274,10 @@ index 5c42512b1..304fa4379 100644
 +            }
 +            return
 +        }
-+
+ 
+-            if snapshot != GlucoseComplicationSnapshot.load() {
+-                snapshot.save()
+-                didSave = true
 +        DispatchQueue.main.async {
 +            // Re-check after deferral: BLE may have advanced the watermark before this block runs.
 +            if let attributed = self.displayedReadingAttributedForDate,
@@ -7298,14 +7291,16 @@ index 5c42512b1..304fa4379 100644
 +            self.delta = snapshot.delta
 +            if let glucoseColor = snapshot.glucoseColor {
 +                self.currentGlucoseColorString = glucoseColor
-+            }
+             }
 +            self.lastWatchStateUpdate = snapshot.readingDate
 +            self.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
 +            self.showSyncingAnimation = false
 +            self.syncTimeoutWorkItem?.cancel()
-+        }
+         }
 +    }
-+
+ 
+-        if didSave {
+-            WidgetCenter.shared.reloadAllTimelines()
 +    private func dateValue(from value: Any?) -> Date? {
 +        if let date = value as? Date {
 +            return date
@@ -7712,11 +7707,11 @@ index 000000000..eb56de046
 +    }
 +}
 diff --git a/Trio Watch App Tests/Unit Tests.swift b/Trio Watch App Tests/Unit Tests.swift
-index 0d0cde0eb..b06331373 100644
+index 996dfb5a5..7dd1fdc28 100644
 --- a/Trio Watch App Tests/Unit Tests.swift	
 +++ b/Trio Watch App Tests/Unit Tests.swift	
-@@ -80,6 +80,36 @@ import XCTest
-         #expect(!watchState.isMealBolusCombo)
+@@ -97,6 +97,36 @@ import Testing
+         #expect(watchState.showAcknowledgmentBanner)
      }
  
 +    // MARK: - C-210-1: unit-aware display formatting parity (mmol users must see "5.6", not "100")
@@ -7749,12 +7744,12 @@ index 0d0cde0eb..b06331373 100644
 +        c.apply(low: 70, high: 180, target: 100, dynamic: false, unitsRaw: "mg/dL") // restore global state
 +    }
 +
-     @Test("Acknowledgment states transition correctly") func testAcknowledgmentStates() throws {
-         // Given - Initial state
-         #expect(watchState.acknowledgementStatus == .pending)
-@@ -97,4 +127,73 @@ import XCTest
-         #expect(watchState.showAcknowledgmentBanner)
-         #expect(watchState.acknowledgmentMessage == "Error")
+     @Test("Bolus with the phone unreachable says nothing was sent") func testUnreachableBolus() async throws {
+         watchState.session = nil
+ 
+@@ -273,4 +303,73 @@ import Testing
+     @Test("Returning to the app with no entry in progress changes nothing") func testNoEntryOnReturn() throws {
+         #expect(!watchState.expireStaleEntry(at: entryStart))
      }
 +
 +    // MARK: - C-210-2: completeness-aware arbitration (shouldUpdate)
