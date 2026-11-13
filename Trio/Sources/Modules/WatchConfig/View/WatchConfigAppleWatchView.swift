@@ -78,6 +78,21 @@ struct WatchConfigAppleWatchView: BaseView {
             ).listRowBackground(Color.chart)
 
             Section(
+                header: Text("G7 on Apple Watch"),
+                footer: Text(
+                    String(
+                        localized: "Changes how the watch app finds the G7 sensor. The watch only listens to the sensor. Applies the next time the watch app starts."
+                    )
+                ),
+                content: {
+                    Toggle(
+                        String(localized: "Upstream G7 watch acquisition (experimental)"),
+                        isOn: $state.upstreamG7WatchAcquisition
+                    )
+                }
+            ).listRowBackground(Color.chart)
+
+            Section(
                 header: Text("Contact Image"),
                 content: {
                     VStack {
