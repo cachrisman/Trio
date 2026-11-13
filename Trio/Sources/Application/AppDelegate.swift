@@ -11,13 +11,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
 
     func application(
         _: UIApplication,
-        didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]?
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         // Default to `true` if the key doesn't exist — Trio is opt-out, not opt-in.
         // Read before touching Firebase: an explicit opt-out means we never
         // configure it, so no component can queue or upload anything.
         let crashReportingEnabled: Bool = PropertyPersistentFlags.shared.crashlyticsSharingEnabled ?? true
         CrashReportingGate.configureAtLaunch(enabled: crashReportingEnabled)
+        AppTerminationTracker.shared.checkForUnexpectedTermination()
+        AppTerminationTracker.shared.markAppLaunched(launchOptions: launchOptions)
 
         return true
     }
@@ -28,6 +30,27 @@ class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject, UNUserNoti
     /// No-op if a send already landed within the last 24h.
     func applicationWillEnterForeground(_: UIApplication) {
         telemetry?.checkAndSendIfOverdue(reason: .foreground)
+        AppTerminationTracker.shared.markAppWillEnterForeground()
+    }
+
+    func applicationDidBecomeActive(_: UIApplication) {
+        AppTerminationTracker.shared.markAppBecameActive()
+    }
+
+    func applicationWillResignActive(_: UIApplication) {
+        AppTerminationTracker.shared.markAppWillResignActive()
+    }
+
+    func applicationDidEnterBackground(_: UIApplication) {
+        AppTerminationTracker.shared.markAppEnteredBackground()
+    }
+
+    func applicationWillTerminate(_: UIApplication) {
+        AppTerminationTracker.shared.markAppWillTerminate()
+    }
+
+    func applicationDidReceiveMemoryWarning(_: UIApplication) {
+        AppTerminationTracker.shared.handleMemoryWarning()
     }
 
     func application(
