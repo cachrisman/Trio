@@ -1,6 +1,6 @@
-From 219238c6f4e58f299d251b4e945afcb3916186db Mon Sep 17 00:00:00 2001
+From 4aa522274350ef5180d00e9f5de665d34e3ac5bb Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 13 Nov 2026 22:05:27 +0100
+Date: Fri, 13 Nov 2026 22:51:05 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 0c85484b30d5631a3fe000a2d346ef547aa3e73f
-Trio-Patch-Generated: 2026-11-13T21:05:06Z
+Trio-Patch-Feature-Tip: 7d7ea8d153d5f31138b73836c871c81ead843879
+Trio-Patch-Generated: 2026-11-13T21:50:42Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -98,6 +98,7 @@ Trio-Patch-Source-Commits:
  fa7110af19fcac8ab0344f75342b6528f7e615a4 watch G7: hop handle(_:) to main instead of assumeIsolated on BLE wakes (TRIO-103)
  0a0e982112fcdc5da1fd81a0b5406818b1d01c2e watch: one link_summary per G7 link, arm= on the heartbeat, describeReason maps .error (TRIO-107)
  0c85484b30d5631a3fe000a2d346ef547aa3e73f watch-g7: take upstream 1.0.2.71 watch changes into the patch 09 files
+ 7d7ea8d153d5f31138b73836c871c81ead843879 watch-g7: register the HealthKit glucose observer at launch (TRIO-113)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -175,32 +176,33 @@ Trio-Patch-Source-PatchIds:
  804451871bac5b049c7d65f5559caca5e078f82d
  13e61118690d7c70f06d4b66e4b13b461984ef0e
  a65d451a9ad873d3a0d278f5aef129ad01730171
+ 6876b01d1ca2b86f5288783885e88ffd83b22e65
 ---
- .../ComplicationLogForwarder.swift            |  171 ++
- .../ExtensionDelegate.swift                   |   95 +
- .../G7WatchSensorAdapter.swift                | 2011 ++++++++++++++
+ .../ComplicationLogForwarder.swift            |  171 +
+ .../ExtensionDelegate.swift                   |  100 +
+ .../G7WatchSensorAdapter.swift                | 2011 ++++++++++++
  .../Helper/WatchNotificationHandler.swift     |   36 +
  .../Helper/WatchResidentTelemetry.swift       |  137 +
  Trio Watch App Extension/TrioWatchApp.swift   |   32 +-
  .../Views/GlucoseTrendView.swift              |   59 +-
  .../Views/TrioMainWatchView.swift             |  198 +-
- .../Views/WatchDiagnosticsView.swift          | 1013 +++++++
+ .../Views/WatchDiagnosticsView.swift          | 1013 ++++++
  .../WatchGlucoseColorComputer.swift           |  179 ++
  .../WatchGlucoseHistoryStore.swift            |  225 ++
  .../WatchLogger+Legacy.swift                  |   18 +
  .../WatchState+Requests.swift                 |   22 +
- Trio Watch App Extension/WatchState.swift     | 2439 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2777 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  351 +++
  Trio Watch App Tests/Unit Tests.swift         |   99 +
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |    4 +
  .../GlucoseBobbleComplication.swift           |   75 +-
  Trio Watch Complication/Info.plist            |    2 +
- .../TrioWatchComplication.swift               |  625 ++++-
+ .../TrioWatchComplication.swift               |  625 +++-
  .../TrioWatchComplicationPreview.swift        |  124 +
  Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
  .../GlucoseComplicationSnapshot.swift         |   38 +-
- .../TrioComplicationDataStore.swift           | 1334 +++++++++
+ .../TrioComplicationDataStore.swift           | 1334 ++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Logger/Watch/WatchLogEntry.swift |    1 +
@@ -209,7 +211,7 @@ Trio-Patch-Source-PatchIds:
  .../View/WatchConfigAppleWatchView.swift      |   15 +
  .../WatchConfig/WatchConfigStateModel.swift   |    9 +
  .../WatchManager/AppleWatchManager.swift      |  608 +++-
- 33 files changed, 9997 insertions(+), 402 deletions(-)
+ 33 files changed, 10310 insertions(+), 432 deletions(-)
  create mode 100644 Trio Watch App Extension/ComplicationLogForwarder.swift
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -404,10 +406,10 @@ index 000000000..058e9ce48
 +}
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
 new file mode 100644
-index 000000000..f814cd123
+index 000000000..564bff6eb
 --- /dev/null
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,100 @@
 +import G7SensorKit
 +import WatchKit
 +
@@ -443,6 +445,11 @@ index 000000000..f814cd123
 +        // widget's accessoryRectangular sparkline can read it. Only the extension can see the history
 +        // store; the widget process never sets this (it reads snapshots, never saves).
 +        TrioComplicationDataStore.shared.recentReadingsProvider = { WatchGlucoseHistoryStore.shared.recentReadingsCompact() }
++
++        // fork — TRIO-113: register HK glucose observer before any background delivery can arrive (no foreground gate).
++        MainActor.assumeIsolated {
++            WatchState.shared.registerHealthKitGlucoseObserverAtLaunchIfAuthorized()
++        }
 +
 +        WatchLogger.shared.log(
 +            "event=watch_extension_launched source=wk_application_delegate "
@@ -4646,7 +4653,7 @@ index fc8b348a6..c41b0cc19 100644
      }
  
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 27b8897cc..beb4bb533 100644
+index 27b8897cc..1d20269f1 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,109 @@
@@ -4842,7 +4849,7 @@ index 27b8897cc..beb4bb533 100644
      var showCommsAnimation: Bool = false
      var showAcknowledgmentBanner: Bool = false
      var acknowledgementStatus: AcknowledgementStatus = .pending
-@@ -93,36 +210,416 @@ import WidgetKit
+@@ -93,36 +210,679 @@ import WidgetKit
          comment: "Error message when a bolus of zero or less is requested"
      )
  
@@ -4926,6 +4933,16 @@ index 27b8897cc..beb4bb533 100644
 +    private var startupFirstRefreshFiredActivationSequence: Int?
 +    private var startupFirstRefreshInFlight = false
 +    private var hasInitializedHealthKitSetupInProcess = false
++    private var hasEnabledHealthKitBackgroundDeliveryInProcess = false
++
++    /// Monotonic process launch time for HK_REG / HK_FIRE launch-context telemetry (TRIO-113).
++    private let processLaunchUptime = ProcessInfo.processInfo.systemUptime
++
++    /// Captured once at launch HK registration from `WKApplication.shared().applicationState` (TRIO-113).
++    private var healthKitObserverLaunchContextTelemetry = "unknown"
++
++    /// HK background-delivery watchdog allowance is 15s; complete the observer callback well inside that.
++    private let healthKitObserverFetchTimeoutSeconds: TimeInterval = 10.0
 +
 +    /// Resident memory sample budget — see `Helper/WatchResidentTelemetry.swift`.
 +    var residentTelemetryBudget = WatchResidentTelemetryBudget()
@@ -5205,10 +5222,263 @@ index 27b8897cc..beb4bb533 100644
 +                + " already_initialized=\(alreadyInitialized)"
 +        )
 +
-+        guard !alreadyInitialized else { return }
++        registerHealthKitGlucoseObserverIfNeeded(
++            registrationPath: "deferred_foreground",
++            requestAuthorizationIfNeeded: true
++        )
++    }
 +
-+        hasInitializedHealthKitSetupInProcess = true
-+        setupHealthKitBackgroundDelivery()
++    // MARK: - HealthKit observer at launch (TRIO-113)
++
++    /// Registers the glucose `HKObserverQuery` and background delivery at process launch (including
++    /// background relaunches). Skips `requestAuthorization` — foreground deferred path handles first-time auth.
++    @MainActor
++    func registerHealthKitGlucoseObserverAtLaunchIfAuthorized() {
++        assert(Thread.isMainThread, "registerHealthKitGlucoseObserverAtLaunchIfAuthorized must be called on main thread")
++        let appState = WKApplication.shared().applicationState
++        healthKitObserverLaunchContextTelemetry = appState == .background ? "background" : "foreground"
++        registerHealthKitGlucoseObserverIfNeeded(
++            registrationPath: "launch",
++            requestAuthorizationIfNeeded: false
++        )
++    }
++
++    private func healthKitLaunchContextTelemetryFields() -> String {
++        let secondsSinceLaunch = Int(ProcessInfo.processInfo.systemUptime - processLaunchUptime)
++        return "launch_context=\(healthKitObserverLaunchContextTelemetry) seconds_since_launch=\(secondsSinceLaunch)"
++    }
++
++    private func logHealthKitRegistration(
++        registrationPath: String,
++        outcome: String,
++        detail: String = ""
++    ) {
++        var line =
++            "event=HK_REG path=\(registrationPath)"
++                + " \(healthKitLaunchContextTelemetryFields())"
++                + " outcome=\(outcome)"
++                + " already_initialized=\(hasInitializedHealthKitSetupInProcess)"
++        if !detail.isEmpty {
++            line += " \(detail)"
++        }
++        WatchLogger.shared.log(line)
++    }
++
++    private func registerHealthKitGlucoseObserverIfNeeded(
++        registrationPath: String,
++        requestAuthorizationIfNeeded: Bool
++    ) {
++        assert(Thread.isMainThread, "registerHealthKitGlucoseObserverIfNeeded must be called on main thread")
++
++        if hasInitializedHealthKitSetupInProcess {
++            if registrationPath == "deferred_foreground",
++               !hasEnabledHealthKitBackgroundDeliveryInProcess,
++               let store = healthKitStore,
++               let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose)
++            {
++                enableHealthKitBackgroundDelivery(
++                    store: store,
++                    sampleType: bgType,
++                    registrationPath: "deferred_foreground_retry"
++                )
++            } else {
++                logHealthKitRegistration(registrationPath: registrationPath, outcome: "skipped_duplicate")
++            }
++            return
++        }
++        guard HKHealthStore.isHealthDataAvailable() else {
++            logHealthKitRegistration(registrationPath: registrationPath, outcome: "skipped_unavailable")
++            return
++        }
++        guard let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else {
++            logHealthKitRegistration(registrationPath: registrationPath, outcome: "skipped_no_type")
++            return
++        }
++
++        let store = HKHealthStore()
++        store.getRequestStatusForAuthorization(toShare: [], read: Set([bgType])) { [weak self] status, error in
++            DispatchQueue.main.async {
++                guard let self else { return }
++                guard !self.hasInitializedHealthKitSetupInProcess else {
++                    self.logHealthKitRegistration(registrationPath: registrationPath, outcome: "skipped_duplicate")
++                    return
++                }
++                if let error {
++                    self.logHealthKitRegistration(
++                        registrationPath: registrationPath,
++                        outcome: "skipped_auth_status_unknown",
++                        detail: "error=\(error.localizedDescription)"
++                    )
++                    return
++                }
++                switch status {
++                case .unnecessary:
++                    self.finishHealthKitGlucoseObserverRegistration(
++                        store: store,
++                        sampleType: bgType,
++                        registrationPath: registrationPath
++                    )
++                case .shouldRequest:
++                    guard requestAuthorizationIfNeeded else {
++                        self.logHealthKitRegistration(
++                            registrationPath: registrationPath,
++                            outcome: "skipped_auth_not_determined"
++                        )
++                        return
++                    }
++                    store.requestAuthorization(toShare: nil, read: Set([bgType])) { [weak self] granted, authError in
++                        DispatchQueue.main.async {
++                            guard let self else { return }
++                            guard !self.hasInitializedHealthKitSetupInProcess else {
++                                self.logHealthKitRegistration(
++                                    registrationPath: registrationPath,
++                                    outcome: "skipped_duplicate"
++                                )
++                                return
++                            }
++                            guard authError == nil else {
++                                WatchLogger.shared.log(
++                                    "❌ hk_authorization_failed granted=\(granted) error=\(authError?.localizedDescription ?? "nil")"
++                                )
++                                self.logHealthKitRegistration(
++                                    registrationPath: registrationPath,
++                                    outcome: "auth_denied"
++                                )
++                                return
++                            }
++                            self.finishHealthKitGlucoseObserverRegistration(
++                                store: store,
++                                sampleType: bgType,
++                                registrationPath: registrationPath
++                            )
++                        }
++                    }
++                case .unknown:
++                    self.logHealthKitRegistration(
++                        registrationPath: registrationPath,
++                        outcome: "skipped_auth_status_unknown"
++                    )
++                @unknown default:
++                    self.logHealthKitRegistration(
++                        registrationPath: registrationPath,
++                        outcome: "skipped_auth_status_unknown",
++                        detail: "request_status=\(status.rawValue)"
++                    )
++                }
++            }
++        }
++    }
++
++    private func enableHealthKitBackgroundDelivery(
++        store: HKHealthStore,
++        sampleType: HKQuantityType,
++        registrationPath: String
++    ) {
++        assert(Thread.isMainThread, "enableHealthKitBackgroundDelivery must be called on main thread")
++        store.enableBackgroundDelivery(for: sampleType, frequency: .immediate) { [weak self] success, error in
++            DispatchQueue.main.async {
++                guard let self else { return }
++                let outcome: String
++                var detail = ""
++                if let error {
++                    outcome = "failed"
++                    detail = "error=\(error.localizedDescription)"
++                    WatchLogger.shared.log(
++                        "❌ hk_background_delivery_registration_failed error=\(error.localizedDescription)"
++                    )
++                } else if success {
++                    outcome = "enabled"
++                    self.hasEnabledHealthKitBackgroundDeliveryInProcess = true
++                    WatchLogger.shared
++                        .log(
++                            "✅ hk_background_delivery_registered success=true low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)"
++                        )
++                } else {
++                    outcome = "failed"
++                    WatchLogger.shared
++                        .log(
++                            "⚠️ hk_background_delivery_registered success=false low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)"
++                        )
++                }
++                var line =
++                    "event=HK_REG phase=background_delivery path=\(registrationPath)"
++                        + " \(self.healthKitLaunchContextTelemetryFields())"
++                        + " outcome=\(outcome)"
++                if !detail.isEmpty {
++                    line += " \(detail)"
++                }
++                WatchLogger.shared.log(line)
++            }
++        }
++    }
++
++    private func finishHealthKitGlucoseObserverRegistration(
++        store: HKHealthStore,
++        sampleType: HKQuantityType,
++        registrationPath: String
++    ) {
++        assert(Thread.isMainThread, "finishHealthKitGlucoseObserverRegistration must be called on main thread")
++        guard !hasInitializedHealthKitSetupInProcess else {
++            logHealthKitRegistration(registrationPath: registrationPath, outcome: "skipped_duplicate")
++            return
++        }
++
++        setupGlucoseObserverQuery(store: store, sampleType: sampleType)
++        enableHealthKitBackgroundDelivery(store: store, sampleType: sampleType, registrationPath: registrationPath)
++        logHealthKitRegistration(
++            registrationPath: registrationPath,
++            outcome: "observer_installed",
++            detail: "low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)"
++        )
++    }
++
++    // fork — TRIO-113: call HKObserverQuery completion exactly once per delivery (watchdog-safe).
++    private final class HKObserverCompletionGate {
++        private static let timeoutQueue = DispatchQueue(label: "com.trio.hk-observer-completion-gate-timeout")
++
++        private let lock = NSLock()
++        private var didComplete = false
++        private let fireId: UUID
++        private let enteredAtUptime: TimeInterval
++        private let launchContextFields: String
++        private let systemHandler: () -> Void
++        private var timeoutWorkItem: DispatchWorkItem?
++
++        init(
++            fireId: UUID,
++            enteredAtUptime: TimeInterval,
++            launchContextFields: String,
++            timeoutSeconds: TimeInterval,
++            systemHandler: @escaping () -> Void
++        ) {
++            self.fireId = fireId
++            self.enteredAtUptime = enteredAtUptime
++            self.launchContextFields = launchContextFields
++            self.systemHandler = systemHandler
++
++            let work = DispatchWorkItem { [weak self] in
++                self?.complete(outcome: "timeout")
++            }
++            timeoutWorkItem = work
++            Self.timeoutQueue.asyncAfter(deadline: .now() + timeoutSeconds, execute: work)
++        }
++
++        func complete(outcome: String) {
++            lock.lock()
++            defer { lock.unlock() }
++            guard !didComplete else { return }
++            didComplete = true
++            timeoutWorkItem?.cancel()
++            timeoutWorkItem = nil
++
++            let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - enteredAtUptime) * 1000)
++            WatchLogger.shared.log(
++                "event=HK_FIRE phase=completion fire_id=\(fireId)"
++                    + " \(launchContextFields)"
++                    + " elapsed_ms=\(elapsedMs) outcome=\(outcome)"
++            )
++            systemHandler()
++        }
 +    }
 +
 +    private func fireDeferredStartupLogDrainOnMain(activationSequence: Int) {
@@ -5272,55 +5542,46 @@ index 27b8897cc..beb4bb533 100644
      }
  
      /// Configures the WatchConnectivity session if supported on the device
-@@ -171,6 +668,515 @@ import WidgetKit
+@@ -171,6 +931,530 @@ import WidgetKit
          return true
      }
  
 +    // MARK: - HealthKit background delivery (R6)
 +
-+    private func setupHealthKitBackgroundDelivery() {
-+        guard HKHealthStore.isHealthDataAvailable() else { return }
-+        let store = HKHealthStore()
-+        guard let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose) else { return }
-+
-+        store.requestAuthorization(toShare: nil, read: Set([bgType])) { [weak self] granted, error in
-+            guard let self else { return }
-+            guard granted, error == nil else {
-+                WatchLogger.shared.log("❌ hk_authorization_failed granted=\(granted) error=\(error?.localizedDescription ?? "nil")")
-+                return
-+            }
-+
-+            store.enableBackgroundDelivery(for: bgType, frequency: .immediate) { success, error in
-+                if let error = error {
-+                    WatchLogger.shared.log("❌ hk_background_delivery_registration_failed error=\(error.localizedDescription)")
-+                } else if success {
-+                    WatchLogger.shared
-+                        .log("✅ hk_background_delivery_registered success=true low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)")
-+                } else {
-+                    WatchLogger.shared
-+                        .log("⚠️ hk_background_delivery_registered success=false low_power_mode=\(ProcessInfo.processInfo.isLowPowerModeEnabled)")
-+                }
-+            }
-+
-+            self.setupGlucoseObserverQuery(store: store, sampleType: bgType)
-+        }
-+    }
-+
 +    private func setupGlucoseObserverQuery(store: HKHealthStore, sampleType: HKQuantityType) {
++        guard !hasInitializedHealthKitSetupInProcess else { return }
 +        healthKitStore = store
 +        let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { [weak self] _, completionHandler, error in
 +            let fireId = UUID()
++            let enteredAtUptime = ProcessInfo.processInfo.systemUptime
++            let launchContextFields: String
++            if let self {
++                launchContextFields = self.healthKitLaunchContextTelemetryFields()
++            } else {
++                launchContextFields = "launch_context=unknown seconds_since_launch=-1"
++            }
++            WatchLogger.shared.log(
++                "event=HK_FIRE phase=entered fire_id=\(fireId) \(launchContextFields)"
++            )
++            let completionGate = HKObserverCompletionGate(
++                fireId: fireId,
++                enteredAtUptime: enteredAtUptime,
++                launchContextFields: launchContextFields,
++                timeoutSeconds: self?.healthKitObserverFetchTimeoutSeconds ?? 10.0,
++                systemHandler: completionHandler
++            )
 +            guard error == nil else {
 +                WatchLogger.shared.log("❌ hk_observer_error fire_id=\(fireId) error=\(error!.localizedDescription)")
-+                completionHandler()
++                completionGate.complete(outcome: "failed")
 +                return
 +            }
 +            guard let self else {
-+                completionHandler()
++                completionGate.complete(outcome: "skipped")
 +                return
 +            }
-+            self.fetchLatestGlucoseFromHealthKit(fireId: fireId, completionHandler: completionHandler)
++            self.fetchLatestGlucoseFromHealthKit(fireId: fireId, completionGate: completionGate)
 +        }
++        hasInitializedHealthKitSetupInProcess = true
 +        store.execute(query)
 +        glucoseObserverQuery = query
 +    }
@@ -5333,12 +5594,21 @@ index 27b8897cc..beb4bb533 100644
 +        newAnchor: HKQueryAnchor?,
 +        error: Error?,
 +        mgDlUnit: HKUnit,
-+        completionHandler: @escaping () -> Void
++        completionGate: HKObserverCompletionGate,
++        onSuccessAfterApply: (() -> Void)? = nil
 +    ) {
 +        let dataStore = TrioComplicationDataStore.shared
++        let finishNonError: (String) -> Void = { outcome in
++            if let onSuccessAfterApply {
++                onSuccessAfterApply()
++            } else {
++                completionGate.complete(outcome: outcome)
++            }
++        }
++
 +        if let err = error {
 +            WatchLogger.shared.log("❌ hk_observer_query_error fire_id=\(fireId) error=\(err.localizedDescription)")
-+            completionHandler()
++            completionGate.complete(outcome: "failed")
 +            return
 +        }
 +
@@ -5365,7 +5635,7 @@ index 27b8897cc..beb4bb533 100644
 +        let sortedByDate = added.sorted { $0.startDate > $1.startDate }
 +        if sortedByDate.isEmpty {
 +            WatchLogger.shared.log("⚠️ hk_observer_no_new_samples fire_id=\(fireId)")
-+            completionHandler()
++            finishNonError("skipped")
 +            return
 +        }
 +
@@ -5380,7 +5650,7 @@ index 27b8897cc..beb4bb533 100644
 +        let sameValue = Int(latestMgDl.rounded()) == Int(dataStore.hkLastReceivedGlucoseValueMgDl().rounded())
 +        if knownEpoch, sameValue {
 +            WatchLogger.shared.log("⚠️ hk_observer_skipped_known_epoch fire_id=\(fireId) epoch=\(Int(latestEpoch))")
-+            completionHandler()
++            finishNonError("skipped")
 +            return
 +        }
 +
@@ -5445,6 +5715,14 @@ index 27b8897cc..beb4bb533 100644
 +        )
 +
 +        DispatchQueue.main.async { [weak self] in
++            guard let self else {
++                if let onSuccessAfterApply {
++                    onSuccessAfterApply()
++                } else {
++                    completionGate.complete(outcome: "skipped")
++                }
++                return
++            }
 +            // Persist HK reading (W1) before the snapshot apply so the chart refresh includes it.
 +            WatchGlucoseHistoryStore.shared.insert(
 +                StoredGlucoseReading(
@@ -5455,8 +5733,12 @@ index 27b8897cc..beb4bb533 100644
 +                )
 +            )
 +            TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
-+            self?.applyHKSnapshot(snapshot, glucoseMgDl: hkMgDl)
-+            completionHandler()
++            self.applyHKSnapshot(snapshot, glucoseMgDl: hkMgDl)
++            if let onSuccessAfterApply {
++                onSuccessAfterApply()
++            } else {
++                completionGate.complete(outcome: "fetched")
++            }
 +        }
 +    }
 +
@@ -5467,7 +5749,7 @@ index 27b8897cc..beb4bb533 100644
 +        store: HKHealthStore,
 +        bgType: HKQuantityType,
 +        fireId: UUID,
-+        completion: @escaping () -> Void
++        completionGate: HKObserverCompletionGate
 +    ) {
 +        let now = Date()
 +        let predicate = HKQuery.predicateForSamples(withStart: now, end: nil, options: .strictStartDate)
@@ -5477,33 +5759,35 @@ index 27b8897cc..beb4bb533 100644
 +            anchor: nil,
 +            limit: HKObjectQueryNoLimit,
 +            resultsHandler: { _, samples, _, newAnchor, error in
-+                defer { completion() }
 +                if let err = error {
 +                    WatchLogger.shared
 +                        .log("⚠️ hk_bootstrap_anchor_establish_failed fire_id=\(fireId) error=\(err.localizedDescription)")
++                    completionGate.complete(outcome: "failed")
 +                    return
 +                }
 +                guard let newAnchor,
 +                      let anchorData = try? NSKeyedArchiver.archivedData(withRootObject: newAnchor, requiringSecureCoding: true)
 +                else {
 +                    WatchLogger.shared.log("⚠️ hk_bootstrap_anchor_establish_no_anchor fire_id=\(fireId)")
++                    completionGate.complete(outcome: "failed")
 +                    return
 +                }
 +                TrioComplicationDataStore.shared.saveHKGlucoseAnchor(anchorData)
 +                let n = (samples as? [HKQuantitySample])?.count ?? 0
 +                WatchLogger.shared
 +                    .log("✅ hk_bootstrap_anchor_established fire_id=\(fireId) timeline_predicate_samples_count=\(n)")
++                completionGate.complete(outcome: "fetched")
 +            }
 +        )
 +        store.execute(anchorQuery)
 +    }
 +
-+    private func fetchLatestGlucoseFromHealthKit(fireId: UUID, completionHandler: @escaping () -> Void) {
++    private func fetchLatestGlucoseFromHealthKit(fireId: UUID, completionGate: HKObserverCompletionGate) {
 +        guard let store = healthKitStore,
 +              let bgType = HKQuantityType.quantityType(forIdentifier: .bloodGlucose)
 +        else {
 +            WatchLogger.shared.log("❌ hk_observer_guard_failed fire_id=\(fireId) reason=nil_store_or_type")
-+            completionHandler()
++            completionGate.complete(outcome: "failed")
 +            return
 +        }
 +
@@ -5538,7 +5822,7 @@ index 27b8897cc..beb4bb533 100644
 +                sortDescriptors: [sort]
 +            ) { [weak self] _, samples, error in
 +                guard let self else {
-+                    completionHandler()
++                    completionGate.complete(outcome: "skipped")
 +                    return
 +                }
 +                if error != nil {
@@ -5549,7 +5833,7 @@ index 27b8897cc..beb4bb533 100644
 +                        newAnchor: nil,
 +                        error: error,
 +                        mgDlUnit: mgDlUnit,
-+                        completionHandler: completionHandler
++                        completionGate: completionGate
 +                    )
 +                    return
 +                }
@@ -5558,7 +5842,7 @@ index 27b8897cc..beb4bb533 100644
 +                        store: store,
 +                        bgType: bgType,
 +                        fireId: fireId,
-+                        completion: completionHandler
++                        completionGate: completionGate
 +                    )
 +                }
 +                self.finishHKGlucoseObserverFetch(
@@ -5568,7 +5852,8 @@ index 27b8897cc..beb4bb533 100644
 +                    newAnchor: nil,
 +                    error: nil,
 +                    mgDlUnit: mgDlUnit,
-+                    completionHandler: afterBootstrap
++                    completionGate: completionGate,
++                    onSuccessAfterApply: afterBootstrap
 +                )
 +            }
 +            store.execute(sampleQuery)
@@ -5582,7 +5867,7 @@ index 27b8897cc..beb4bb533 100644
 +            limit: HKObjectQueryNoLimit,
 +            resultsHandler: { [weak self] _, samples, _, newAnchor, error in
 +                guard let self else {
-+                    completionHandler()
++                    completionGate.complete(outcome: "skipped")
 +                    return
 +                }
 +                self.finishHKGlucoseObserverFetch(
@@ -5592,7 +5877,7 @@ index 27b8897cc..beb4bb533 100644
 +                    newAnchor: newAnchor,
 +                    error: error,
 +                    mgDlUnit: mgDlUnit,
-+                    completionHandler: completionHandler
++                    completionGate: completionGate
 +                )
 +            }
 +        )
@@ -5788,7 +6073,7 @@ index 27b8897cc..beb4bb533 100644
      // MARK: – Handle Acknowledgement Messages FROM Phone
  
      /// Shows "Processing…" and starts the clock for the phone's answer
-@@ -247,7 +1253,7 @@ import WidgetKit
+@@ -247,7 +1531,7 @@ import WidgetKit
              if activationState == .activated {
                  WatchLogger.shared.info(.connectivity, "Session activated, phone reachable: \(session.isReachable)")
  
@@ -5797,7 +6082,7 @@ index 27b8897cc..beb4bb533 100644
  
                  self.isReachable = session.isReachable
              }
-@@ -285,30 +1291,45 @@ import WidgetKit
+@@ -285,30 +1569,45 @@ import WidgetKit
              return
          }
  
@@ -5860,11 +6145,13 @@ index 27b8897cc..beb4bb533 100644
  
          // Wall-clock staleness gate. Drops the queued backlog cheaply when
          // the watch app wakes after long disuse; without it, every payload
-@@ -317,7 +1338,14 @@ import WidgetKit
+@@ -317,87 +1616,588 @@ import WidgetKit
              if WatchLogger.shared.shouldLog("staleState") {
                  WatchLogger.shared.debug(.data, "Stale watch state from \(date) skipped")
              }
 -            DispatchQueue.main.async { self.showSyncingAnimation = false }
+-            return
+-        }
 +            DispatchQueue.main.async {
 +                self.clearStartupFirstRefreshInFlightOnMain()
 +                self.showSyncingAnimation = false
@@ -5873,36 +6160,32 @@ index 27b8897cc..beb4bb533 100644
 +                    requiresNoPendingContent: true
 +                )
 +            }
-             return
-         }
- 
-@@ -327,18 +1355,202 @@ import WidgetKit
-             if WatchLogger.shared.shouldLog("duplicateState") {
-                 WatchLogger.shared.debug(.data, "Duplicate watch state from \(date) skipped")
-             }
++            return
++        }
++
++        // Monotonicity dedup.
++        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
++        guard date > lastProcessed else {
++            if WatchLogger.shared.shouldLog("duplicateState") {
++                WatchLogger.shared.debug(.data, "Duplicate watch state from \(date) skipped")
++            }
 +            DispatchQueue.main.async {
 +                self.completePendingConnectivityTasksOnMain(
 +                    path: "message_duplicate",
 +                    requiresNoPendingContent: true
 +                )
 +            }
-             return
-         }
- 
-         WatchStateSnapshot.saveLatestDateToDisk(date)
--        DispatchQueue.main.async {
--            self.scheduleUIUpdate(with: payload)
--        }
++            return
++        }
++
++        WatchStateSnapshot.saveLatestDateToDisk(date)
 +
 +        let extractedEpoch = (payload[WatchMessageKeys.readingEpoch] as? TimeInterval).map { Int($0) } ?? -1
 +        WatchLogger.shared.log("📬 didReceiveMessage reading_epoch=\(extractedEpoch) receive_wall=\(Date().timeIntervalSince1970)")
 +        WatchLogger.shared.log("Handling watchState from \(date)")
 +        processWatchMessage(message)
-     }
- 
--    func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
--        if let error = error {
--            WatchLogger.shared.warning(.connectivity, "User info transfer to the phone failed", error: error)
++    }
++
 +    func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
 +        if WatchLogger.shared.handlePhoneMessage(userInfo) { return }
 +
@@ -6082,15 +6365,26 @@ index 27b8897cc..beb4bb533 100644
 +        } else {
 +            transferRetryCount = 0
 +            WatchLogger.shared.debug(.connectivity, "userinfo_transfer_finished outcome=success")
-         }
-     }
- 
-@@ -359,45 +1571,355 @@ import WidgetKit
-             WatchLogger.shared.debug(.connectivity, "Phone reachable: \(isReachable)")
-         }
- 
--        if isReachable {
--            forceConditionalWatchStateUpdate()
++        }
++    }
++
++    /// Called when the reachability status of the paired iPhone changes
++    /// Updates the local reachability status
++    func sessionReachabilityDidChange(_ session: WCSession) {
++        let isReachable = session.isReachable
++        DispatchQueue.main.async {
++            self.handleReachabilityChange(isReachable: isReachable)
++        }
++    }
++
++    /// Reachability flips on every wrist raise, so this must leave entries in progress alone:
++    /// clearing `bolusAmount` here turned a confirmed bolus into a 0 U request.
++    /// The main view resets the entry fields when it appears.
++    func handleReachabilityChange(isReachable: Bool) {
++        if WatchLogger.shared.shouldLog("reachability", state: "\(isReachable)") {
++            WatchLogger.shared.debug(.connectivity, "Phone reachable: \(isReachable)")
++        }
++
 +        self.isReachable = isReachable
 +
 +        if isReachable, isColdStart, !forcedSinceActivation {
@@ -6135,21 +6429,15 @@ index 27b8897cc..beb4bb533 100644
 +                requiresNoPendingContent: requiresNoPendingContent,
 +                recordMarkerWithoutPendingTasks: !requiresNoPendingContent
 +            )
-         }
-     }
- 
-     /// Conditionally triggers a watch state update if the last known update was too long ago or has never occurred.
-     ///
--    /// This method checks the `lastWatchStateUpdate` timestamp to determine how many seconds
--    /// have elapsed since the last update under the following conditions
--    ///  - If `lastWatchStateUpdate` is `nil` (meaning there has never been an update), or
--    ///  - If more than 15 seconds have passed,
++        }
++    }
++
++    /// Conditionally triggers a watch state update if the last known update was too long ago or has never occurred.
++    ///
 +    /// Shows a syncing animation and requests a new watch state update from the iPhone app when
 +    ///  - there has never been an update (once per activation), or
 +    ///  - more than 15 seconds have passed since the last one, or the app is in its cold-start window.
-     ///
--    /// it will show a syncing animation and request a new watch state update from the iPhone app.
--    private func forceConditionalWatchStateUpdate() {
++    ///
 +    /// Suppressed during the startup grace period and while the first deferred refresh is in flight.
 +    @discardableResult
 +    private func forceConditionalWatchStateUpdate() -> Bool {
@@ -6163,30 +6451,23 @@ index 27b8897cc..beb4bb533 100644
 +            return false
 +        }
 +
-         guard let lastUpdateTimestamp = lastWatchStateUpdate else {
++        guard let lastUpdateTimestamp = lastWatchStateUpdate else {
 +            guard !hasRequestedInitialUpdate else { return false }
 +            hasRequestedInitialUpdate = true
-             WatchLogger.shared.debug(.data, "No watch state yet, requesting one")
--
--            // If there's no recorded timestamp, we must force a fresh update immediately.
-             showSyncingAnimation = true
-             requestWatchStateUpdate()
--            return
++            WatchLogger.shared.debug(.data, "No watch state yet, requesting one")
++            showSyncingAnimation = true
++            requestWatchStateUpdate()
 +            forcedSinceActivation = true
 +            return true
-         }
- 
--        let now = Date().timeIntervalSince1970
--        let secondsSinceUpdate = now - lastUpdateTimestamp
++        }
++
 +        let now = Date()
 +        let secondsSinceUpdate = now.timeIntervalSince(lastUpdateTimestamp)
- 
--        // If more than 15 seconds have elapsed since the last update, force an(other) update.
--        if secondsSinceUpdate > 15 {
++
 +        if secondsSinceUpdate > 15 || isColdStart {
-             WatchLogger.shared.debug(.data, "Watch state \(Int(secondsSinceUpdate)) s old, requesting update")
-             showSyncingAnimation = true
-             requestWatchStateUpdate()
++            WatchLogger.shared.debug(.data, "Watch state \(Int(secondsSinceUpdate)) s old, requesting update")
++            showSyncingAnimation = true
++            requestWatchStateUpdate()
 +            forcedSinceActivation = true
 +            return true
 +        }
@@ -6225,8 +6506,8 @@ index 27b8897cc..beb4bb533 100644
 +
 +        guard !pendingConnectivityTasks.isEmpty else {
 +            clearDeferredConnectivityCompletionRetryOnMain()
-             return
-         }
++            return
++        }
 +
 +        let now = Date()
 +        if deferredConnectivityCompletionPath != path {
@@ -6269,7 +6550,12 @@ index 27b8897cc..beb4bb533 100644
 +                )
 +                return
 +            }
-+
+ 
+-        // Monotonicity dedup.
+-        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
+-        guard date > lastProcessed else {
+-            if WatchLogger.shared.shouldLog("duplicateState") {
+-                WatchLogger.shared.debug(.data, "Duplicate watch state from \(date) skipped")
 +            guard let deadline = deferredConnectivityCompletionDeadline,
 +                  Date() < deadline
 +            else {
@@ -6282,8 +6568,13 @@ index 27b8897cc..beb4bb533 100644
 +                )
 +                clearDeferredConnectivityCompletionRetryOnMain()
 +                return
-+            }
-+
+             }
+-            return
+-        }
+ 
+-        WatchStateSnapshot.saveLatestDateToDisk(date)
+-        DispatchQueue.main.async {
+-            self.scheduleUIUpdate(with: payload)
 +            WatchLogger.shared.log(
 +                "event=complication_bgtask_completion_retry_pending path=\(path)"
 +                    + " window_id=\(wid)"
@@ -6292,11 +6583,14 @@ index 27b8897cc..beb4bb533 100644
 +                    + " pending_content=true"
 +            )
 +            scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
-+        }
+         }
 +        deferredConnectivityCompletionWorkItem = work
 +        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-+    }
-+
+     }
+ 
+-    func session(_: WCSession, didFinish _: WCSessionUserInfoTransfer, error: (any Error)?) {
+-        if let error = error {
+-            WatchLogger.shared.warning(.connectivity, "User info transfer to the phone failed", error: error)
 +    private func recentConnectivityTerminalBasePathOnMain() -> String? {
 +        assert(Thread.isMainThread, "recentConnectivityTerminalBasePathOnMain must be called on main thread")
 +
@@ -6307,11 +6601,17 @@ index 27b8897cc..beb4bb533 100644
 +            lastConnectivityTerminalAt = nil
 +            lastConnectivityTerminalPath = nil
 +            return nil
-+        }
+         }
 +
 +        return terminalPath
-+    }
-+
+     }
+ 
+-    /// Called when the reachability status of the paired iPhone changes
+-    /// Updates the local reachability status
+-    func sessionReachabilityDidChange(_ session: WCSession) {
+-        let isReachable = session.isReachable
+-        DispatchQueue.main.async {
+-            self.handleReachabilityChange(isReachable: isReachable)
 +    @discardableResult
 +    private func completePendingConnectivityTasksOnMain(
 +        path: String,
@@ -6335,8 +6635,15 @@ index 27b8897cc..beb4bb533 100644
 +                scheduleDeferredConnectivityCompletionRetryOnMain(path: path)
 +            }
 +            return 0
-+        }
-+
+         }
+-    }
+ 
+-    /// Reachability flips on every wrist raise, so this must leave entries in progress alone:
+-    /// clearing `bolusAmount` here turned a confirmed bolus into a 0 U request.
+-    /// The main view resets the entry fields when it appears.
+-    func handleReachabilityChange(isReachable: Bool) {
+-        if WatchLogger.shared.shouldLog("reachability", state: "\(isReachable)") {
+-            WatchLogger.shared.debug(.connectivity, "Phone reachable: \(isReachable)")
 +        // Successful terminal paths need a short-lived marker even when the task
 +        // arrives after processing completed. Guarded/no-pending paths use
 +        // requiresNoPendingContent instead.
@@ -6355,8 +6662,10 @@ index 27b8897cc..beb4bb533 100644
 +                )
 +            }
 +            return 0
-+        }
-+
+         }
+ 
+-        if isReachable {
+-            forceConditionalWatchStateUpdate()
 +        let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
 +        WatchLogger.shared.log(
 +            "event=complication_bgtask_completing path=\(path)"
@@ -6373,20 +6682,33 @@ index 27b8897cc..beb4bb533 100644
 +        // and changing snapshot semantics is outside the scope of this task-lifecycle fix.
 +        for task in pendingConnectivityTasks {
 +            task.setTaskCompletedWithSnapshot(false)
-+        }
+         }
 +        pendingConnectivityTasks.removeAll()
 +        return pendingCount
-+    }
-+
+     }
+ 
+-    /// Conditionally triggers a watch state update if the last known update was too long ago or has never occurred.
 +    /// Phase C — sync G7 sensor identity from iPhone watch payload into `G7WatchSensorAdapter`.
-+    ///
+     ///
+-    /// This method checks the `lastWatchStateUpdate` timestamp to determine how many seconds
+-    /// have elapsed since the last update under the following conditions
+-    ///  - If `lastWatchStateUpdate` is `nil` (meaning there has never been an update), or
+-    ///  - If more than 15 seconds have passed,
 +    /// **Freshness gate (P1 fix):** patch 13 sends `g7_active_sensor_name` on every state
 +    /// payload (using `""` when no G7 is active). WatchConnectivity is best-effort and can
 +    /// deliver an older queued userInfo / message *after* a newer payload has already updated
 +    /// the watch's view of the phone state. Without gating, the older payload's stale sensor
 +    /// name (possibly empty after a swap, or the previous identity) would force a rescan via
 +    /// `setActiveSensorName(oldName/nil)` and reset BLE session state.
-+    ///
+     ///
+-    /// it will show a syncing animation and request a new watch state update from the iPhone app.
+-    private func forceConditionalWatchStateUpdate() {
+-        guard let lastUpdateTimestamp = lastWatchStateUpdate else {
+-            WatchLogger.shared.debug(.data, "No watch state yet, requesting one")
+-
+-            // If there's no recorded timestamp, we must force a fresh update immediately.
+-            showSyncingAnimation = true
+-            requestWatchStateUpdate()
 +    /// Gate by `WatchMessageKeys.date` (payload build time on the phone — documented as
 +    /// "BUILD TIME, not CGM reading time"). Only apply identity changes when the incoming
 +    /// build-time is at least as new as the last applied one. Payloads without a parseable
@@ -6407,9 +6729,11 @@ index 27b8897cc..beb4bb533 100644
 +                    + " payload_date=\(Int(payloadDate.timeIntervalSince1970))"
 +                    + " last_applied=\(Int(lastApplied.timeIntervalSince1970))"
 +            )
-+            return
-+        }
-+
+             return
+         }
+ 
+-        let now = Date().timeIntervalSince1970
+-        let secondsSinceUpdate = now - lastUpdateTimestamp
 +        let raw = payload[WatchMessageKeys.g7ActiveSensorName]
 +        let name: String?
 +        if let s = raw as? String {
@@ -6417,7 +6741,13 @@ index 27b8897cc..beb4bb533 100644
 +        } else {
 +            name = nil
 +        }
-+
+ 
+-        // If more than 15 seconds have elapsed since the last update, force an(other) update.
+-        if secondsSinceUpdate > 15 {
+-            WatchLogger.shared.debug(.data, "Watch state \(Int(secondsSinceUpdate)) s old, requesting update")
+-            showSyncingAnimation = true
+-            requestWatchStateUpdate()
+-            return
 +        if let payloadDate { lastAppliedG7SensorNamePayloadDate = payloadDate }
 +
 +        // C2: pair the name with its activation epoch (Int64 seconds, NSNumber-safe). Absent ⇒ legacy
@@ -6448,7 +6778,7 @@ index 27b8897cc..beb4bb533 100644
 +                .g7,
 +                "event=g7_acquisition_arm_setting_changed enabled=\(enabled) applies=next_launch"
 +            )
-+        }
+         }
      }
  
 -    /// Handles incoming messages that either contain an acknowledgement or fresh watchState data  (<15 min)
@@ -6459,7 +6789,7 @@ index 27b8897cc..beb4bb533 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -407,6 +1929,8 @@ import WidgetKit
+@@ -407,6 +2207,8 @@ import WidgetKit
                      self.showSyncingAnimation = false
                  }
  
@@ -6468,7 +6798,7 @@ index 27b8897cc..beb4bb533 100644
                  switch ackCode {
                  case .savingCarbs:
                      self.isMealBolusCombo = true
-@@ -427,86 +1951,222 @@ import WidgetKit
+@@ -427,86 +2229,222 @@ import WidgetKit
                  }
              }
  
@@ -6663,12 +6993,12 @@ index 27b8897cc..beb4bb533 100644
 +
 +        syncTimeoutWorkItem?.cancel()
 +        syncTimeoutWorkItem = nil
++
++        let effectiveReading = resolveEffectiveCGMReadingDate(from: message)
++        let sequence = intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
  
 -        if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
 -            self.currentGlucoseColorString = currentGlucoseColorString
-+        let effectiveReading = resolveEffectiveCGMReadingDate(from: message)
-+        let sequence = intForWatchMessageKey(WatchMessageKeys.g7Sequence, in: message)
-+
 +        let shouldApplyCGMFields: Bool
 +        if case let .found(readingDate) = effectiveReading {
 +            shouldApplyCGMFields = tryAttributeDisplayedReadingSource(
@@ -6725,7 +7055,7 @@ index 27b8897cc..beb4bb533 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -521,50 +2181,27 @@ import WidgetKit
+@@ -521,50 +2459,27 @@ import WidgetKit
              self.lastLoopTime = lastLoopTime
          }
  
@@ -6792,7 +7122,7 @@ index 27b8897cc..beb4bb533 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -585,43 +2222,54 @@ import WidgetKit
+@@ -585,43 +2500,54 @@ import WidgetKit
              }
          }
  
@@ -6872,7 +7202,7 @@ index 27b8897cc..beb4bb533 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -643,37 +2291,456 @@ import WidgetKit
+@@ -643,37 +2569,456 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
@@ -6934,17 +7264,9 @@ index 27b8897cc..beb4bb533 100644
              glucoseBobbleComplicationSettings.save()
 -            didSave = true
 +            WidgetCenter.shared.reloadTimelines(ofKind: TrioComplicationDataStore.glucoseBobbleComplicationKind)
-         }
++        }
 +    }
- 
--        if let readingDate = glucoseValues.map(\.date).max(), currentGlucose != "--" {
--            let snapshot = GlucoseComplicationSnapshot(
--                glucose: currentGlucose,
--                trend: trend,
--                delta: delta,
--                glucoseColorHex: latestGlucoseColorString ?? currentGlucoseColorString,
--                readingDate: readingDate,
--                lastLoopDate: lastLoopDate
++
 +    /// Build 205 / review #5: apply the phone's glucose color settings + display units to the color
 +    /// computer when present in the payload. Called from both `processRawDataForWatchState` and
 +    /// `saveComplicationSnapshot` so a background complication bake never uses stale cached settings
@@ -6983,10 +7305,18 @@ index 27b8897cc..beb4bb533 100644
 +            WatchLogger.shared.log(
 +                "📸 saveComplicationSnapshot SKIPPED: no valid CGM reading timestamp"
 +                    + " (no reading_epoch, glucoseValues, or parseable date)"
-             )
++            )
 +            return
-+        }
-+
+         }
+ 
+-        if let readingDate = glucoseValues.map(\.date).max(), currentGlucose != "--" {
+-            let snapshot = GlucoseComplicationSnapshot(
+-                glucose: currentGlucose,
+-                trend: trend,
+-                delta: delta,
+-                glucoseColorHex: latestGlucoseColorString ?? currentGlucoseColorString,
+-                readingDate: readingDate,
+-                lastLoopDate: lastLoopDate
 +        let glucoseValue = message[WatchMessageKeys.currentGlucose] as? String ?? currentGlucose
 +        let trendValue = message[WatchMessageKeys.trend] as? String ?? trend ?? ""
 +        let deltaValue = message[WatchMessageKeys.delta] as? String ?? delta ?? ""
@@ -7010,8 +7340,11 @@ index 27b8897cc..beb4bb533 100644
 +        WatchLogger.shared
 +            .log(
 +                "🔍 Debug: glucoseValue source - message: \(message[WatchMessageKeys.currentGlucose] as? String ?? "nil"), currentGlucose: \(currentGlucose)"
-+            )
-+
+             )
+ 
+-            if snapshot != GlucoseComplicationSnapshot.load() {
+-                snapshot.save()
+-                didSave = true
 +        let snapshot = TrioComplicationSnapshot(
 +            glucose: glucoseValue,
 +            trend: trendValue,
@@ -7274,10 +7607,7 @@ index 27b8897cc..beb4bb533 100644
 +            }
 +            return
 +        }
- 
--            if snapshot != GlucoseComplicationSnapshot.load() {
--                snapshot.save()
--                didSave = true
++
 +        DispatchQueue.main.async {
 +            // Re-check after deferral: BLE may have advanced the watermark before this block runs.
 +            if let attributed = self.displayedReadingAttributedForDate,
@@ -7296,11 +7626,9 @@ index 27b8897cc..beb4bb533 100644
 +            self.alignDisplayedReadingAttributionWithComplicationSnapshot(snapshot)
 +            self.showSyncingAnimation = false
 +            self.syncTimeoutWorkItem?.cancel()
-         }
++        }
 +    }
- 
--        if didSave {
--            WidgetCenter.shared.reloadAllTimelines()
++
 +    private func dateValue(from value: Any?) -> Date? {
 +        if let date = value as? Date {
 +            return date
@@ -7321,10 +7649,12 @@ index 27b8897cc..beb4bb533 100644
 +
 +        let dates = glucoseData.compactMap { data in
 +            dateValue(from: data["date"])
-+        }
+         }
 +        return dates.max()
 +    }
-+
+ 
+-        if didSave {
+-            WidgetCenter.shared.reloadAllTimelines()
 +    private enum EffectiveCGMReadingDateResolution {
 +        case found(Date)
 +        case rejectedDateOnly
