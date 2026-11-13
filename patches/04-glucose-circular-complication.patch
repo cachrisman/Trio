@@ -1,12 +1,12 @@
-From c96545db2274c9972b65e5579695cf9b42c4018f Mon Sep 17 00:00:00 2001
+From b1863cb6a37f22496b1457c90a1e913750003fee Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 6 Nov 2026 13:59:01 +0100
+Date: Fri, 13 Nov 2026 22:57:23 +0100
 Subject: [PATCH] feat: glucose-circular-complication
 
 Trio-Patch-Source-Branch: feature/glucose-circular-complication
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 1d49937633f1cd0826e6a5ebfac28d1a4ff5fe89
-Trio-Patch-Generated: 2026-11-06T12:58:44Z
+Trio-Patch-Feature-Tip: 967d3775001b2d18a8a139eed04df35f87c2a42b
+Trio-Patch-Generated: 2026-11-13T21:57:09Z
 Trio-Patch-Source-Commits:
  03f1519f025ccfbcb0edc744766d8bd32cc9ac5b Make the Glucose Bobble view shareable with other targets
  799cfbdbfc1d2e340bc0b4aa1af4c20009406a88 Add a circular Glucose Bobble watch complication
@@ -26,6 +26,7 @@ Trio-Patch-Source-Commits:
  89fab892b8ed9ba823d32779d4e4cf5e84967d56 Glucose Bobble settings preview: keep the glucose tint in White mode, as the complication does
  7936b4da3ba08fc91c89ead04a3408f28a2f308a Glucose Bobble complication: colour the reading like the chart, not the white-in-range bubble
  1d49937633f1cd0826e6a5ebfac28d1a4ff5fe89 Merge dev (1.0.2.59) into feature/glucose-circular-complication
+ 967d3775001b2d18a8a139eed04df35f87c2a42b glucose-circular-complication: lighter same-hue digits, grey-only stale state, live phone preview (TRIO-070)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  5cb666e96e012bc49c99d1bfd5f3fcf1d1ffa338
@@ -45,22 +46,23 @@ Trio-Patch-Source-PatchIds:
  09c266963acddd16224101605b9adaef157d3875
  b19bc3bb4664130e59987eff56666cada522df72
  22ff8677116d5323f0fb49d0812376a5d34a5578
+ 68f2c06610dc2f48b945f16037ff7bf66926fe37
 ---
- Trio Watch App Extension/WatchState.swift     |  58 ++++
+ Trio Watch App Extension/WatchState.swift     |  58 +++
  Trio Watch App/TrioWatchApp.entitlements      |  10 +
- .../GlucoseBobbleComplication.swift           | 311 ++++++++++++++++++
+ .../GlucoseBobbleComplication.swift           | 363 ++++++++++++++++++
  .../TrioWatchComplication.entitlements        |  10 +
  .../TrioWatchComplication.swift               |   2 +-
- .../GlucoseComplicationSnapshot.swift         |  41 +++
- .../GlucoseBobbleComplicationSettings.swift   |  80 +++++
+ .../GlucoseComplicationSnapshot.swift         |  41 ++
+ .../GlucoseBobbleComplicationSettings.swift   |  80 ++++
  Trio/Sources/Models/TrioSettings.swift        |   8 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   4 +
  Trio/Sources/Models/WatchState.swift          |   8 +-
- ...lucoseBobbleComplicationSettingsView.swift | 124 +++++++
+ ...lucoseBobbleComplicationSettingsView.swift | 204 ++++++++++
  .../View/WatchConfigAppleWatchView.swift      |  13 +
  .../WatchConfig/WatchConfigStateModel.swift   |   2 +
  .../WatchManager/AppleWatchManager.swift      |  13 +
- 14 files changed, 682 insertions(+), 2 deletions(-)
+ 14 files changed, 814 insertions(+), 2 deletions(-)
  create mode 100644 Trio Watch App/TrioWatchApp.entitlements
  create mode 100644 Trio Watch Complication/GlucoseBobbleComplication.swift
  create mode 100644 Trio Watch Complication/TrioWatchComplication.entitlements
@@ -69,7 +71,7 @@ Trio-Patch-Source-PatchIds:
  create mode 100644 Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
 
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 25558fb58..5c42512b1 100644
+index 30e223cf7..27b8897cc 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,6 +1,7 @@
@@ -93,7 +95,7 @@ index 25558fb58..5c42512b1 100644
      var overridePresets: [OverridePresetWatch] = []
      var tempTargetPresets: [TempTargetPresetWatch] = []
      var snoozeUntilDate: Date = .distantPast
-@@ -426,6 +433,14 @@ import WatchConnectivity
+@@ -514,6 +521,14 @@ import WatchConnectivity
              self.lastLoopTime = lastLoopTime
          }
  
@@ -108,7 +110,7 @@ index 25558fb58..5c42512b1 100644
          if let glucoseData = message[WatchMessageKeys.glucoseValues] as? [[String: Any]] {
              glucoseValues = glucoseData.compactMap { data in
                  guard let glucose = data["glucose"] as? Double,
-@@ -440,6 +455,16 @@ import WatchConnectivity
+@@ -528,6 +543,16 @@ import WatchConnectivity
                  )
              }
              .sorted { $0.date < $1.date }
@@ -125,7 +127,7 @@ index 25558fb58..5c42512b1 100644
          }
  
          if let minYAxisValue = message[WatchMessageKeys.minYAxisValue] {
-@@ -529,5 +554,38 @@ import WatchConnectivity
+@@ -617,5 +642,38 @@ import WatchConnectivity
              forecastConeMax = forecastPayload[WatchMessageKeys.forecastConeMax] as? [Double] ?? []
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
@@ -182,11 +184,12 @@ index 000000000..9a37de423
 +</plist>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
 new file mode 100644
-index 000000000..d7d135215
+index 000000000..3b07d70c9
 --- /dev/null
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,363 @@
 +import SwiftUI
++import UIKit
 +import WidgetKit
 +
 +// MARK: - Widget Bundle
@@ -315,17 +318,21 @@ index 000000000..d7d135215
 +    // The raw glucose colour from the snapshot, independent of colorMode: the glucoseTint
 +    // background always uses this, even when the number itself is forced white.
 +    private var snapshotGlucoseColor: Color {
-+        guard let snapshot = entry.snapshot, !isStale, let color = Self.color(fromHex: snapshot.glucoseColorHex) else {
++        guard let snapshot = entry.snapshot, let color = Self.color(fromHex: snapshot.glucoseColorHex) else {
 +            return .gray
 +        }
 +        return color
 +    }
 +
 +    private var valueColor: Color {
-+        guard entry.settings.colorMode == .white, entry.snapshot != nil, !isStale else {
-+            return snapshotGlucoseColor
++        guard entry.snapshot != nil else { return .gray }
++        if isStale {
++            return Color(white: 0.55)
 +        }
-+        return .white
++        if entry.settings.colorMode == .white {
++            return .white
++        }
++        return Self.lighterSameHueGlucoseColor(snapshotGlucoseColor)
 +    }
 +
 +    private var ringColor: Color? {
@@ -366,7 +373,7 @@ index 000000000..d7d135215
 +    @ViewBuilder private var background: some View {
 +        switch entry.settings.backgroundStyle {
 +        case .glucoseTint:
-+            if renderingMode == .fullColor, entry.snapshot != nil, !isStale {
++            if renderingMode == .fullColor, entry.snapshot != nil {
 +                Circle().fill(snapshotGlucoseColor.opacity(0.3))
 +            } else {
 +                AccessoryWidgetBackground()
@@ -392,11 +399,12 @@ index 000000000..d7d135215
 +                    glucoseColor: valueColor,
 +                    rotationDegrees: GlucoseBobbleContactView.rotationDegrees(forTrend: entry.snapshot?.trend),
 +                    trendArrowPlacement: .insideRing,
-+                    ringColor: ringColor
++                    trend: entry.snapshot?.trend,
++                    ringColor: ringColor,
++                    arrowOutlineColor: .black
 +                )
 +                .scaleEffect(side / GlucoseBobbleContactView.Layout.nativeSize)
 +                .frame(width: side, height: side)
-+                .opacity(isStale ? 0.55 : 1)
 +            }
 +            .frame(width: geometry.size.width, height: geometry.size.height)
 +        }
@@ -409,6 +417,18 @@ index 000000000..d7d135215
 +}
 +
 +private extension GlucoseBobbleComplicationView {
++    /// Display digits on the glucose tint use HSB(h, 0.45, 1.0) while the tint keeps the dynamic colour.
++    static func lighterSameHueGlucoseColor(_ color: Color) -> Color {
++        var hue: CGFloat = 0
++        var saturation: CGFloat = 0
++        var brightness: CGFloat = 0
++        var alpha: CGFloat = 0
++        guard UIColor(color).getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) else {
++            return color
++        }
++        return Color(hue: Double(hue), saturation: 0.45, brightness: 1)
++    }
++
 +    static func color(fromHex hex: String) -> Color? {
 +        var sanitized = hex
 +        if sanitized.hasPrefix("#") {
@@ -478,6 +498,40 @@ index 000000000..d7d135215
 +    TrioGlucoseBobbleComplication()
 +} timeline: {
 +    GlucoseBobbleComplicationEntry(date: Date(), snapshot: nil, settings: GlucoseBobbleComplicationSettings())
++}
++
++#Preview("mmol / FortyFiveDown", as: .accessoryCircular) {
++    TrioGlucoseBobbleComplication()
++} timeline: {
++    let now = Date()
++    GlucoseBobbleComplicationEntry(
++        date: now,
++        snapshot: GlucoseComplicationSnapshot(
++            glucose: "12.8",
++            trend: "FortyFiveDown",
++            delta: "-0.6",
++            glucoseColorHex: "#5BE5C0",
++            readingDate: now.addingTimeInterval(-59 * 60)
++        ),
++        settings: GlucoseBobbleComplicationSettings()
++    )
++}
++
++#Preview("DoubleUp", as: .accessoryCircular) {
++    TrioGlucoseBobbleComplication()
++} timeline: {
++    let now = Date()
++    GlucoseBobbleComplicationEntry(
++        date: now,
++        snapshot: GlucoseComplicationSnapshot(
++            glucose: "199",
++            trend: "DoubleUp",
++            delta: "+7",
++            glucoseColorHex: "#665BDD",
++            readingDate: now.addingTimeInterval(-9 * 60)
++        ),
++        settings: GlucoseBobbleComplicationSettings()
++    )
 +}
 +
 +#Preview("Loop status, white", as: .accessoryCircular) {
@@ -760,23 +814,93 @@ index 9fec9a04b..56db82bdd 100644
  }
 diff --git a/Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift b/Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
 new file mode 100644
-index 000000000..c73d9ec4c
+index 000000000..97d26eaf5
 --- /dev/null
 +++ b/Trio/Sources/Modules/WatchConfig/View/GlucoseBobbleComplicationSettingsView.swift
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,204 @@
++import CoreData
 +import SwiftUI
++import UIKit
 +
 +struct GlucoseBobbleComplicationSettingsView: View {
 +    @ObservedObject var state: WatchConfig.StateModel
 +
++    @State private var scheduledTargetMgDl: Decimal = 100
++
++    @FetchRequest(fetchRequest: {
++        let request: NSFetchRequest<GlucoseStored> = GlucoseStored.fetchRequest()
++        request.sortDescriptors = [NSSortDescriptor(keyPath: \GlucoseStored.date, ascending: false)]
++        request.fetchLimit = 1
++        return request
++    }())
++    private var latestGlucoseReadings: FetchedResults<GlucoseStored>
++
 +    @Environment(\.colorScheme) var colorScheme
 +    @Environment(AppState.self) var appState
 +
++    private var liveGlucoseTintColor: Color {
++        Trio.getDynamicGlucoseColor(
++            glucoseValue: previewGlucoseValue,
++            highGlucoseColorValue: colorHighGlucose,
++            lowGlucoseColorValue: colorLowGlucose,
++            targetGlucose: colorTargetGlucose,
++            glucoseColorScheme: state.settingsManager.settings.glucoseColorScheme
++        )
++    }
++
 +    private var sampleGlucoseColor: Color {
 +        switch state.glucoseBobbleComplication.colorMode {
-+        case .glucose: return .green
++        case .glucose: return lighterSameHueGlucoseColor(liveGlucoseTintColor)
 +        case .white: return .white
 +        }
++    }
++
++    private var previewGlucoseValue: Decimal {
++        if let latest = latestGlucoseReadings.first {
++            let mgdl = Decimal(latest.glucose)
++            return state.units == .mgdL ? mgdl : mgdl.asMmolL
++        }
++        let isMgdL = state.units == .mgdL
++        return isMgdL ? 112 : 112.asMmolL
++    }
++
++    private var previewGlucoseText: String {
++        if let latest = latestGlucoseReadings.first {
++            return Decimal(latest.glucose).formatted(for: state.units)
++        }
++        return Decimal(112).formatted(for: state.units)
++    }
++
++    private var colorLowGlucose: Decimal {
++        let settings = state.settingsManager.settings
++        let isMgdL = state.units == .mgdL
++        let hardCodedLow = Decimal(55)
++        let low = settings.glucoseColorScheme == .dynamicColor ? hardCodedLow : settings.low
++        return isMgdL ? low : low.asMmolL
++    }
++
++    private var colorHighGlucose: Decimal {
++        let settings = state.settingsManager.settings
++        let isMgdL = state.units == .mgdL
++        let hardCodedHigh = Decimal(220)
++        let high = settings.glucoseColorScheme == .dynamicColor ? hardCodedHigh : settings.high
++        return isMgdL ? high : high.asMmolL
++    }
++
++    private var colorTargetGlucose: Decimal {
++        let isMgdL = state.units == .mgdL
++        return isMgdL ? scheduledTargetMgDl : scheduledTargetMgDl.asMmolL
++    }
++
++    private func lighterSameHueGlucoseColor(_ color: Color) -> Color {
++        var hue: CGFloat = 0
++        var saturation: CGFloat = 0
++        var brightness: CGFloat = 0
++        var alpha: CGFloat = 0
++        guard UIColor(color).getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) else {
++            return color
++        }
++        return Color(hue: Double(hue), saturation: 0.45, brightness: 1)
 +    }
 +
 +    /// A "Loop Status" ring previews as a fresh loop (green); nil keeps the trend gradient.
@@ -797,7 +921,7 @@ index 000000000..c73d9ec4c
 +                        switch state.glucoseBobbleComplication.backgroundStyle {
 +                        case .glucoseTint:
 +                            // The complication tints with the glucose colour even when the number is white.
-+                            Circle().fill(Color.green.opacity(0.3))
++                            Circle().fill(liveGlucoseTintColor.opacity(0.3))
 +                        case .system:
 +                            Circle().fill(Color.gray.opacity(0.25))
 +                        case .none:
@@ -805,13 +929,15 @@ index 000000000..c73d9ec4c
 +                        }
 +
 +                        GlucoseBobbleContactView(
-+                            glucoseText: "112",
++                            glucoseText: previewGlucoseText,
 +                            minutesAgoText: state.glucoseBobbleComplication.showMinutesAgo ? "3m" : nil,
 +                            deltaText: state.glucoseBobbleComplication.showDelta ? "+2" : nil,
 +                            glucoseColor: sampleGlucoseColor,
 +                            rotationDegrees: GlucoseBobbleContactView.rotationDegrees(forTrend: "Flat"),
 +                            trendArrowPlacement: .insideRing,
-+                            ringColor: previewRingColor
++                            trend: "Flat",
++                            ringColor: previewRingColor,
++                            arrowOutlineColor: .black
 +                        )
 +                        .scaleEffect(120 / GlucoseBobbleContactView.Layout.nativeSize)
 +                    }
@@ -858,6 +984,14 @@ index 000000000..c73d9ec4c
 +        .background(appState.trioBackgroundColor(for: colorScheme))
 +        .navigationTitle("Glucose Bobble Complication")
 +        .navigationBarTitleDisplayMode(.inline)
++        .task {
++            let bgTargets = await state.provider.storage.retrieveAsync(OpenAPS.Settings.bgTargets, as: BGTargets.self)
++                ?? BGTargets(from: OpenAPS.defaults(for: OpenAPS.Settings.bgTargets))
++                ?? BGTargets(units: .mgdL, userPreferredUnits: .mgdL, targets: [])
++            if let target = bgTargets.currentTarget() {
++                scheduledTargetMgDl = target
++            }
++        }
 +    }
 +}
 +
