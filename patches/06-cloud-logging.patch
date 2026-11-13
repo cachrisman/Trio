@@ -1,12 +1,12 @@
-From 55bdd569692f06432eed528b1f41484ec59b5321 Mon Sep 17 00:00:00 2001
+From d4ea6dcc8a0813a343b7070296f461dded8430e7 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 7 Nov 2026 21:49:04 +0100
+Date: Fri, 13 Nov 2026 19:57:31 +0100
 Subject: [PATCH] feat: cloud-logging
 
 Trio-Patch-Source-Branch: feature/cloud-logging
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 5b9aae3a589cf8531df1e773eaccadb011c52f40
-Trio-Patch-Generated: 2026-11-07T20:48:53Z
+Trio-Patch-Feature-Tip: 4671ba0fdbf6a7752e0b93b5d11d6f41b6035dac
+Trio-Patch-Generated: 2026-11-13T18:57:19Z
 Trio-Patch-Source-Commits:
  fc417ef5189f50f479dea4579a726fa7dc6677e6 feat: ns-richer-settings
  c7c8d208badaa588d5eb2050dd74ef4487ce4efe feat: g7-reading-time-with-seconds
@@ -18,6 +18,7 @@ Trio-Patch-Source-Commits:
  2915659d3c978f9530306125a2f1e87c5f113904 cloud logging: rebuild as a LogSink tee on upstream's log pipeline
  ded8f582e0013c722cab34acb51d1118910b1009 cloud logging: forward alert acks and text, determination reasons and device-log errors to BetterStack (TRIO-102)
  5b9aae3a589cf8531df1e773eaccadb011c52f40 cloud logging: start the determination observer from CloudLogUploadService, not TrioApp (TRIO-102)
+ 4671ba0fdbf6a7752e0b93b5d11d6f41b6035dac cloud logging: drop rows a permanent 4xx rejects instead of stalling the queue, and report each drop (TRIO-039)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  f19d9363a9ac847de8e6c12a5acd685d05be56fa
@@ -28,6 +29,7 @@ Trio-Patch-Source-PatchIds:
  7ab8129126244d626529ebd0f2d0681999b4e663
  ae3d22bc2ee2c8958b7473917658e59bc953160a
  4f88bf956d5fbddd47dc9b8a77c3ed57f32f6b39
+ 1219eabd3da45db4ccdfe23f408841605a9d8863
 ---
  Trio/Sources/Application/AppDelegate.swift    |  25 +-
  Trio/Sources/Application/TrioApp.swift        |   3 +-
@@ -37,11 +39,11 @@ Trio-Patch-Source-PatchIds:
  .../CloudLogging/BetterStackSettings.swift    |  35 ++
  .../CloudDeterminationLogger.swift            |  67 +++
  .../CloudDeviceLogForwarder.swift             |  37 ++
- .../CloudLogForwardingLogic.swift             | 110 +++++
- .../CloudLogging/CloudLogProvider.swift       | 260 ++++++++++
+ .../CloudLogForwardingLogic.swift             | 249 ++++++++++
+ .../CloudLogging/CloudLogProvider.swift       | 287 +++++++++++
  .../Logger/CloudLogging/CloudLogQueue.swift   | 458 ++++++++++++++++++
  .../Logger/CloudLogging/CloudLogSink.swift    | 149 ++++++
- .../CloudLogging/CloudLogUploadService.swift  | 290 +++++++++++
+ .../CloudLogging/CloudLogUploadService.swift  | 273 +++++++++++
  Trio/Sources/Logger/Core/TeeLogSink.swift     |  30 ++
  .../Logger/DeviceLog/DeviceLogStore.swift     |   5 +
  Trio/Sources/Logger/Export/LogExport.swift    |   2 +-
@@ -50,8 +52,8 @@ Trio-Patch-Source-PatchIds:
  .../Settings/View/Subviews/ServicesView.swift |   1 +
  Trio/Sources/Router/Screen.swift              |   3 +
  .../Services/Alerts/TrioAlertManager.swift    |  12 +-
- .../Logging/CloudLogForwardingTests.swift     | 154 ++++++
- 22 files changed, 2192 insertions(+), 4 deletions(-)
+ .../Logging/CloudLogForwardingTests.swift     | 309 ++++++++++++
+ 22 files changed, 2496 insertions(+), 4 deletions(-)
  create mode 100644 Trio/Sources/Helpers/AppTerminationTracker.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackLogtailProvider.swift
  create mode 100644 Trio/Sources/Logger/CloudLogging/BetterStackSettings.swift
@@ -717,10 +719,10 @@ index 000000000..1b852cf2c
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogForwardingLogic.swift b/Trio/Sources/Logger/CloudLogging/CloudLogForwardingLogic.swift
 new file mode 100644
-index 000000000..df8b99dc4
+index 000000000..3d607b511
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogForwardingLogic.swift
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,249 @@
 +import Foundation
 +
 +// Pure, Foundation-only decisions for forwarding device logs and determinations to the cloud.
@@ -831,13 +833,156 @@ index 000000000..df8b99dc4
 +        return .new
 +    }
 +}
++
++enum CloudLogUploadFailureAction: Equatable {
++    case rejectRows
++    case retryLater
++}
++
++enum CloudLogUploadFailurePolicy {
++    private static let retryLaterClientCodes: Set<Int> = [401, 403, 404, 408, 429]
++
++    static func action(for error: CloudLogUploadError) -> CloudLogUploadFailureAction {
++        switch error {
++        case .encoding:
++            return .rejectRows
++        case let .unexpectedStatus(code, _):
++            guard (400 ..< 500).contains(code), !retryLaterClientCodes.contains(code) else { return .retryLater }
++            return .rejectRows
++        case .notConfigured, .invalidURL, .transport, .invalidResponse:
++            return .retryLater
++        }
++    }
++}
++
++// MARK: - Cloud log batch upload drain (testable; mirrors `CloudLogUploadService.runPass` per-batch loop)
++
++enum CloudLogBatchUploadDrain {
++    enum Outcome: Equatable {
++        case batchComplete
++        case stopPass
++    }
++
++    struct Handlers: Sendable {
++        let encodedSize: @Sendable ([CloudLogEvent]) -> Int?
++        let upload: @Sendable ([CloudLogEvent]) async -> Result<Void, CloudLogUploadError>
++        let commit: @Sendable (CloudLogQueue.Cursor, UInt64) async -> Void
++        let addDropped: @Sendable (UInt64) -> Void
++        let logRejectedRow: @Sendable (String) -> Void
++        let uploadDropVisibility: @Sendable (CloudLogEvent) async -> Void
++    }
++
++    struct Context: Sendable {
++        let itemEvents: [CloudLogEvent]
++        let itemEnds: [CloudLogQueue.Cursor]
++        let itemSkips: [Int]
++        var persistedDropped: UInt64
++        let rangeStart: CloudLogQueue.Cursor
++        let common: CloudLogCommonAttributes
++        let maxRequestBytes: Int
++        let maxRequestsPerPass: Int
++    }
++
++    static func rejectionStatusLabel(for error: CloudLogUploadError) -> String {
++        switch error {
++        case .encoding:
++            return "encoding"
++        case let .unexpectedStatus(code, _):
++            return String(code)
++        case .notConfigured, .invalidURL, .transport, .invalidResponse:
++            return "retry"
++        }
++    }
++
++    static func drain(
++        handlers: Handlers,
++        context: Context,
++        requests: inout Int
++    ) async -> Outcome {
++        let count = context.itemEvents.count
++        guard count > 0 else { return .batchComplete }
++
++        let ctx = context
++        var persistedPending = ctx.persistedDropped
++        var lo = 0
++        var hi = count
++
++        while lo < count {
++            func droppedCount(_ upper: Int) -> UInt64 {
++                persistedPending &+ UInt64(ctx.itemSkips[lo ..< upper].reduce(0, +))
++            }
++            func events(upTo upper: Int) -> [CloudLogEvent] {
++                let dropped = droppedCount(upper)
++                let dropEvents = dropped > 0 ? [CloudLogEvent.dropped(count: dropped, common: ctx.common)] : []
++                return dropEvents + ctx.itemEvents[lo ..< upper]
++            }
++
++            while hi - lo > 1,
++                  let size = handlers.encodedSize(events(upTo: hi)),
++                  size > ctx.maxRequestBytes
++            {
++                hi = lo + max(1, (hi - lo) / 2)
++            }
++
++            guard requests < ctx.maxRequestsPerPass else { return .stopPass }
++            requests += 1
++
++            switch await handlers.upload(events(upTo: hi)) {
++            case .success:
++                await handlers.commit(ctx.itemEnds[hi - 1], persistedPending)
++                persistedPending = 0
++                lo = hi
++                hi = count
++            case let .failure(error):
++                switch CloudLogUploadFailurePolicy.action(for: error) {
++                case .retryLater:
++                    return .stopPass
++                case .rejectRows:
++                    if hi - lo > 1 {
++                        hi = lo + (hi - lo) / 2
++                        continue
++                    }
++                    let status = rejectionStatusLabel(for: error)
++                    handlers.logRejectedRow(status)
++                    let lostSkips = UInt64(ctx.itemSkips[lo])
++                    let rowEnd = ctx.itemEnds[lo]
++                    let rowStart = lo == 0 ? ctx.rangeStart : ctx.itemEnds[lo - 1]
++                    await handlers.commit(rowEnd, 0)
++                    let droppedRows = 1 &+ lostSkips
++                    handlers.addDropped(droppedRows)
++
++                    if requests < ctx.maxRequestsPerPass {
++                        requests += 1
++                        let visibility = CloudLogEvent.rowDropped(
++                            status: status,
++                            rows: droppedRows,
++                            rangeStart: rowStart,
++                            rangeEnd: rowEnd,
++                            common: ctx.common
++                        )
++                        await handlers.uploadDropVisibility(visibility)
++                    }
++
++                    lo += 1
++                    hi = count
++                }
++            }
++        }
++
++        return .batchComplete
++    }
++}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
 new file mode 100644
-index 000000000..040c8982f
+index 000000000..5b9e38d19
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogProvider.swift
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,287 @@
 +import Foundation
++
++extension CloudLogQueue.Cursor: CustomStringConvertible {
++    var description: String { "\(segment):\(offset)" }
++}
 +
 +protocol CloudLogProvider {
 +    /// Uploads a batch of events.
@@ -1048,6 +1193,29 @@ index 000000000..040c8982f
 +    static func dropped(count: UInt64, common: CloudLogCommonAttributes) -> CloudLogEvent {
 +        CloudLogEvent(
 +            message: "event=cloud_log_dropped count=\(count) CloudLogQueue dropped rows before upload",
++            dt: isoString(from: Date()),
++            attributes: [
++                "platform": "ios",
++                "build": common.build,
++                "category": "CloudLogging",
++                "appVersion": common.appVersion,
++                "env": common.env,
++                "level": "warn",
++                "severity": "warning",
++                "source": "phone"
++            ]
++        )
++    }
++
++    static func rowDropped(
++        status: String,
++        rows: UInt64,
++        rangeStart: CloudLogQueue.Cursor,
++        rangeEnd: CloudLogQueue.Cursor,
++        common: CloudLogCommonAttributes
++    ) -> CloudLogEvent {
++        CloudLogEvent(
++            message: "event=cloud_log_row_dropped status=\(status) rows=\(rows) range=\(rangeStart)..\(rangeEnd)",
 +            dt: isoString(from: Date()),
 +            attributes: [
 +                "platform": "ios",
@@ -1718,10 +1886,10 @@ index 000000000..0ec25d67c
 +}
 diff --git a/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
 new file mode 100644
-index 000000000..523b52a76
+index 000000000..e390882d4
 --- /dev/null
 +++ b/Trio/Sources/Logger/CloudLogging/CloudLogUploadService.swift
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,273 @@
 +import Foundation
 +import os
 +import UIKit
@@ -1876,53 +2044,36 @@ index 000000000..523b52a76
 +            }
 +
 +            let itemEvents = batch.items.map { CloudLogEvent.make(from: $0.record, common: common) }
-+            var persistedPending = batch.persistedDropped
-+            var lo = 0
-+            var hi = batch.items.count
-+
-+            while lo < batch.items.count {
-+                // Skipped rows count with the range that ends after them; persisted drops go with the first commit.
-+                func droppedCount(_ upper: Int) -> UInt64 {
-+                    persistedPending &+ UInt64(batch.itemSkips[lo ..< upper].reduce(0, +))
++            let itemEnds = batch.items.map(\.end)
++            let handlers = CloudLogBatchUploadDrain.Handlers(
++                encodedSize: { [provider] events in provider.encodedSize(of: events) },
++                upload: { [provider] events in await provider.upload(events: events) },
++                commit: { cursor, droppedReported in
++                    await queue.commit(through: cursor, droppedReported: droppedReported)
++                },
++                addDropped: { count in queue.addDropped(count) },
++                logRejectedRow: { status in
++                    Self.osLog.error("Cloud logging: dropping rejected row (status=\(status, privacy: .public))")
++                },
++                uploadDropVisibility: { [provider] event in
++                    _ = await provider.upload(events: [event])
 +                }
-+                func events(upTo upper: Int) -> [CloudLogEvent] {
-+                    let dropped = droppedCount(upper)
-+                    let dropEvents = dropped > 0 ? [CloudLogEvent.dropped(count: dropped, common: common)] : []
-+                    return dropEvents + itemEvents[lo ..< upper]
-+                }
-+
-+                // Halve the range until the encoded request fits (keep at least one item).
-+                while hi - lo > 1,
-+                      let size = provider.encodedSize(of: events(upTo: hi)),
-+                      size > Self.maxRequestBytes
-+                {
-+                    hi = lo + max(1, (hi - lo) / 2)
-+                }
-+
-+                guard requests < Self.maxRequestsPerPass else { return }
-+                requests += 1
-+
-+                switch await provider.upload(events: events(upTo: hi)) {
-+                case .success:
-+                    await queue.commit(through: batch.items[hi - 1].end, droppedReported: persistedPending)
-+                    persistedPending = 0
-+                    lo = hi
-+                    hi = batch.items.count
-+                case let .failure(error):
-+                    guard case let .unexpectedStatus(code, _) = error, code == 400 || code == 413 else { return }
-+                    if hi - lo > 1 {
-+                        // Bisect: retry the first half; the rest follows once it is committed.
-+                        hi = lo + (hi - lo) / 2
-+                        continue
-+                    }
-+                    // A permanently rejected single row must not wedge the queue.
-+                    Self.osLog.error("Cloud logging: dropping rejected row (status=\(code))")
-+                    let lostSkips = UInt64(batch.itemSkips[lo])
-+                    await queue.commit(through: batch.items[lo].end, droppedReported: 0)
-+                    queue.addDropped(1 &+ lostSkips)
-+                    lo += 1
-+                    hi = batch.items.count
-+                }
++            )
++            let context = CloudLogBatchUploadDrain.Context(
++                itemEvents: itemEvents,
++                itemEnds: itemEnds,
++                itemSkips: batch.itemSkips,
++                persistedDropped: batch.persistedDropped,
++                rangeStart: batch.start,
++                common: common,
++                maxRequestBytes: Self.maxRequestBytes,
++                maxRequestsPerPass: Self.maxRequestsPerPass
++            )
++            switch await CloudLogBatchUploadDrain.drain(handlers: handlers, context: context, requests: &requests) {
++            case .batchComplete:
++                continue
++            case .stopPass:
++                return
 +            }
 +        }
 +    }
@@ -2335,10 +2486,10 @@ index a4d3ddedd..512d02c68 100644
              broadcaster.notify(GlucoseSnoozeObserver.self, on: .main) { (observer: GlucoseSnoozeObserver) in
 diff --git a/TrioTests/Logging/CloudLogForwardingTests.swift b/TrioTests/Logging/CloudLogForwardingTests.swift
 new file mode 100644
-index 000000000..421915e90
+index 000000000..46f57c447
 --- /dev/null
 +++ b/TrioTests/Logging/CloudLogForwardingTests.swift
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,309 @@
 +import Foundation
 +import XCTest
 +
@@ -2492,6 +2643,161 @@ index 000000000..421915e90
 +        XCTAssertEqual(dedupe.observe(id: 1, enacted: true, date: now, now: later), .none)
 +        XCTAssertEqual(dedupe.observe(id: 1, enacted: true, date: later, now: later), .none)
 +    }
++
++    #if !CLOUD_LOG_HARNESS
++        // MARK: - Cloud log upload failure policy
++
++        func testUploadFailurePolicyRejectsSelectedClientErrorsAndEncoding() {
++            XCTAssertEqual(
++                CloudLogUploadFailurePolicy.action(for: .unexpectedStatus(code: 400, bodyPreview: nil)),
++                .rejectRows
++            )
++            XCTAssertEqual(
++                CloudLogUploadFailurePolicy.action(for: .unexpectedStatus(code: 413, bodyPreview: nil)),
++                .rejectRows
++            )
++            XCTAssertEqual(
++                CloudLogUploadFailurePolicy.action(for: .unexpectedStatus(code: 422, bodyPreview: nil)),
++                .rejectRows
++            )
++            XCTAssertEqual(
++                CloudLogUploadFailurePolicy.action(for: .encoding(NSError(domain: "t", code: 1))),
++                .rejectRows
++            )
++        }
++
++        func testUploadFailurePolicyRetriesAuthRateLimitAndServerErrors() {
++            for code in [401, 403, 404, 408, 429] {
++                XCTAssertEqual(
++                    CloudLogUploadFailurePolicy.action(for: .unexpectedStatus(code: code, bodyPreview: nil)),
++                    .retryLater,
++                    "code \(code)"
++                )
++            }
++            XCTAssertEqual(
++                CloudLogUploadFailurePolicy.action(for: .unexpectedStatus(code: 503, bodyPreview: nil)),
++                .retryLater
++            )
++            XCTAssertEqual(
++                CloudLogUploadFailurePolicy.action(for: .transport(NSError(domain: "t", code: 1))),
++                .retryLater
++            )
++            XCTAssertEqual(
++                CloudLogUploadFailurePolicy.action(for: .invalidResponse),
++                .retryLater
++            )
++        }
++
++        // MARK: - Cloud log batch upload drain
++
++        private func testCloudCommon() -> CloudLogCommonAttributes {
++            CloudLogCommonAttributes(build: "99", appVersion: "1.0", env: "test")
++        }
++
++        private func itemEvents(prefix: String, count: Int) -> [CloudLogEvent] {
++            (0 ..< count).map { CloudLogEvent(message: "\(prefix)-\($0)", dt: nil, attributes: nil) }
++        }
++
++        private func itemEnds(count: Int, base: UInt64 = 10) -> [CloudLogQueue.Cursor] {
++            (0 ..< count).map { CloudLogQueue.Cursor(segment: 1, offset: base + UInt64($0) * 100) }
++        }
++
++        private func drainWithFakeUpload(
++            itemCount: Int,
++            rejectMessage: String?,
++            rejectCode: Int = 422,
++            permanentReject: Bool = true,
++            maxRequests: Int = 100,
++            failAll: CloudLogUploadError? = nil
++        ) async -> (
++            outcome: CloudLogBatchUploadDrain.Outcome,
++            requests: Int,
++            uploadSizes: [Int],
++            commits: [CloudLogQueue.Cursor],
++            droppedRows: UInt64,
++            visibility: [String]
++        ) {
++            final class Box: @unchecked Sendable {
++                var uploadSizes: [Int] = []
++                var commits: [CloudLogQueue.Cursor] = []
++                var droppedRows: UInt64 = 0
++                var visibility: [String] = []
++            }
++            let box = Box()
++            let events = itemEvents(prefix: "item", count: itemCount)
++            let ends = itemEnds(count: itemCount)
++            let handlers = CloudLogBatchUploadDrain.Handlers(
++                encodedSize: { _ in nil },
++                upload: { batch in
++                    let payloads = batch.filter { $0.message.hasPrefix("item-") }
++                    box.uploadSizes.append(payloads.count)
++                    if let failAll {
++                        return .failure(failAll)
++                    }
++                    if let rejectMessage,
++                       permanentReject,
++                       payloads.contains(where: { $0.message == rejectMessage })
++                    {
++                        return .failure(.unexpectedStatus(code: rejectCode, bodyPreview: nil))
++                    }
++                    return .success(())
++                },
++                commit: { cursor, _ in box.commits.append(cursor) },
++                addDropped: { box.droppedRows += $0 },
++                logRejectedRow: { _ in },
++                uploadDropVisibility: { event in box.visibility.append(event.message) }
++            )
++            let context = CloudLogBatchUploadDrain.Context(
++                itemEvents: events,
++                itemEnds: ends,
++                itemSkips: Array(repeating: 0, count: itemCount),
++                persistedDropped: 0,
++                rangeStart: CloudLogQueue.Cursor(segment: 1, offset: 0),
++                common: testCloudCommon(),
++                maxRequestBytes: 1_000_000,
++                maxRequestsPerPass: maxRequests
++            )
++            var requests = 0
++            let outcome = await CloudLogBatchUploadDrain.drain(handlers: handlers, context: context, requests: &requests)
++            return (outcome, requests, box.uploadSizes, box.commits, box.droppedRows, box.visibility)
++        }
++
++        func testDrainDropsPermanentlyRejectedMiddleRowAndContinues() async {
++            let ends = itemEnds(count: 5)
++            let result = await drainWithFakeUpload(itemCount: 5, rejectMessage: "item-2", rejectCode: 422)
++            XCTAssertEqual(result.outcome, .batchComplete)
++            XCTAssertEqual(result.commits, [ends[1], ends[2], ends[4]])
++            XCTAssertEqual(result.droppedRows, 1)
++            XCTAssertEqual(result.requests, 6)
++            XCTAssertTrue(result.visibility.first?.contains("status=422") == true)
++            XCTAssertTrue(result.visibility.first?.contains("rows=1") == true)
++            XCTAssertTrue(result.visibility.first?.contains("range=1:110..1:210") == true)
++        }
++
++        func testDrainStopsOn401WithoutCommitOrDrop() async {
++            let result = await drainWithFakeUpload(
++                itemCount: 3,
++                rejectMessage: nil,
++                failAll: .unexpectedStatus(code: 401, bodyPreview: nil)
++            )
++            XCTAssertEqual(result.outcome, .stopPass)
++            XCTAssertTrue(result.commits.isEmpty)
++            XCTAssertEqual(result.droppedRows, 0)
++            XCTAssertEqual(result.requests, 1)
++        }
++
++        func testDrainBisects413OnFourItemBatch() async {
++            let result = await drainWithFakeUpload(
++                itemCount: 4,
++                rejectMessage: "item-0",
++                rejectCode: 413,
++                maxRequests: 50
++            )
++            // First attempts bisect the failing range before dropping singleton rows.
++            XCTAssertEqual(Array(result.uploadSizes.prefix(3)), [4, 2, 1])
++            XCTAssertEqual(result.outcome, .batchComplete)
++        }
++    #endif
 +}
 -- 
 2.56.0
