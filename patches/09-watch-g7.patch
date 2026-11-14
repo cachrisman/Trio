@@ -1,6 +1,6 @@
-From 072d9c7d884546f56fd5096e08da2a0d7aac84f3 Mon Sep 17 00:00:00 2001
+From 99ff1f2f52ba8087141eef0d2c6364c4d49a9e02 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 14 Nov 2026 23:01:09 +0100
+Date: Sat, 14 Nov 2026 23:44:52 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 6b921fd20b9b8101f2c7a9a7d7863f079a2acddf
-Trio-Patch-Generated: 2026-11-14T22:00:46Z
+Trio-Patch-Feature-Tip: 0d641f8c73ad034fa7a254a1ce309d5b202866a7
+Trio-Patch-Generated: 2026-11-14T22:44:12Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -103,6 +103,8 @@ Trio-Patch-Source-Commits:
  50eca7c4c14c9603dee3acbf06b61e3f6791a865 watch-g7: reload complications only when the face content changes, with per-kind servicing and run telemetry (TRIO-120)
  08bc1f8e325c9b1e3510f5d56e88fd335c347950 phone: sleep mode from a Trio Focus Filter, quiet-window fallback and 16 h staleness bound (TRIO-121)
  6b921fd20b9b8101f2c7a9a7d7863f079a2acddf phone: complication transfer age gate, 600 s awake and 1800 s asleep, logged per decision (TRIO-122)
+ 33d66a4bcc037bdaa0d47a5af54a34725b942e75 phone: complication-only fast path 1 s after an eligible glucose update, newer-epoch guard and per-path send logs (TRIO-124)
+ 0d641f8c73ad034fa7a254a1ce309d5b202866a7 phone: cancel a queued complication fast send when a full send starts, so it holds under the patch 10 delegate coalescer (TRIO-124)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -185,6 +187,8 @@ Trio-Patch-Source-PatchIds:
  7500e9a870103e2198e9f78a44eb9dd8e843db39
  34fb8630aac34e9ab172ca2a72a865173e6a6fac
  f81dc1a316eecbb9a0247cfeca88bf07054cff85
+ bc13c926e03343a746112ee68f466cf2a2409ee5
+ d99a842805b6c27f7ab2dcfeaae1aaebb912a87a
 ---
  .../ComplicationLogForwarder.swift            |  171 +
  .../ExtensionDelegate.swift                   |  100 +
@@ -220,12 +224,14 @@ Trio-Patch-Source-PatchIds:
  .../WatchConfig/WatchConfigStateModel.swift   |   34 +
  .../SleepMode/SleepModeProvider+Shared.swift  |    7 +
  .../SleepMode/SleepModeProvider.swift         |  138 +
- .../WatchManager/AppleWatchManager.swift      |  609 +++-
+ .../WatchManager/AppleWatchManager.swift      |  713 ++++-
+ .../ComplicationFastPathPolicy.swift          |   39 +
  .../ComplicationTransferAgeGate.swift         |   30 +
  .../Shortcuts/SleepFocusFilterIntent.swift    |   42 +
+ .../ComplicationFastPathPolicyTests.swift     |   53 +
  .../ComplicationTransferAgeGateTests.swift    |   40 +
  TrioTests/SleepModeProviderTests.swift        |  149 +
- 39 files changed, 11705 insertions(+), 433 deletions(-)
+ 41 files changed, 11901 insertions(+), 433 deletions(-)
  create mode 100644 Trio Watch App Extension/ComplicationLogForwarder.swift
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -242,8 +248,10 @@ Trio-Patch-Source-PatchIds:
  create mode 100644 Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
  create mode 100644 Trio/Sources/Services/SleepMode/SleepModeProvider+Shared.swift
  create mode 100644 Trio/Sources/Services/SleepMode/SleepModeProvider.swift
+ create mode 100644 Trio/Sources/Services/WatchManager/ComplicationFastPathPolicy.swift
  create mode 100644 Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift
  create mode 100644 Trio/Sources/Shortcuts/SleepFocusFilterIntent.swift
+ create mode 100644 TrioTests/ComplicationFastPathPolicyTests.swift
  create mode 100644 TrioTests/ComplicationTransferAgeGateTests.swift
  create mode 100644 TrioTests/SleepModeProviderTests.swift
 
@@ -12305,7 +12313,7 @@ index 000000000..adcf234a2
 +    }
 +}
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 96f7add93..8ddb84700 100644
+index 96f7add93..c854cb1b3 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -1,6 +1,7 @@
@@ -12331,7 +12339,7 @@ index 96f7add93..8ddb84700 100644
      @Injected() private var determinationStorage: DeterminationStorage!
      @Injected() private var overrideStorage: OverrideStorage!
      @Injected() private var tempTargetStorage: TempTargetsStorage!
-@@ -40,6 +44,25 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -40,6 +44,45 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
      private var subscriptions = Set<AnyCancellable>()
  
@@ -12348,6 +12356,26 @@ index 96f7add93..8ddb84700 100644
 +    private var lastEligibleSourceAt: TimeInterval = 0
 +    private let complicationEligibleSources: Set<String> = ["glucoseStored", "glucoseUpdate"]
 +
++    // Complication fast path (TRIO-124). Main-thread confined.
++    private var pendingFastPathWorkItem: DispatchWorkItem?
++    private var fastPathFirstEligibleAt: Date?
++    private var pendingCoalescerFireAt: Date?
++    /// Newest reading epoch already sent to the watch by either the fast or the full path (-1 = none yet).
++    private var lastSentReadingEpoch: Int = ComplicationFastPathPolicy.noEpoch
++
++    /// Which payload `sendDataToWatch` sends on the reachable path.
++    enum WatchSendPayload {
++        case full
++        case complicationOnly
++
++        var pathName: String {
++            switch self {
++            case .full: return "full"
++            case .complicationOnly: return "fast"
++            }
++        }
++    }
++
 +    // Per-reading-epoch dispatch gate (App Group-backed to survive restarts)
 +    private var lastDispatchedGateKey: String {
 +        get { appGroupIDCandidate().value.flatMap { UserDefaults(suiteName: $0)?.string(forKey: "lastDispatchedGateKey") } ?? "" }
@@ -12357,7 +12385,7 @@ index 96f7add93..8ddb84700 100644
      typealias PumpEvent = PumpEventStored.EventType
  
      let viewContext = CoreDataStack.shared.persistentContainer.viewContext
-@@ -69,27 +92,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -69,27 +112,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
          // Observer for glucose and manual glucose
          glucoseStorage.updatePublisher
@@ -12389,7 +12417,7 @@ index 96f7add93..8ddb84700 100644
              }
              .store(in: &subscriptions)
  
-@@ -97,26 +109,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -97,26 +129,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      }
  
      private func registerHandlers() {
@@ -12426,7 +12454,7 @@ index 96f7add93..8ddb84700 100644
  
          coreDataPublisher?.filteredByEntityName("PumpEventStored").sink { [weak self] _ in
              guard let self = self else { return }
-@@ -125,25 +129,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -125,25 +149,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              }
          }.store(in: &subscriptions)
  
@@ -12462,7 +12490,7 @@ index 96f7add93..8ddb84700 100644
      }
  
      /// Sets up the WatchConnectivity session if the device supports it
-@@ -155,11 +151,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -155,11 +171,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              self.session = session
  
              debug(.watch, "Watch session set up, paired: \(session.isPaired)")
@@ -12513,7 +12541,7 @@ index 96f7add93..8ddb84700 100644
      /// Attempts to reestablish the Watch connection if it becomes unreachable
      private func retryConnection() {
          guard let session = session else { return }
-@@ -174,11 +209,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -174,11 +229,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      /// - Returns: WatchState containing current glucose readings and trends and determination infos for displaying cob and iob in the view
      func setupWatchState() async -> WatchState {
          // Check if a watch is paired and reachable before doing expensive calculations
@@ -12521,14 +12549,14 @@ index 96f7add93..8ddb84700 100644
 -            debug(.watch, "Watch state skipped: no watch paired or app not installed")
 +        guard let session else {
 +            debug(.watch, "Watch state skipped: WCSession not available")
-             return WatchState(date: Date())
-         }
- 
-+        if !session.isPaired {
-+            debug(.watch, "Watch state skipped: no watch paired")
 +            return WatchState(date: Date())
 +        }
 +
++        if !session.isPaired {
++            debug(.watch, "Watch state skipped: no watch paired")
+             return WatchState(date: Date())
+         }
+ 
 +        if !session.isWatchAppInstalled {
 +            debug(.watch, "Watch state skipped: Trio watch app not installed")
 +            return WatchState(date: Date())
@@ -12544,7 +12572,7 @@ index 96f7add93..8ddb84700 100644
          // Skip if watch session is not activated
          guard session.activationState == .activated else {
              debug(.watch, "Watch state skipped: session not activated")
-@@ -222,6 +274,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -222,6 +294,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
                  // Set before the no-glucose early return below, or a CGM outage would send the defaults
                  watchState.glucoseBobbleComplication = self.settingsManager.settings.glucoseBobbleComplication
@@ -12553,7 +12581,7 @@ index 96f7add93..8ddb84700 100644
  
                  // Set IOB and COB from latest determination
                  let iob = self.iobService.currentIOB ?? 0
-@@ -273,8 +327,23 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -273,8 +347,23 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.currentGlucoseColorString = "#ffffff" // white when in range; colored when out of range
                  }
  
@@ -12577,7 +12605,7 @@ index 96f7add93..8ddb84700 100644
                      let glucoseValue = self.units == .mgdL
                          ? Double(glucose.glucose)
                          : Double(truncating: Decimal(glucose.glucose).asMmolL as NSNumber)
-@@ -288,7 +357,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -288,7 +377,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      )
  
                      return WatchGlucoseObject(
@@ -12586,7 +12614,7 @@ index 96f7add93..8ddb84700 100644
                          glucose: glucoseValue,
                          color: glucoseColor.toHexString()
                      )
-@@ -506,7 +575,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -506,7 +595,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                  [
                      "glucose": value.glucose,
@@ -12595,7 +12623,7 @@ index 96f7add93..8ddb84700 100644
                      "color": value.color
                  ]
              },
-@@ -556,12 +625,217 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -556,13 +645,289 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              dictionary[WatchMessageKeys.glucoseBobbleComplicationSettings] = glucoseBobbleData
          }
  
@@ -12778,6 +12806,7 @@ index 96f7add93..8ddb84700 100644
 +            self.coalescerSources = []
 +            self.lastEligibleSourceAt = 0
 +            self.coalescerFirstScheduledAt = nil
++            self.pendingCoalescerFireAt = nil
 +
 +            debug(
 +                .watch,
@@ -12795,7 +12824,67 @@ index 96f7add93..8ddb84700 100644
 +            }
 +        }
 +        pendingSendWorkItem = workItem
++        pendingCoalescerFireAt = now.addingTimeInterval(delay)
 +        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
++
++        if ComplicationFastPathPolicy.qualifies(source: source, eligibleSources: complicationEligibleSources) {
++            scheduleComplicationFastPath(source: source, now: now, coalescerFireIn: delay)
++        }
++    }
++
++    /// Schedules a separate work item (at most 1 s from the first eligible trigger it serves) that sends only
++    /// the reduced complication payload for a new reading epoch. The full state stays on the coalescer.
++    private func scheduleComplicationFastPath(source: String, now: Date, coalescerFireIn: TimeInterval) {
++        if fastPathFirstEligibleAt == nil {
++            fastPathFirstEligibleAt = now
++        }
++        let elapsed = now.timeIntervalSince(fastPathFirstEligibleAt ?? now)
++        guard let fastDelay = ComplicationFastPathPolicy.delay(
++            elapsedSinceFirstEligible: elapsed,
++            coalescerFireIn: coalescerFireIn
++        ) else {
++            pendingFastPathWorkItem?.cancel()
++            pendingFastPathWorkItem = nil
++            fastPathFirstEligibleAt = nil
++            debug(
++                .watch,
++                "coalescer_fast_path_fired reading_epoch=unknown reachable=\(session?.isReachable ?? false) action=skipped_coalescer_sooner"
++            )
++            return
++        }
++
++        pendingFastPathWorkItem?.cancel()
++        let workItem = DispatchWorkItem { [weak self] in
++            guard let self else { return }
++            self.pendingFastPathWorkItem = nil
++            self.fastPathFirstEligibleAt = nil
++            Task { @MainActor in
++                await self.fireComplicationFastPath()
++            }
++        }
++        pendingFastPathWorkItem = workItem
++        debug(.watch, "coalescer_fast_path_scheduled source=\(source) delay_ms=\(Int(fastDelay * 1000))")
++        DispatchQueue.main.asyncAfter(deadline: .now() + fastDelay, execute: workItem)
++    }
++
++    /// Fast path body: sends only the complication payload, and only when the state's newest reading epoch
++    /// is newer than the last epoch sent to the watch by either path.
++    @MainActor private func fireComplicationFastPath() async {
++        let state = await setupWatchState()
++        let stateEpoch = state.glucoseValues.max(by: { $0.date < $1.date })
++            .map { Int($0.date.timeIntervalSince1970) } ?? ComplicationFastPathPolicy.noEpoch
++        let reachable = session?.isReachable ?? false
++
++        guard ComplicationFastPathPolicy.isNewer(stateEpoch: stateEpoch, lastSentEpoch: lastSentReadingEpoch) else {
++            debug(
++                .watch,
++                "coalescer_fast_path_fired reading_epoch=\(stateEpoch) reachable=\(reachable) action=skipped_not_newer"
++            )
++            return
++        }
++
++        debug(.watch, "coalescer_fast_path_fired reading_epoch=\(stateEpoch) reachable=\(reachable) action=sent")
++        await sendDataToWatch(state, payload: .complicationOnly)
 +    }
 +
      /// Sends the state of type WatchState to the connected Watch
@@ -12810,12 +12899,23 @@ index 96f7add93..8ddb84700 100644
 +        _ state: WatchState,
 +        sourcesSnapshot: [String] = [],
 +        lastEligibleSourceAt: TimeInterval = 0,
-+        windowStartEpoch: TimeInterval? = nil
++        windowStartEpoch: TimeInterval? = nil,
++        payload: WatchSendPayload = .full
 +    ) async {
          guard let session = session else { return }
++        let pathName = payload.pathName
++
++        if payload == .full, let fast = pendingFastPathWorkItem {
++            // TRIO-124: a full send carries the newest reading too, so a queued fast send is redundant.
++            fast.cancel()
++            pendingFastPathWorkItem = nil
++            fastPathFirstEligibleAt = nil
++            debug(.watch, "coalescer_fast_path_cancelled reason=full_send")
++        }
  
          guard session.isPaired else {
-@@ -587,19 +861,173 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+             debug(.watch, "No watch paired")
+@@ -587,19 +952,186 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          var state = state
          state.date = Date()
  
@@ -12860,9 +12960,7 @@ index 96f7add93..8ddb84700 100644
 +        }
 +
 +        WatchStateSnapshot.saveLatestDateToDisk(state.date)
- 
--        // if session is reachable, it means watch App is in the foreground -> send watchState as message
--        // if session is not reachable, it means it's in background -> send watchState as userInfo
++
 +        // Per-reading-epoch dispatch gate: suppresses duplicate complication transfers only.
 +        // The gate key is computed unconditionally for logging, but only persisted when a complication
 +        // transfer is actually enqueued (not on sendMessage-only paths).
@@ -12873,24 +12971,29 @@ index 96f7add93..8ddb84700 100644
 +        if isDuplicateDispatch, !session.isReachable, readingEpochPresent {
 +            debug(.watch, "complication_transfer_gate_skipped skip_reason=duplicate_gate gate_key=\(gateKey) reading_date_epoch_seconds=\(readingEpoch)")
 +        }
-+
+ 
+-        // if session is reachable, it means watch App is in the foreground -> send watchState as message
+-        // if session is not reachable, it means it's in background -> send watchState as userInfo
 +        let budgetSnapshot = session.remainingComplicationUserInfoTransfers
 +        debug(
 +            .watch,
 +            "complication_budget_check remaining=\(budgetSnapshot) isReachable=\(session.isReachable) readingEpochPresent=\(readingEpochPresent) isDuplicate=\(isDuplicateDispatch) queue_depth=\(session.outstandingUserInfoTransfers.count)"
 +        )
 +
-+        // sendMessage (budget-free watch UI path): always fires with fullMessage
++        // sendMessage (budget-free watch UI path): always fires; the full path sends fullMessage,
++        // the fast path only the reduced complicationMessage.
          if session.isReachable {
 -            session.sendMessage([WatchMessageKeys.watchState: message], replyHandler: nil) { error in
-+            session.sendMessage([WatchMessageKeys.watchState: fullMessage], replyHandler: nil) { error in
++            let outgoing = payload == .full ? fullMessage : complicationMessage
++            session.sendMessage([WatchMessageKeys.watchState: outgoing], replyHandler: nil) { error in
                  warning(.watch, "Sending watch state failed", error: error)
              }
 -        } else {
 -            session.transferUserInfo([WatchMessageKeys.watchState: message])
 -            debug(.watch, "Watch state queued for background transfer")
++            recordSentReadingEpoch(readingEpoch)
 +            debug(.watch, "sendMessage_sent reading_epoch=\(readingEpoch) send_wall=\(Date().timeIntervalSince1970)")
-+            debug(.watch, "Transferred new WatchState snapshot via=sendMessage reading_date_epoch_seconds=\(readingEpoch)")
++            debug(.watch, "Transferred new WatchState snapshot via=sendMessage path=\(pathName) reading_date_epoch_seconds=\(readingEpoch)")
 +            if readingEpochPresent, !isDuplicateDispatch {
 +                if budgetSnapshot > 0 {
 +                    debug(.watch, "complication_transfer_skipped_reachable remaining=\(budgetSnapshot)")
@@ -12922,11 +13025,12 @@ index 96f7add93..8ddb84700 100644
 +            if gateDecision.passes {
 +                session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: complicationMessage])
 +                lastDispatchedGateKey = gateKey
++                recordSentReadingEpoch(readingEpoch)
 +                let remaining = session.remainingComplicationUserInfoTransfers
 +                let queueDepth = session.outstandingUserInfoTransfers.count
 +                debug(
 +                    .watch,
-+                    "Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch) complication_age_seconds=\(Int(complicationAgeSeconds)) complication_age_gate_threshold_seconds=\(Int(gateDecision.thresholdSeconds)) \(gateFields)"
++                    "Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo path=\(pathName) remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch) complication_age_seconds=\(Int(complicationAgeSeconds)) complication_age_gate_threshold_seconds=\(Int(gateDecision.thresholdSeconds)) \(gateFields)"
 +                )
 +            } else {
 +                debug(
@@ -12943,10 +13047,11 @@ index 96f7add93..8ddb84700 100644
 +            cancelStaleQueuedTransfers()
 +            session.transferUserInfo([WatchMessageKeys.watchState: complicationMessage])
 +            lastDispatchedGateKey = gateKey
++            recordSentReadingEpoch(readingEpoch)
 +            let queueDepth = session.outstandingUserInfoTransfers.count
 +            debug(
 +                .watch,
-+                "Transferred new WatchState snapshot via=userInfo budget_exhausted=true queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)"
++                "Transferred new WatchState snapshot via=userInfo path=\(pathName) budget_exhausted=true queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch)"
 +            )
 +        }
 +
@@ -12985,19 +13090,27 @@ index 96f7add93..8ddb84700 100644
 +        debug(.watch, "context_attempted budget_exhausted=\(budgetExhausted) queue_depth=\(session.outstandingUserInfoTransfers.count)")
 +        do {
 +            try session.updateApplicationContext(ctx)
++            recordSentReadingEpoch(readingEpoch)
 +            debug(.watch, "context_succeeded reading_epoch=\(readingEpoch)")
 +            debug(
 +                .watch,
-+                "Transferred new WatchState snapshot via=updateApplicationContext reading_date_epoch_seconds=\(readingEpoch) userinfo_budget_exhausted=\(budgetExhausted) queue_depth=\(session.outstandingUserInfoTransfers.count)"
++                "Transferred new WatchState snapshot via=updateApplicationContext path=\(pathName) reading_date_epoch_seconds=\(readingEpoch) userinfo_budget_exhausted=\(budgetExhausted) queue_depth=\(session.outstandingUserInfoTransfers.count)"
 +            )
 +        } catch {
 +            warning(.watch, "context_failed context_update_failed=true", error: error)
++        }
++    }
++
++    /// Records the newest reading epoch handed to the watch by either path (main-thread confined).
++    @MainActor private func recordSentReadingEpoch(_ epoch: Int) {
++        if epoch > lastSentReadingEpoch {
++            lastSentReadingEpoch = epoch
          }
 -        WatchStateSnapshot.saveLatestDateToDisk(state.date)
      }
  
      func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode) {
-@@ -627,9 +1055,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -627,9 +1159,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -13009,14 +13122,14 @@ index 96f7add93..8ddb84700 100644
 +
 +        // Clear the dispatch gate on activation so the first post-launch transfer always fires
 +        lastDispatchedGateKey = ""
-+
+ 
+-        // Try to send initial data after activation
 +        // One-time startup drain of the frozen transfer queue
 +        if !hasPerformedStartupQueueDrain {
 +            hasPerformedStartupQueueDrain = true
 +            cancelStaleQueuedTransfers()
 +        }
- 
--        // Try to send initial data after activation
++
 +        DispatchQueue.main.async {
 +            self.pendingSendWorkItem?.cancel()
 +            self.coalescerFirstScheduledAt = nil
@@ -13024,7 +13137,7 @@ index 96f7add93..8ddb84700 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -778,6 +1221,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -778,6 +1325,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -13042,7 +13155,7 @@ index 96f7add93..8ddb84700 100644
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
          if let logs = userInfo["watchLogs"] as? String {
              WatchLogIngest.legacyRecords(from: logs).forEach(TrioLogger.sink.accept)
-@@ -804,9 +1258,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -804,9 +1362,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      #endif
  
      func sessionReachabilityDidChange(_ session: WCSession) {
@@ -13057,7 +13170,7 @@ index 96f7add93..8ddb84700 100644
              // Try to send data when connection is established
              Task {
                  let state = await self.setupWatchState()
-@@ -1081,11 +1539,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1081,11 +1643,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -13071,7 +13184,7 @@ index 96f7add93..8ddb84700 100644
          }
      }
  
-@@ -1096,12 +1551,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1096,12 +1655,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
@@ -13086,6 +13199,51 @@ index 96f7add93..8ddb84700 100644
          }
      }
  }
+diff --git a/Trio/Sources/Services/WatchManager/ComplicationFastPathPolicy.swift b/Trio/Sources/Services/WatchManager/ComplicationFastPathPolicy.swift
+new file mode 100644
+index 000000000..9c71497e1
+--- /dev/null
++++ b/Trio/Sources/Services/WatchManager/ComplicationFastPathPolicy.swift
+@@ -0,0 +1,39 @@
++import Foundation
++
++/// Pure decisions for the phone-side complication fast path (TRIO-124).
++///
++/// A new glucose reading schedules a separate work item at `maxDelaySeconds` that sends only the
++/// reduced complication payload, while the full watch state stays on the 2 s / 5 s coalescer.
++/// No WCSession or timers here; the caller owns scheduling and transport.
++enum ComplicationFastPathPolicy {
++    /// Maximum wait from the first eligible trigger a fast work item serves.
++    static let maxDelaySeconds: TimeInterval = 1.0
++
++    /// Reading epoch value meaning "state has no reading".
++    static let noEpoch = -1
++
++    /// Whether a trigger source is complication-eligible and so schedules a fast item.
++    static func qualifies(source: String, eligibleSources: Set<String>) -> Bool {
++        eligibleSources.contains(source)
++    }
++
++    /// Delay for the fast work item, or nil when the pending coalescer send fires no later than the
++    /// fast item would (a separate fast send would add nothing).
++    /// - Parameters:
++    ///   - elapsedSinceFirstEligible: seconds since the first eligible trigger this fast item serves (0 for the first)
++    ///   - coalescerFireIn: seconds until the pending coalescer send fires, nil when none is pending
++    static func delay(elapsedSinceFirstEligible: TimeInterval, coalescerFireIn: TimeInterval?) -> TimeInterval? {
++        let fastDelay = max(0.0, maxDelaySeconds - max(0.0, elapsedSinceFirstEligible))
++        if let coalescerFireIn, coalescerFireIn <= fastDelay {
++            return nil
++        }
++        return fastDelay
++    }
++
++    /// Whether the state's newest reading epoch is newer than the last epoch sent by either path.
++    /// A state with no reading (`noEpoch`, or any negative value) never fast-paths.
++    static func isNewer(stateEpoch: Int, lastSentEpoch: Int) -> Bool {
++        guard stateEpoch >= 0 else { return false }
++        return stateEpoch > lastSentEpoch
++    }
++}
 diff --git a/Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift b/Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift
 new file mode 100644
 index 000000000..8e5e675d8
@@ -13168,6 +13326,65 @@ index 000000000..a5c001b0a
 +        }
 +        SleepModeProvider.shared.reportFilter(isOn: isOn)
 +        return .result()
++    }
++}
+diff --git a/TrioTests/ComplicationFastPathPolicyTests.swift b/TrioTests/ComplicationFastPathPolicyTests.swift
+new file mode 100644
+index 000000000..4eca46a20
+--- /dev/null
++++ b/TrioTests/ComplicationFastPathPolicyTests.swift
+@@ -0,0 +1,53 @@
++import Foundation
++import Testing
++
++@testable import Trio
++
++@Suite("ComplicationFastPathPolicy") struct ComplicationFastPathPolicyTests {
++    private let eligible: Set<String> = ["glucoseStored", "glucoseUpdate"]
++
++    @Test("only eligible sources qualify") func qualifies() {
++        #expect(ComplicationFastPathPolicy.qualifies(source: "glucoseStored", eligibleSources: eligible))
++        #expect(ComplicationFastPathPolicy.qualifies(source: "glucoseUpdate", eligibleSources: eligible))
++        #expect(!ComplicationFastPathPolicy.qualifies(source: "iobUpdate", eligibleSources: eligible))
++        #expect(!ComplicationFastPathPolicy.qualifies(source: "unknown", eligibleSources: eligible))
++    }
++
++    @Test("first eligible trigger with a 2 s coalescer waits 1 s") func firstTrigger() {
++        let d = ComplicationFastPathPolicy.delay(elapsedSinceFirstEligible: 0, coalescerFireIn: 2.0)
++        #expect(d == 1.0)
++    }
++
++    @Test("later trigger never waits past 1 s from the first") func cappedFromFirst() {
++        let d = ComplicationFastPathPolicy.delay(elapsedSinceFirstEligible: 0.4, coalescerFireIn: 2.0)
++        #expect(d != nil)
++        #expect(abs((d ?? 0) - 0.6) < 0.0001)
++    }
++
++    @Test("elapsed beyond 1 s fires immediately") func overdue() {
++        #expect(ComplicationFastPathPolicy.delay(elapsedSinceFirstEligible: 3, coalescerFireIn: 2.0) == 0)
++    }
++
++    @Test("no pending coalescer still schedules") func noCoalescer() {
++        #expect(ComplicationFastPathPolicy.delay(elapsedSinceFirstEligible: 0, coalescerFireIn: nil) == 1.0)
++    }
++
++    @Test("skips when the coalescer fires sooner or at the same time") func coalescerSooner() {
++        #expect(ComplicationFastPathPolicy.delay(elapsedSinceFirstEligible: 0, coalescerFireIn: 0.5) == nil)
++        #expect(ComplicationFastPathPolicy.delay(elapsedSinceFirstEligible: 0, coalescerFireIn: 1.0) == nil)
++        #expect(ComplicationFastPathPolicy.delay(elapsedSinceFirstEligible: 0, coalescerFireIn: 1.01) == 1.0)
++    }
++
++    @Test("epoch newness") func isNewer() {
++        #expect(ComplicationFastPathPolicy.isNewer(stateEpoch: 200, lastSentEpoch: 100))
++        #expect(!ComplicationFastPathPolicy.isNewer(stateEpoch: 100, lastSentEpoch: 100))
++        #expect(!ComplicationFastPathPolicy.isNewer(stateEpoch: 99, lastSentEpoch: 100))
++        #expect(ComplicationFastPathPolicy.isNewer(stateEpoch: 100, lastSentEpoch: ComplicationFastPathPolicy.noEpoch))
++    }
++
++    @Test("no-epoch state never fast-paths") func noEpoch() {
++        #expect(!ComplicationFastPathPolicy.isNewer(stateEpoch: -1, lastSentEpoch: -1))
++        #expect(!ComplicationFastPathPolicy.isNewer(stateEpoch: -1, lastSentEpoch: 100))
++        #expect(!ComplicationFastPathPolicy.isNewer(stateEpoch: -1, lastSentEpoch: -5))
 +    }
 +}
 diff --git a/TrioTests/ComplicationTransferAgeGateTests.swift b/TrioTests/ComplicationTransferAgeGateTests.swift
