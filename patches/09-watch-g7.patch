@@ -1,6 +1,6 @@
-From 0f36c803235f46b9f73222a224b1c47447b93ea9 Mon Sep 17 00:00:00 2001
+From 2c431885d5345d86bbb0d084d8ddb0e6f34025c1 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 15 Nov 2026 00:29:35 +0100
+Date: Sun, 15 Nov 2026 00:47:18 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: c8909bdecfadcf93d198ff95cab7f011db07263a
-Trio-Patch-Generated: 2026-11-14T23:28:43Z
+Trio-Patch-Feature-Tip: 4d3713de92874f5eaca34a828ef51046b28d8015
+Trio-Patch-Generated: 2026-11-14T23:46:56Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -106,6 +106,9 @@ Trio-Patch-Source-Commits:
  33d66a4bcc037bdaa0d47a5af54a34725b942e75 phone: complication-only fast path 1 s after an eligible glucose update, newer-epoch guard and per-path send logs (TRIO-124)
  0d641f8c73ad034fa7a254a1ce309d5b202866a7 phone: cancel a queued complication fast send when a full send starts, so it holds under the patch 10 delegate coalescer (TRIO-124)
  c8909bdecfadcf93d198ff95cab7f011db07263a watch-g7: refresh behind complications on app open and recheck them at close (TRIO-126)
+ a1fe2fe7dadd5b68c7eaf74cdb9d3d09ec75d0b4 phone: render an unknown complication age as inf in the age-gate logs instead of trapping in Int(.infinity) (TRIO-122)
+ d6b7d86bfcb25edc5d8f0ba0909a5748be893e0b phone: drop the full-send cancel of a queued complication fast send; the newer-epoch guard already skips a delivered reading (TRIO-124)
+ 4d3713de92874f5eaca34a828ef51046b28d8015 watch-g7: drain the complication provider log on saves and background tasks, tag saves with via=, and sequence-number provider lines with gap reporting (TRIO-119)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -191,9 +194,12 @@ Trio-Patch-Source-PatchIds:
  bc13c926e03343a746112ee68f466cf2a2409ee5
  d99a842805b6c27f7ab2dcfeaae1aaebb912a87a
  5dc5a752ba5519e66efc105ee68ee50cb4d7be5b
+ b1eaae9577a1b07f8684b11f0e3bba03468b6079
+ 31eefe7d210b86f84a5b9fc21303015cf6e9ad1c
+ 6a912ee44723eba212e62ba008f485205e7826a9
 ---
- .../ComplicationLogForwarder.swift            |  171 +
- .../ExtensionDelegate.swift                   |  100 +
+ .../ComplicationLogForwarder.swift            |  217 ++
+ .../ExtensionDelegate.swift                   |  102 +
  .../G7WatchSensorAdapter.swift                | 2011 ++++++++++++
  .../Helper/WatchNotificationHandler.swift     |   36 +
  .../Helper/WatchResidentTelemetry.swift       |  137 +
@@ -205,35 +211,35 @@ Trio-Patch-Source-PatchIds:
  .../WatchGlucoseHistoryStore.swift            |  225 ++
  .../WatchLogger+Legacy.swift                  |   18 +
  .../WatchState+Requests.swift                 |   22 +
- Trio Watch App Extension/WatchState.swift     | 2801 +++++++++++++++--
- .../WatchTelemetryRing.swift                  |  351 +++
- Trio Watch App Tests/Unit Tests.swift         |  882 ++++++
+ Trio Watch App Extension/WatchState.swift     | 2844 +++++++++++++++--
+ .../WatchTelemetryRing.swift                  |  351 ++
+ Trio Watch App Tests/Unit Tests.swift         | 1038 ++++++
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |    4 +
  .../GlucoseBobbleComplication.swift           |   96 +-
  Trio Watch Complication/Info.plist            |    2 +
  .../TrioWatchComplication.swift               |  639 +++-
  .../TrioWatchComplicationPreview.swift        |  124 +
- Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
+ Trio Watch Shared/ComplicationLogBuffer.swift |  520 +++
  .../GlucoseComplicationSnapshot.swift         |   59 +-
  .../TrioComplicationDataStore.swift           | 1988 ++++++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Logger/Watch/WatchLogEntry.swift |    1 +
- Trio/Sources/Models/WatchMessageKeys.swift    |   22 +-
+ Trio/Sources/Models/WatchMessageKeys.swift    |   26 +-
  Trio/Sources/Models/WatchState.swift          |   31 +-
  .../View/WatchConfigAppleWatchView.swift      |   36 +
  .../WatchConfig/WatchConfigStateModel.swift   |   34 +
  .../SleepMode/SleepModeProvider+Shared.swift  |    7 +
  .../SleepMode/SleepModeProvider.swift         |  138 +
- .../WatchManager/AppleWatchManager.swift      |  713 ++++-
+ .../WatchManager/AppleWatchManager.swift      |  708 +++-
  .../ComplicationFastPathPolicy.swift          |   39 +
- .../ComplicationTransferAgeGate.swift         |   30 +
+ .../ComplicationTransferAgeGate.swift         |   36 +
  .../Shortcuts/SleepFocusFilterIntent.swift    |   42 +
  .../ComplicationFastPathPolicyTests.swift     |   53 +
- .../ComplicationTransferAgeGateTests.swift    |   40 +
+ .../ComplicationTransferAgeGateTests.swift    |   52 +
  TrioTests/SleepModeProviderTests.swift        |  149 +
- 41 files changed, 12475 insertions(+), 433 deletions(-)
+ 41 files changed, 12908 insertions(+), 433 deletions(-)
  create mode 100644 Trio Watch App Extension/ComplicationLogForwarder.swift
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -259,10 +265,10 @@ Trio-Patch-Source-PatchIds:
 
 diff --git a/Trio Watch App Extension/ComplicationLogForwarder.swift b/Trio Watch App Extension/ComplicationLogForwarder.swift
 new file mode 100644
-index 000000000..058e9ce48
+index 000000000..845d4bc5d
 --- /dev/null
 +++ b/Trio Watch App Extension/ComplicationLogForwarder.swift	
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,217 @@
 +import Foundation
 +
 +/// Drains the complication log files from the App Group container into the upstream `WatchLogger`.
@@ -282,11 +288,32 @@ index 000000000..058e9ce48
 +    private let queue = DispatchQueue(label: "com.trio.watch.complication-log-forwarder", qos: .utility)
 +    private var drainQueued = false
 +
++    /// TRIO-119: last forwarded `seq=`, persisted so gaps are also found across drains and launches.
++    private static let lastSeqKey = "ComplicationLogForwarder.lastForwardedSeq"
++    private var gapDetector = ComplicationLogGapDetector(
++        lastSeq: UserDefaults.standard.object(forKey: ComplicationLogForwarder.lastSeqKey) as? Int
++    )
++
++    /// TRIO-119: rate-limited drain decision for background wakes and saved readings.
++    /// The closure only runs after `shared` exists, so it may name it.
++    private let scheduler = ComplicationLogDrainScheduler(drain: { ComplicationLogForwarder.shared.drain() })
++
 +    private init() {}
++
++    /// TRIO-119: drains when due (at most once per 10 min, at once past half the file cap). Cheap when
++    /// not due: one stat. `reason` names the call site in the log line.
++    func drainIfDue(reason: String) {
++        guard let trigger = scheduler.drainIfDue() else { return }
++        WatchLogger.shared.info(
++            .data,
++            "event=complication_log_drain_due reason=\(reason) trigger=\(trigger.rawValue)"
++        )
++    }
 +
 +    /// Returns immediately; the work runs on the private queue.
 +    /// Calls arriving while a drain is already queued are coalesced.
 +    func drain() {
++        scheduler.noteDrain()
 +        queue.async { [self] in
 +            guard !drainQueued else { return }
 +            drainQueued = true
@@ -408,13 +435,38 @@ index 000000000..058e9ce48
 +        }
 +
 +        var count = 0
++        let seqBefore = gapDetector.lastSeq
 +        for line in text.split(whereSeparator: \.isNewline) {
 +            let trimmed = line.trimmingCharacters(in: .whitespaces)
 +            guard !trimmed.isEmpty else { continue }
++            if let seq = ComplicationLogBuffer.sequenceNumber(inLine: trimmed) {
++                reportSequenceEvent(gapDetector.observe(seq), file: url.lastPathComponent)
++            }
 +            WatchLogger.shared.info(.data, "src=complication \(trimmed)")
 +            count += 1
 +        }
++        if let last = gapDetector.lastSeq, last != seqBefore {
++            UserDefaults.standard.set(last, forKey: Self.lastSeqKey)
++        }
 +        return count
++    }
++
++    /// TRIO-119: one line per gap or counter reset; contiguous values stay silent.
++    private func reportSequenceEvent(_ event: ComplicationLogGapDetector.Event, file: String) {
++        switch event {
++        case let .gap(from, to, missing):
++            WatchLogger.shared.warning(
++                .data,
++                "event=complication_log_gap from_seq=\(from) to_seq=\(to) missing=\(missing) file=\(file)"
++            )
++        case let .reset(from, to):
++            WatchLogger.shared.info(
++                .data,
++                "event=complication_log_seq_reset from_seq=\(from) to_seq=\(to) file=\(file)"
++            )
++        case .first, .contiguous, .duplicate:
++            break
++        }
 +    }
 +
 +    private func remove(_ url: URL) -> Bool {
@@ -436,10 +488,10 @@ index 000000000..058e9ce48
 +}
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
 new file mode 100644
-index 000000000..564bff6eb
+index 000000000..57daf6d06
 --- /dev/null
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,102 @@
 +import G7SensorKit
 +import WatchKit
 +
@@ -537,6 +589,8 @@ index 000000000..564bff6eb
 +
 +    @MainActor private func handleBackgroundTasksOnMain(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
 +        G7WatchSensorAdapter.shared.noteAcquisitionWake(reason: "bg_task")
++        // TRIO-119: collect the provider's log on background wakes too (rate-limited; a stat when not due).
++        ComplicationLogForwarder.shared.drainIfDue(reason: "bg_task")
 +        WatchState.shared.handleBackgroundTasks(backgroundTasks)
 +    }
 +}
@@ -4683,7 +4737,7 @@ index fc8b348a6..c41b0cc19 100644
      }
  
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 27b8897cc..c310b648c 100644
+index 27b8897cc..701d38656 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,109 @@
@@ -5587,7 +5641,7 @@ index 27b8897cc..c310b648c 100644
      }
  
      /// Configures the WatchConnectivity session if supported on the device
-@@ -171,6 +946,530 @@ import WidgetKit
+@@ -171,6 +946,532 @@ import WidgetKit
          return true
      }
  
@@ -5999,6 +6053,7 @@ index 27b8897cc..c310b648c 100644
 +
 +    func applyG7DirectBleSnapshot(_ snapshot: TrioComplicationSnapshot, glucoseMgDl: Int) {
 +        assert(Thread.isMainThread, "applyG7DirectBleSnapshot must be called on main thread")
++        noteComplicationSnapshotSaved(snapshot, via: .ble)
 +        g7DirectBleLastEventAt = Date()
 +        g7DirectBleLastReadingAt = snapshot.readingDate
 +        if snapshot.source == .g7DirectBLE {
@@ -6033,6 +6088,7 @@ index 27b8897cc..c310b648c 100644
 +
 +    func applyHKSnapshot(_ snapshot: TrioComplicationSnapshot, glucoseMgDl: Int) {
 +        assert(Thread.isMainThread, "applyHKSnapshot must be called on main thread")
++        noteComplicationSnapshotSaved(snapshot, via: .healthkit)
 +        guard tryAttributeDisplayedReadingSource(
 +            .healthKit,
 +            forReadingDate: snapshot.readingDate,
@@ -6118,7 +6174,7 @@ index 27b8897cc..c310b648c 100644
      // MARK: – Handle Acknowledgement Messages FROM Phone
  
      /// Shows "Processing…" and starts the clock for the phone's answer
-@@ -247,7 +1546,7 @@ import WidgetKit
+@@ -247,7 +1548,7 @@ import WidgetKit
              if activationState == .activated {
                  WatchLogger.shared.info(.connectivity, "Session activated, phone reachable: \(session.isReachable)")
  
@@ -6127,7 +6183,7 @@ index 27b8897cc..c310b648c 100644
  
                  self.isReachable = session.isReachable
              }
-@@ -285,30 +1584,45 @@ import WidgetKit
+@@ -285,30 +1586,45 @@ import WidgetKit
              return
          }
  
@@ -6190,7 +6246,7 @@ index 27b8897cc..c310b648c 100644
  
          // Wall-clock staleness gate. Drops the queued backlog cheaply when
          // the watch app wakes after long disuse; without it, every payload
-@@ -317,87 +1631,588 @@ import WidgetKit
+@@ -317,87 +1633,592 @@ import WidgetKit
              if WatchLogger.shared.shouldLog("staleState") {
                  WatchLogger.shared.debug(.data, "Stale watch state from \(date) skipped")
              }
@@ -6237,6 +6293,8 @@ index 27b8897cc..c310b648c 100644
 +        WatchLogger.shared.log("Received userInfo with keys: \(userInfo.keys.joined(separator: ", "))")
 +
 +        let payload = (userInfo[WatchMessageKeys.watchState] as? [String: Any]) ?? userInfo
++        // The marker is top-level beside watchState, not inside the nested payload.
++        let deliveryPath = ComplicationDeliveryPath.forUserInfo(userInfo)
 +
 +        DispatchQueue.main.async { @MainActor [weak self] in
 +            self?.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
@@ -6334,7 +6392,7 @@ index 27b8897cc..c310b648c 100644
 +            // so forceWidgetReloadIfStale reads fresh App Group data. Normal-cadence
 +            // deliveries use the deferred path; shouldUpdate dedup prevents double-writes.
 +            if isSleepGap {
-+                saveComplicationSnapshot(from: payload)
++                saveComplicationSnapshot(from: payload, deliveryPath: deliveryPath)
 +            }
 +
 +            if pendingConnectivityTasks.isEmpty {
@@ -6347,7 +6405,8 @@ index 27b8897cc..c310b648c 100644
 +                    with: payload,
 +                    fromUserInfo: true,
 +                    userInfoReceiveTimestamp: lastUserInfoReceiveTimestamp,
-+                    pendingConnectivityCompletionPath: "fast"
++                    pendingConnectivityCompletionPath: "fast",
++                    deliveryPath: deliveryPath
 +                )
 +            } else {
 +                pendingData.merge(payload) { _, new in new }
@@ -6358,7 +6417,8 @@ index 27b8897cc..c310b648c 100644
 +                    finalizePendingData(
 +                        fromUserInfo: true,
 +                        userInfoReceiveTimestamp: receiveTs,
-+                        pendingConnectivityCompletionPath: "fast"
++                        pendingConnectivityCompletionPath: "fast",
++                        deliveryPath: deliveryPath
 +                    )
 +                }
 +                quietWindowWorkItem = work
@@ -6449,9 +6509,9 @@ index 27b8897cc..c310b648c 100644
 +            guard let self else { return }
 +            self.applyG7ActiveSensorNameFromWatchPayloadIfPresent(payload)
 +            let gap = self.lastDataReceivedAt.map { Date().timeIntervalSince($0) } ?? .infinity
-+            self.saveComplicationSnapshot(from: payload)
++            self.saveComplicationSnapshot(from: payload, deliveryPath: .applicationContext)
 +            if case .found = readingResolution {
-+                self.scheduleUIUpdate(with: payload)
++                self.scheduleUIUpdate(with: payload, deliveryPath: .applicationContext)
 +            }
 +            self.lastDataReceivedAt = Date()
 +            if gap > 600 {
@@ -6580,7 +6640,12 @@ index 27b8897cc..c310b648c 100644
 +                clearDeferredConnectivityCompletionRetryOnMain()
 +                return
 +            }
-+
+ 
+-        // Monotonicity dedup.
+-        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
+-        guard date > lastProcessed else {
+-            if WatchLogger.shared.shouldLog("duplicateState") {
+-                WatchLogger.shared.debug(.data, "Duplicate watch state from \(date) skipped")
 +            let wid = BackgroundTaskWindowCounter.currentOrNil() ?? -1
 +            if !connectivitySessionHasPendingContent() {
 +                WatchLogger.shared.log(
@@ -6594,13 +6659,13 @@ index 27b8897cc..c310b648c 100644
 +                    requiresNoPendingContent: true
 +                )
 +                return
-+            }
+             }
+-            return
+-        }
  
--        // Monotonicity dedup.
--        let lastProcessed = WatchStateSnapshot.loadLatestDateFromDisk()
--        guard date > lastProcessed else {
--            if WatchLogger.shared.shouldLog("duplicateState") {
--                WatchLogger.shared.debug(.data, "Duplicate watch state from \(date) skipped")
+-        WatchStateSnapshot.saveLatestDateToDisk(date)
+-        DispatchQueue.main.async {
+-            self.scheduleUIUpdate(with: payload)
 +            guard let deadline = deferredConnectivityCompletionDeadline,
 +                  Date() < deadline
 +            else {
@@ -6613,13 +6678,8 @@ index 27b8897cc..c310b648c 100644
 +                )
 +                clearDeferredConnectivityCompletionRetryOnMain()
 +                return
-             }
--            return
--        }
- 
--        WatchStateSnapshot.saveLatestDateToDisk(date)
--        DispatchQueue.main.async {
--            self.scheduleUIUpdate(with: payload)
++            }
++
 +            WatchLogger.shared.log(
 +                "event=complication_bgtask_completion_retry_pending path=\(path)"
 +                    + " window_id=\(wid)"
@@ -6834,7 +6894,7 @@ index 27b8897cc..c310b648c 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -407,6 +2222,8 @@ import WidgetKit
+@@ -407,6 +2228,8 @@ import WidgetKit
                      self.showSyncingAnimation = false
                  }
  
@@ -6843,7 +6903,7 @@ index 27b8897cc..c310b648c 100644
                  switch ackCode {
                  case .savingCarbs:
                      self.isMealBolusCombo = true
-@@ -427,86 +2244,222 @@ import WidgetKit
+@@ -427,86 +2250,237 @@ import WidgetKit
                  }
              }
  
@@ -6870,7 +6930,8 @@ index 27b8897cc..c310b648c 100644
 +        with newData: [String: Any],
 +        fromUserInfo: Bool = false,
 +        userInfoReceiveTimestamp: Date? = nil,
-+        pendingConnectivityCompletionPath: String? = nil
++        pendingConnectivityCompletionPath: String? = nil,
++        deliveryPath: ComplicationDeliveryPath? = nil
 +    ) {
 +        guard Thread.isMainThread else {
 +            DispatchQueue.main.async { @MainActor [self] in
@@ -6878,7 +6939,8 @@ index 27b8897cc..c310b648c 100644
 +                    with: newData,
 +                    fromUserInfo: fromUserInfo,
 +                    userInfoReceiveTimestamp: userInfoReceiveTimestamp,
-+                    pendingConnectivityCompletionPath: pendingConnectivityCompletionPath
++                    pendingConnectivityCompletionPath: pendingConnectivityCompletionPath,
++                    deliveryPath: deliveryPath
 +                )
 +            }
 +            return
@@ -6928,13 +6990,15 @@ index 27b8897cc..c310b648c 100644
 +        let fromUserInfoCapture = fromUserInfo
 +        let userInfoTsCapture = userInfoReceiveTimestamp
 +        let completionPathCapture = pendingConnectivityCompletionPath
++        let deliveryPathCapture = deliveryPath
          let workItem = DispatchWorkItem { [self] in
 -            self.finalizePendingData()
 +            WatchLogger.shared.log("Debounced update fired")
 +            self.finalizePendingData(
 +                fromUserInfo: fromUserInfoCapture,
 +                userInfoReceiveTimestamp: userInfoTsCapture,
-+                pendingConnectivityCompletionPath: completionPathCapture
++                pendingConnectivityCompletionPath: completionPathCapture,
++                deliveryPath: deliveryPathCapture
 +            )
          }
          finalizeWorkItem = workItem
@@ -6956,7 +7020,8 @@ index 27b8897cc..c310b648c 100644
 +    private func finalizePendingData(
 +        fromUserInfo: Bool = false,
 +        userInfoReceiveTimestamp: Date? = nil,
-+        pendingConnectivityCompletionPath: String? = nil
++        pendingConnectivityCompletionPath: String? = nil,
++        deliveryPath: ComplicationDeliveryPath? = nil
 +    ) {
          guard !pendingData.isEmpty else {
 -            // If we have no actual data, just end syncing
@@ -6979,7 +7044,12 @@ index 27b8897cc..c310b648c 100644
 +        WatchLogger.shared.log("Finalizing pending data")
  
 -        // Clear
-+        processRawDataForWatchState(pendingData, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
++        processRawDataForWatchState(
++            pendingData,
++            fromUserInfo: fromUserInfo,
++            userInfoReceiveTimestamp: userInfoReceiveTimestamp,
++            deliveryPath: deliveryPath
++        )
          pendingData.removeAll()
  
 -        // Done - hide sync animation
@@ -7029,13 +7099,18 @@ index 27b8897cc..c310b648c 100644
 +            WatchLogger.shared.log("event=complication_finalize_end window_id=\(wid) cleared_count=\(clearedCount)")
 +        }
 +    }
-+
-+    /// Updates the UI properties
-+    private func processRawDataForWatchState(_ message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
-+        WatchLogger.shared.log("Processing raw WatchState data with keys: \(message.keys.joined(separator: ", "))")
  
 -        if let currentGlucoseColorString = message[WatchMessageKeys.currentGlucoseColorString] as? String {
 -            self.currentGlucoseColorString = currentGlucoseColorString
++    /// Updates the UI properties
++    private func processRawDataForWatchState(
++        _ message: [String: Any],
++        fromUserInfo: Bool = false,
++        userInfoReceiveTimestamp: Date? = nil,
++        deliveryPath: ComplicationDeliveryPath? = nil
++    ) {
++        WatchLogger.shared.log("Processing raw WatchState data with keys: \(message.keys.joined(separator: ", "))")
++
 +        startupFirstRefreshInFlight = false
 +
 +        syncTimeoutWorkItem?.cancel()
@@ -7100,7 +7175,7 @@ index 27b8897cc..c310b648c 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -521,50 +2474,27 @@ import WidgetKit
+@@ -521,50 +2495,27 @@ import WidgetKit
              self.lastLoopTime = lastLoopTime
          }
  
@@ -7167,7 +7242,7 @@ index 27b8897cc..c310b648c 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -585,43 +2515,54 @@ import WidgetKit
+@@ -585,43 +2536,54 @@ import WidgetKit
              }
          }
  
@@ -7247,12 +7322,17 @@ index 27b8897cc..c310b648c 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -643,37 +2584,465 @@ import WidgetKit
+@@ -643,37 +2605,487 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
 -        publishComplicationSnapshot()
-+        saveComplicationSnapshot(from: message, fromUserInfo: fromUserInfo, userInfoReceiveTimestamp: userInfoReceiveTimestamp)
++        saveComplicationSnapshot(
++            from: message,
++            fromUserInfo: fromUserInfo,
++            userInfoReceiveTimestamp: userInfoReceiveTimestamp,
++            deliveryPath: deliveryPath
++        )
 +
 +        storeG7WatchAcquisitionArmIfPresent(message)
 +        DispatchQueue.main.async { @MainActor in
@@ -7326,7 +7406,23 @@ index 27b8897cc..c310b648c 100644
 +        WatchGlucoseColorComputer.shared.apply(low: low, high: high, target: target, dynamic: dynamic, unitsRaw: unitsRaw)
 +    }
 +
-+    private func saveComplicationSnapshot(from message: [String: Any], fromUserInfo: Bool = false, userInfoReceiveTimestamp: Date? = nil) {
++    /// TRIO-119: the save line for the BLE and HealthKit paths (their saves run in the caller just before
++    /// `apply…Snapshot`), plus the rate-limited provider-log drain every saved reading triggers.
++    private func noteComplicationSnapshotSaved(_ snapshot: TrioComplicationSnapshot, via: ComplicationDeliveryPath) {
++        WatchLogger.shared.log(
++            "📸 Saved snapshot: glucose=\(snapshot.glucose), reading_date_epoch=\(Int(snapshot.readingDate.timeIntervalSince1970)) via=\(via.rawValue)"
++        )
++        ComplicationLogForwarder.shared.drainIfDue(reason: "saved_reading_\(via.rawValue)")
++    }
++
++    /// `deliveryPath` is the `via=` value on the save line; nil derives it from `fromUserInfo`.
++    private func saveComplicationSnapshot(
++        from message: [String: Any],
++        fromUserInfo: Bool = false,
++        userInfoReceiveTimestamp: Date? = nil,
++        deliveryPath: ComplicationDeliveryPath? = nil
++    ) {
++        let via = deliveryPath ?? (fromUserInfo ? .userInfo : .message)
 +        WatchLogger.shared.log("📸 saveComplicationSnapshot called with keys: \(message.keys.joined(separator: ", "))")
 +
 +        // Ensure the bake below uses the freshest settings even on a complication-only path that didn't
@@ -7381,7 +7477,7 @@ index 27b8897cc..c310b648c 100644
 +            return nil
 +        }()
 +
-+        WatchLogger.shared.log("📸 Saving snapshot: glucose=\(glucoseValue), trend=\(trendValue), delta=\(deltaValue), readingDate=\(readingDate)")
++        WatchLogger.shared.log("📸 Saving snapshot: glucose=\(glucoseValue), trend=\(trendValue), delta=\(deltaValue), readingDate=\(readingDate) via=\(via.rawValue)")
 +        WatchLogger.shared
 +            .log(
 +                "🔍 Debug: glucoseValue source - message: \(message[WatchMessageKeys.currentGlucose] as? String ?? "nil"), currentGlucose: \(currentGlucose)"
@@ -7410,6 +7506,7 @@ index 27b8897cc..c310b648c 100644
 +
 +        TrioComplicationDataStore.shared.save(snapshot, minInterval: 5)
 +        lastPhoneEGVDate = readingDate // C-210-4: phone-path freshness for direct-BLE stall detection
++        ComplicationLogForwarder.shared.drainIfDue(reason: "saved_reading_\(via.rawValue)")
 +
 +        // R5c — log decode latency and reading_epoch for the payload we just saved (avoids misattribution when overlapping userInfo deliveries).
 +        // Use only the threaded userInfoReceiveTimestamp; no fallback to instance state so attribution stays unambiguous.
@@ -8091,7 +8188,7 @@ index 000000000..eb56de046
 +    }
 +}
 diff --git a/Trio Watch App Tests/Unit Tests.swift b/Trio Watch App Tests/Unit Tests.swift
-index 996dfb5a5..129672477 100644
+index 996dfb5a5..52e9636e3 100644
 --- a/Trio Watch App Tests/Unit Tests.swift	
 +++ b/Trio Watch App Tests/Unit Tests.swift	
 @@ -97,6 +97,36 @@ import Testing
@@ -8131,7 +8228,7 @@ index 996dfb5a5..129672477 100644
      @Test("Bolus with the phone unreachable says nothing was sent") func testUnreachableBolus() async throws {
          watchState.session = nil
  
-@@ -273,4 +303,856 @@ import Testing
+@@ -273,4 +303,1012 @@ import Testing
      @Test("Returning to the app with no entry in progress changes nothing") func testNoEntryOnReturn() throws {
          #expect(!watchState.expireStaleEntry(at: entryStart))
      }
@@ -8986,6 +9083,162 @@ index 996dfb5a5..129672477 100644
 +        o.h.store.performUnservicedCheckOnMain(generation: 1)
 +        #expect(o.h.reloads == 2)
 +        #expect(o.lines("complication_reload_unserviced").last?.contains("action=rate_limited") == true)
++    }
++
++    // MARK: - TRIO-119: provider log drain scheduling, sequence numbers, delivery path
++
++    private final class DrainHarness {
++        var now = Date(timeIntervalSince1970: 1_700_000_000)
++        var size: Int? = 0
++        var drains = 0
++        lazy var scheduler = ComplicationLogDrainScheduler(
++            now: { [unowned self] in now },
++            fileSize: { [unowned self] in size },
++            drain: { [unowned self] in drains += 1 }
++        )
++    }
++
++    @Test("TRIO-119 AC-1: the first request drains, then none within 10 min, then one again")
++    func testDrainRateLimit() {
++        let h = DrainHarness()
++        #expect(h.scheduler.drainIfDue() == .interval)
++        #expect(h.drains == 1)
++
++        h.now = h.now.addingTimeInterval(ComplicationLogDrainScheduler.minInterval - 1)
++        #expect(h.scheduler.drainIfDue() == nil)
++        h.now = h.now.addingTimeInterval(0.5)
++        #expect(h.scheduler.drainIfDue() == nil)
++        #expect(h.drains == 1)
++
++        h.now = h.now.addingTimeInterval(1)
++        #expect(h.scheduler.drainIfDue() == .interval)
++        #expect(h.drains == 2)
++    }
++
++    @Test("TRIO-119 AC-1: a file past half the cap drains at once, ignoring the rate limit")
++    func testDrainAtHalfCap() {
++        let h = DrainHarness()
++        _ = h.scheduler.drainIfDue()
++        #expect(h.drains == 1)
++
++        // Exactly half the cap is not past it.
++        h.now = h.now.addingTimeInterval(5)
++        h.size = ComplicationLogBuffer.sizeCapBytes / 2
++        #expect(h.scheduler.drainIfDue() == nil)
++
++        h.size = ComplicationLogBuffer.sizeCapBytes / 2 + 1
++        #expect(h.scheduler.drainIfDue() == .size)
++        #expect(h.drains == 2)
++
++        // The file was drained away; the next request is back under the interval rule.
++        h.size = 100
++        h.now = h.now.addingTimeInterval(30)
++        #expect(h.scheduler.drainIfDue() == nil)
++        #expect(h.drains == 2)
++    }
++
++    @Test("TRIO-119 AC-1: a drain done elsewhere restarts the interval; a clock step back counts as due")
++    func testNoteDrainAndClockStep() {
++        let h = DrainHarness()
++        h.scheduler.noteDrain()
++        h.now = h.now.addingTimeInterval(60)
++        #expect(h.scheduler.drainIfDue() == nil)
++
++        h.now = h.now.addingTimeInterval(-3600)
++        #expect(h.scheduler.drainIfDue() == .interval)
++        #expect(h.drains == 1)
++    }
++
++    @Test("TRIO-119 AC-4: seq= is read from the end of a line, and only there")
++    func testSequenceNumberParsing() {
++        let line = "[2026-11-14T10:00:00+0100] [b:240] [X.swift:1] getTimeline → event=x battery_level_percent=80 seq=42"
++        #expect(ComplicationLogBuffer.sequenceNumber(inLine: line) == 42)
++        #expect(ComplicationLogBuffer.sequenceNumber(inLine: line + "  ") == 42)
++        #expect(ComplicationLogBuffer.sequenceNumber(inLine: "[dropped 12 lines]") == nil)
++        #expect(ComplicationLogBuffer.sequenceNumber(inLine: "a line from before seq numbers") == nil)
++        #expect(ComplicationLogBuffer.sequenceNumber(inLine: "x seq=12 and then more") == nil)
++        #expect(ComplicationLogBuffer.sequenceNumber(inLine: "x seq=") == nil)
++        #expect(ComplicationLogBuffer.sequenceNumber(inLine: "x seq=-3") == nil)
++        #expect(ComplicationLogBuffer.sequenceNumber(inLine: "x seq=99999999999999999999999") == nil)
++    }
++
++    @Test("TRIO-119 AC-4: the counter continues across instances (extension launches)")
++    func testSequenceCounterPersists() {
++        let suite = "trio119-\(UUID().uuidString)"
++        defer { UserDefaults().removePersistentDomain(forName: suite) }
++        let first = ComplicationLogSequenceCounter(defaults: UserDefaults(suiteName: suite))
++        let firstRun: [Int] = [first.next(), first.next(), first.next()]
++        #expect(firstRun == [1, 2, 3])
++
++        let relaunched = ComplicationLogSequenceCounter(defaults: UserDefaults(suiteName: suite))
++        #expect(relaunched.next() == 4)
++
++        // Without defaults it counts in memory and restarts at 1 on the next launch.
++        let memory = ComplicationLogSequenceCounter(defaults: nil)
++        let memoryRun: [Int] = [memory.next(), memory.next()]
++        #expect(memoryRun == [1, 2])
++        #expect(ComplicationLogSequenceCounter(defaults: nil).next() == 1)
++    }
++
++    @Test("TRIO-119 AC-4: contiguous values are not gaps")
++    func testGapDetectorNoGap() {
++        var d = ComplicationLogGapDetector()
++        #expect(d.observe(10) == .first)
++        #expect(d.observe(11) == .contiguous)
++        #expect(d.observe(12) == .contiguous)
++        // A re-read line is not a loss.
++        #expect(d.observe(12) == .duplicate)
++        #expect(d.lastSeq == 12)
++    }
++
++    @Test("TRIO-119 AC-4: a gap reports the last seen value, the new one and the missing count")
++    func testGapDetectorGap() {
++        var d = ComplicationLogGapDetector(lastSeq: 5)
++        #expect(d.observe(6) == .contiguous)
++        #expect(d.observe(10) == .gap(from: 6, to: 10, missing: 3))
++        #expect(d.observe(11) == .contiguous)
++    }
++
++    @Test("TRIO-119 AC-4: a gap across two drains is found from the remembered last seq")
++    func testGapDetectorAcrossDrains() {
++        var firstDrain = ComplicationLogGapDetector()
++        for seq in 1...20 { _ = firstDrain.observe(seq) }
++
++        // The next drain starts from what the first one persisted; lines 21-29 were truncated away.
++        var secondDrain = ComplicationLogGapDetector(lastSeq: firstDrain.lastSeq)
++        #expect(secondDrain.observe(30) == .gap(from: 20, to: 30, missing: 9))
++        #expect(secondDrain.observe(31) == .contiguous)
++
++        // No loss between drains: the first line of the next drain continues the count.
++        var thirdDrain = ComplicationLogGapDetector(lastSeq: secondDrain.lastSeq)
++        #expect(thirdDrain.observe(32) == .contiguous)
++    }
++
++    @Test("TRIO-119 AC-4: a counter reset is reported as a reset, not a huge gap, and counting resumes")
++    func testGapDetectorReset() {
++        var d = ComplicationLogGapDetector(lastSeq: 48_210)
++        #expect(d.observe(1) == .reset(from: 48_210, to: 1))
++        #expect(d.observe(2) == .contiguous)
++        #expect(d.observe(5) == .gap(from: 2, to: 5, missing: 2))
++    }
++
++    @Test("TRIO-119 AC-2: the via= values are the delivery paths this code has")
++    func testDeliveryPathValues() {
++        #expect(ComplicationDeliveryPath.message.rawValue == "message")
++        #expect(ComplicationDeliveryPath.userInfo.rawValue == "userInfo")
++        #expect(ComplicationDeliveryPath.complicationUserInfo.rawValue == "complicationUserInfo")
++        #expect(ComplicationDeliveryPath.applicationContext.rawValue == "applicationContext")
++        #expect(ComplicationDeliveryPath.ble.rawValue == "ble")
++        #expect(ComplicationDeliveryPath.healthkit.rawValue == "healthkit")
++    }
++
++    @Test("TRIO-119 AC-2: the top-level complication marker picks the userInfo path")
++    func testDeliveryPathForUserInfo() {
++        let payload: [String: Any] = ["watchState": [String: Any]()]
++        #expect(ComplicationDeliveryPath.forUserInfo(payload.merging(["complicationTransfer": true]) { $1 }) == .complicationUserInfo)
++        #expect(ComplicationDeliveryPath.forUserInfo(payload.merging(["complicationTransfer": false]) { $1 }) == .userInfo)
++        #expect(ComplicationDeliveryPath.forUserInfo(payload) == .userInfo)
++        #expect(ComplicationDeliveryPath.forUserInfo(["watchState": ["complicationTransfer": true]]) == .userInfo)
 +    }
  }
 diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
@@ -10026,10 +10279,10 @@ index 000000000..e4bce5153
 +#endif
 diff --git a/Trio Watch Shared/ComplicationLogBuffer.swift b/Trio Watch Shared/ComplicationLogBuffer.swift
 new file mode 100644
-index 000000000..46a746648
+index 000000000..6e5922442
 --- /dev/null
 +++ b/Trio Watch Shared/ComplicationLogBuffer.swift	
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,520 @@
 +import Foundation
 +#if os(watchOS)
 +import WatchKit
@@ -10045,6 +10298,9 @@ index 000000000..46a746648
 +/// - File format: newline-delimited UTF-8; same path/truncation as 06. Drain is race-safe (atomic
 +///   rename-then-read). Truncation is a full-file rewrite and can race with a concurrent drain rename;
 +///   we accept best-effort loss and possible rare corrupt chunk in that case.
++/// - TRIO-119: every line the writer appends ends with ` seq=<n>`, a counter the writer persists in the App Group
++///   defaults. The drain detects gaps (lost or truncated lines) from it. The watch app only reads the counter's
++///   effects from the file; it never writes the counter.
 +enum ComplicationLogBuffer {
 +    // MARK: - Ring buffer (all targets)
 +    private static let maxEntries = 200
@@ -10053,7 +10309,8 @@ index 000000000..46a746648
 +    // MARK: - File (06 contract: same path, format, truncation)
 +    private static let logFileName = "complication_log.txt"
 +    private static let logsSubdir = "logs"
-+    private static let sizeCapBytes = 64 * 1024
++    /// Internal so the drain scheduler can derive its half-cap threshold from it.
++    static let sizeCapBytes = 64 * 1024
 +    private static let truncateKeepBytes = 32 * 1024
 +
 +    /// Single queue for ring + file within process. Drain uses atomic rename-then-read; best-effort delivery, rare corruption possible when truncation races with drain.
@@ -10140,6 +10397,13 @@ index 000000000..46a746648
 +    #endif
 +    #endif
 +    private static var hasLoggedFileAppendStatus = false
++
++    #if WIDGET_EXTENSION
++    /// TRIO-119: persisted per-line sequence counter. Only the complication extension appends, so only it advances it.
++    private static let sequenceCounter = ComplicationLogSequenceCounter(
++        defaults: appGroupSuiteName().flatMap { UserDefaults(suiteName: $0) }
++    )
++    #endif
 +
 +    private static let build: String = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
 +
@@ -10263,7 +10527,8 @@ index 000000000..46a746648
 +    private static func appendToFile(message: String, file: String, line: Int, function: String, batteryContext: String) {
 +        let shortFile = (file as NSString).lastPathComponent
 +        let timestamp = dateFormatter.string(from: Date())
-+        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message) \(batteryContext)\n"
++        let seq = sequenceCounter.next()
++        let entry = "[\(timestamp)] [b:\(build)] [\(shortFile):\(line)] \(function) → \(message) \(batteryContext) seq=\(seq)\n"
 +
 +        guard let logURL = logFileURL() else {
 +            NSLog("[ComplicationLogBuffer] %@", String(entry.dropLast()))
@@ -10336,14 +10601,26 @@ index 000000000..46a746648
 +
 +    /// Returns the shared container URL. Used by append (Complication) and drain (Watch App).
 +    static func sharedContainerURL() -> URL? {
++        guard let suiteName = appGroupSuiteName() else { return nil }
++        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
++    }
++
++    /// The resolved App Group ID (also the defaults suite name), or nil if unavailable.
++    private static func appGroupSuiteName() -> String? {
 +        var bundle: Bundle = .main
 +        let classBundle = Bundle(for: _BundleAnchor.self)
 +        if classBundle.object(forInfoDictionaryKey: "AppGroupID") != nil {
 +            bundle = classBundle
 +        }
++        return resolveAppGroupID(bundle: bundle).value
++    }
 +
-+        guard let suiteName = resolveAppGroupID(bundle: bundle).value else { return nil }
-+        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
++    /// TRIO-119: the `seq=` value a line ends with, or nil when it has none (old lines, `[dropped N lines]` markers).
++    static func sequenceNumber(inLine line: String) -> Int? {
++        guard let range = line.range(of: " seq=", options: .backwards) else { return nil }
++        let tail = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
++        guard !tail.isEmpty, tail.allSatisfy({ ("0"..."9").contains($0) }) else { return nil }
++        return Int(tail)
 +    }
 +
 +    // MARK: - App Group Resolution (mirrors 06; same logic for drain compatibility)
@@ -10376,6 +10653,151 @@ index 000000000..46a746648
 +            return (appGroupID(forTeamID: teamID), "Derived(bundleIdentifier)")
 +        }
 +        return (nil, "Unavailable")
++    }
++}
++
++// MARK: - TRIO-119 sequence numbers
++
++/// Monotonic per-line counter the log writer persists across extension launches (App Group defaults, or in memory
++/// when the defaults are unavailable, in which case a relaunch restarts it and the drain reports a reset).
++final class ComplicationLogSequenceCounter {
++    static let defaultsKey = "ComplicationLogBuffer_seq"
++    private let defaults: UserDefaults?
++    private let key: String
++    private let lock = NSLock()
++    private var inMemory = 0
++
++    init(defaults: UserDefaults?, key: String = ComplicationLogSequenceCounter.defaultsKey) {
++        self.defaults = defaults
++        self.key = key
++    }
++
++    /// Persists before returning, so a relaunch continues from here.
++    func next() -> Int {
++        lock.lock()
++        defer { lock.unlock() }
++        guard let defaults else {
++            inMemory += 1
++            return inMemory
++        }
++        let value = defaults.integer(forKey: key) + 1
++        defaults.set(value, forKey: key)
++        return value
++    }
++}
++
++/// Finds gaps between consecutive `seq=` values the drain reads. Keep the last value across drains.
++struct ComplicationLogGapDetector: Equatable {
++    enum Event: Equatable {
++        /// No earlier value to compare with.
++        case first
++        case contiguous
++        /// Same value again (a re-read line); not a loss.
++        case duplicate
++        /// `missing` lines between `from` (last seen) and `to`.
++        case gap(from: Int, to: Int, missing: Int)
++        /// The counter went backwards (extension data cleared): not a loss of `from - to` lines.
++        case reset(from: Int, to: Int)
++    }
++
++    private(set) var lastSeq: Int?
++
++    init(lastSeq: Int? = nil) {
++        self.lastSeq = lastSeq
++    }
++
++    mutating func observe(_ seq: Int) -> Event {
++        defer { lastSeq = seq }
++        guard let last = lastSeq else { return .first }
++        if seq == last { return .duplicate }
++        if seq < last { return .reset(from: last, to: seq) }
++        if seq == last + 1 { return .contiguous }
++        return .gap(from: last, to: seq, missing: seq - last - 1)
++    }
++}
++
++// MARK: - TRIO-119 drain scheduling
++
++/// Decides when the watch app drains the complication log outside its lifecycle drains: at most once per
++/// `minInterval`, and at once when the file passes half of `sizeCapBytes` (before a truncation can drop lines).
++/// Reads the file size only; never appends. The clock, size source and drain action are injectable.
++final class ComplicationLogDrainScheduler {
++    static let minInterval: TimeInterval = 10 * 60
++    static var sizeThresholdBytes: Int { ComplicationLogBuffer.sizeCapBytes / 2 }
++
++    enum Trigger: String, Equatable {
++        case interval
++        case size
++    }
++
++    private let now: () -> Date
++    private let fileSize: () -> Int?
++    private let drain: () -> Void
++    private let lock = NSLock()
++    private var lastDrainAt: Date?
++
++    init(
++        now: @escaping () -> Date = { Date() },
++        fileSize: @escaping () -> Int? = ComplicationLogDrainScheduler.currentFileSize,
++        drain: @escaping () -> Void
++    ) {
++        self.now = now
++        self.fileSize = fileSize
++        self.drain = drain
++    }
++
++    /// Size of the live log file in bytes; nil when there is none or the App Group is unavailable.
++    static func currentFileSize() -> Int? {
++        guard let url = ComplicationLogBuffer.logFileURL(),
++              let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
++        else { return nil }
++        return size.intValue
++    }
++
++    /// Records a drain that happened elsewhere (lifecycle drains), which restarts the interval.
++    func noteDrain() {
++        lock.lock()
++        lastDrainAt = now()
++        lock.unlock()
++    }
++
++    /// Drains when due and returns why; nil when it is not due.
++    @discardableResult
++    func drainIfDue() -> Trigger? {
++        lock.lock()
++        let current = now()
++        let trigger: Trigger?
++        if let size = fileSize(), size > Self.sizeThresholdBytes {
++            trigger = .size
++        } else if let last = lastDrainAt, current.timeIntervalSince(last) >= 0,
++                  current.timeIntervalSince(last) < Self.minInterval
++        {
++            trigger = nil
++        } else {
++            trigger = .interval
++        }
++        if trigger != nil { lastDrainAt = current }
++        lock.unlock()
++
++        if trigger != nil { drain() }
++        return trigger
++    }
++}
++
++/// How a reading reached the watch; the `via=` value on the save log line.
++enum ComplicationDeliveryPath: String, Equatable {
++    case message
++    case userInfo
++    case complicationUserInfo
++    case applicationContext
++    case ble
++    case healthkit
++
++    /// Maps a received userInfo to its path: a `true` top-level complication marker is `.complicationUserInfo`;
++    /// anything else, including a missing marker from an old phone build, is `.userInfo`.
++    /// The key literal must equal `WatchMessageKeys.complicationTransfer`; Watch Shared can't see that file.
++    static func forUserInfo(_ userInfo: [String: Any]) -> ComplicationDeliveryPath {
++        (userInfo["complicationTransfer"] as? Bool) == true ? .complicationUserInfo : .userInfo
 +    }
 +}
 +
@@ -12511,7 +12933,7 @@ index eb6b1fb6a..13170cbd0 100644
          var name: String {
              rawValue.prefix(1).uppercased() + rawValue.dropFirst()
 diff --git a/Trio/Sources/Models/WatchMessageKeys.swift b/Trio/Sources/Models/WatchMessageKeys.swift
-index 63eca691f..185f67751 100644
+index 63eca691f..94ea2ca4d 100644
 --- a/Trio/Sources/Models/WatchMessageKeys.swift
 +++ b/Trio/Sources/Models/WatchMessageKeys.swift
 @@ -1,6 +1,6 @@
@@ -12522,7 +12944,7 @@ index 63eca691f..185f67751 100644
      static let units = "units"
      static let requestWatchUpdate = "requestWatchUpdate"
      static let watchState = "watchState"
-@@ -45,6 +45,26 @@ enum WatchMessageKeys {
+@@ -45,6 +45,30 @@ enum WatchMessageKeys {
      static let overridePresets = "overridePresets"
      static let tempTargetPresets = "tempTargetPresets"
  
@@ -12543,6 +12965,10 @@ index 63eca691f..185f67751 100644
 +    /// G7 sensor activation epoch as Int64 seconds; pairs with `g7ActiveSensorName` for sensor identity (build 205 / C2).
 +    static let g7ActivationEpoch = "g7_activation_epoch"
 +    static let transferEnqueuedAt = "transfer_enqueued_at"
++    /// Bool, top-level beside `watchState` on a `transferCurrentComplicationUserInfo` payload only; absent on the plain
++    /// `transferUserInfo` fallback. Lets the watch log `via=complicationUserInfo`. The watch maps it in
++    /// `ComplicationDeliveryPath.forUserInfo`, which hard-codes this literal (Watch Shared can't see this file).
++    static let complicationTransfer = "complicationTransfer"
 +    /// Bool: tells the watch whether to use upstream G7 watch acquisition from its next launch.
 +    static let g7WatchAcquisitionArm = "g7_watch_acquisition_arm"
 +
@@ -12889,7 +13315,7 @@ index 000000000..adcf234a2
 +    }
 +}
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 96f7add93..c854cb1b3 100644
+index 96f7add93..f38e87a2b 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -1,6 +1,7 @@
@@ -13199,7 +13625,7 @@ index 96f7add93..c854cb1b3 100644
                      "color": value.color
                  ]
              },
-@@ -556,13 +645,289 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -556,13 +645,281 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              dictionary[WatchMessageKeys.glucoseBobbleComplicationSettings] = glucoseBobbleData
          }
  
@@ -13480,18 +13906,10 @@ index 96f7add93..c854cb1b3 100644
 +    ) async {
          guard let session = session else { return }
 +        let pathName = payload.pathName
-+
-+        if payload == .full, let fast = pendingFastPathWorkItem {
-+            // TRIO-124: a full send carries the newest reading too, so a queued fast send is redundant.
-+            fast.cancel()
-+            pendingFastPathWorkItem = nil
-+            fastPathFirstEligibleAt = nil
-+            debug(.watch, "coalescer_fast_path_cancelled reason=full_send")
-+        }
  
          guard session.isPaired else {
              debug(.watch, "No watch paired")
-@@ -587,19 +952,186 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -587,19 +944,189 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          var state = state
          state.date = Date()
  
@@ -13536,7 +13954,9 @@ index 96f7add93..c854cb1b3 100644
 +        }
 +
 +        WatchStateSnapshot.saveLatestDateToDisk(state.date)
-+
+ 
+-        // if session is reachable, it means watch App is in the foreground -> send watchState as message
+-        // if session is not reachable, it means it's in background -> send watchState as userInfo
 +        // Per-reading-epoch dispatch gate: suppresses duplicate complication transfers only.
 +        // The gate key is computed unconditionally for logging, but only persisted when a complication
 +        // transfer is actually enqueued (not on sendMessage-only paths).
@@ -13547,9 +13967,7 @@ index 96f7add93..c854cb1b3 100644
 +        if isDuplicateDispatch, !session.isReachable, readingEpochPresent {
 +            debug(.watch, "complication_transfer_gate_skipped skip_reason=duplicate_gate gate_key=\(gateKey) reading_date_epoch_seconds=\(readingEpoch)")
 +        }
- 
--        // if session is reachable, it means watch App is in the foreground -> send watchState as message
--        // if session is not reachable, it means it's in background -> send watchState as userInfo
++
 +        let budgetSnapshot = session.remainingComplicationUserInfoTransfers
 +        debug(
 +            .watch,
@@ -13595,23 +14013,26 @@ index 96f7add93..c854cb1b3 100644
 +            if let ageSource {
 +                debug(
 +                    .watch,
-+                    "complication_age_check age_seconds=\(Int(complicationAgeSeconds)) threshold=\(Int(gateDecision.thresholdSeconds)) gate_passes=\(gateDecision.passes) source=\(ageSource) \(gateFields)"
++                    "complication_age_check age_seconds=\(ComplicationTransferAgeGate.logValue(complicationAgeSeconds)) threshold=\(Int(gateDecision.thresholdSeconds)) gate_passes=\(gateDecision.passes) source=\(ageSource) \(gateFields)"
 +                )
 +            }
 +            if gateDecision.passes {
-+                session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: complicationMessage])
++                session.transferCurrentComplicationUserInfo([
++                    WatchMessageKeys.watchState: complicationMessage,
++                    WatchMessageKeys.complicationTransfer: true
++                ])
 +                lastDispatchedGateKey = gateKey
 +                recordSentReadingEpoch(readingEpoch)
 +                let remaining = session.remainingComplicationUserInfoTransfers
 +                let queueDepth = session.outstandingUserInfoTransfers.count
 +                debug(
 +                    .watch,
-+                    "Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo path=\(pathName) remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch) complication_age_seconds=\(Int(complicationAgeSeconds)) complication_age_gate_threshold_seconds=\(Int(gateDecision.thresholdSeconds)) \(gateFields)"
++                    "Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo path=\(pathName) remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch) complication_age_seconds=\(ComplicationTransferAgeGate.logValue(complicationAgeSeconds)) complication_age_gate_threshold_seconds=\(Int(gateDecision.thresholdSeconds)) \(gateFields)"
 +                )
 +            } else {
 +                debug(
 +                    .watch,
-+                    "complication_transfer_age_gate_skipped skip_reason=age_gate age_seconds=\(Int(complicationAgeSeconds)) threshold_seconds=\(Int(gateDecision.thresholdSeconds)) gate_key=\(gateKey) reading_date_epoch_seconds=\(readingEpoch) \(gateFields)"
++                    "complication_transfer_age_gate_skipped skip_reason=age_gate age_seconds=\(ComplicationTransferAgeGate.logValue(complicationAgeSeconds)) threshold_seconds=\(Int(gateDecision.thresholdSeconds)) gate_key=\(gateKey) reading_date_epoch_seconds=\(readingEpoch) \(gateFields)"
 +                )
 +            }
 +        }
@@ -13686,7 +14107,7 @@ index 96f7add93..c854cb1b3 100644
      }
  
      func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode) {
-@@ -627,9 +1159,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -627,9 +1154,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -13713,7 +14134,7 @@ index 96f7add93..c854cb1b3 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -778,6 +1325,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -778,6 +1320,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -13731,7 +14152,7 @@ index 96f7add93..c854cb1b3 100644
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
          if let logs = userInfo["watchLogs"] as? String {
              WatchLogIngest.legacyRecords(from: logs).forEach(TrioLogger.sink.accept)
-@@ -804,9 +1362,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -804,9 +1357,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      #endif
  
      func sessionReachabilityDidChange(_ session: WCSession) {
@@ -13746,7 +14167,7 @@ index 96f7add93..c854cb1b3 100644
              // Try to send data when connection is established
              Task {
                  let state = await self.setupWatchState()
-@@ -1081,11 +1643,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1081,11 +1638,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -13760,7 +14181,7 @@ index 96f7add93..c854cb1b3 100644
          }
      }
  
-@@ -1096,12 +1655,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1096,12 +1650,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
@@ -13822,10 +14243,10 @@ index 000000000..9c71497e1
 +}
 diff --git a/Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift b/Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift
 new file mode 100644
-index 000000000..8e5e675d8
+index 000000000..4d9651da7
 --- /dev/null
 +++ b/Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,36 @@
 +import Foundation
 +
 +/// Decides whether the phone may spend a budgeted complication transfer, based on how stale
@@ -13843,6 +14264,12 @@ index 000000000..8e5e675d8
 +        /// "awake" or "asleep"; the gate name and the sleep state always agree.
 +        let gateName: String
 +        let sleepState: String
++    }
++
++    /// Log-safe rendering of an age: "inf" when unknown (infinite or NaN), else whole seconds.
++    /// `Int(_:)` traps on non-finite values, so log lines must not convert an age directly.
++    static func logValue(_ seconds: TimeInterval) -> String {
++        seconds.isFinite ? String(Int(seconds)) : "inf"
 +    }
 +
 +    static func evaluate(isAsleep: Bool, ageSeconds: TimeInterval) -> Decision {
@@ -13965,10 +14392,10 @@ index 000000000..4eca46a20
 +}
 diff --git a/TrioTests/ComplicationTransferAgeGateTests.swift b/TrioTests/ComplicationTransferAgeGateTests.swift
 new file mode 100644
-index 000000000..8088c365a
+index 000000000..ef23101ed
 --- /dev/null
 +++ b/TrioTests/ComplicationTransferAgeGateTests.swift
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,52 @@
 +import Foundation
 +import Testing
 +
@@ -14001,6 +14428,18 @@ index 000000000..8088c365a
 +        let asleep = ComplicationTransferAgeGate.evaluate(isAsleep: true, ageSeconds: 0)
 +        #expect(asleep.gateName == "asleep")
 +        #expect(asleep.sleepState == "asleep")
++    }
++
++    @Test("logValue renders non-finite ages as inf and truncates finite ones")
++    func logValue() {
++        #expect(ComplicationTransferAgeGate.logValue(.infinity) == "inf")
++        #expect(ComplicationTransferAgeGate.logValue(.nan) == "inf")
++        #expect(ComplicationTransferAgeGate.logValue(612.7) == "612")
++    }
++
++    @Test("cold-start unknown age passes the awake gate, reaching the log line")
++    func coldStartPasses() {
++        #expect(ComplicationTransferAgeGate.evaluate(isAsleep: false, ageSeconds: .infinity).passes)
 +    }
 +
 +    @Test("unknown age (infinity) always passes")
