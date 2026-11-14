@@ -1,6 +1,6 @@
-From 7d894583961cb5752b514d49b5266868ef70a086 Mon Sep 17 00:00:00 2001
+From 072d9c7d884546f56fd5096e08da2a0d7aac84f3 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 14 Nov 2026 22:26:28 +0100
+Date: Sat, 14 Nov 2026 23:01:09 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 50eca7c4c14c9603dee3acbf06b61e3f6791a865
-Trio-Patch-Generated: 2026-11-14T21:26:08Z
+Trio-Patch-Feature-Tip: 6b921fd20b9b8101f2c7a9a7d7863f079a2acddf
+Trio-Patch-Generated: 2026-11-14T22:00:46Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -101,6 +101,8 @@ Trio-Patch-Source-Commits:
  7d7ea8d153d5f31138b73836c871c81ead843879 watch-g7: register the HealthKit glucose observer at launch (TRIO-113)
  66ddbfb18b0eb535c01f752a9e14d16108ef7f7e watch-g7: trailing reload after a debounced save so a newer reading never waits for the policy refresh (TRIO-118)
  50eca7c4c14c9603dee3acbf06b61e3f6791a865 watch-g7: reload complications only when the face content changes, with per-kind servicing and run telemetry (TRIO-120)
+ 08bc1f8e325c9b1e3510f5d56e88fd335c347950 phone: sleep mode from a Trio Focus Filter, quiet-window fallback and 16 h staleness bound (TRIO-121)
+ 6b921fd20b9b8101f2c7a9a7d7863f079a2acddf phone: complication transfer age gate, 600 s awake and 1800 s asleep, logged per decision (TRIO-122)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -181,6 +183,8 @@ Trio-Patch-Source-PatchIds:
  6876b01d1ca2b86f5288783885e88ffd83b22e65
  bb4b0a9ee2ef56c4a029430263654430b6a8edf2
  7500e9a870103e2198e9f78a44eb9dd8e843db39
+ 34fb8630aac34e9ab172ca2a72a865173e6a6fac
+ f81dc1a316eecbb9a0247cfeca88bf07054cff85
 ---
  .../ComplicationLogForwarder.swift            |  171 +
  .../ExtensionDelegate.swift                   |  100 +
@@ -212,10 +216,16 @@ Trio-Patch-Source-PatchIds:
  Trio/Sources/Logger/Watch/WatchLogEntry.swift |    1 +
  Trio/Sources/Models/WatchMessageKeys.swift    |   22 +-
  Trio/Sources/Models/WatchState.swift          |   31 +-
- .../View/WatchConfigAppleWatchView.swift      |   15 +
- .../WatchConfig/WatchConfigStateModel.swift   |    9 +
- .../WatchManager/AppleWatchManager.swift      |  608 +++-
- 33 files changed, 11252 insertions(+), 433 deletions(-)
+ .../View/WatchConfigAppleWatchView.swift      |   36 +
+ .../WatchConfig/WatchConfigStateModel.swift   |   34 +
+ .../SleepMode/SleepModeProvider+Shared.swift  |    7 +
+ .../SleepMode/SleepModeProvider.swift         |  138 +
+ .../WatchManager/AppleWatchManager.swift      |  609 +++-
+ .../ComplicationTransferAgeGate.swift         |   30 +
+ .../Shortcuts/SleepFocusFilterIntent.swift    |   42 +
+ .../ComplicationTransferAgeGateTests.swift    |   40 +
+ TrioTests/SleepModeProviderTests.swift        |  149 +
+ 39 files changed, 11705 insertions(+), 433 deletions(-)
  create mode 100644 Trio Watch App Extension/ComplicationLogForwarder.swift
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -230,6 +240,12 @@ Trio-Patch-Source-PatchIds:
  create mode 100644 Trio Watch Shared/TrioComplicationDataStore.swift
  create mode 100644 Trio/Resources/TrioWatch.entitlements
  create mode 100644 Trio/Sources/Helpers/G7StructuredTelemetryLogLine.swift
+ create mode 100644 Trio/Sources/Services/SleepMode/SleepModeProvider+Shared.swift
+ create mode 100644 Trio/Sources/Services/SleepMode/SleepModeProvider.swift
+ create mode 100644 Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift
+ create mode 100644 Trio/Sources/Shortcuts/SleepFocusFilterIntent.swift
+ create mode 100644 TrioTests/ComplicationTransferAgeGateTests.swift
+ create mode 100644 TrioTests/SleepModeProviderTests.swift
 
 diff --git a/Trio Watch App Extension/ComplicationLogForwarder.swift b/Trio Watch App Extension/ComplicationLogForwarder.swift
 new file mode 100644
@@ -12030,10 +12046,10 @@ index 56db82bdd..9ffdf3414 100644
      }
  }
 diff --git a/Trio/Sources/Modules/WatchConfig/View/WatchConfigAppleWatchView.swift b/Trio/Sources/Modules/WatchConfig/View/WatchConfigAppleWatchView.swift
-index 5384d69eb..a1a186610 100644
+index 5384d69eb..9c7bca242 100644
 --- a/Trio/Sources/Modules/WatchConfig/View/WatchConfigAppleWatchView.swift
 +++ b/Trio/Sources/Modules/WatchConfig/View/WatchConfigAppleWatchView.swift
-@@ -77,6 +77,21 @@ struct WatchConfigAppleWatchView: BaseView {
+@@ -77,6 +77,42 @@ struct WatchConfigAppleWatchView: BaseView {
                  }
              ).listRowBackground(Color.chart)
  
@@ -12052,22 +12068,45 @@ index 5384d69eb..a1a186610 100644
 +                }
 +            ).listRowBackground(Color.chart)
 +
++            Section(
++                header: Text("Sleep Mode"),
++                footer: Text(
++                    String(
++                        localized: "This quiet window is used only until the Trio Focus Filter has reported. To add the filter, open Settings, Focus, Sleep, Add Filter, and choose Trio sleep mode with Sleep mode turned on."
++                    )
++                ),
++                content: {
++                    DatePicker(
++                        String(localized: "Quiet window start"),
++                        selection: $state.sleepQuietStart,
++                        displayedComponents: .hourAndMinute
++                    )
++                    DatePicker(
++                        String(localized: "Quiet window end"),
++                        selection: $state.sleepQuietEnd,
++                        displayedComponents: .hourAndMinute
++                    )
++                }
++            ).listRowBackground(Color.chart)
++
              Section(
                  header: Text("Contact Image"),
                  content: {
 diff --git a/Trio/Sources/Modules/WatchConfig/WatchConfigStateModel.swift b/Trio/Sources/Modules/WatchConfig/WatchConfigStateModel.swift
-index f2253751f..af8595607 100644
+index f2253751f..ac2240390 100644
 --- a/Trio/Sources/Modules/WatchConfig/WatchConfigStateModel.swift
 +++ b/Trio/Sources/Modules/WatchConfig/WatchConfigStateModel.swift
-@@ -11,6 +11,7 @@ extension WatchConfig {
+@@ -11,6 +11,9 @@ extension WatchConfig {
          @Published var confirmBolusFaster = false
          @Published var showForecastWatch = false
          @Published var glucoseBobbleComplication = GlucoseBobbleComplicationSettings()
 +        @Published var upstreamG7WatchAcquisition = false
++        @Published var sleepQuietStart = Date()
++        @Published var sleepQuietEnd = Date()
  
          /// Garmin watch settings containing all watch-related configuration
          @Published var garminSettings = GarminWatchSettings()
-@@ -27,6 +28,14 @@ extension WatchConfig {
+@@ -27,9 +30,40 @@ extension WatchConfig {
              subscribeSetting(\.showForecastWatch, on: $showForecastWatch) { showForecastWatch = $0 }
              subscribeSetting(\.glucoseBobbleComplication, on: $glucoseBobbleComplication) { glucoseBobbleComplication = $0 }
  
@@ -12079,11 +12118,194 @@ index f2253751f..af8595607 100644
 +                .sink { UserDefaults.standard.set($0, forKey: WatchState.g7WatchAcquisitionArmDefaultsKey) }
 +                .store(in: &lifetime)
 +
++            let sleepMode = SleepModeProvider.shared
++            sleepQuietStart = Self.date(fromMinutes: sleepMode.quietStartMinutes)
++            sleepQuietEnd = Self.date(fromMinutes: sleepMode.quietEndMinutes)
++            $sleepQuietStart
++                .dropFirst()
++                .removeDuplicates()
++                .sink { SleepModeProvider.shared.quietStartMinutes = Self.minutes(from: $0) }
++                .store(in: &lifetime)
++            $sleepQuietEnd
++                .dropFirst()
++                .removeDuplicates()
++                .sink { SleepModeProvider.shared.quietEndMinutes = Self.minutes(from: $0) }
++                .store(in: &lifetime)
++
              devices = garmin.devices
          }
  
++        private static func date(fromMinutes minutes: Int) -> Date {
++            Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: Date()) ?? Date()
++        }
++
++        private static func minutes(from date: Date) -> Int {
++            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
++            return (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
++        }
++
+         /// Prompts the user to select Garmin devices and updates the device list
+         func selectGarminDevices() {
+             garmin.selectDevices()
+diff --git a/Trio/Sources/Services/SleepMode/SleepModeProvider+Shared.swift b/Trio/Sources/Services/SleepMode/SleepModeProvider+Shared.swift
+new file mode 100644
+index 000000000..061e8e17e
+--- /dev/null
++++ b/Trio/Sources/Services/SleepMode/SleepModeProvider+Shared.swift
+@@ -0,0 +1,7 @@
++import Foundation
++
++extension SleepModeProvider {
++    /// App-wide instance backed by `UserDefaults.standard`, logging transitions under the watch category.
++    /// The phone's watch transfer gate (TRIO-122) reads `SleepModeProvider.shared.isAsleep()`.
++    static let shared = SleepModeProvider(log: { message in debug(.watch, message) })
++}
+diff --git a/Trio/Sources/Services/SleepMode/SleepModeProvider.swift b/Trio/Sources/Services/SleepMode/SleepModeProvider.swift
+new file mode 100644
+index 000000000..adcf234a2
+--- /dev/null
++++ b/Trio/Sources/Services/SleepMode/SleepModeProvider.swift
+@@ -0,0 +1,138 @@
++import Foundation
++
++/// Phone-side sleep state. The Trio Focus Filter (attached to the Sleep Focus) reports on/off; until it has
++/// reported once, a quiet window (default 22:00 to 06:00 local time) stands in. Foundation-only so it can be
++/// unit tested outside the app. Not sent to the watch; the phone's watch transfer gate reads `isAsleep(now:)`.
++final class SleepModeProvider {
++    enum Source: String {
++        case focusFilter = "focus_filter"
++        case quietWindow = "quiet_window"
++        case focusFilterStale = "focus_filter_stale"
++    }
++
++    enum Keys {
++        static let filterReported = "Trio.sleepMode.filterReported"
++        static let filterAsleep = "Trio.sleepMode.filterAsleep"
++        static let filterReportedAt = "Trio.sleepMode.filterReportedAt"
++        static let quietStartMinutes = "Trio.sleepMode.quietStartMinutes"
++        static let quietEndMinutes = "Trio.sleepMode.quietEndMinutes"
++    }
++
++    static let defaultQuietStartMinutes = 22 * 60
++    static let defaultQuietEndMinutes = 6 * 60
++    /// An "asleep" filter report older than this no longer counts.
++    static let filterStaleAfter: TimeInterval = 16 * 60 * 60
++
++    private let defaults: UserDefaults
++    private let calendar: () -> Calendar
++    private let log: (String) -> Void
++    private let lock = NSLock()
++    private var lastLogged: Bool?
++    private var lastSource: Source?
++
++    init(
++        defaults: UserDefaults = .standard,
++        calendar: @escaping () -> Calendar = { Calendar.current },
++        log: @escaping (String) -> Void = { _ in }
++    ) {
++        self.defaults = defaults
++        self.calendar = calendar
++        self.log = log
++    }
++
++    /// Minutes after local midnight (0..<1440) at which the quiet window starts.
++    var quietStartMinutes: Int {
++        get { minutes(forKey: Keys.quietStartMinutes, default: Self.defaultQuietStartMinutes) }
++        set { defaults.set(Self.clamp(newValue), forKey: Keys.quietStartMinutes) }
++    }
++
++    /// Minutes after local midnight (0..<1440) at which the quiet window ends.
++    var quietEndMinutes: Int {
++        get { minutes(forKey: Keys.quietEndMinutes, default: Self.defaultQuietEndMinutes) }
++        set { defaults.set(Self.clamp(newValue), forKey: Keys.quietEndMinutes) }
++    }
++
++    var hasFilterReported: Bool {
++        defaults.bool(forKey: Keys.filterReported)
++    }
++
++    /// Called by the Focus Filter intent when the Sleep Focus turns on or off. All three writes and the
++    /// evaluation happen under one lock, so a concurrent read sees a whole report.
++    func reportFilter(isOn: Bool, at date: Date = Date()) {
++        lock.lock()
++        defaults.set(true, forKey: Keys.filterReported)
++        defaults.set(isOn, forKey: Keys.filterAsleep)
++        defaults.set(date.timeIntervalSince1970, forKey: Keys.filterReportedAt)
++        let message = evaluateLocked(now: date)
++        lock.unlock()
++        emit(message)
++    }
++
++    /// The filter's last state once it has ever reported, otherwise the quiet window. An "asleep" filter report
++    /// older than `filterStaleAfter` no longer counts (the Focus-off call may never have arrived), so the quiet
++    /// window applies again. Logs a `sleep_mode` line when the result differs from the last evaluation.
++    func isAsleep(now: Date = Date()) -> Bool {
++        lock.lock()
++        let asleep = resolveLocked(now: now)
++        let message = logMessageLocked(asleep: asleep.asleep, source: asleep.source)
++        lock.unlock()
++        emit(message)
++        return asleep.asleep
++    }
++
++    private func evaluateLocked(now: Date) -> String? {
++        let result = resolveLocked(now: now)
++        return logMessageLocked(asleep: result.asleep, source: result.source)
++    }
++
++    /// Caller holds `lock`.
++    private func resolveLocked(now: Date) -> (asleep: Bool, source: Source) {
++        guard defaults.bool(forKey: Keys.filterReported) else {
++            return (isInQuietWindow(now: now), .quietWindow)
++        }
++        let filterAsleep = defaults.bool(forKey: Keys.filterAsleep)
++        if filterAsleep, let reportedAt = defaults.object(forKey: Keys.filterReportedAt) as? Double,
++           now.timeIntervalSince1970 - reportedAt > Self.filterStaleAfter
++        {
++            return (isInQuietWindow(now: now), .focusFilterStale)
++        }
++        return (filterAsleep, .focusFilter)
++    }
++
++    /// Caller holds `lock`. Updates `lastLogged` and returns the line to log, if any.
++    private func logMessageLocked(asleep: Bool, source: Source) -> String? {
++        let changed = lastLogged != asleep
++        // The first evaluation of a process only logs when it is asleep, so a cold start while awake stays quiet.
++        let shouldLog = changed && (lastLogged != nil || asleep)
++        let sourceChanged = lastSource != source
++        lastLogged = asleep
++        lastSource = source
++        // The stale fallback is logged on its own transition even when the awake/asleep value is unchanged.
++        guard shouldLog || (source == .focusFilterStale && sourceChanged) else { return nil }
++        return "sleep_mode state=\(asleep ? "asleep" : "awake") source=\(source.rawValue)"
++    }
++
++    private func emit(_ message: String?) {
++        if let message { log(message) }
++    }
++
++    func isInQuietWindow(now: Date) -> Bool {
++        let cal = calendar()
++        let parts = cal.dateComponents([.hour, .minute], from: now)
++        let minuteOfDay = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
++        let start = quietStartMinutes
++        let end = quietEndMinutes
++        if start == end { return false }
++        if start < end { return minuteOfDay >= start && minuteOfDay < end }
++        return minuteOfDay >= start || minuteOfDay < end
++    }
++
++    private func minutes(forKey key: String, default fallback: Int) -> Int {
++        guard defaults.object(forKey: key) != nil else { return fallback }
++        return Self.clamp(defaults.integer(forKey: key))
++    }
++
++    private static func clamp(_ value: Int) -> Int {
++        min(max(value, 0), 24 * 60 - 1)
++    }
++}
 diff --git a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
-index 96f7add93..5fd5079d3 100644
+index 96f7add93..8ddb84700 100644
 --- a/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 +++ b/Trio/Sources/Services/WatchManager/AppleWatchManager.swift
 @@ -1,6 +1,7 @@
@@ -12109,7 +12331,7 @@ index 96f7add93..5fd5079d3 100644
      @Injected() private var determinationStorage: DeterminationStorage!
      @Injected() private var overrideStorage: OverrideStorage!
      @Injected() private var tempTargetStorage: TempTargetsStorage!
-@@ -40,6 +44,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -40,6 +44,25 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      private var coreDataPublisher: AnyPublisher<Set<NSManagedObjectID>, Never>?
      private var subscriptions = Set<AnyCancellable>()
  
@@ -12132,13 +12354,10 @@ index 96f7add93..5fd5079d3 100644
 +        set { appGroupIDCandidate().value.flatMap { UserDefaults(suiteName: $0) }?.set(newValue, forKey: "lastDispatchedGateKey") }
 +    }
 +
-+    // Complication-age stale-first gate threshold (seconds)
-+    private static let complicationAgeGateThresholdSeconds: TimeInterval = 600
-+
      typealias PumpEvent = PumpEventStored.EventType
  
      let viewContext = CoreDataStack.shared.persistentContainer.viewContext
-@@ -69,27 +95,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -69,27 +92,16 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
          // Observer for glucose and manual glucose
          glucoseStorage.updatePublisher
@@ -12170,7 +12389,7 @@ index 96f7add93..5fd5079d3 100644
              }
              .store(in: &subscriptions)
  
-@@ -97,26 +112,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -97,26 +109,18 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      }
  
      private func registerHandlers() {
@@ -12207,7 +12426,7 @@ index 96f7add93..5fd5079d3 100644
  
          coreDataPublisher?.filteredByEntityName("PumpEventStored").sink { [weak self] _ in
              guard let self = self else { return }
-@@ -125,25 +132,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -125,25 +129,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              }
          }.store(in: &subscriptions)
  
@@ -12243,7 +12462,7 @@ index 96f7add93..5fd5079d3 100644
      }
  
      /// Sets up the WatchConnectivity session if the device supports it
-@@ -155,11 +154,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -155,11 +151,50 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              self.session = session
  
              debug(.watch, "Watch session set up, paired: \(session.isPaired)")
@@ -12294,7 +12513,7 @@ index 96f7add93..5fd5079d3 100644
      /// Attempts to reestablish the Watch connection if it becomes unreachable
      private func retryConnection() {
          guard let session = session else { return }
-@@ -174,11 +212,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -174,11 +209,28 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      /// - Returns: WatchState containing current glucose readings and trends and determination infos for displaying cob and iob in the view
      func setupWatchState() async -> WatchState {
          // Check if a watch is paired and reachable before doing expensive calculations
@@ -12302,9 +12521,9 @@ index 96f7add93..5fd5079d3 100644
 -            debug(.watch, "Watch state skipped: no watch paired or app not installed")
 +        guard let session else {
 +            debug(.watch, "Watch state skipped: WCSession not available")
-+            return WatchState(date: Date())
-+        }
-+
+             return WatchState(date: Date())
+         }
+ 
 +        if !session.isPaired {
 +            debug(.watch, "Watch state skipped: no watch paired")
 +            return WatchState(date: Date())
@@ -12312,9 +12531,9 @@ index 96f7add93..5fd5079d3 100644
 +
 +        if !session.isWatchAppInstalled {
 +            debug(.watch, "Watch state skipped: Trio watch app not installed")
-             return WatchState(date: Date())
-         }
- 
++            return WatchState(date: Date())
++        }
++
 +        if !session.isReachable {
 +            debug(
 +                .watch,
@@ -12325,7 +12544,7 @@ index 96f7add93..5fd5079d3 100644
          // Skip if watch session is not activated
          guard session.activationState == .activated else {
              debug(.watch, "Watch state skipped: session not activated")
-@@ -222,6 +277,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -222,6 +274,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  
                  // Set before the no-glucose early return below, or a CGM outage would send the defaults
                  watchState.glucoseBobbleComplication = self.settingsManager.settings.glucoseBobbleComplication
@@ -12334,7 +12553,7 @@ index 96f7add93..5fd5079d3 100644
  
                  // Set IOB and COB from latest determination
                  let iob = self.iobService.currentIOB ?? 0
-@@ -273,8 +330,23 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -273,8 +327,23 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      watchState.currentGlucoseColorString = "#ffffff" // white when in range; colored when out of range
                  }
  
@@ -12358,7 +12577,7 @@ index 96f7add93..5fd5079d3 100644
                      let glucoseValue = self.units == .mgdL
                          ? Double(glucose.glucose)
                          : Double(truncating: Decimal(glucose.glucose).asMmolL as NSNumber)
-@@ -288,7 +360,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -288,7 +357,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                      )
  
                      return WatchGlucoseObject(
@@ -12367,7 +12586,7 @@ index 96f7add93..5fd5079d3 100644
                          glucose: glucoseValue,
                          color: glucoseColor.toHexString()
                      )
-@@ -506,7 +578,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -506,7 +575,7 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                  [
                      "glucose": value.glucose,
@@ -12376,7 +12595,7 @@ index 96f7add93..5fd5079d3 100644
                      "color": value.color
                  ]
              },
-@@ -556,12 +628,224 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -556,12 +625,217 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              dictionary[WatchMessageKeys.glucoseBobbleComplicationSettings] = glucoseBobbleData
          }
  
@@ -12474,7 +12693,7 @@ index 96f7add93..5fd5079d3 100644
 +
 +    /// Builds a gate key from the complication-visible fields of a WatchState.
 +    /// Matches the watch-side ComplicationSnapshotFingerprint for consistent dual-layer dedup.
-+    /// Format: "epoch|glucose|trend|delta"; currentComplicationAgeSeconds() parses the epoch
++    /// Format: "epoch|glucose|trend|delta"; currentComplicationAge() parses the epoch
 +    /// from the first pipe-delimited component. Do not change the format without updating that function.
 +    private func computeDispatchGateKey(state: WatchState) -> String {
 +        let epoch = state.glucoseValues.max(by: { $0.date < $1.date })
@@ -12487,38 +12706,31 @@ index 96f7add93..5fd5079d3 100644
 +    /// Prefers the ground-truth timestamp from the watch (reported via updateApplicationContext
 +    /// after each successful complication save). Falls back to the reading epoch in
 +    /// lastDispatchedGateKey (iOS-side proxy) when the watch hasn't reported yet.
-+    /// Returns .infinity if neither source has data (first transfer always goes through).
-+    private func currentComplicationAgeSeconds() -> TimeInterval {
++    /// Returns age .infinity if neither source has data (first transfer always goes through).
++    /// `source` is nil when no age source was available (already logged here).
++    private func currentComplicationAge() -> (age: TimeInterval, source: String?) {
 +        // Watch writes Swift Double; WCSession bridges it as NSNumber across the process boundary.
 +        // The NSNumber path is the one that actually succeeds; TimeInterval cast is kept for safety.
 +        let rawTimestamp = WCSession.default.receivedApplicationContext["complicationLastValidTimestamp"]
 +        let watchTimestamp = (rawTimestamp as? TimeInterval) ?? (rawTimestamp as? NSNumber)?.doubleValue ?? 0
 +        if watchTimestamp > 0 {
 +            let age = max(0, Date().timeIntervalSince(Date(timeIntervalSince1970: watchTimestamp)))
-+            debug(
-+                .watch,
-+                "complication_age_check age_seconds=\(Int(age)) threshold=\(Int(Self.complicationAgeGateThresholdSeconds)) gate_passes=\(age > Self.complicationAgeGateThresholdSeconds) source=watchApplicationContext"
-+            )
-+            return age
++            return (age, "watchApplicationContext")
 +        }
 +
 +        let gateKey = lastDispatchedGateKey
 +        guard !gateKey.isEmpty else {
 +            debug(.watch, "complication_age_check gate_key_empty returning=infinity")
-+            return .infinity
++            return (.infinity, nil)
 +        }
 +        guard let epochString = gateKey.split(separator: "|").first,
 +              let epoch = TimeInterval(epochString), epoch > 0 else {
 +            debug(.watch, "complication_age_check gate_key_parse_failed key=\(gateKey) returning=infinity")
-+            return .infinity
++            return (.infinity, nil)
 +        }
 +        let readingDate = Date(timeIntervalSince1970: epoch)
 +        let age = max(0, Date().timeIntervalSince(readingDate))
-+        debug(
-+            .watch,
-+            "complication_age_check age_seconds=\(Int(age)) threshold=\(Int(Self.complicationAgeGateThresholdSeconds)) gate_passes=\(age > Self.complicationAgeGateThresholdSeconds) source=lastDispatchedGateKey"
-+        )
-+        return age
++        return (age, "lastDispatchedGateKey")
 +    }
 +
 +    /// Coalesces multiple publisher-driven WatchState updates into a single send.
@@ -12603,7 +12815,7 @@ index 96f7add93..5fd5079d3 100644
          guard let session = session else { return }
  
          guard session.isPaired else {
-@@ -587,19 +871,162 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -587,19 +861,173 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          var state = state
          state.date = Date()
  
@@ -12646,11 +12858,11 @@ index 96f7add93..5fd5079d3 100644
 +        if !readingEpochPresent {
 +            warning(.watch, "complication_transfer_skipped missing readingEpoch; sendMessage still firing")
 +        }
++
++        WatchStateSnapshot.saveLatestDateToDisk(state.date)
  
 -        // if session is reachable, it means watch App is in the foreground -> send watchState as message
 -        // if session is not reachable, it means it's in background -> send watchState as userInfo
-+        WatchStateSnapshot.saveLatestDateToDisk(state.date)
-+
 +        // Per-reading-epoch dispatch gate: suppresses duplicate complication transfers only.
 +        // The gate key is computed unconditionally for logging, but only persisted when a complication
 +        // transfer is actually enqueued (not on sendMessage-only paths).
@@ -12694,21 +12906,32 @@ index 96f7add93..5fd5079d3 100644
 +        // Complication age is derived from the watch-reported timestamp (receivedApplicationContext)
 +        // or the reading epoch in lastDispatchedGateKey (iOS-side proxy).
 +        if !session.isReachable, readingEpochPresent, !isDuplicateDispatch, budgetSnapshot > 0 {
-+            let complicationAgeSeconds = currentComplicationAgeSeconds()
-+            let ageGatePassed = complicationAgeSeconds > Self.complicationAgeGateThresholdSeconds
-+            if ageGatePassed {
++            let (complicationAgeSeconds, ageSource) = currentComplicationAge()
++            // Sleep state is evaluated once so the threshold and the logged state agree.
++            let gateDecision = ComplicationTransferAgeGate.evaluate(
++                isAsleep: SleepModeProvider.shared.isAsleep(),
++                ageSeconds: complicationAgeSeconds
++            )
++            let gateFields = "gate=\(gateDecision.gateName) sleep_state=\(gateDecision.sleepState)"
++            if let ageSource {
++                debug(
++                    .watch,
++                    "complication_age_check age_seconds=\(Int(complicationAgeSeconds)) threshold=\(Int(gateDecision.thresholdSeconds)) gate_passes=\(gateDecision.passes) source=\(ageSource) \(gateFields)"
++                )
++            }
++            if gateDecision.passes {
 +                session.transferCurrentComplicationUserInfo([WatchMessageKeys.watchState: complicationMessage])
 +                lastDispatchedGateKey = gateKey
 +                let remaining = session.remainingComplicationUserInfoTransfers
 +                let queueDepth = session.outstandingUserInfoTransfers.count
 +                debug(
 +                    .watch,
-+                    "Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch) complication_age_seconds=\(Int(complicationAgeSeconds)) complication_age_gate_threshold_seconds=\(Int(Self.complicationAgeGateThresholdSeconds))"
++                    "Transferred new WatchState snapshot via=transferCurrentComplicationUserInfo remaining_budget=\(remaining) queue_depth=\(queueDepth) reading_date_epoch_seconds=\(readingEpoch) complication_age_seconds=\(Int(complicationAgeSeconds)) complication_age_gate_threshold_seconds=\(Int(gateDecision.thresholdSeconds)) \(gateFields)"
 +                )
 +            } else {
 +                debug(
 +                    .watch,
-+                    "complication_transfer_age_gate_skipped skip_reason=age_gate age_seconds=\(Int(complicationAgeSeconds)) threshold_seconds=\(Int(Self.complicationAgeGateThresholdSeconds)) gate_key=\(gateKey) reading_date_epoch_seconds=\(readingEpoch)"
++                    "complication_transfer_age_gate_skipped skip_reason=age_gate age_seconds=\(Int(complicationAgeSeconds)) threshold_seconds=\(Int(gateDecision.thresholdSeconds)) gate_key=\(gateKey) reading_date_epoch_seconds=\(readingEpoch) \(gateFields)"
 +                )
 +            }
 +        }
@@ -12774,7 +12997,7 @@ index 96f7add93..5fd5079d3 100644
      }
  
      func sendAcknowledgment(toWatch success: Bool, message: String = "", ackCode: AcknowledgmentCode) {
-@@ -627,9 +1054,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -627,9 +1055,24 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
              return
          }
  
@@ -12783,8 +13006,7 @@ index 96f7add93..5fd5079d3 100644
 +            .watch,
 +            "Watch session activated, state \(activationState.rawValue), reachable: \(session.isReachable), paired: \(session.isPaired), watch app installed: \(session.isWatchAppInstalled), remaining budget: \(session.remainingComplicationUserInfoTransfers)"
 +        )
- 
--        // Try to send initial data after activation
++
 +        // Clear the dispatch gate on activation so the first post-launch transfer always fires
 +        lastDispatchedGateKey = ""
 +
@@ -12793,7 +13015,8 @@ index 96f7add93..5fd5079d3 100644
 +            hasPerformedStartupQueueDrain = true
 +            cancelStaleQueuedTransfers()
 +        }
-+
+ 
+-        // Try to send initial data after activation
 +        DispatchQueue.main.async {
 +            self.pendingSendWorkItem?.cancel()
 +            self.coalescerFirstScheduledAt = nil
@@ -12801,7 +13024,7 @@ index 96f7add93..5fd5079d3 100644
          Task {
              let state = await self.setupWatchState()
              await self.sendDataToWatch(state)
-@@ -778,6 +1220,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -778,6 +1221,17 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
          }
      }
  
@@ -12819,7 +13042,7 @@ index 96f7add93..5fd5079d3 100644
      func session(_: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
          if let logs = userInfo["watchLogs"] as? String {
              WatchLogIngest.legacyRecords(from: logs).forEach(TrioLogger.sink.accept)
-@@ -804,9 +1257,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -804,9 +1258,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
      #endif
  
      func sessionReachabilityDidChange(_ session: WCSession) {
@@ -12834,7 +13057,7 @@ index 96f7add93..5fd5079d3 100644
              // Try to send data when connection is established
              Task {
                  let state = await self.setupWatchState()
-@@ -1081,11 +1538,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
+@@ -1081,11 +1539,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
  extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
      // to update maxBolus
      func pumpSettingsDidChange(_: PumpSettings) {
@@ -12848,7 +13071,7 @@ index 96f7add93..5fd5079d3 100644
          }
      }
  
-@@ -1096,12 +1550,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
+@@ -1096,12 +1551,8 @@ extension BaseWatchManager: SettingsObserver, PumpSettingsObserver {
          lowGlucose = settingsManager.settings.low
          highGlucose = settingsManager.settings.high
  
@@ -12863,6 +13086,291 @@ index 96f7add93..5fd5079d3 100644
          }
      }
  }
+diff --git a/Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift b/Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift
+new file mode 100644
+index 000000000..8e5e675d8
+--- /dev/null
++++ b/Trio/Sources/Services/WatchManager/ComplicationTransferAgeGate.swift
+@@ -0,0 +1,30 @@
++import Foundation
++
++/// Decides whether the phone may spend a budgeted complication transfer, based on how stale
++/// the watch complication is. The threshold is longer while the user is asleep.
++/// Foundation-only so it can be unit tested outside the app.
++enum ComplicationTransferAgeGate {
++    static let awakeThresholdSeconds: TimeInterval = 600
++    static let asleepThresholdSeconds: TimeInterval = 1800
++
++    struct Decision: Equatable {
++        /// Threshold chosen for this decision, in seconds.
++        let thresholdSeconds: TimeInterval
++        /// True when the complication is strictly older than the threshold.
++        let passes: Bool
++        /// "awake" or "asleep"; the gate name and the sleep state always agree.
++        let gateName: String
++        let sleepState: String
++    }
++
++    static func evaluate(isAsleep: Bool, ageSeconds: TimeInterval) -> Decision {
++        let threshold = isAsleep ? asleepThresholdSeconds : awakeThresholdSeconds
++        let name = isAsleep ? "asleep" : "awake"
++        return Decision(
++            thresholdSeconds: threshold,
++            passes: ageSeconds > threshold,
++            gateName: name,
++            sleepState: name
++        )
++    }
++}
+diff --git a/Trio/Sources/Shortcuts/SleepFocusFilterIntent.swift b/Trio/Sources/Shortcuts/SleepFocusFilterIntent.swift
+new file mode 100644
+index 000000000..a5c001b0a
+--- /dev/null
++++ b/Trio/Sources/Shortcuts/SleepFocusFilterIntent.swift
+@@ -0,0 +1,42 @@
++import AppIntents
++import Foundation
++
++/// Focus Filter the operator attaches to the Sleep Focus (Settings, Focus, Sleep, Focus Filters).
++/// The system runs `perform()` when the Focus turns on (with the configured values) and when it turns off
++/// (with the parameter defaults), so `sleepMode` defaults to false and is switched on in the filter setup.
++/// The parameter default is not a reliable off signal (the system may re-run `perform()` with the saved
++/// configured value), so `perform()` reads `SleepFocusFilterIntent.current`, the currently active values, and
++/// treats `.notFound` (no active Trio filter) as off; it falls back to `self` only on other errors. What `current` does while no Focus with this filter is active is
++/// not documented in the SDK interface (UNVERIFIED, needs the on-device check, AC-8); the provider's 16 h
++/// staleness bound covers a missed off call either way.
++/// A Focus Filter needs no `AppShortcut` entry; it appears under Focus Filters for any app that declares one.
++struct SleepFocusFilterIntent: SetFocusFilterIntent {
++    static var title = LocalizedStringResource("Trio sleep mode")
++
++    static var description = IntentDescription(
++        "Tells Trio when you are asleep so it can send fewer updates to the Apple Watch complication."
++    )
++
++    var displayRepresentation: DisplayRepresentation {
++        DisplayRepresentation(
++            title: "Trio sleep mode",
++            subtitle: sleepMode ? "On while this Focus is active" : "Off"
++        )
++    }
++
++    @Parameter(title: "Sleep mode", default: false)
++    var sleepMode: Bool
++
++    func perform() async throws -> some IntentResult {
++        let isOn: Bool
++        do {
++            isOn = try await Self.current.sleepMode
++        } catch SetFocusFilterIntentError.notFound {
++            isOn = false // no active Trio filter: the Focus has ended
++        } catch {
++            isOn = sleepMode
++        }
++        SleepModeProvider.shared.reportFilter(isOn: isOn)
++        return .result()
++    }
++}
+diff --git a/TrioTests/ComplicationTransferAgeGateTests.swift b/TrioTests/ComplicationTransferAgeGateTests.swift
+new file mode 100644
+index 000000000..8088c365a
+--- /dev/null
++++ b/TrioTests/ComplicationTransferAgeGateTests.swift
+@@ -0,0 +1,40 @@
++import Foundation
++import Testing
++
++@testable import Trio
++
++@Suite("ComplicationTransferAgeGate") struct ComplicationTransferAgeGateTests {
++    @Test("awake gate passes only strictly above 600 s", arguments: [
++        (599.0, false), (600.0, false), (601.0, true), (900.0, true)
++    ])
++    func awakeBoundary(age: Double, passes: Bool) {
++        let decision = ComplicationTransferAgeGate.evaluate(isAsleep: false, ageSeconds: age)
++        #expect(decision.thresholdSeconds == 600)
++        #expect(decision.passes == passes)
++    }
++
++    @Test("asleep gate passes only strictly above 1800 s", arguments: [
++        (1799.0, false), (1800.0, false), (1801.0, true), (900.0, false)
++    ])
++    func asleepBoundary(age: Double, passes: Bool) {
++        let decision = ComplicationTransferAgeGate.evaluate(isAsleep: true, ageSeconds: age)
++        #expect(decision.thresholdSeconds == 1800)
++        #expect(decision.passes == passes)
++    }
++
++    @Test("gate name and sleep state follow isAsleep")
++    func names() {
++        let awake = ComplicationTransferAgeGate.evaluate(isAsleep: false, ageSeconds: 0)
++        #expect(awake.gateName == "awake")
++        #expect(awake.sleepState == "awake")
++        let asleep = ComplicationTransferAgeGate.evaluate(isAsleep: true, ageSeconds: 0)
++        #expect(asleep.gateName == "asleep")
++        #expect(asleep.sleepState == "asleep")
++    }
++
++    @Test("unknown age (infinity) always passes")
++    func infinity() {
++        #expect(ComplicationTransferAgeGate.evaluate(isAsleep: true, ageSeconds: .infinity).passes)
++        #expect(ComplicationTransferAgeGate.evaluate(isAsleep: false, ageSeconds: .infinity).passes)
++    }
++}
+diff --git a/TrioTests/SleepModeProviderTests.swift b/TrioTests/SleepModeProviderTests.swift
+new file mode 100644
+index 000000000..4122b9660
+--- /dev/null
++++ b/TrioTests/SleepModeProviderTests.swift
+@@ -0,0 +1,149 @@
++import Foundation
++import Testing
++
++@testable import Trio
++
++@Suite("Sleep mode provider") struct SleepModeProviderTests {
++    private var calendar: Calendar {
++        var cal = Calendar(identifier: .gregorian)
++        cal.timeZone = TimeZone(identifier: "UTC")!
++        return cal
++    }
++
++    private func at(_ hour: Int, _ minute: Int = 0) -> Date {
++        calendar.date(from: DateComponents(year: 2026, month: 11, day: 14, hour: hour, minute: minute))!
++    }
++
++    private func makeDefaults() -> UserDefaults {
++        let name = "SleepModeProviderTests.\(UUID().uuidString)"
++        let defaults = UserDefaults(suiteName: name)!
++        defaults.removePersistentDomain(forName: name)
++        return defaults
++    }
++
++    private func makeProvider(
++        _ defaults: UserDefaults,
++        log: @escaping (String) -> Void = { _ in }
++    ) -> SleepModeProvider {
++        let cal = calendar
++        return SleepModeProvider(defaults: defaults, calendar: { cal }, log: log)
++    }
++
++    @Test("Default window 22:00-06:00 wraps midnight") func defaultWindow() {
++        let p = makeProvider(makeDefaults())
++        #expect(p.isAsleep(now: at(22)))
++        #expect(p.isAsleep(now: at(23, 59)))
++        #expect(p.isAsleep(now: at(0)))
++        #expect(p.isAsleep(now: at(5, 59)))
++        #expect(!p.isAsleep(now: at(6)))
++        #expect(!p.isAsleep(now: at(12)))
++        #expect(!p.isAsleep(now: at(21, 59)))
++    }
++
++    @Test("Custom same-day window") func customWindow() {
++        let p = makeProvider(makeDefaults())
++        p.quietStartMinutes = 13 * 60
++        p.quietEndMinutes = 15 * 60
++        #expect(p.isAsleep(now: at(14)))
++        #expect(!p.isAsleep(now: at(15)))
++        #expect(!p.isAsleep(now: at(23)))
++    }
++
++    @Test("Start equal to end is never asleep") func emptyWindow() {
++        let p = makeProvider(makeDefaults())
++        p.quietStartMinutes = 8 * 60
++        p.quietEndMinutes = 8 * 60
++        #expect(!p.isAsleep(now: at(8)))
++        #expect(!p.isAsleep(now: at(23)))
++    }
++
++    @Test("Filter on then off overrides the window, including inside it") func filterOverrides() {
++        let p = makeProvider(makeDefaults())
++        p.reportFilter(isOn: false, at: at(12))
++        #expect(!p.isAsleep(now: at(23))) // inside window, filter says awake
++        p.reportFilter(isOn: true, at: at(13))
++        #expect(p.isAsleep(now: at(12))) // outside window, filter says asleep
++        p.reportFilter(isOn: false, at: at(14))
++        #expect(!p.isAsleep(now: at(2)))
++    }
++
++    @Test("State survives a new provider on the same storage") func persistence() {
++        let defaults = makeDefaults()
++        let first = makeProvider(defaults)
++        first.quietStartMinutes = 21 * 60 + 30
++        first.reportFilter(isOn: true, at: at(12))
++        let second = makeProvider(defaults)
++        #expect(second.hasFilterReported)
++        #expect(second.isAsleep(now: at(12)))
++        #expect(second.quietStartMinutes == 21 * 60 + 30)
++        second.reportFilter(isOn: false, at: at(13))
++        #expect(!makeProvider(defaults).isAsleep(now: at(23)))
++    }
++
++    @Test("A transition is logged once, not on every evaluation") func logsOncePerTransition() {
++        var lines: [String] = []
++        let p = makeProvider(makeDefaults(), log: { lines.append($0) })
++        #expect(!p.isAsleep(now: at(12)))
++        #expect(lines.isEmpty) // cold start awake is not a transition
++        _ = p.isAsleep(now: at(22, 5))
++        _ = p.isAsleep(now: at(22, 10))
++        #expect(lines == ["sleep_mode state=asleep source=quiet_window"])
++        _ = p.isAsleep(now: at(6, 1))
++        _ = p.isAsleep(now: at(6, 2))
++        #expect(lines.count == 2)
++        #expect(lines[1] == "sleep_mode state=awake source=quiet_window")
++        p.reportFilter(isOn: true, at: at(12))
++        _ = p.isAsleep(now: at(12, 1))
++        #expect(lines.count == 3)
++        #expect(lines[2] == "sleep_mode state=asleep source=focus_filter")
++        p.reportFilter(isOn: false, at: at(13))
++        #expect(lines.count == 4)
++        #expect(lines[3] == "sleep_mode state=awake source=focus_filter")
++    }
++
++    @Test("An asleep filter report goes stale after 16 h and falls back to the window") func filterStaleness() {
++        #expect(SleepModeProvider.filterStaleAfter == 16 * 3600)
++        var lines: [String] = []
++        let p = makeProvider(makeDefaults(), log: { lines.append($0) })
++        let reportedAt = at(12)
++        p.reportFilter(isOn: true, at: reportedAt)
++        #expect(lines == ["sleep_mode state=asleep source=focus_filter"])
++        #expect(p.isAsleep(now: reportedAt.addingTimeInterval(15 * 3600))) // 03:00, still counts
++        #expect(lines.count == 1)
++        // 17 h later is 05:00 next day: inside the quiet window, so still asleep, but the source changed.
++        #expect(p.isAsleep(now: reportedAt.addingTimeInterval(17 * 3600)))
++        #expect(p.isAsleep(now: reportedAt.addingTimeInterval(17 * 3600 + 60)))
++        #expect(lines.count == 2)
++        #expect(lines[1] == "sleep_mode state=asleep source=focus_filter_stale")
++        // Outside the window the stale report reads as awake.
++        #expect(!p.isAsleep(now: reportedAt.addingTimeInterval(30 * 3600))) // 18:00
++        #expect(lines.last == "sleep_mode state=awake source=focus_filter_stale")
++        // A new report restores normal behaviour.
++        p.reportFilter(isOn: true, at: reportedAt.addingTimeInterval(30 * 3600))
++        #expect(p.isAsleep(now: reportedAt.addingTimeInterval(31 * 3600)))
++        #expect(lines.last == "sleep_mode state=asleep source=focus_filter")
++    }
++
++    @Test("An awake filter report never goes stale") func awakeReportNeverStale() {
++        let p = makeProvider(makeDefaults())
++        p.reportFilter(isOn: false, at: at(12))
++        #expect(!p.isAsleep(now: at(12).addingTimeInterval(40 * 3600)))
++        #expect(!p.isAsleep(now: at(23).addingTimeInterval(40 * 3600)))
++    }
++
++    @Test("Concurrent reports and evaluations end on the last report") func concurrencySmoke() async {
++        let p = makeProvider(makeDefaults())
++        let base = at(12)
++        await withTaskGroup(of: Void.self) { group in
++            for i in 0..<200 {
++                group.addTask { p.reportFilter(isOn: i % 2 == 0, at: base) }
++                group.addTask { _ = p.isAsleep(now: base) }
++            }
++        }
++        p.reportFilter(isOn: true, at: base)
++        #expect(p.isAsleep(now: base))
++        p.reportFilter(isOn: false, at: base)
++        #expect(!p.isAsleep(now: base))
++        #expect(p.hasFilterReported)
++    }
++}
 -- 
 2.56.0
 
