@@ -1,6 +1,6 @@
-From 4aa522274350ef5180d00e9f5de665d34e3ac5bb Mon Sep 17 00:00:00 2001
+From c62e184caf993cd995f01d0908ea60283426836b Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Fri, 13 Nov 2026 22:51:05 +0100
+Date: Sat, 14 Nov 2026 21:59:48 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 7d7ea8d153d5f31138b73836c871c81ead843879
-Trio-Patch-Generated: 2026-11-13T21:50:42Z
+Trio-Patch-Feature-Tip: 66ddbfb18b0eb535c01f752a9e14d16108ef7f7e
+Trio-Patch-Generated: 2026-11-14T20:59:27Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -99,6 +99,7 @@ Trio-Patch-Source-Commits:
  0a0e982112fcdc5da1fd81a0b5406818b1d01c2e watch: one link_summary per G7 link, arm= on the heartbeat, describeReason maps .error (TRIO-107)
  0c85484b30d5631a3fe000a2d346ef547aa3e73f watch-g7: take upstream 1.0.2.71 watch changes into the patch 09 files
  7d7ea8d153d5f31138b73836c871c81ead843879 watch-g7: register the HealthKit glucose observer at launch (TRIO-113)
+ 66ddbfb18b0eb535c01f752a9e14d16108ef7f7e watch-g7: trailing reload after a debounced save so a newer reading never waits for the policy refresh (TRIO-118)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -177,6 +178,7 @@ Trio-Patch-Source-PatchIds:
  13e61118690d7c70f06d4b66e4b13b461984ef0e
  a65d451a9ad873d3a0d278f5aef129ad01730171
  6876b01d1ca2b86f5288783885e88ffd83b22e65
+ bb4b0a9ee2ef56c4a029430263654430b6a8edf2
 ---
  .../ComplicationLogForwarder.swift            |  171 +
  .../ExtensionDelegate.swift                   |  100 +
@@ -193,7 +195,7 @@ Trio-Patch-Source-PatchIds:
  .../WatchState+Requests.swift                 |   22 +
  Trio Watch App Extension/WatchState.swift     | 2777 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  351 +++
- Trio Watch App Tests/Unit Tests.swift         |   99 +
+ Trio Watch App Tests/Unit Tests.swift         |  217 ++
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |    4 +
  .../GlucoseBobbleComplication.swift           |   75 +-
@@ -202,7 +204,7 @@ Trio-Patch-Source-PatchIds:
  .../TrioWatchComplicationPreview.swift        |  124 +
  Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
  .../GlucoseComplicationSnapshot.swift         |   38 +-
- .../TrioComplicationDataStore.swift           | 1334 ++++++++
+ .../TrioComplicationDataStore.swift           | 1414 +++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Logger/Watch/WatchLogEntry.swift |    1 +
@@ -211,7 +213,7 @@ Trio-Patch-Source-PatchIds:
  .../View/WatchConfigAppleWatchView.swift      |   15 +
  .../WatchConfig/WatchConfigStateModel.swift   |    9 +
  .../WatchManager/AppleWatchManager.swift      |  608 +++-
- 33 files changed, 10310 insertions(+), 432 deletions(-)
+ 33 files changed, 10508 insertions(+), 432 deletions(-)
  create mode 100644 Trio Watch App Extension/ComplicationLogForwarder.swift
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -8037,7 +8039,7 @@ index 000000000..eb56de046
 +    }
 +}
 diff --git a/Trio Watch App Tests/Unit Tests.swift b/Trio Watch App Tests/Unit Tests.swift
-index 996dfb5a5..7dd1fdc28 100644
+index 996dfb5a5..e6295ab6a 100644
 --- a/Trio Watch App Tests/Unit Tests.swift	
 +++ b/Trio Watch App Tests/Unit Tests.swift	
 @@ -97,6 +97,36 @@ import Testing
@@ -8077,7 +8079,7 @@ index 996dfb5a5..7dd1fdc28 100644
      @Test("Bolus with the phone unreachable says nothing was sent") func testUnreachableBolus() async throws {
          watchState.session = nil
  
-@@ -273,4 +303,73 @@ import Testing
+@@ -273,4 +303,191 @@ import Testing
      @Test("Returning to the app with no entry in progress changes nothing") func testNoEntryOnReturn() throws {
          #expect(!watchState.expireStaleEntry(at: entryStart))
      }
@@ -8150,6 +8152,124 @@ index 996dfb5a5..7dd1fdc28 100644
 +        let decoded = try dec.decode(TrioComplicationSnapshot.self, from: json)
 +        #expect(decoded.recentReadings == nil)
 +    }
++
++    // MARK: - TRIO-118: trailing reload after a debounced save
++
++    /// Isolated store with a manual clock, a captured scheduler and a counting reload sink.
++    private final class TrailingHarness {
++        let store: TrioComplicationDataStore
++        var clock = Date()
++        var reloads = 0
++        var scheduled: [(delay: TimeInterval, work: DispatchWorkItem)] = []
++        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++
++        init() {
++            let dir = self.dir
++            TrioComplicationDataStore.lastValidTimestamp = nil
++            store = TrioComplicationDataStore(
++                sharedContainerURLProvider: { dir },
++                appGroupDefaultsProvider: { nil }
++            )
++            store.nowProvider = { [unowned self] in clock }
++            store.reloadSink = { [unowned self] in reloads += 1 }
++            store.scheduleDelayedWork = { [unowned self] delay, work in scheduled.append((delay, work)) }
++        }
++
++        deinit { try? FileManager.default.removeItem(at: dir) }
++
++        /// Saves a reading `age` seconds before real now (the future-skew guard uses the real clock).
++        func save(glucose: String, age: TimeInterval) {
++            let d = Date().addingTimeInterval(-age)
++            store.save(
++                TrioComplicationSnapshot(
++                    glucose: glucose, trend: "Flat", delta: "+1", readingDate: d, date: d,
++                    state: nil, glucoseColor: nil, source: .g7DirectBLE, sequence: nil
++                )
++            )
++        }
++
++        /// Runs every pending (non-cancelled) delayed item, as the interval expiring would.
++        func runScheduled() {
++            let items = scheduled
++            scheduled.removeAll()
++            items.forEach { $0.work.perform() }
++        }
++    }
++
++    @Test("TRIO-118 AC-1: save debounced after an earlier reload -> exactly one trailing reload at expiry")
++    func testTrailingReloadAfterCoalescedReload() throws {
++        let h = TrailingHarness()
++        h.save(glucose: "100", age: 300) // not debounced (lastReload distantPast) -> reload 1
++        #expect(h.reloads == 1)
++        #expect(h.scheduled.isEmpty)
++        h.clock.addTimeInterval(2)
++        h.save(glucose: "110", age: 10) // newer reading within 30s -> debounced
++        #expect(h.reloads == 1)
++        #expect(h.scheduled.count == 1)
++        #expect(abs(h.scheduled[0].delay - 28.5) < 0.01) // 30 - 2 + 0.5 margin
++        h.clock.addTimeInterval(28.5)
++        h.runScheduled()
++        #expect(h.reloads == 2)
++        #expect(h.scheduled.isEmpty)
++    }
++
++    @Test("TRIO-118 AC-1: a force reload just before the save does not cover it -> trailing reload still fires")
++    func testTrailingReloadAfterForceReloadBeforeSave() throws {
++        let h = TrailingHarness()
++        h.save(glucose: "100", age: 300)
++        #expect(h.reloads == 1)
++        h.clock.addTimeInterval(1)
++        h.store.forceReload(scheduleRetry: false) // fires before the newer snapshot exists
++        #expect(h.reloads == 2)
++        h.clock.addTimeInterval(1)
++        h.save(glucose: "110", age: 10)
++        #expect(h.reloads == 2) // debounced
++        #expect(h.scheduled.count == 1)
++        h.clock.addTimeInterval(29)
++        h.runScheduled()
++        #expect(h.reloads == 3)
++    }
++
++    @Test("TRIO-118 AC-2: two debounced saves inside the window -> still exactly one trailing reload")
++    func testTrailingReloadAtMostOnePending() throws {
++        let h = TrailingHarness()
++        h.save(glucose: "100", age: 300)
++        h.clock.addTimeInterval(2)
++        h.save(glucose: "110", age: 20)
++        h.clock.addTimeInterval(2)
++        h.save(glucose: "120", age: 5)
++        #expect(h.reloads == 1)
++        #expect(h.scheduled.count == 1)
++        h.clock.addTimeInterval(30)
++        h.runScheduled()
++        #expect(h.reloads == 2)
++        #expect(h.scheduled.isEmpty)
++    }
++
++    @Test("TRIO-118 AC-2: a reload that fires after the newest save absorbs the pending trailing reload")
++    func testTrailingReloadAbsorbedByLaterReload() throws {
++        let h = TrailingHarness()
++        h.save(glucose: "100", age: 300)
++        h.clock.addTimeInterval(2)
++        h.save(glucose: "110", age: 10)
++        #expect(h.scheduled.count == 1)
++        h.clock.addTimeInterval(1)
++        h.store.forceReload(scheduleRetry: false) // after the newest save -> covers it
++        #expect(h.reloads == 2)
++        h.clock.addTimeInterval(40)
++        h.runScheduled() // cancelled item: perform() is a no-op
++        #expect(h.reloads == 2)
++    }
++
++    @Test("TRIO-118: no trailing reload when the save's reload was not debounced")
++    func testNoTrailingReloadWhenNotDebounced() throws {
++        let h = TrailingHarness()
++        h.save(glucose: "100", age: 300)
++        h.clock.addTimeInterval(31)
++        h.save(glucose: "110", age: 10)
++        #expect(h.reloads == 2)
++        #expect(h.scheduled.isEmpty)
++    }
  }
 diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
 index 8d15acbed..244892dc7 100644
@@ -8214,10 +8334,10 @@ index 9a37de423..54e6e8145 100644
  	<array>
  		<string>$(TRIO_APP_GROUP_ID)</string>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
-index d7d135215..ddfb21322 100644
+index 3b07d70c9..8daca8fee 100644
 --- a/Trio Watch Complication/GlucoseBobbleComplication.swift	
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
-@@ -41,22 +41,68 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+@@ -42,22 +42,68 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
          )
      }
  
@@ -8289,7 +8409,7 @@ index d7d135215..ddfb21322 100644
          // One entry per minute so the minutes-ago text advances on screen without WidgetKit
          // reloading the timeline; the watch app requests a reload once fresh data arrives.
          var entries = (0 ..< 30).map { offset in
-@@ -92,6 +138,29 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+@@ -93,6 +139,29 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
      static func roundedDownToMinute(_ date: Date) -> Date {
          Date(timeIntervalSinceReferenceDate: (date.timeIntervalSinceReferenceDate / 60).rounded(.down) * 60)
      }
@@ -9564,10 +9684,10 @@ index 9137e122b..8cca3a552 100644
      func save() {
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..161724b14
+index 000000000..f4e01bea2
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,1334 @@
+@@ -0,0 +1,1414 @@
 +import Foundation
 +import os
 +#if os(watchOS)
@@ -9944,6 +10064,28 @@ index 000000000..161724b14
 +    /// Unique ID of the currently pending retry (used to identify stale retries without capturing work item)
 +    private var pendingRetryID: UUID?
 +
++    /// TRIO-118: trailing reload after a debounced save. Main-thread confined. At most one is
++    /// pending; `trailingReloadID` is the generation token that makes stale firings no-ops.
++    private var pendingTrailingWorkItem: DispatchWorkItem?
++    private var trailingReloadID: UUID?
++    private static let trailingReloadMargin: TimeInterval = 0.5
++
++    /// Reading date of the newest snapshot this process saved (nil until the first save).
++    private var newestSavedReadingDate: Date?
++    /// Reading date of the newest saved snapshot at the moment the last reload fired. A reload
++    /// covers the newest stored reading only when this is >= `newestSavedReadingDate`.
++    private var lastReloadCoveredReadingDate: Date?
++
++    // Test seams (internal, default to production behaviour).
++    /// Clock used for debounce decisions and trailing-reload delays.
++    var nowProvider: () -> Date = { Date() }
++    /// Delayed-work scheduler for the trailing reload (delay in seconds, work item to run on main).
++    var scheduleDelayedWork: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
++        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
++    }
++    /// When set, replaces `reloadTimeline()` (no WidgetKit in tests).
++    var reloadSink: (() -> Void)?
++
 +    /// In-memory fallback for lastReload when appGroupDefaults is nil (per-process debounce)
 +    private var inMemoryLastReload: Date = .distantPast
 +
@@ -10074,14 +10216,15 @@ index 000000000..161724b14
 +    init(
 +        sharedContainerURLProvider: @escaping () -> URL? = TrioComplicationDataStore.defaultSharedContainerURL,
 +        fileManager: FileManager = .default,
-+        snapshotFilename: String = "snapshot.json"
++        snapshotFilename: String = "snapshot.json",
++        appGroupDefaultsProvider: () -> UserDefaults? = TrioComplicationDataStore.resolveAppGroupDefaultsOnce
 +    ) {
 +        self.sharedContainerURLProvider = sharedContainerURLProvider
 +        self.fileManager = fileManager
 +        self.snapshotFilename = snapshotFilename
 +
 +        // Resolve appGroupDefaults once at init (avoids repeated bundle/logging overhead per access).
-+        self.cachedAppGroupDefaults = Self.resolveAppGroupDefaultsOnce()
++        self.cachedAppGroupDefaults = appGroupDefaultsProvider()
 +
 +        logAppGroupDiagnosticsOnce(context: "init")
 +    }
@@ -10433,6 +10576,7 @@ index 000000000..161724b14
 +            try data.write(to: fileURL, options: [.atomic])
 +            self.inMemorySavedSnapshot = snapshot
 +            Self.lastValidTimestamp = snapshot.readingDate
++            newestSavedReadingDate = snapshot.readingDate
 +            log("✅ lastValidTimestamp updated: \(snapshot.readingDate)")
 +
 +            // Phase 3.0: fingerprint written here and ONLY here.
@@ -10466,7 +10610,7 @@ index 000000000..161724b14
 +            #endif
 +
 +            if triggerReload {
-+                coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false)
++                coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false, scheduleTrailing: true)
 +            }
 +        } catch {
 +            log("❌ Snapshot save FAILED: \(error.localizedDescription) (domain: \((error as NSError).domain), code: \((error as NSError).code))")
@@ -10584,9 +10728,14 @@ index 000000000..161724b14
 +        }
 +    }
 +
-+    private func coalescedReloadOnMain(minInterval: TimeInterval = 30, isRetry: Bool = false, scheduleRetry: Bool = true) {
++    private func coalescedReloadOnMain(
++        minInterval: TimeInterval = 30,
++        isRetry: Bool = false,
++        scheduleRetry: Bool = true,
++        scheduleTrailing: Bool = false
++    ) {
 +        assert(Thread.isMainThread, "coalescedReloadOnMain must be called on main thread")
-+        let now = Date()
++        let now = nowProvider()
 +        let elapsed = now.timeIntervalSince(lastReload)
 +
 +        if elapsed < minInterval {
@@ -10594,6 +10743,9 @@ index 000000000..161724b14
 +            let elapsedStr = String(format: "%.3f", elapsed)
 +            let minStr = String(format: "%.3f", minInterval)
 +            log("⏳ Reload DEBOUNCED burst_window_id=\(burstWindowId) suppressed=\(reloadSuppressionCount) elapsed=\(elapsedStr)s min=\(minStr)s")
++            if scheduleTrailing {
++                scheduleTrailingReloadOnMain(minInterval: minInterval, remaining: minInterval - elapsed)
++            }
 +            return
 +        }
 +
@@ -10605,7 +10757,8 @@ index 000000000..161724b14
 +        let elapsedStr = String(format: "%.3f", elapsed)
 +        log("🔄 Reload TRIGGERED burst_window_id=\(burstWindowId) suppressed=\(reloadSuppressionCount) elapsed=\(elapsedStr)s since last reload\(isRetry ? " (retry)" : "")")
 +        lastReload = now
-+        reloadTimeline()
++        noteReloadFiredOnMain(by: "coalesced")
++        performReload()
 +
 +        guard scheduleRetry else {
 +            log("⏭️ Retry skipped: scheduleRetry=false (save path)")
@@ -10639,11 +10792,20 @@ index 000000000..161724b14
 +        cancelPendingRetryOnMain(reason: "superseded by force reload")
 +        Self.reloadGenerationToken = UUID().uuidString
 +        log("🔄 FORCE reload triggered (bypassing debounce)")
-+        lastReload = Date()
-+        reloadTimeline()
++        lastReload = nowProvider()
++        noteReloadFiredOnMain(by: "force")
++        performReload()
 +        if scheduleRetry {
 +            scheduleRetryAfterReloadOnMain(minInterval: 30)
 +        }
++    }
++
++    private func performReload() {
++        if let reloadSink {
++            reloadSink()
++            return
++        }
++        reloadTimeline()
 +    }
 +
 +    #if canImport(WidgetKit)
@@ -10791,6 +10953,44 @@ index 000000000..161724b14
 +        pendingRetryWorkItem = workItem
 +        log("⏰ Retry scheduled: delay=\(Int(retryDelay))s, token='\(tokenAtReload.prefix(8))...'")
 +        DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: workItem)
++    }
++
++    /// TRIO-118: records which saved reading a firing reload covers, and absorbs a pending trailing
++    /// reload only if that reload already covers the newest stored reading. A reload that fired
++    /// before the newest save (e.g. a force reload just before it) does not.
++    private func noteReloadFiredOnMain(by source: String) {
++        assert(Thread.isMainThread, "noteReloadFiredOnMain must be called on main thread")
++        lastReloadCoveredReadingDate = newestSavedReadingDate
++        guard trailingReloadID != nil,
++              let newest = newestSavedReadingDate,
++              let covered = lastReloadCoveredReadingDate,
++              covered >= newest else { return }
++        pendingTrailingWorkItem?.cancel()
++        pendingTrailingWorkItem = nil
++        trailingReloadID = nil
++        log("⏱️ Trailing reload ABSORBED by=\(source)")
++    }
++
++    /// TRIO-118: a save's reload was suppressed by `minInterval`; schedule one trailing reload for when
++    /// the interval expires. At most one is pending. Independent of the retry machinery.
++    private func scheduleTrailingReloadOnMain(minInterval: TimeInterval, remaining: TimeInterval) {
++        assert(Thread.isMainThread, "scheduleTrailingReloadOnMain must be called on main thread")
++        guard trailingReloadID == nil else { return }
++
++        let id = UUID()
++        trailingReloadID = id
++        let delay = max(0, remaining) + Self.trailingReloadMargin
++        let workItem = DispatchWorkItem { [weak self] in
++            guard let self else { return }
++            guard self.trailingReloadID == id else { return }
++            self.pendingTrailingWorkItem = nil
++            self.trailingReloadID = nil
++            self.log("⏱️ Trailing reload FIRED")
++            self.coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false, scheduleTrailing: true)
++        }
++        pendingTrailingWorkItem = workItem
++        log("⏱️ Trailing reload SCHEDULED in=\(String(format: "%.1f", delay))s")
++        scheduleDelayedWork(delay, workItem)
 +    }
 +
 +    private func fallbackSnapshot(state: String) -> TrioComplicationSnapshot {
