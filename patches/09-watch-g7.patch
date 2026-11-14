@@ -1,6 +1,6 @@
-From c62e184caf993cd995f01d0908ea60283426836b Mon Sep 17 00:00:00 2001
+From 7d894583961cb5752b514d49b5266868ef70a086 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sat, 14 Nov 2026 21:59:48 +0100
+Date: Sat, 14 Nov 2026 22:26:28 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 66ddbfb18b0eb535c01f752a9e14d16108ef7f7e
-Trio-Patch-Generated: 2026-11-14T20:59:27Z
+Trio-Patch-Feature-Tip: 50eca7c4c14c9603dee3acbf06b61e3f6791a865
+Trio-Patch-Generated: 2026-11-14T21:26:08Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -100,6 +100,7 @@ Trio-Patch-Source-Commits:
  0c85484b30d5631a3fe000a2d346ef547aa3e73f watch-g7: take upstream 1.0.2.71 watch changes into the patch 09 files
  7d7ea8d153d5f31138b73836c871c81ead843879 watch-g7: register the HealthKit glucose observer at launch (TRIO-113)
  66ddbfb18b0eb535c01f752a9e14d16108ef7f7e watch-g7: trailing reload after a debounced save so a newer reading never waits for the policy refresh (TRIO-118)
+ 50eca7c4c14c9603dee3acbf06b61e3f6791a865 watch-g7: reload complications only when the face content changes, with per-kind servicing and run telemetry (TRIO-120)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -179,6 +180,7 @@ Trio-Patch-Source-PatchIds:
  a65d451a9ad873d3a0d278f5aef129ad01730171
  6876b01d1ca2b86f5288783885e88ffd83b22e65
  bb4b0a9ee2ef56c4a029430263654430b6a8edf2
+ 7500e9a870103e2198e9f78a44eb9dd8e843db39
 ---
  .../ComplicationLogForwarder.swift            |  171 +
  .../ExtensionDelegate.swift                   |  100 +
@@ -193,18 +195,18 @@ Trio-Patch-Source-PatchIds:
  .../WatchGlucoseHistoryStore.swift            |  225 ++
  .../WatchLogger+Legacy.swift                  |   18 +
  .../WatchState+Requests.swift                 |   22 +
- Trio Watch App Extension/WatchState.swift     | 2777 +++++++++++++++--
+ Trio Watch App Extension/WatchState.swift     | 2785 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  351 +++
- Trio Watch App Tests/Unit Tests.swift         |  217 ++
+ Trio Watch App Tests/Unit Tests.swift         |  548 ++++
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |    4 +
- .../GlucoseBobbleComplication.swift           |   75 +-
+ .../GlucoseBobbleComplication.swift           |   86 +-
  Trio Watch Complication/Info.plist            |    2 +
- .../TrioWatchComplication.swift               |  625 +++-
+ .../TrioWatchComplication.swift               |  632 +++-
  .../TrioWatchComplicationPreview.swift        |  124 +
  Trio Watch Shared/ComplicationLogBuffer.swift |  351 +++
- .../GlucoseComplicationSnapshot.swift         |   38 +-
- .../TrioComplicationDataStore.swift           | 1414 +++++++++
+ .../GlucoseComplicationSnapshot.swift         |   59 +-
+ .../TrioComplicationDataStore.swift           | 1781 +++++++++++
  Trio/Resources/TrioWatch.entitlements         |   10 +
  .../G7StructuredTelemetryLogLine.swift        |   28 +
  Trio/Sources/Logger/Watch/WatchLogEntry.swift |    1 +
@@ -213,7 +215,7 @@ Trio-Patch-Source-PatchIds:
  .../View/WatchConfigAppleWatchView.swift      |   15 +
  .../WatchConfig/WatchConfigStateModel.swift   |    9 +
  .../WatchManager/AppleWatchManager.swift      |  608 +++-
- 33 files changed, 10508 insertions(+), 432 deletions(-)
+ 33 files changed, 11252 insertions(+), 433 deletions(-)
  create mode 100644 Trio Watch App Extension/ComplicationLogForwarder.swift
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -4655,7 +4657,7 @@ index fc8b348a6..c41b0cc19 100644
      }
  
 diff --git a/Trio Watch App Extension/WatchState.swift b/Trio Watch App Extension/WatchState.swift
-index 27b8897cc..1d20269f1 100644
+index 27b8897cc..232a1505f 100644
 --- a/Trio Watch App Extension/WatchState.swift	
 +++ b/Trio Watch App Extension/WatchState.swift	
 @@ -1,23 +1,109 @@
@@ -4851,7 +4853,7 @@ index 27b8897cc..1d20269f1 100644
      var showCommsAnimation: Bool = false
      var showAcknowledgmentBanner: Bool = false
      var acknowledgementStatus: AcknowledgementStatus = .pending
-@@ -93,36 +210,679 @@ import WidgetKit
+@@ -93,36 +210,685 @@ import WidgetKit
          comment: "Error message when a bolus of zero or less is requested"
      )
  
@@ -5005,6 +5007,12 @@ index 27b8897cc..1d20269f1 100644
          super.init()
          setupSession()
 +        restoreCachedLoopMetrics()
++        // TRIO-120: the store cannot see the Bobble settings type; hand it their canonical string.
++        TrioComplicationDataStore.shared.bobbleSettingsKeyProvider = {
++            let s = GlucoseBobbleComplicationSettings.load() ?? GlucoseBobbleComplicationSettings()
++            return "\(s.colorMode.rawValue),\(s.showMinutesAgo),\(s.showDelta),\(s.backgroundStyle.rawValue),\(s.ringStyle.rawValue)"
++        }
++        TrioComplicationDataStore.shared.refreshInstalledKinds()
 +
 +        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
 +            self.forceComplicationUpdate()
@@ -5544,7 +5552,7 @@ index 27b8897cc..1d20269f1 100644
      }
  
      /// Configures the WatchConnectivity session if supported on the device
-@@ -171,6 +931,530 @@ import WidgetKit
+@@ -171,6 +937,530 @@ import WidgetKit
          return true
      }
  
@@ -6075,7 +6083,7 @@ index 27b8897cc..1d20269f1 100644
      // MARK: – Handle Acknowledgement Messages FROM Phone
  
      /// Shows "Processing…" and starts the clock for the phone's answer
-@@ -247,7 +1531,7 @@ import WidgetKit
+@@ -247,7 +1537,7 @@ import WidgetKit
              if activationState == .activated {
                  WatchLogger.shared.info(.connectivity, "Session activated, phone reachable: \(session.isReachable)")
  
@@ -6084,7 +6092,7 @@ index 27b8897cc..1d20269f1 100644
  
                  self.isReachable = session.isReachable
              }
-@@ -285,30 +1569,45 @@ import WidgetKit
+@@ -285,30 +1575,45 @@ import WidgetKit
              return
          }
  
@@ -6147,7 +6155,7 @@ index 27b8897cc..1d20269f1 100644
  
          // Wall-clock staleness gate. Drops the queued backlog cheaply when
          // the watch app wakes after long disuse; without it, every payload
-@@ -317,87 +1616,588 @@ import WidgetKit
+@@ -317,87 +1622,588 @@ import WidgetKit
              if WatchLogger.shared.shouldLog("staleState") {
                  WatchLogger.shared.debug(.data, "Stale watch state from \(date) skipped")
              }
@@ -6791,7 +6799,7 @@ index 27b8897cc..1d20269f1 100644
              if let acknowledged = message[WatchMessageKeys.acknowledged] as? Bool,
                 let ackMessage = message[WatchMessageKeys.message] as? String,
                 let ackCodeRaw = message[WatchMessageKeys.ackCode] as? String,
-@@ -407,6 +2207,8 @@ import WidgetKit
+@@ -407,6 +2213,8 @@ import WidgetKit
                      self.showSyncingAnimation = false
                  }
  
@@ -6800,7 +6808,7 @@ index 27b8897cc..1d20269f1 100644
                  switch ackCode {
                  case .savingCarbs:
                      self.isMealBolusCombo = true
-@@ -427,86 +2229,222 @@ import WidgetKit
+@@ -427,86 +2235,222 @@ import WidgetKit
                  }
              }
  
@@ -7057,7 +7065,7 @@ index 27b8897cc..1d20269f1 100644
          }
  
          if let iob = message[WatchMessageKeys.iob] as? String {
-@@ -521,50 +2459,27 @@ import WidgetKit
+@@ -521,50 +2465,27 @@ import WidgetKit
              self.lastLoopTime = lastLoopTime
          }
  
@@ -7124,7 +7132,7 @@ index 27b8897cc..1d20269f1 100644
          }
  
          if let overrideData = message[WatchMessageKeys.overridePresets] as? [[String: Any]] {
-@@ -585,43 +2500,54 @@ import WidgetKit
+@@ -585,43 +2506,54 @@ import WidgetKit
              }
          }
  
@@ -7204,7 +7212,7 @@ index 27b8897cc..1d20269f1 100644
          if let showForecast = message[WatchMessageKeys.showForecastWatch] as? Bool {
              self.showForecast = showForecast
          }
-@@ -643,37 +2569,456 @@ import WidgetKit
+@@ -643,37 +2575,458 @@ import WidgetKit
              forecastLines = forecastPayload[WatchMessageKeys.forecastLines] as? [String: [Double]] ?? [:]
          }
  
@@ -7265,7 +7273,7 @@ index 27b8897cc..1d20269f1 100644
 +        {
              glucoseBobbleComplicationSettings.save()
 -            didSave = true
-+            WidgetCenter.shared.reloadTimelines(ofKind: TrioComplicationDataStore.glucoseBobbleComplicationKind)
++            TrioComplicationDataStore.shared.reloadGlucoseBobbleKind(caller: "bobble_settings")
 +        }
 +    }
 +
@@ -7425,12 +7433,13 @@ index 27b8897cc..1d20269f1 100644
 +
 +        WatchLogger.shared.log("🔄 forceComplicationUpdate: glucose=\(currentGlucose), readingDate=\(effectiveReadingDate)")
 +
-+        TrioComplicationDataStore.shared.save(snapshot, triggerReload: false)
-+        TrioComplicationDataStore.shared.forceReload(scheduleRetry: false)
++        // TRIO-120: save, then reload only when what the face shows changed (or the last request is unserviced).
++        TrioComplicationDataStore.shared.forceComplicationReload(snapshot, caller: "force_update")
 +    }
 +
-+    /// R5d: after a detected sleep gap, force a widget reload. Rate-limited to 5 minutes.
-+    /// Stale-backlog detection is diagnostic only — the reload always fires.
++    /// R5d: after a detected sleep gap, request a widget reload. Rate-limited to 5 minutes.
++    /// Stale-backlog detection is diagnostic only. TRIO-120: the store skips the reload unless it holds
++    /// a newer reading epoch than the last request or the last request is unserviced.
 +    private func forceWidgetReloadIfStale(receivedGap: TimeInterval) {
 +        let store = TrioComplicationDataStore.shared
 +
@@ -7473,8 +7482,9 @@ index 27b8897cc..1d20269f1 100644
 +                )
 +        }
 +
-+        store.setLastWidgetReloadAt(Date())
-+        store.forceReload(scheduleRetry: false)
++        // TRIO-120: fires only for a newer reading epoch than the last request, or an unserviced one;
++        // the rate limiter is consumed only when it fires.
++        store.requestSleepGapReload(onFired: { store.setLastWidgetReloadAt(Date()) })
 +    }
 +
 +    #if os(watchOS)
@@ -8039,7 +8049,7 @@ index 000000000..eb56de046
 +    }
 +}
 diff --git a/Trio Watch App Tests/Unit Tests.swift b/Trio Watch App Tests/Unit Tests.swift
-index 996dfb5a5..e6295ab6a 100644
+index 996dfb5a5..cbe9ebf63 100644
 --- a/Trio Watch App Tests/Unit Tests.swift	
 +++ b/Trio Watch App Tests/Unit Tests.swift	
 @@ -97,6 +97,36 @@ import Testing
@@ -8079,7 +8089,7 @@ index 996dfb5a5..e6295ab6a 100644
      @Test("Bolus with the phone unreachable says nothing was sent") func testUnreachableBolus() async throws {
          watchState.session = nil
  
-@@ -273,4 +303,191 @@ import Testing
+@@ -273,4 +303,522 @@ import Testing
      @Test("Returning to the app with no entry in progress changes nothing") func testNoEntryOnReturn() throws {
          #expect(!watchState.expireStaleEntry(at: entryStart))
      }
@@ -8162,20 +8172,66 @@ index 996dfb5a5..e6295ab6a 100644
 +        var reloads = 0
 +        var scheduled: [(delay: TimeInterval, work: DispatchWorkItem)] = []
 +        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        /// TRIO-120: isolated app-group defaults (nil for the TRIO-118 tests), and captured store logs.
++        let defaults: UserDefaults?
++        private let suiteName: String?
++        var logs: [String] = []
++        var bobbleKindReloads = 0
 +
-+        init() {
++        init(isolatedDefaults: Bool = false) {
 +            let dir = self.dir
++            let suiteName = isolatedDefaults ? "trio120-\(UUID().uuidString)" : nil
++            let defaults = suiteName.flatMap { UserDefaults(suiteName: $0) }
++            self.suiteName = suiteName
++            self.defaults = defaults
 +            TrioComplicationDataStore.lastValidTimestamp = nil
 +            store = TrioComplicationDataStore(
 +                sharedContainerURLProvider: { dir },
-+                appGroupDefaultsProvider: { nil }
++                appGroupDefaultsProvider: { defaults }
 +            )
 +            store.nowProvider = { [unowned self] in clock }
 +            store.reloadSink = { [unowned self] in reloads += 1 }
++            store.kindReloadSink = { [unowned self] _ in bobbleKindReloads += 1 }
 +            store.scheduleDelayedWork = { [unowned self] delay, work in scheduled.append((delay, work)) }
++            // Never ask WidgetKit in tests: the installed set is unknown until a test says otherwise.
++            store.installedKindsSource = { $0(nil) }
++            TrioComplicationDataStore.setLogForwarder { [weak self] in self?.logs.append($0) }
 +        }
 +
-+        deinit { try? FileManager.default.removeItem(at: dir) }
++        deinit {
++            TrioComplicationDataStore.setLogForwarder(nil)
++            try? FileManager.default.removeItem(at: dir)
++            if let suiteName { UserDefaults().removePersistentDomain(forName: suiteName) }
++        }
++
++        static let mainKind = TrioComplicationDataStore.complicationKind
++        static let bobbleKind = TrioComplicationDataStore.glucoseBobbleComplicationKind
++
++        func setInstalled(_ kinds: Set<String>?) {
++            store.installedKindsSource = { $0(kinds) }
++            store.refreshInstalledKinds()
++        }
++
++        /// Seeds the persisted requested generation (the reload sink replaces the code that bumps it).
++        func setRequestedGeneration(_ generation: Int) {
++            defaults?.set(generation, forKey: "TrioComplication_reloadGeneration")
++        }
++
++        func skipLogs(caller: String) -> [String] {
++            logs.filter { $0.contains("event=complication_reload_skipped") && $0.contains("caller=\(caller)") }
++        }
++
++        func snapshot(
++            glucose: String, age: TimeInterval, source: TrioComplicationDataSource = .g7DirectBLE,
++            glucoseColor: String? = nil, chart: String? = nil, recent: [[Int]]? = nil, sequence: Int? = nil
++        ) -> TrioComplicationSnapshot {
++            let d = Date().addingTimeInterval(-age)
++            return TrioComplicationSnapshot(
++                glucose: glucose, trend: "Flat", delta: "+1", readingDate: d, date: d,
++                state: nil, glucoseColor: glucoseColor, source: source, sequence: sequence,
++                recentReadings: recent, chartGlucoseColor: chart
++            )
++        }
 +
 +        /// Saves a reading `age` seconds before real now (the future-skew guard uses the real clock).
 +        func save(glucose: String, age: TimeInterval) {
@@ -8270,6 +8326,291 @@ index 996dfb5a5..e6295ab6a 100644
 +        #expect(h.reloads == 2)
 +        #expect(h.scheduled.isEmpty)
 +    }
++
++    // MARK: - TRIO-120: reload only when the face content changes
++
++    @Test("TRIO-120 AC-1: a duplicate-skipped save then forceComplicationUpdate requests no reload and logs why")
++    func testForceAfterDuplicateSaveRequestsNoReload() throws {
++        let h = TrailingHarness(isolatedDefaults: true)
++        let s1 = h.snapshot(glucose: "100", age: 300)
++        h.store.save(s1)
++        #expect(h.reloads == 1)
++
++        h.clock.addTimeInterval(40)
++        h.store.save(s1) // duplicate skipped: no write, no reload
++        h.store.forceComplicationReload(s1)
++        #expect(h.reloads == 1)
++        let skips = h.skipLogs(caller: "force_update")
++        #expect(skips.count == 1)
++        #expect(skips.first?.contains("reason=no_new_content") == true)
++    }
++
++    @Test("TRIO-120 AC-1: save reload then force reload for the same reading -> exactly one reload")
++    func testSaveThenForceSameReadingOneReload() throws {
++        let h = TrailingHarness(isolatedDefaults: true)
++        let s1 = h.snapshot(glucose: "100", age: 300)
++        h.store.save(s1)
++        #expect(h.reloads == 1)
++
++        h.clock.addTimeInterval(0.008)
++        h.store.forceComplicationReload(s1)
++        #expect(h.reloads == 1)
++        #expect(h.skipLogs(caller: "force_update").first?.contains("reason=already_requested") == true)
++
++        // A genuinely newer reading still goes through the force path.
++        h.clock.addTimeInterval(60)
++        h.store.forceComplicationReload(h.snapshot(glucose: "110", age: 5))
++        #expect(h.reloads == 2)
++    }
++
++    @Test("TRIO-120 AC-2: sleep-gap reload fires only for a newer epoch or an unserviced last request")
++    func testSleepGapReloadGate() throws {
++        // Serviced last request, no newer epoch -> skipped, rate limiter not consumed.
++        let a = TrailingHarness(isolatedDefaults: true)
++        a.store.save(a.snapshot(glucose: "100", age: 300))
++        var fired = false
++        a.store.requestSleepGapReload(onFired: { fired = true })
++        #expect(a.reloads == 1)
++        #expect(!fired)
++        let skips = a.skipLogs(caller: "sleep_gap")
++        #expect(skips.count == 1)
++        #expect(skips.first?.contains("reason=no_newer_epoch") == true)
++
++        // The store holds a newer epoch than the last request -> fires.
++        a.clock.addTimeInterval(60)
++        a.store.save(a.snapshot(glucose: "110", age: 5), triggerReload: false)
++        a.store.requestSleepGapReload(onFired: { fired = true })
++        #expect(a.reloads == 2)
++        #expect(fired)
++
++        // Last request unserviced (generation 7 requested, main kind saw 6) -> fires without a newer epoch.
++        let b = TrailingHarness(isolatedDefaults: true)
++        b.setInstalled([TrailingHarness.mainKind])
++        b.store.save(b.snapshot(glucose: "100", age: 300))
++        b.setRequestedGeneration(7)
++        b.store.recordWidgetObservedGeneration(6, kind: TrailingHarness.mainKind)
++        b.store.requestSleepGapReload()
++        #expect(b.reloads == 2)
++        b.store.recordWidgetObservedGeneration(7, kind: TrailingHarness.mainKind)
++        b.store.requestSleepGapReload()
++        #expect(b.reloads == 2) // serviced now, nothing newer
++    }
++
++    @Test("TRIO-120 AC-3: unserviced re-request, launch reconcile, debug Force Reload and Bobble settings reload ignore the gate")
++    func testBypassingReloadsIgnoreContentGate() throws {
++        func harness() -> TrailingHarness {
++            let h = TrailingHarness(isolatedDefaults: true)
++            h.store.save(h.snapshot(glucose: "100", age: 300))
++            #expect(h.reloads == 1) // content now remembered; nothing changes below
++            return h
++        }
++
++        let unserviced = harness()
++        unserviced.setRequestedGeneration(9)
++        unserviced.store.recordWidgetObservedGeneration(8, kind: TrailingHarness.mainKind)
++        unserviced.store.performUnservicedCheckOnMain(generation: 9)
++        #expect(unserviced.reloads == 2)
++
++        let launch = harness()
++        launch.setRequestedGeneration(9)
++        launch.store.recordWidgetObservedGeneration(8, kind: TrailingHarness.mainKind)
++        launch.store.reconcileUnservicedReloadOnLaunch()
++        #expect(launch.reloads == 2)
++
++        let debug = harness()
++        debug.store.forceReload(scheduleRetry: false) // WatchDiagnosticsView's Force Reload
++        #expect(debug.reloads == 2)
++
++        let bobble = harness()
++        bobble.store.reloadGlucoseBobbleKind()
++        #expect(bobble.bobbleKindReloads == 1)
++        #expect(bobble.reloads == 1) // only the Bobble kind, through its own sink
++    }
++
++    @Test("TRIO-120 AC-5: serviced only when every installed kind observed the generation")
++    func testPerKindServicing() throws {
++        let h = TrailingHarness(isolatedDefaults: true)
++        let both: Set<String> = [TrailingHarness.mainKind, TrailingHarness.bobbleKind]
++        h.setInstalled(both)
++        h.store.save(h.snapshot(glucose: "100", age: 300))
++        h.setRequestedGeneration(5)
++
++        // Main ran, Bobble was deferred -> unserviced, and the re-request fires.
++        h.store.recordWidgetObservedGeneration(5, kind: TrailingHarness.mainKind)
++        h.store.recordWidgetObservedGeneration(4, kind: TrailingHarness.bobbleKind)
++        #expect(!h.store.isGenerationServiced(5))
++        h.store.performUnservicedCheckOnMain(generation: 5)
++        #expect(h.reloads == 2)
++
++        // Both observed -> serviced.
++        h.store.recordWidgetObservedGeneration(5, kind: TrailingHarness.bobbleKind)
++        #expect(h.store.isGenerationServiced(5))
++        #expect(h.store.widgetObservedGeneration(kind: TrailingHarness.mainKind) == 5)
++        #expect(h.store.widgetObservedGeneration(kind: TrailingHarness.bobbleKind) == 5)
++        // The legacy shared key is still written.
++        #expect(h.defaults?.integer(forKey: "TrioComplication_widgetObservedReloadGeneration") == 5)
++        #expect(h.store.widgetObservedGeneration() == 5)
++
++        // A face with only the main kind never waits on the Bobble.
++        let single = TrailingHarness(isolatedDefaults: true)
++        single.setInstalled([TrailingHarness.mainKind])
++        single.store.recordWidgetObservedGeneration(3, kind: TrailingHarness.mainKind)
++        #expect(single.store.isGenerationServiced(3))
++
++        // Unknown or empty installed set: the old rule (any kind observing counts via the legacy key).
++        for unknown in [nil, Set<String>()] as [Set<String>?] {
++            let u = TrailingHarness(isolatedDefaults: true)
++            u.setInstalled(unknown)
++            u.store.recordWidgetObservedGeneration(4, kind: TrailingHarness.bobbleKind)
++            #expect(u.store.isGenerationServiced(4)) // only Bobble observed
++            #expect(!u.store.isGenerationServiced(5))
++        }
++    }
++
++    @Test("TRIO-120 AC-5: an installed-kinds set delivered asynchronously re-checks servicing and re-requests once")
++    func testAsyncInstalledKindsRecheck() throws {
++        let h = TrailingHarness(isolatedDefaults: true)
++        h.store.save(h.snapshot(glucose: "100", age: 300))
++        #expect(h.reloads == 1)
++        var pending: [(Set<String>?) -> Void] = []
++        h.store.installedKindsSource = { pending.append($0) }
++        h.setRequestedGeneration(5)
++        // Bobble ran first, main last: the shared legacy key then holds main's 5.
++        h.store.recordWidgetObservedGeneration(4, kind: TrailingHarness.bobbleKind)
++        h.store.recordWidgetObservedGeneration(5, kind: TrailingHarness.mainKind)
++
++        // Cache still nil: the check falls back to the any-kind rule and sees N serviced.
++        h.store.performUnservicedCheckOnMain(generation: 5)
++        #expect(h.reloads == 1)
++        #expect(pending.count == 1)
++
++        // The refresh then reports both kinds installed: Bobble never observed N -> re-request.
++        let both: Set<String> = [TrailingHarness.mainKind, TrailingHarness.bobbleKind]
++        pending.removeFirst()(both)
++        #expect(h.reloads == 2)
++        #expect(h.logs.contains { $0.contains("trigger=installed_kinds_changed") && $0.contains("action=re_request") })
++
++        // An unchanged set delivered later triggers nothing more.
++        h.store.refreshInstalledKinds()
++        #expect(pending.count == 1)
++        pending.removeFirst()(both)
++        #expect(h.reloads == 2)
++    }
++
++    @Test("TRIO-120 AC-6: a field one kind displays lets a gated request through; a field neither displays does not")
++    func testContentKeyPerKind() throws {
++        let h = TrailingHarness(isolatedDefaults: true)
++        h.setInstalled([TrailingHarness.mainKind, TrailingHarness.bobbleKind])
++        var loopDate: Date? = Date(timeIntervalSince1970: 1_700_000_000)
++        var settings = "glucose,true,true,glucoseTint,trendGradient"
++        h.store.bobbleLastLoopDateProvider = { loopDate }
++        h.store.bobbleSettingsKeyProvider = { settings }
++
++        let base = h.snapshot(
++            glucose: "100", age: 300, source: .watchConnectivity, glucoseColor: "#FFFFFF", chart: "#00FF00",
++            recent: [[1_700_000_000, 98], [1_700_000_300, 100]], sequence: 1
++        )
++        var current = base
++        h.store.gateSnapshotOverride = { current }
++        h.store.save(base)
++        #expect(h.reloads == 1)
++
++        func gated() { h.store.forceComplicationReload(base) }
++
++        // Fields neither kind displays: sequence, save date, a non-BLE source swap (WC vs HK).
++        let hk = TrioComplicationSnapshot(
++            glucose: base.glucose, trend: base.trend, delta: base.delta, readingDate: base.readingDate,
++            date: base.date.addingTimeInterval(99), state: nil, glucoseColor: "#FFFFFF", source: .healthKit,
++            sequence: 77, recentReadings: base.recentReadings, chartGlucoseColor: "#00FF00"
++        )
++        #expect(TrioComplicationDataStore.mainContentKey(for: base) == TrioComplicationDataStore.mainContentKey(for: hk))
++        #expect(
++            TrioComplicationDataStore.bobbleContentKey(for: base, lastLoopDate: loopDate, settingsKey: settings)
++                == TrioComplicationDataStore.bobbleContentKey(for: hk, lastLoopDate: loopDate, settingsKey: settings)
++        )
++        current = hk
++        h.clock.addTimeInterval(60)
++        gated()
++        #expect(h.reloads == 1)
++        #expect(h.skipLogs(caller: "force_update").count == 1)
++
++        // Only the Bobble's chart colour changed: Bobble key moves, main key does not.
++        var changed = TrioComplicationSnapshot(
++            glucose: base.glucose, trend: base.trend, delta: base.delta, readingDate: base.readingDate,
++            date: base.date, state: nil, glucoseColor: "#FFFFFF", source: .watchConnectivity, sequence: 1,
++            recentReadings: base.recentReadings, chartGlucoseColor: "#FF0000"
++        )
++        #expect(TrioComplicationDataStore.mainContentKey(for: changed) == TrioComplicationDataStore.mainContentKey(for: base))
++        #expect(
++            TrioComplicationDataStore.bobbleContentKey(for: changed, lastLoopDate: loopDate, settingsKey: settings)
++                != TrioComplicationDataStore.bobbleContentKey(for: base, lastLoopDate: loopDate, settingsKey: settings)
++        )
++        current = changed
++        gated()
++        #expect(h.reloads == 2)
++
++        // With only the main kind installed the Bobble key is not compared.
++        h.setInstalled([TrailingHarness.mainKind])
++        changed.chartGlucoseColor = "#0000FF"
++        current = changed
++        gated()
++        #expect(h.reloads == 2)
++        h.setInstalled([TrailingHarness.mainKind, TrailingHarness.bobbleKind])
++        gated()
++        #expect(h.reloads == 3)
++
++        // Bobble inputs outside the snapshot: loop date and settings.
++        loopDate = Date(timeIntervalSince1970: 1_700_000_600)
++        gated()
++        #expect(h.reloads == 4)
++        settings = "white,true,true,glucoseTint,loopStatus"
++        gated()
++        #expect(h.reloads == 5)
++        gated()
++        #expect(h.reloads == 5) // nothing changed since the last request
++
++        // Main-only fields: bubble colour (the chart colour wins for the Bobble), state and recent readings.
++        func mainDiffers(_ s: TrioComplicationSnapshot) -> Bool {
++            TrioComplicationDataStore.mainContentKey(for: s) != TrioComplicationDataStore.mainContentKey(for: changed)
++        }
++        func bobbleDiffers(_ s: TrioComplicationSnapshot) -> Bool {
++            TrioComplicationDataStore.bobbleContentKey(for: s, lastLoopDate: loopDate, settingsKey: settings)
++                != TrioComplicationDataStore.bobbleContentKey(for: changed, lastLoopDate: loopDate, settingsKey: settings)
++        }
++        func variant(
++            glucoseColor: String? = "#FFFFFF", state: String? = nil, source: TrioComplicationDataSource = .watchConnectivity,
++            recent: [[Int]]? = base.recentReadings
++        ) -> TrioComplicationSnapshot {
++            TrioComplicationSnapshot(
++                glucose: base.glucose, trend: base.trend, delta: base.delta, readingDate: base.readingDate,
++                date: base.date, state: state, glucoseColor: glucoseColor, source: source, sequence: 1,
++                recentReadings: recent, chartGlucoseColor: "#0000FF"
++            )
++        }
++        #expect(mainDiffers(variant(glucoseColor: "#FF8800")) && !bobbleDiffers(variant(glucoseColor: "#FF8800")))
++        #expect(mainDiffers(variant(state: "Old")))
++        #expect(mainDiffers(variant(source: .g7DirectBLE)) && !bobbleDiffers(variant(source: .g7DirectBLE))) // BLE marker appears
++        #expect(mainDiffers(variant(recent: [[1_700_000_000, 98]])) && !bobbleDiffers(variant(recent: [[1_700_000_000, 98]])))
++        current = variant(glucoseColor: "#FF8800")
++        gated()
++        #expect(h.reloads == 6)
++    }
++
++    @Test("TRIO-120 AC-7: provider runs record seconds since the previous run of that kind and a newer reading")
++    func testProviderRunTelemetry() throws {
++        let h = TrailingHarness(isolatedDefaults: true)
++        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
++        let main = TrailingHarness.mainKind
++        #expect(h.store.recordProviderRun(kind: main, readingEpoch: 1_000, now: t0)
++            == .init(sincePrevRunSeconds: -1, newerReading: false))
++        #expect(h.store.recordProviderRun(kind: main, readingEpoch: 1_300, now: t0.addingTimeInterval(60))
++            == .init(sincePrevRunSeconds: 60, newerReading: true))
++        #expect(h.store.recordProviderRun(kind: main, readingEpoch: 1_300, now: t0.addingTimeInterval(360))
++            == .init(sincePrevRunSeconds: 300, newerReading: false))
++        // Kinds are independent.
++        #expect(h.store.recordProviderRun(kind: TrailingHarness.bobbleKind, readingEpoch: 1_300, now: t0.addingTimeInterval(400))
++            == .init(sincePrevRunSeconds: -1, newerReading: false))
++    }
  }
 diff --git a/Trio Watch App/Info.plist b/Trio Watch App/Info.plist
 index 8d15acbed..244892dc7 100644
@@ -8334,10 +8675,10 @@ index 9a37de423..54e6e8145 100644
  	<array>
  		<string>$(TRIO_APP_GROUP_ID)</string>
 diff --git a/Trio Watch Complication/GlucoseBobbleComplication.swift b/Trio Watch Complication/GlucoseBobbleComplication.swift
-index 3b07d70c9..8daca8fee 100644
+index 3b07d70c9..a01410256 100644
 --- a/Trio Watch Complication/GlucoseBobbleComplication.swift	
 +++ b/Trio Watch Complication/GlucoseBobbleComplication.swift	
-@@ -42,22 +42,68 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+@@ -42,22 +42,77 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
          )
      }
  
@@ -8372,14 +8713,22 @@ index 3b07d70c9..8daca8fee 100644
 +        // Record only a generation that exists. With none written there is no reload to service, and
 +        // writing 0 could lower a value the corner provider already recorded in the same shared key.
 +        if let currentGeneration {
-+            store.recordWidgetObservedGeneration(currentGeneration)
++            store.recordWidgetObservedGeneration(currentGeneration, kind: TrioComplicationDataStore.glucoseBobbleComplicationKind)
 +        }
 +        let observedReloadGeneration = appGroupAvailable ? (currentGeneration ?? 0) : -1
 +
          let anchor = Self.roundedDownToMinute(Date())
          let settings = GlucoseBobbleComplicationSettings.load() ?? GlucoseBobbleComplicationSettings()
  
-         guard let snapshot = GlucoseComplicationSnapshot.load() else {
+-        guard let snapshot = GlucoseComplicationSnapshot.load() else {
++        let loadedSnapshot = GlucoseComplicationSnapshot.load()
++        // TRIO-120: seconds since this kind's previous run and whether this run carried a newer reading.
++        let runInfo = store.recordProviderRun(
++            kind: TrioComplicationDataStore.glucoseBobbleComplicationKind,
++            readingEpoch: loadedSnapshot.map { Int($0.readingDate.timeIntervalSince1970) }
++        )
++
++        guard let snapshot = loadedSnapshot else {
 +            // fork — telemetry for the circular complication's getTimeline path (no-snapshot case).
 +            store.logGlucoseBobbleProviderCall(
 +                call: "timeline",
@@ -8388,7 +8737,8 @@ index 3b07d70c9..8daca8fee 100644
 +                dataAgeSeconds: -1,
 +                loopAgeSeconds: -1,
 +                observedReloadGeneration: observedReloadGeneration,
-+                settingsSummary: Self.settingsSummary(settings)
++                settingsSummary: Self.settingsSummary(settings),
++                runInfo: runInfo
 +            )
              let entry = GlucoseBobbleComplicationEntry(date: anchor, snapshot: nil, settings: settings)
              completion(Timeline(entries: [entry], policy: .never))
@@ -8403,13 +8753,14 @@ index 3b07d70c9..8daca8fee 100644
 +            dataAgeSeconds: Self.ageSeconds(since: snapshot.readingDate),
 +            loopAgeSeconds: Self.ageSeconds(since: snapshot.lastLoopDate),
 +            observedReloadGeneration: observedReloadGeneration,
-+            settingsSummary: Self.settingsSummary(settings)
++            settingsSummary: Self.settingsSummary(settings),
++            runInfo: runInfo
 +        )
 +
          // One entry per minute so the minutes-ago text advances on screen without WidgetKit
          // reloading the timeline; the watch app requests a reload once fresh data arrives.
          var entries = (0 ..< 30).map { offset in
-@@ -93,6 +139,29 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
+@@ -93,6 +148,29 @@ struct GlucoseBobbleComplicationProvider: TimelineProvider {
      static func roundedDownToMinute(_ date: Date) -> Date {
          Date(timeIntervalSinceReferenceDate: (date.timeIntervalSinceReferenceDate / 60).rounded(.down) * 60)
      }
@@ -8453,10 +8804,10 @@ index 0f118fb75..f3aa654f6 100644
  	<dict>
  		<key>NSExtensionPointIdentifier</key>
 diff --git a/Trio Watch Complication/TrioWatchComplication.swift b/Trio Watch Complication/TrioWatchComplication.swift
-index 695bd6a54..ad4f050df 100644
+index 695bd6a54..0b6254a0c 100644
 --- a/Trio Watch Complication/TrioWatchComplication.swift	
 +++ b/Trio Watch Complication/TrioWatchComplication.swift	
-@@ -1,112 +1,635 @@
+@@ -1,112 +1,642 @@
 +import Foundation
  import SwiftUI
  import WidgetKit
@@ -8680,7 +9031,7 @@ index 695bd6a54..ad4f050df 100644
 +            ProviderProcessState.lastSeenGeneration = observedGeneration
 +            // C-209-7 (review 5.9): persist the serviced generation so the app side can detect
 +            // reloads WidgetKit dropped and re-request once. Widget-owned key, app reads only.
-+            store.recordWidgetObservedGeneration(observedGeneration)
++            store.recordWidgetObservedGeneration(observedGeneration, kind: TrioComplicationDataStore.complicationKind)
 +        }
 +
 +        let latencyValid: Bool
@@ -8697,6 +9048,11 @@ index 695bd6a54..ad4f050df 100644
 +        let reloadId = store.newestReloadRecord()?.id.uuidString ?? "none"
 +
 +        let timelineBase = loadLatestEntry()
++        // TRIO-120: seconds since this kind's previous run and whether this run carried a newer reading.
++        let runInfo = store.recordProviderRun(
++            kind: TrioComplicationDataStore.complicationKind,
++            readingEpoch: timelineBase.readingDate == .distantPast ? nil : Int(timelineBase.readingDate.timeIntervalSince1970)
++        )
 +        let getTimelineAtEpochSeconds = Int(Date().timeIntervalSince1970)
 +        let dataAgeSeconds: Int = {
 +            let rd = timelineBase.readingDate
@@ -8716,7 +9072,9 @@ index 695bd6a54..ad4f050df 100644
 +            reloadRequestedAtEpochSeconds: lastReloadEpoch ?? -1,
 +            mostRecentReloadId: reloadId,
 +            getTimelineAtEpochSeconds: getTimelineAtEpochSeconds,
-+            dataAgeSeconds: dataAgeSeconds
++            dataAgeSeconds: dataAgeSeconds,
++            sincePrevRunSeconds: runInfo.sincePrevRunSeconds,
++            newerReading: runInfo.newerReading
 +        )
 +        var entries: [TrioWatchComplicationEntry] = []
 +        let now = Date().roundedDownToMinute
@@ -9631,10 +9989,10 @@ index 000000000..46a746648
 +/// Anchor class for Bundle(for:) lookup since the enum has no instances.
 +private final class _BundleAnchor { }
 diff --git a/Trio Watch Shared/GlucoseComplicationSnapshot.swift b/Trio Watch Shared/GlucoseComplicationSnapshot.swift
-index 9137e122b..8cca3a552 100644
+index 9137e122b..5eb7edf4d 100644
 --- a/Trio Watch Shared/GlucoseComplicationSnapshot.swift	
 +++ b/Trio Watch Shared/GlucoseComplicationSnapshot.swift	
-@@ -23,11 +23,45 @@ struct GlucoseComplicationSnapshot: Codable, Equatable {
+@@ -23,11 +23,66 @@ struct GlucoseComplicationSnapshot: Codable, Equatable {
          return UserDefaults(suiteName: suiteName)
      }
  
@@ -9664,7 +10022,13 @@ index 9137e122b..8cca3a552 100644
 +    // the upstream App Group key; save() is unused in this fork.
      static func load() -> GlucoseComplicationSnapshot? {
 -        guard let data = sharedDefaults?.data(forKey: defaultsKey) else {
-+        guard let s = TrioComplicationDataStore.shared.latestSnapshot(),
++        make(from: TrioComplicationDataStore.shared.latestSnapshot(), lastLoopDate: storedLastLoopDate())
++    }
++
++    /// The pure part of `load()`, shared with the store's content key so the key covers exactly what
++    /// the circular complication is handed.
++    static func make(from snapshot: TrioComplicationSnapshot?, lastLoopDate: Date?) -> GlucoseComplicationSnapshot? {
++        guard let s = snapshot,
 +              s.glucose != "--", s.glucose != "!!"
 +        else {
              return nil
@@ -9677,17 +10041,32 @@ index 9137e122b..8cca3a552 100644
 +            // fork — prefer the chart/scheme colour over the white-in-range bubble colour.
 +            glucoseColorHex: s.chartGlucoseColor ?? s.glucoseColor ?? "",
 +            readingDate: s.readingDate,
-+            lastLoopDate: storedLastLoopDate()
++            lastLoopDate: lastLoopDate
 +        )
++    }
++
++    /// Canonical, deterministic key of everything the Glucose Bobble displays from this snapshot,
++    /// plus `settingsKey` (the Bobble settings, which live outside the snapshot).
++    func contentKey(settingsKey: String) -> String {
++        [
++            "bobble",
++            "g=\(glucose)",
++            "t=\(trend ?? "<nil>")",
++            "d=\(delta ?? "<nil>")",
++            "c=\(glucoseColorHex)",
++            "rd=\(Int(readingDate.timeIntervalSince1970))",
++            "loop=\(lastLoopDate.map { String(Int($0.timeIntervalSince1970)) } ?? "<nil>")",
++            "s=\(settingsKey)"
++        ].joined(separator: "|")
      }
  
      func save() {
 diff --git a/Trio Watch Shared/TrioComplicationDataStore.swift b/Trio Watch Shared/TrioComplicationDataStore.swift
 new file mode 100644
-index 000000000..f4e01bea2
+index 000000000..50e81169a
 --- /dev/null
 +++ b/Trio Watch Shared/TrioComplicationDataStore.swift	
-@@ -0,0 +1,1414 @@
+@@ -0,0 +1,1781 @@
 +import Foundation
 +import os
 +#if os(watchOS)
@@ -9906,6 +10285,8 @@ index 000000000..f4e01bea2
 +    static let complicationKind = "TrioWatchComplication"
 +    /// Must match the kind declared in GlucoseBobbleComplication.swift; repeated here because this file is also compiled into targets that cannot see that type.
 +    static let glucoseBobbleComplicationKind = "TrioGlucoseBobbleComplication"
++    /// Every complication kind this app ships; `reloadTimeline()` reloads all of them together.
++    static let allComplicationKinds = [complicationKind, glucoseBobbleComplicationKind]
 +
 +    /// C-217 V-2b: set once by the watch extension (ExtensionDelegate) to supply the rolling 2h
 +    /// sparkline series from the extension-local WatchGlucoseHistoryStore, which the Shared target
@@ -9968,6 +10349,17 @@ index 000000000..f4e01bea2
 +    /// C-209-7 (review 5.9): the generation the widget last serviced at getTimeline.
 +    /// Widget-owned key — the app only reads it (the no-widget-writes rule is ring-specific).
 +    private static let widgetObservedGenerationKey = "TrioComplication_widgetObservedReloadGeneration"
++    /// TRIO-120: per-kind observed generation (suffix = kind). The legacy key above is still
++    /// written by every provider run, so anything reading it keeps working.
++    private static let widgetObservedGenerationKeyPrefix = "TrioComplication_widgetObservedReloadGeneration."
++    /// TRIO-120: content key of each kind as of the last `reloadTimeline()` request (suffix = kind),
++    /// and the reading epoch of the snapshot at that request.
++    private static let lastRequestedContentKeyPrefix = "TrioComplication_lastRequestedContentKey."
++    private static let lastRequestedReadingEpochKey = "TrioComplication_lastRequestedReadingEpoch"
++    /// TRIO-120: per-kind provider-run telemetry written by the complication extension (suffix = kind).
++    private static let lastProviderRunAtKeyPrefix = "TrioComplication_lastProviderRunAt."
++    private static let lastProviderRunReadingKeyPrefix = "TrioComplication_lastProviderRunReadingEpoch."
++    private static let lastProviderRunNewerKeyPrefix = "TrioComplication_lastProviderRunNewerReading."
 +    private static let fingerprintKey = "complication_last_saved_fingerprint"
 +    // R5d — last time any data channel delivered data to the watch (persisted for sleep-gap detection)
 +    private static let lastDataReceivedAtKey = "TrioComplication_lastDataReceivedAt"
@@ -10085,6 +10477,33 @@ index 000000000..f4e01bea2
 +    }
 +    /// When set, replaces `reloadTimeline()` (no WidgetKit in tests).
 +    var reloadSink: (() -> Void)?
++    /// When set, replaces the single-kind WidgetKit reload used by `reloadGlucoseBobbleKind` (no WidgetKit in tests).
++    var kindReloadSink: ((String) -> Void)?
++    /// TRIO-120: learns which complication kinds are on a watch face. Default asks
++    /// `WidgetCenter.getCurrentConfigurations`; nil means unknown. Tests inject a stub.
++    var installedKindsSource: (@escaping (Set<String>?) -> Void) -> Void = TrioComplicationDataStore.widgetCenterInstalledKinds
++    /// TRIO-120: the snapshot the content keys are computed from. nil uses the newest saved snapshot
++    /// (memory, then disk). Tests inject one to change a field the save path's dedup would swallow.
++    var gateSnapshotOverride: (() -> TrioComplicationSnapshot?)?
++    /// TRIO-120: Bobble inputs that live outside the snapshot. The settings type is not visible to every
++    /// target this file is compiled into, so WatchState supplies its canonical string.
++    var bobbleSettingsKeyProvider: () -> String = { "" }
++    /// The iOS app target compiles this file without `GlucoseComplicationSnapshot.swift`; the phone
++    /// never reloads watch complications, so the Bobble inputs exist only off iOS.
++    #if os(iOS)
++    var bobbleLastLoopDateProvider: () -> Date? = { nil }
++    #else
++    var bobbleLastLoopDateProvider: () -> Date? = { GlucoseComplicationSnapshot.storedLastLoopDate() }
++    #endif
++
++    /// TRIO-120: cached result of the last `refreshInstalledKinds()`; nil until known. Main-thread confined.
++    private var cachedInstalledKinds: Set<String>?
++    /// TRIO-120: in-memory mirrors of the persisted last-request state (app-group defaults may be nil).
++    private var inMemoryRequestedContentKeys: [String: String] = [:]
++    private var inMemoryRequestedReadingEpoch: Int?
++    /// TRIO-120: who asked for the reload in flight and why it went ahead; read by the request log line.
++    private var currentRequestCaller = "unspecified"
++    private var currentRequestReason = "bypass"
 +
 +    /// In-memory fallback for lastReload when appGroupDefaults is nil (per-process debounce)
 +    private var inMemoryLastReload: Date = .distantPast
@@ -10610,7 +11029,7 @@ index 000000000..f4e01bea2
 +            #endif
 +
 +            if triggerReload {
-+                coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false, scheduleTrailing: true)
++                coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false, scheduleTrailing: true, gateCaller: "save")
 +            }
 +        } catch {
 +            log("❌ Snapshot save FAILED: \(error.localizedDescription) (domain: \((error as NSError).domain), code: \((error as NSError).code))")
@@ -10640,9 +11059,18 @@ index 000000000..f4e01bea2
 +    }
 +
 +    /// C-209-7 (review 5.9): widget-side write at getTimeline — records the generation the
-+    /// provider actually serviced, so the app can detect dropped reloads.
-+    func recordWidgetObservedGeneration(_ generation: Int) {
++    /// provider actually serviced, so the app can detect dropped reloads. TRIO-120: also recorded
++    /// per kind; the legacy shared key is still written so existing readers keep working.
++    func recordWidgetObservedGeneration(_ generation: Int, kind: String) {
 +        appGroupDefaults?.set(generation, forKey: Self.widgetObservedGenerationKey)
++        appGroupDefaults?.set(generation, forKey: Self.widgetObservedGenerationKeyPrefix + kind)
++    }
++
++    /// TRIO-120: app-side read of the generation one kind last serviced.
++    func widgetObservedGeneration(kind: String) -> Int? {
++        guard let defaults = appGroupDefaults else { return nil }
++        let key = Self.widgetObservedGenerationKeyPrefix + kind
++        return defaults.object(forKey: key) != nil ? defaults.integer(forKey: key) : nil
 +    }
 +
 +    /// C-209-7: app-side read of the widget's last serviced generation.
@@ -10716,6 +11144,286 @@ index 000000000..f4e01bea2
 +        }
 +    }
 +
++    // MARK: - TRIO-120 Per-kind servicing, content keys and the reload gate
++
++    /// `getCurrentConfigurations` result for the kinds this app ships; nil when unknown.
++    private static func widgetCenterInstalledKinds(_ completion: @escaping (Set<String>?) -> Void) {
++        if #available(watchOS 9.0, *) {
++            WidgetCenter.shared.getCurrentConfigurations { result in
++                switch result {
++                case let .success(infos): completion(Set(infos.map(\.kind)))
++                case .failure: completion(nil)
++                }
++            }
++        } else {
++            completion(nil)
++        }
++    }
++
++    /// Refreshes the cached set of installed kinds. Called at launch, on foreground and when the
++    /// unserviced check runs. The completion may arrive on any thread; the cache is set on main.
++    /// When the installed set changed (including unknown or empty to known), the servicing of the
++    /// last requested generation is re-evaluated: an earlier evaluation against the old or nil
++    /// cache may have fallen back to the any-kind rule and wrongly counted it serviced.
++    func refreshInstalledKinds() {
++        installedKindsSource { [weak self] kinds in
++            self?.onMain {
++                guard let self else { return }
++                let old = self.cachedInstalledKinds
++                self.cachedInstalledKinds = kinds
++                guard old != kinds else { return }
++                #if canImport(WidgetKit)
++                guard let requested = self.appGroupDefaults?.integer(forKey: Self.reloadGenerationKey),
++                      requested > 0 else { return }
++                self.evaluateUnservicedOnMain(generation: requested, trigger: "installed_kinds_changed")
++                #endif
++            }
++        }
++    }
++
++    /// Installed kinds among the ones this app ships; nil when unknown or empty.
++    private func installedKnownKinds() -> [String]? {
++        guard let installed = cachedInstalledKinds else { return nil }
++        let known = Self.allComplicationKinds.filter(installed.contains)
++        return known.isEmpty ? nil : known
++    }
++
++    /// True when `generation` has been serviced: every installed kind has observed it. With the
++    /// installed set unknown or empty it falls back to the legacy rule (any kind observing counts).
++    func isGenerationServiced(_ generation: Int) -> Bool {
++        if let kinds = installedKnownKinds() {
++            return kinds.allSatisfy { (widgetObservedGeneration(kind: $0) ?? -1) >= generation }
++        }
++        return (widgetObservedGeneration() ?? -1) >= generation
++    }
++
++    private func perKindObservedSummary() -> String {
++        Self.allComplicationKinds
++            .map { "\($0)=\(widgetObservedGeneration(kind: $0).map(String.init) ?? "nil")" }
++            .joined(separator: ",")
++    }
++
++    /// Canonical content key of the main complication: every field any of its families displays.
++    /// The source counts only as the BLE marker the face prints. IOB/COB are not displayed.
++    static func mainContentKey(for snapshot: TrioComplicationSnapshot?) -> String {
++        guard let s = snapshot else { return "main|none" }
++        let readings = (s.recentReadings ?? [])
++            .map { $0.map(String.init).joined(separator: ":") }
++            .joined(separator: ",")
++        return [
++            "main",
++            "g=\(s.glucose)",
++            "t=\(s.trend)",
++            "d=\(s.delta)",
++            "rd=\(Int(s.readingDate.timeIntervalSince1970))",
++            "st=\(s.state ?? "<nil>")",
++            "c=\(s.glucoseColor ?? "<nil>")",
++            "ble=\(s.source == .g7DirectBLE)",
++            "rr=\(readings)"
++        ].joined(separator: "|")
++    }
++
++    /// Canonical content key of the Glucose Bobble: what `GlucoseComplicationSnapshot.load()` hands
++    /// it (including the chart colour), the last loop date and the Bobble settings.
++    static func bobbleContentKey(
++        for snapshot: TrioComplicationSnapshot?,
++        lastLoopDate: Date?,
++        settingsKey: String
++    ) -> String {
++        #if os(iOS)
++        return "bobble|none|s=\(settingsKey)"
++        #else
++        guard let bobble = snapshot.flatMap({ GlucoseComplicationSnapshot.make(from: $0, lastLoopDate: lastLoopDate) }) else {
++            return "bobble|none|s=\(settingsKey)"
++        }
++        return bobble.contentKey(settingsKey: settingsKey)
++        #endif
++    }
++
++    private func contentKey(forKind kind: String, snapshot: TrioComplicationSnapshot?) -> String {
++        if kind == Self.glucoseBobbleComplicationKind {
++            return Self.bobbleContentKey(
++                for: snapshot,
++                lastLoopDate: bobbleLastLoopDateProvider(),
++                settingsKey: bobbleSettingsKeyProvider()
++            )
++        }
++        return Self.mainContentKey(for: snapshot)
++    }
++
++    private func gateSnapshotOnMain() -> TrioComplicationSnapshot? {
++        if let gateSnapshotOverride { return gateSnapshotOverride() }
++        return inMemorySavedSnapshot ?? latestSnapshot()
++    }
++
++    private func lastRequestedContentKey(_ kind: String) -> String? {
++        inMemoryRequestedContentKeys[kind]
++            ?? appGroupDefaults?.string(forKey: Self.lastRequestedContentKeyPrefix + kind)
++    }
++
++    private func lastRequestedReadingEpoch() -> Int? {
++        if let inMemoryRequestedReadingEpoch { return inMemoryRequestedReadingEpoch }
++        guard let defaults = appGroupDefaults, defaults.object(forKey: Self.lastRequestedReadingEpochKey) != nil else {
++            return nil
++        }
++        return defaults.integer(forKey: Self.lastRequestedReadingEpochKey)
++    }
++
++    /// Remembers what every kind showed as of this reload request. Runs for gated and bypassing
++    /// requests alike, so a bypassing reload never leaves a stale key behind.
++    private func recordRequestedContentOnMain() {
++        let snapshot = gateSnapshotOnMain()
++        for kind in Self.allComplicationKinds {
++            let key = contentKey(forKind: kind, snapshot: snapshot)
++            inMemoryRequestedContentKeys[kind] = key
++            appGroupDefaults?.set(key, forKey: Self.lastRequestedContentKeyPrefix + kind)
++        }
++        let epoch = snapshot.map { Int($0.readingDate.timeIntervalSince1970) }
++        inMemoryRequestedReadingEpoch = epoch
++        if let epoch {
++            appGroupDefaults?.set(epoch, forKey: Self.lastRequestedReadingEpochKey)
++        } else {
++            appGroupDefaults?.removeObject(forKey: Self.lastRequestedReadingEpochKey)
++        }
++    }
++
++    private func lastRequestIsUnserviced() -> Bool {
++        guard let defaults = appGroupDefaults else { return false }
++        let requested = defaults.integer(forKey: Self.reloadGenerationKey)
++        return requested > 0 && !isGenerationServiced(requested)
++    }
++
++    private struct ReloadGateDecision {
++        let proceed: Bool
++        let reason: String
++    }
++
++    /// Decides a gated reload request. `requireNewerEpoch` is the sleep-gap rule: content changes
++    /// alone do not count, only a newer reading epoch than the last request, or an unserviced request.
++    private func evaluateReloadGateOnMain(caller: String, requireNewerEpoch: Bool = false) -> ReloadGateDecision {
++        let snapshot = gateSnapshotOnMain()
++        let unserviced = lastRequestIsUnserviced()
++        let currentEpoch = snapshot.map { Int($0.readingDate.timeIntervalSince1970) }
++        let requestedEpoch = lastRequestedReadingEpoch()
++
++        var changedKinds: [String] = []
++        let decision: ReloadGateDecision
++        if unserviced {
++            decision = ReloadGateDecision(proceed: true, reason: "unserviced")
++        } else if requireNewerEpoch {
++            if let currentEpoch, requestedEpoch.map({ currentEpoch > $0 }) ?? true {
++                decision = ReloadGateDecision(proceed: true, reason: "newer_epoch")
++            } else {
++                decision = ReloadGateDecision(proceed: false, reason: "no_newer_epoch")
++            }
++        } else {
++            // Unknown or empty installed set: compare every shipped kind (more reloads, never fewer).
++            let kinds = installedKnownKinds() ?? Self.allComplicationKinds
++            changedKinds = kinds.filter { contentKey(forKind: $0, snapshot: snapshot) != lastRequestedContentKey($0) }
++            if !changedKinds.isEmpty {
++                decision = ReloadGateDecision(proceed: true, reason: "content_changed")
++            } else {
++                let sinceLast = nowProvider().timeIntervalSince(lastReload)
++                decision = ReloadGateDecision(proceed: false, reason: sinceLast < 30 ? "already_requested" : "no_new_content")
++            }
++        }
++
++        if !decision.proceed {
++            let sinceLast = nowProvider().timeIntervalSince(lastReload)
++            let sinceLastStr = lastReload == .distantPast ? "never" : "\(Int(sinceLast))"
++            log(
++                "event=complication_reload_skipped reason=\(decision.reason) caller=\(caller)"
++                    + " last_request_age_s=\(sinceLastStr)"
++                    + " reading_epoch=\(currentEpoch.map(String.init) ?? "nil")"
++                    + " last_requested_epoch=\(requestedEpoch.map(String.init) ?? "nil")"
++                    + " unserviced=\(unserviced)"
++            )
++        } else {
++            currentRequestReason = changedKinds.isEmpty ? decision.reason : "\(decision.reason):\(changedKinds.joined(separator: "+"))"
++        }
++        return decision
++    }
++
++    /// `forceComplicationUpdate`: saves the snapshot (no reload of its own), then reloads only when
++    /// what the face shows changed since the last request, or the last request is unserviced.
++    func forceComplicationReload(_ snapshot: TrioComplicationSnapshot, caller: String = "force_update") {
++        onMain { [self] in
++            saveOnMain(snapshot, triggerReload: false)
++            guard evaluateReloadGateOnMain(caller: caller).proceed else { return }
++            forceReloadOnMain(scheduleRetry: false, caller: caller, reason: currentRequestReason)
++        }
++    }
++
++    /// Sleep-gap reload: goes ahead only when the store holds a newer reading epoch than the last
++    /// request, or the last request is unserviced. `onFired` runs just before the reload.
++    func requestSleepGapReload(caller: String = "sleep_gap", onFired: @escaping () -> Void = {}) {
++        onMain { [self] in
++            guard evaluateReloadGateOnMain(caller: caller, requireNewerEpoch: true).proceed else { return }
++            onFired()
++            forceReloadOnMain(scheduleRetry: false, caller: caller, reason: currentRequestReason)
++        }
++    }
++
++    /// Bobble settings changed: reload only the Bobble kind. Never gated; refreshes its remembered key.
++    func reloadGlucoseBobbleKind(caller: String = "bobble_settings") {
++        onMain { [self] in
++            let key = contentKey(forKind: Self.glucoseBobbleComplicationKind, snapshot: gateSnapshotOnMain())
++            inMemoryRequestedContentKeys[Self.glucoseBobbleComplicationKind] = key
++            appGroupDefaults?.set(key, forKey: Self.lastRequestedContentKeyPrefix + Self.glucoseBobbleComplicationKind)
++            log("event=complication_kind_reload kind=\(Self.glucoseBobbleComplicationKind) caller=\(caller)")
++            if let kindReloadSink {
++                kindReloadSink(Self.glucoseBobbleComplicationKind)
++            } else {
++                WidgetCenter.shared.reloadTimelines(ofKind: Self.glucoseBobbleComplicationKind)
++            }
++        }
++    }
++
++    // MARK: - TRIO-120 Provider-run telemetry (written by the complication extension)
++
++    struct ProviderRunInfo: Equatable {
++        /// Seconds since the previous provider run of this kind; -1 when there was none.
++        let sincePrevRunSeconds: Int
++        /// True when this run's reading is newer than the previous run's; false when either is unknown.
++        let newerReading: Bool
++    }
++
++    @discardableResult
++    func recordProviderRun(kind: String, readingEpoch: Int?, now: Date = Date()) -> ProviderRunInfo {
++        guard let defaults = appGroupDefaults else { return ProviderRunInfo(sincePrevRunSeconds: -1, newerReading: false) }
++        let atKey = Self.lastProviderRunAtKeyPrefix + kind
++        let readingKey = Self.lastProviderRunReadingKeyPrefix + kind
++        let prevAt = defaults.object(forKey: atKey) as? Double
++        let prevReading = defaults.object(forKey: readingKey) as? Int
++        let since = prevAt.map { max(0, Int(now.timeIntervalSince1970 - $0)) } ?? -1
++        let newer: Bool = {
++            guard let readingEpoch, let prevReading else { return false }
++            return readingEpoch > prevReading
++        }()
++        defaults.set(now.timeIntervalSince1970, forKey: atKey)
++        if let readingEpoch { defaults.set(readingEpoch, forKey: readingKey) } else { defaults.removeObject(forKey: readingKey) }
++        defaults.set(newer, forKey: Self.lastProviderRunNewerKeyPrefix + kind)
++        return ProviderRunInfo(sincePrevRunSeconds: since, newerReading: newer)
++    }
++
++    /// Per kind: seconds since its last provider run and whether that run carried a newer reading
++    /// than the run before it. Appended to the reload request line.
++    private func providerRunSummary(now: Date) -> String {
++        let labels = [Self.complicationKind: "main", Self.glucoseBobbleComplicationKind: "bobble"]
++        return Self.allComplicationKinds.map { kind in
++            let label = labels[kind] ?? kind
++            var since = -1
++            var newer = false
++            if let defaults = appGroupDefaults {
++                if let at = defaults.object(forKey: Self.lastProviderRunAtKeyPrefix + kind) as? Double {
++                    since = max(0, Int(now.timeIntervalSince1970 - at))
++                }
++                newer = defaults.bool(forKey: Self.lastProviderRunNewerKeyPrefix + kind)
++            }
++            return "\(label)_since_prev_run_s=\(since) \(label)_newer_reading=\(newer)"
++        }.joined(separator: " ")
++    }
++
 +    // MARK: - Reload Methods
 +
 +    /// Triggers a complication timeline reload with 30-second debouncing. Main-thread confined.
@@ -10732,7 +11440,8 @@ index 000000000..f4e01bea2
 +        minInterval: TimeInterval = 30,
 +        isRetry: Bool = false,
 +        scheduleRetry: Bool = true,
-+        scheduleTrailing: Bool = false
++        scheduleTrailing: Bool = false,
++        gateCaller: String? = nil
 +    ) {
 +        assert(Thread.isMainThread, "coalescedReloadOnMain must be called on main thread")
 +        let now = nowProvider()
@@ -10747,6 +11456,16 @@ index 000000000..f4e01bea2
 +                scheduleTrailingReloadOnMain(minInterval: minInterval, remaining: minInterval - elapsed)
 +            }
 +            return
++        }
++
++        // TRIO-120: gated callers (save path, trailing reload) go ahead only when what a face shows
++        // changed since the last request, or the last request is unserviced.
++        if let gateCaller {
++            guard evaluateReloadGateOnMain(caller: gateCaller).proceed else { return }
++            currentRequestCaller = gateCaller
++        } else {
++            currentRequestCaller = isRetry ? "coalesced_retry" : "coalesced"
++            currentRequestReason = "bypass"
 +        }
 +
 +        cancelPendingRetryOnMain(reason: "superseded by new reload")
@@ -10781,14 +11500,16 @@ index 000000000..f4e01bea2
 +    /// Forces an immediate complication timeline reload, bypassing the debounce. Main-thread confined.
 +    /// - Parameter scheduleRetry: If true (default), schedules a retry after the reload.
 +    ///   Pass false for paths that fire infrequently (e.g., forceComplicationUpdate).
-+    func forceReload(scheduleRetry: Bool = true) {
++    func forceReload(scheduleRetry: Bool = true, caller: String = "force") {
 +        onMain { [self] in
-+            forceReloadOnMain(scheduleRetry: scheduleRetry)
++            forceReloadOnMain(scheduleRetry: scheduleRetry, caller: caller)
 +        }
 +    }
 +
-+    private func forceReloadOnMain(scheduleRetry: Bool = true) {
++    private func forceReloadOnMain(scheduleRetry: Bool = true, caller: String = "force", reason: String = "bypass") {
 +        assert(Thread.isMainThread, "forceReloadOnMain must be called on main thread")
++        currentRequestCaller = caller
++        currentRequestReason = reason
 +        cancelPendingRetryOnMain(reason: "superseded by force reload")
 +        Self.reloadGenerationToken = UUID().uuidString
 +        log("🔄 FORCE reload triggered (bypassing debounce)")
@@ -10801,6 +11522,7 @@ index 000000000..f4e01bea2
 +    }
 +
 +    private func performReload() {
++        recordRequestedContentOnMain()
 +        if let reloadSink {
 +            reloadSink()
 +            return
@@ -10830,7 +11552,7 @@ index 000000000..f4e01bea2
 +            // and re-request once, rate-limited.
 +            scheduleUnservicedReloadCheck(generation: reloadGeneration)
 +            #endif
-+            log("event=complication_reload_requested reload_generation=\(reloadGeneration) reload_requested_at_epoch_seconds=\(record.requestedAtEpochSeconds) reload_id=\(record.id.uuidString)")
++            log("event=complication_reload_requested reload_generation=\(reloadGeneration) reload_requested_at_epoch_seconds=\(record.requestedAtEpochSeconds) reload_id=\(record.id.uuidString) caller=\(currentRequestCaller) gate_reason=\(currentRequestReason) \(providerRunSummary(now: Date()))")
 +
 +            if let lastTS = Self.lastValidTimestamp {
 +                let ageSec = max(0, Int(Date().timeIntervalSince(lastTS)))
@@ -10868,18 +11590,32 @@ index 000000000..f4e01bea2
 +            let work = DispatchWorkItem { [weak self] in
 +                guard let self else { return }
 +                self.unservicedCheckWorkItem = nil
-+                let observed = self.widgetObservedGeneration() ?? -1
-+                guard observed < generation else { return } // serviced — the common, silent case
-+                guard Date().timeIntervalSince(self.lastUnservicedRetryAt) >= Self.unservicedRetryMinInterval else {
-+                    self.log("event=complication_reload_unserviced generation=\(generation) observed=\(observed) action=rate_limited")
-+                    return
-+                }
-+                self.lastUnservicedRetryAt = Date()
-+                self.log("event=complication_reload_unserviced generation=\(generation) observed=\(observed) action=re_request")
-+                self.forceReloadOnMain(scheduleRetry: false)
++                self.performUnservicedCheckOnMain(generation: generation)
 +            }
 +            unservicedCheckWorkItem = work
-+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.unservicedCheckDelay, execute: work)
++            scheduleDelayedWork(Self.unservicedCheckDelay, work)
++        }
++
++        /// The body of the unserviced check. TRIO-120: serviced means every installed kind observed
++        /// `generation`. Never gated. Refreshes the installed-kinds cache for the next evaluation.
++        func performUnservicedCheckOnMain(generation: Int) {
++            defer { refreshInstalledKinds() } // after evaluating, so a changed set re-checks exactly once
++            evaluateUnservicedOnMain(generation: generation, trigger: nil)
++        }
++
++        /// Shared unserviced evaluation and re-request (15 min rate limit). `trigger` is logged when
++        /// the check was not the timer (e.g. `installed_kinds_changed`).
++        fileprivate func evaluateUnservicedOnMain(generation: Int, trigger: String?) {
++            guard !isGenerationServiced(generation) else { return } // serviced — the common, silent case
++            let observed = widgetObservedGeneration() ?? -1
++            let triggerField = trigger.map { " trigger=\($0)" } ?? ""
++            guard Date().timeIntervalSince(lastUnservicedRetryAt) >= Self.unservicedRetryMinInterval else {
++                log("event=complication_reload_unserviced generation=\(generation) observed=\(observed) per_kind=\(perKindObservedSummary())\(triggerField) action=rate_limited")
++                return
++            }
++            lastUnservicedRetryAt = Date()
++            log("event=complication_reload_unserviced generation=\(generation) observed=\(observed) per_kind=\(perKindObservedSummary())\(triggerField) action=re_request")
++            forceReloadOnMain(scheduleRetry: false, caller: "unserviced_re_request")
 +        }
 +    #endif
 +
@@ -10890,18 +11626,21 @@ index 000000000..f4e01bea2
 +    /// App Group, so compare them on launch/foreground and re-request once (rate-limited) when the
 +    /// widget never serviced the most recent reload. Watch-app only (never the widget process).
 +    func reconcileUnservicedReloadOnLaunch() {
++        // TRIO-120: refresh the installed kinds (launch and foreground); this evaluation uses the
++        // cache, and a changed set re-checks servicing when the refresh completes.
++        defer { refreshInstalledKinds() }
 +        guard let defaults = appGroupDefaults else { return }
 +        let requested = defaults.integer(forKey: Self.reloadGenerationKey)
 +        guard requested > 0 else { return }
 +        let observed = widgetObservedGeneration() ?? -1
-+        guard observed < requested else { return } // serviced — the common case
++        guard !isGenerationServiced(requested) else { return } // serviced — the common case
 +        guard Date().timeIntervalSince(lastUnservicedRetryAt) >= Self.unservicedRetryMinInterval else {
-+            log("event=complication_reload_unserviced_launch requested=\(requested) observed=\(observed) action=rate_limited")
++            log("event=complication_reload_unserviced_launch requested=\(requested) observed=\(observed) per_kind=\(perKindObservedSummary()) action=rate_limited")
 +            return
 +        }
 +        lastUnservicedRetryAt = Date()
-+        log("event=complication_reload_unserviced_launch requested=\(requested) observed=\(observed) action=re_request")
-+        forceReload(scheduleRetry: false)
++        log("event=complication_reload_unserviced_launch requested=\(requested) observed=\(observed) per_kind=\(perKindObservedSummary()) action=re_request")
++        forceReload(scheduleRetry: false, caller: "launch_reconcile")
 +    }
 +    #endif
 +
@@ -10986,7 +11725,7 @@ index 000000000..f4e01bea2
 +            self.pendingTrailingWorkItem = nil
 +            self.trailingReloadID = nil
 +            self.log("⏱️ Trailing reload FIRED")
-+            self.coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false, scheduleTrailing: true)
++            self.coalescedReloadOnMain(minInterval: minInterval, scheduleRetry: false, scheduleTrailing: true, gateCaller: "trailing")
 +        }
 +        pendingTrailingWorkItem = workItem
 +        log("⏱️ Trailing reload SCHEDULED in=\(String(format: "%.1f", delay))s")
@@ -11044,7 +11783,9 @@ index 000000000..f4e01bea2
 +        reloadRequestedAtEpochSeconds: Int,
 +        mostRecentReloadId: String,
 +        getTimelineAtEpochSeconds: Int,
-+        dataAgeSeconds: Int
++        dataAgeSeconds: Int,
++        sincePrevRunSeconds: Int,
++        newerReading: Bool
 +    ) {
 +        log(
 +            "event=complication_get_timeline_called"
@@ -11060,6 +11801,9 @@ index 000000000..f4e01bea2
 +            + " most_recent_reload_id=\(mostRecentReloadId)"
 +            + " get_timeline_at_epoch_seconds=\(getTimelineAtEpochSeconds)"
 +            + " data_age_seconds=\(dataAgeSeconds)"
++            + " kind=\(Self.complicationKind)"
++            + " since_prev_run_s=\(sincePrevRunSeconds)"
++            + " newer_reading=\(newerReading)"
 +        )
 +    }
 +
@@ -11081,7 +11825,8 @@ index 000000000..f4e01bea2
 +        dataAgeSeconds: Int,
 +        loopAgeSeconds: Int,
 +        observedReloadGeneration: Int,
-+        settingsSummary: String
++        settingsSummary: String,
++        runInfo: ProviderRunInfo? = nil
 +    ) {
 +        log(
 +            "event=glucose_bobble_complication_\(call)"
@@ -11091,6 +11836,7 @@ index 000000000..f4e01bea2
 +            + " data_age_seconds=\(dataAgeSeconds)"
 +            + " loop_age_seconds=\(loopAgeSeconds)"
 +            + " observed_reload_generation=\(observedReloadGeneration)"
++            + (runInfo.map { " since_prev_run_s=\($0.sincePrevRunSeconds) newer_reading=\($0.newerReading)" } ?? "")
 +            + " \(settingsSummary)"
 +        )
 +    }
