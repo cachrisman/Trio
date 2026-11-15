@@ -2,13 +2,15 @@
 uid = "019f8141-e117-77db-9216-aadba8bc7c56"
 key = "TRIO-020"
 title = "Add staleness visual indicator to circular complication"
-status = "ready"
+status = "dropped"
 kind = "code"
 source = "human"
 source_ref = "docs/in-progress/complication-freshness/problem-and-strategy.md#L177"
 created = 2026-07-20
-updated = 2026-09-26
-touched = 2026-09-26
+updated = 2026-11-13
+touched = 2026-11-13
+closed = 2026-11-13
+first_closed = 2026-11-13
 owner = "me"
 tags = ["complication-freshness", "ux"]
 
@@ -17,8 +19,11 @@ id = "AC-1"
 text = "`TrioAccessoryCircularView` glucose text colored by recency (green/yellow/red), matching corner view's existing scheme"
 owner = "agent"
 phase = "pre-review"
-state = "open"
+state = "dropped"
 added_at = 2026-09-26
+reason = "Folded into TRIO-070 (operator 2026-11-13): stale digits turn grey, background keeps its colour; recency colours would clash with the lighter-hue digits"
+closed_at = 2026-11-13
+closed_ts = "2026-11-13T15:36:46+01:00"
 +++
 
 ## Intent
