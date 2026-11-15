@@ -1,6 +1,6 @@
-From 2c431885d5345d86bbb0d084d8ddb0e6f34025c1 Mon Sep 17 00:00:00 2001
+From ee3a97f0177dbab539439ced9c189cfcb13d8959 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 15 Nov 2026 00:47:18 +0100
+Date: Sun, 15 Nov 2026 01:04:45 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 4d3713de92874f5eaca34a828ef51046b28d8015
-Trio-Patch-Generated: 2026-11-14T23:46:56Z
+Trio-Patch-Feature-Tip: 8843529b1a72c94b935c737639882376bf654f34
+Trio-Patch-Generated: 2026-11-15T00:04:18Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -109,6 +109,7 @@ Trio-Patch-Source-Commits:
  a1fe2fe7dadd5b68c7eaf74cdb9d3d09ec75d0b4 phone: render an unknown complication age as inf in the age-gate logs instead of trapping in Int(.infinity) (TRIO-122)
  d6b7d86bfcb25edc5d8f0ba0909a5748be893e0b phone: drop the full-send cancel of a queued complication fast send; the newer-epoch guard already skips a delivered reading (TRIO-124)
  4d3713de92874f5eaca34a828ef51046b28d8015 watch-g7: drain the complication provider log on saves and background tasks, tag saves with via=, and sequence-number provider lines with gap reporting (TRIO-119)
+ 8843529b1a72c94b935c737639882376bf654f34 watch: finish the complication log drain before completing background tasks, including one queued at launch (TRIO-119)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -197,9 +198,10 @@ Trio-Patch-Source-PatchIds:
  b1eaae9577a1b07f8684b11f0e3bba03468b6079
  31eefe7d210b86f84a5b9fc21303015cf6e9ad1c
  6a912ee44723eba212e62ba008f485205e7826a9
+ 0401d013e7c4efd277b3b89fc66963c1f7400b5e
 ---
- .../ComplicationLogForwarder.swift            |  217 ++
- .../ExtensionDelegate.swift                   |  102 +
+ .../ComplicationLogForwarder.swift            |  252 ++
+ .../ExtensionDelegate.swift                   |  124 +
  .../G7WatchSensorAdapter.swift                | 2011 ++++++++++++
  .../Helper/WatchNotificationHandler.swift     |   36 +
  .../Helper/WatchResidentTelemetry.swift       |  137 +
@@ -213,7 +215,7 @@ Trio-Patch-Source-PatchIds:
  .../WatchState+Requests.swift                 |   22 +
  Trio Watch App Extension/WatchState.swift     | 2844 +++++++++++++++--
  .../WatchTelemetryRing.swift                  |  351 ++
- Trio Watch App Tests/Unit Tests.swift         | 1038 ++++++
+ Trio Watch App Tests/Unit Tests.swift         | 1079 +++++++
  Trio Watch App/Info.plist                     |   37 +-
  Trio Watch App/TrioWatchApp.entitlements      |    4 +
  .../GlucoseBobbleComplication.swift           |   96 +-
@@ -239,7 +241,7 @@ Trio-Patch-Source-PatchIds:
  .../ComplicationFastPathPolicyTests.swift     |   53 +
  .../ComplicationTransferAgeGateTests.swift    |   52 +
  TrioTests/SleepModeProviderTests.swift        |  149 +
- 41 files changed, 12908 insertions(+), 433 deletions(-)
+ 41 files changed, 13006 insertions(+), 433 deletions(-)
  create mode 100644 Trio Watch App Extension/ComplicationLogForwarder.swift
  create mode 100644 Trio Watch App Extension/ExtensionDelegate.swift
  create mode 100644 Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -265,10 +267,10 @@ Trio-Patch-Source-PatchIds:
 
 diff --git a/Trio Watch App Extension/ComplicationLogForwarder.swift b/Trio Watch App Extension/ComplicationLogForwarder.swift
 new file mode 100644
-index 000000000..845d4bc5d
+index 000000000..4369ad7b4
 --- /dev/null
 +++ b/Trio Watch App Extension/ComplicationLogForwarder.swift	
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,252 @@
 +import Foundation
 +
 +/// Drains the complication log files from the App Group container into the upstream `WatchLogger`.
@@ -295,32 +297,67 @@ index 000000000..845d4bc5d
 +    )
 +
 +    /// TRIO-119: rate-limited drain decision for background wakes and saved readings.
-+    /// The closure only runs after `shared` exists, so it may name it.
-+    private let scheduler = ComplicationLogDrainScheduler(drain: { ComplicationLogForwarder.shared.drain() })
++    /// The closure only runs after `shared` exists, so it may name it. It runs synchronously inside
++    /// `scheduler.drainIfDue()`, so `drainIfDue(reason:completion:)` hands its completion over through
++    /// `pendingCompletion` under `dueLock`.
++    private let scheduler = ComplicationLogDrainScheduler(drain: {
++        ComplicationLogForwarder.shared.drain(completion: ComplicationLogForwarder.shared.takePendingCompletion())
++    })
++    private let dueLock = NSLock()
++    private var pendingCompletion: (() -> Void)?
 +
 +    private init() {}
 +
-+    /// TRIO-119: drains when due (at most once per 10 min, at once past half the file cap). Cheap when
-+    /// not due: one stat. `reason` names the call site in the log line.
-+    func drainIfDue(reason: String) {
-+        guard let trigger = scheduler.drainIfDue() else { return }
++    private func takePendingCompletion() -> (() -> Void)? {
++        let completion = pendingCompletion
++        pendingCompletion = nil
++        return completion
++    }
++
++    /// TRIO-119: drains when due (at most once per 10 min, at once past half the cap). Cheap when
++    /// not due: one stat. `reason` names the call site in the log line. Returns whether a drain was
++    /// started; `completion` runs once on the forwarder queue after that drain, and never when this
++    /// returns false.
++    @discardableResult
++    func drainIfDue(reason: String, completion: (() -> Void)? = nil) -> Bool {
++        dueLock.lock()
++        pendingCompletion = completion
++        let trigger = scheduler.drainIfDue()
++        pendingCompletion = nil
++        dueLock.unlock()
++        guard let trigger else { return false }
 +        WatchLogger.shared.info(
 +            .data,
 +            "event=complication_log_drain_due reason=\(reason) trigger=\(trigger.rawValue)"
 +        )
++        return true
 +    }
 +
 +    /// Returns immediately; the work runs on the private queue.
-+    /// Calls arriving while a drain is already queued are coalesced.
-+    func drain() {
++    /// Calls arriving while a drain is already queued are coalesced. `completion` runs on the queue
++    /// after the drain that serves this call, including when the call was coalesced.
++    func drain(completion: (() -> Void)? = nil) {
 +        scheduler.noteDrain()
 +        queue.async { [self] in
-+            guard !drainQueued else { return }
-+            drainQueued = true
-+            queue.async { [self] in
-+                drainQueued = false
-+                performDrain()
++            if !drainQueued {
++                drainQueued = true
++                queue.async { [self] in
++                    drainQueued = false
++                    performDrain()
++                }
 +            }
++            // The queue is serial, so this lands after the pending `performDrain`.
++            if let completion {
++                queue.async { completion() }
++            }
++        }
++    }
++
++    /// TRIO-119: runs `completion` on the queue after any drain already queued, or at once if nothing is pending.
++    func afterPendingWork(_ completion: @escaping () -> Void) {
++        // `drain` enqueues its work from inside a queued block, so hop once to land behind it.
++        queue.async { [self] in
++            queue.async { completion() }
 +        }
 +    }
 +
@@ -488,10 +525,10 @@ index 000000000..845d4bc5d
 +}
 diff --git a/Trio Watch App Extension/ExtensionDelegate.swift b/Trio Watch App Extension/ExtensionDelegate.swift
 new file mode 100644
-index 000000000..57daf6d06
+index 000000000..d880b7b68
 --- /dev/null
 +++ b/Trio Watch App Extension/ExtensionDelegate.swift	
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,124 @@
 +import G7SensorKit
 +import WatchKit
 +
@@ -590,8 +627,30 @@ index 000000000..57daf6d06
 +    @MainActor private func handleBackgroundTasksOnMain(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
 +        G7WatchSensorAdapter.shared.noteAcquisitionWake(reason: "bg_task")
 +        // TRIO-119: collect the provider's log on background wakes too (rate-limited; a stat when not due).
-+        ComplicationLogForwarder.shared.drainIfDue(reason: "bg_task")
-+        WatchState.shared.handleBackgroundTasks(backgroundTasks)
++        // The refresh task completes inside handleBackgroundTasks and watchOS may then suspend the
++        // extension, so the tasks are handled once the forwarder queue has caught up: after the drain this
++        // call starts, or after one queued earlier (e.g. at launch). A 5 s fallback covers both.
++        var handled = false
++        let handleOnce: @MainActor () -> Void = {
++            guard !handled else { return }
++            handled = true
++            WatchState.shared.handleBackgroundTasks(backgroundTasks)
++        }
++        let started = ComplicationLogForwarder.shared.drainIfDue(reason: "bg_task") {
++            DispatchQueue.main.async { @MainActor in handleOnce() }
++        }
++        if !started {
++            ComplicationLogForwarder.shared.afterPendingWork {
++                DispatchQueue.main.async { @MainActor in handleOnce() }
++            }
++        }
++        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { @MainActor in
++            guard !handled else { return }
++            WatchLogger.shared.log(
++                "event=complication_log_drain_bg_timeout source=wk_application_delegate timeout_s=5 started=\(started)"
++            )
++            handleOnce()
++        }
 +    }
 +}
 diff --git a/Trio Watch App Extension/G7WatchSensorAdapter.swift b/Trio Watch App Extension/G7WatchSensorAdapter.swift
@@ -8188,7 +8247,7 @@ index 000000000..eb56de046
 +    }
 +}
 diff --git a/Trio Watch App Tests/Unit Tests.swift b/Trio Watch App Tests/Unit Tests.swift
-index 996dfb5a5..52e9636e3 100644
+index 996dfb5a5..eedd70f12 100644
 --- a/Trio Watch App Tests/Unit Tests.swift	
 +++ b/Trio Watch App Tests/Unit Tests.swift	
 @@ -97,6 +97,36 @@ import Testing
@@ -8228,7 +8287,7 @@ index 996dfb5a5..52e9636e3 100644
      @Test("Bolus with the phone unreachable says nothing was sent") func testUnreachableBolus() async throws {
          watchState.session = nil
  
-@@ -273,4 +303,1012 @@ import Testing
+@@ -273,4 +303,1053 @@ import Testing
      @Test("Returning to the app with no entry in progress changes nothing") func testNoEntryOnReturn() throws {
          #expect(!watchState.expireStaleEntry(at: entryStart))
      }
@@ -9096,6 +9155,47 @@ index 996dfb5a5..52e9636e3 100644
 +            fileSize: { [unowned self] in size },
 +            drain: { [unowned self] in drains += 1 }
 +        )
++    }
++
++    @Test("TRIO-119: drain(completion:) calls each completion once, including coalesced back-to-back calls")
++    func testDrainCompletionRunsOncePerCall() async {
++        let counts = LockedCounts()
++        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
++            ComplicationLogForwarder.shared.drain(completion: { counts.bump(0) })
++            ComplicationLogForwarder.shared.drain(completion: {
++                counts.bump(1)
++                continuation.resume()
++            })
++        }
++        // Serial queue: the second completion ran after the first.
++        #expect(counts.values == [1, 1])
++    }
++
++    @Test("TRIO-119: afterPendingWork runs once, after a drain(completion:) issued just before it")
++    func testAfterPendingWorkRunsAfterQueuedDrain() async {
++        let order = LockedOrder()
++        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
++            ComplicationLogForwarder.shared.drain(completion: { order.append("drain") })
++            ComplicationLogForwarder.shared.afterPendingWork {
++                order.append("after")
++                continuation.resume()
++            }
++        }
++        #expect(order.values == ["drain", "after"])
++    }
++
++    private final class LockedOrder: @unchecked Sendable {
++        private let lock = NSLock()
++        private var storage: [String] = []
++        func append(_ s: String) { lock.lock(); storage.append(s); lock.unlock() }
++        var values: [String] { lock.lock(); defer { lock.unlock() }; return storage }
++    }
++
++    private final class LockedCounts: @unchecked Sendable {
++        private let lock = NSLock()
++        private var storage = [0, 0]
++        func bump(_ i: Int) { lock.lock(); storage[i] += 1; lock.unlock() }
++        var values: [Int] { lock.lock(); defer { lock.unlock() }; return storage }
 +    }
 +
 +    @Test("TRIO-119 AC-1: the first request drains, then none within 10 min, then one again")
