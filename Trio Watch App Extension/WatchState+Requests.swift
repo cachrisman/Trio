@@ -190,12 +190,16 @@ extension WatchState {
     func requestWatchStateUpdate() {
         guard let session = session else {
             WatchLogger.shared.warning(.connectivity, "No session for a state update")
+            clearStartupFirstRefreshInFlightOnMain()
+            loadFallbackDataFromComplication()
             return
         }
 
         guard session.activationState == .activated else {
             WatchLogger.shared.debug(.connectivity, "Session not activated, activating")
             session.activate()
+            clearStartupFirstRefreshInFlightOnMain()
+            loadFallbackDataFromComplication()
             return
         }
 
@@ -206,9 +210,27 @@ extension WatchState {
 
             session.sendMessage(message, replyHandler: nil) { error in
                 WatchLogger.shared.warning(.connectivity, "Requesting a state update failed", error: error)
+                DispatchQueue.main.async {
+                    self.clearStartupFirstRefreshInFlightOnMain()
+                    self.loadFallbackDataFromComplication()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                        self.requestWatchStateUpdate()
+                    }
+                }
             }
+
+            syncTimeoutWorkItem?.cancel()
+            let timeoutWorkItem = DispatchWorkItem { [weak self] in
+                WatchLogger.shared.warning(.data, "State update timed out, using fallback data")
+                self?.clearStartupFirstRefreshInFlightOnMain()
+                self?.loadFallbackDataFromComplication()
+            }
+            syncTimeoutWorkItem = timeoutWorkItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30.0, execute: timeoutWorkItem)
         } else {
             WatchLogger.shared.debug(.connectivity, "Phone unreachable, state update not requested")
+            clearStartupFirstRefreshInFlightOnMain()
+            loadFallbackDataFromComplication()
         }
     }
 

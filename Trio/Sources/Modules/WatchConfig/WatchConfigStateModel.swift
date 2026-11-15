@@ -11,6 +11,9 @@ extension WatchConfig {
         @Published var confirmBolusFaster = false
         @Published var showForecastWatch = false
         @Published var glucoseBobbleComplication = GlucoseBobbleComplicationSettings()
+        @Published var upstreamG7WatchAcquisition = false
+        @Published var sleepQuietStart = Date()
+        @Published var sleepQuietEnd = Date()
 
         /// Garmin watch settings containing all watch-related configuration
         @Published var garminSettings = GarminWatchSettings()
@@ -27,7 +30,38 @@ extension WatchConfig {
             subscribeSetting(\.showForecastWatch, on: $showForecastWatch) { showForecastWatch = $0 }
             subscribeSetting(\.glucoseBobbleComplication, on: $glucoseBobbleComplication) { glucoseBobbleComplication = $0 }
 
+            // Not a TrioSettings value: persisted directly in UserDefaults and read by AppleWatchManager
+            upstreamG7WatchAcquisition = UserDefaults.standard.bool(forKey: WatchState.g7WatchAcquisitionArmDefaultsKey)
+            $upstreamG7WatchAcquisition
+                .dropFirst()
+                .removeDuplicates()
+                .sink { UserDefaults.standard.set($0, forKey: WatchState.g7WatchAcquisitionArmDefaultsKey) }
+                .store(in: &lifetime)
+
+            let sleepMode = SleepModeProvider.shared
+            sleepQuietStart = Self.date(fromMinutes: sleepMode.quietStartMinutes)
+            sleepQuietEnd = Self.date(fromMinutes: sleepMode.quietEndMinutes)
+            $sleepQuietStart
+                .dropFirst()
+                .removeDuplicates()
+                .sink { SleepModeProvider.shared.quietStartMinutes = Self.minutes(from: $0) }
+                .store(in: &lifetime)
+            $sleepQuietEnd
+                .dropFirst()
+                .removeDuplicates()
+                .sink { SleepModeProvider.shared.quietEndMinutes = Self.minutes(from: $0) }
+                .store(in: &lifetime)
+
             devices = garmin.devices
+        }
+
+        private static func date(fromMinutes minutes: Int) -> Date {
+            Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: Date()) ?? Date()
+        }
+
+        private static func minutes(from date: Date) -> Int {
+            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+            return (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
         }
 
         /// Prompts the user to select Garmin devices and updates the device list

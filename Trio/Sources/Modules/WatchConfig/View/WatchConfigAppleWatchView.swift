@@ -78,6 +78,42 @@ struct WatchConfigAppleWatchView: BaseView {
             ).listRowBackground(Color.chart)
 
             Section(
+                header: Text("G7 on Apple Watch"),
+                footer: Text(
+                    String(
+                        localized: "Changes how the watch app finds the G7 sensor. The watch only listens to the sensor. Applies the next time the watch app starts."
+                    )
+                ),
+                content: {
+                    Toggle(
+                        String(localized: "Upstream G7 watch acquisition (experimental)"),
+                        isOn: $state.upstreamG7WatchAcquisition
+                    )
+                }
+            ).listRowBackground(Color.chart)
+
+            Section(
+                header: Text("Sleep Mode"),
+                footer: Text(
+                    String(
+                        localized: "This quiet window is used only until the Trio Focus Filter has reported. To add the filter, open Settings, Focus, Sleep, Add Filter, and choose Trio sleep mode with Sleep mode turned on."
+                    )
+                ),
+                content: {
+                    DatePicker(
+                        String(localized: "Quiet window start"),
+                        selection: $state.sleepQuietStart,
+                        displayedComponents: .hourAndMinute
+                    )
+                    DatePicker(
+                        String(localized: "Quiet window end"),
+                        selection: $state.sleepQuietEnd,
+                        displayedComponents: .hourAndMinute
+                    )
+                }
+            ).listRowBackground(Color.chart)
+
+            Section(
                 header: Text("Contact Image"),
                 content: {
                     VStack {
