@@ -1,6 +1,6 @@
-From ee3a97f0177dbab539439ced9c189cfcb13d8959 Mon Sep 17 00:00:00 2001
+From 83a91d6ded419135601c09f6945bd765c987ec52 Mon Sep 17 00:00:00 2001
 From: Trio Patch Bot <patch-bot@users.noreply.github.com>
-Date: Sun, 15 Nov 2026 01:04:45 +0100
+Date: Sun, 15 Nov 2026 07:11:39 +0100
 Subject: [PATCH] feat: watch-g7
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -8,8 +8,8 @@ Content-Transfer-Encoding: 8bit
 
 Trio-Patch-Source-Branch: feature/watch-g7
 Trio-Patch-Base: dc533adfeee98cf51f53a455a9fae7bbdaece77b
-Trio-Patch-Feature-Tip: 8843529b1a72c94b935c737639882376bf654f34
-Trio-Patch-Generated: 2026-11-15T00:04:18Z
+Trio-Patch-Feature-Tip: 6adee3b2864215ad17db5726135164b4f4e3b87f
+Trio-Patch-Generated: 2026-11-15T06:11:08Z
 Trio-Patch-Source-Commits:
  aedabb3358f16e803e36f5409fbfccb19acb4814 feat: ns-richer-settings
  0a72b4750a0a5fcfe3e733f0252977797b596b4b feat: g7-reading-time-with-seconds
@@ -110,6 +110,7 @@ Trio-Patch-Source-Commits:
  d6b7d86bfcb25edc5d8f0ba0909a5748be893e0b phone: drop the full-send cancel of a queued complication fast send; the newer-epoch guard already skips a delivered reading (TRIO-124)
  4d3713de92874f5eaca34a828ef51046b28d8015 watch-g7: drain the complication provider log on saves and background tasks, tag saves with via=, and sequence-number provider lines with gap reporting (TRIO-119)
  8843529b1a72c94b935c737639882376bf654f34 watch: finish the complication log drain before completing background tasks, including one queued at launch (TRIO-119)
+ 6adee3b2864215ad17db5726135164b4f4e3b87f phone: drop 'Apple' from the Sleep Focus Filter intent description, rejected by ITMS-90626 (TRIO-121)
 Trio-Patch-PatchIds-Note: merge commits are omitted (no single patch-id); see Trio-Patch-Source-Commits for full history
 Trio-Patch-Source-PatchIds:
  ee4fda53fe1f87c338ca7d73ed1ac5e9761fa09c
@@ -199,6 +200,7 @@ Trio-Patch-Source-PatchIds:
  31eefe7d210b86f84a5b9fc21303015cf6e9ad1c
  6a912ee44723eba212e62ba008f485205e7826a9
  0401d013e7c4efd277b3b89fc66963c1f7400b5e
+ 09cc76cae0c70c0e18ff5301e13ca13946eb1b6c
 ---
  .../ComplicationLogForwarder.swift            |  252 ++
  .../ExtensionDelegate.swift                   |  124 +
@@ -14385,7 +14387,7 @@ index 000000000..4d9651da7
 +}
 diff --git a/Trio/Sources/Shortcuts/SleepFocusFilterIntent.swift b/Trio/Sources/Shortcuts/SleepFocusFilterIntent.swift
 new file mode 100644
-index 000000000..a5c001b0a
+index 000000000..26b6ed120
 --- /dev/null
 +++ b/Trio/Sources/Shortcuts/SleepFocusFilterIntent.swift
 @@ -0,0 +1,42 @@
@@ -14405,7 +14407,7 @@ index 000000000..a5c001b0a
 +    static var title = LocalizedStringResource("Trio sleep mode")
 +
 +    static var description = IntentDescription(
-+        "Tells Trio when you are asleep so it can send fewer updates to the Apple Watch complication."
++        "Tells Trio when you are asleep so it can send fewer updates to the watch complication."
 +    )
 +
 +    var displayRepresentation: DisplayRepresentation {
